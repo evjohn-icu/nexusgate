@@ -1,0 +1,35 @@
+[Unit]
+Description=Timingdex v0.14 Worker
+Documentation=man:timingdex  https://github.com/ev/timingdex
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=timingdex
+Group=timingdex
+StateDirectory=timingdex-worker
+RuntimeDirectory=timingdex-worker
+RuntimeDirectoryMode=0700
+WorkingDirectory=/var/lib/timingdex-worker
+Environment=TIMINGDEX_DATA_DIR=/var/lib/timingdex-worker
+Environment=TIMINGDEX_WORKER_TOKEN_FILE=/etc/timingdex/worker.token
+EnvironmentFile=-/etc/timingdex/worker.env
+ExecStart=/usr/local/bin/timingdex worker run --config /var/lib/timingdex-worker/worker.json
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0077
+
+# This service has no access to the Hub's StateDirectory or SQLite file.
+# /srv/timingdex/media must be the same path exposed to the Hub and is read
+# only so a worker cannot modify originals, sidecars, or metadata.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/timingdex-worker /run/timingdex-worker
+ReadOnlyPaths=/srv/timingdex/media /etc/timingdex/tls /etc/timingdex/worker.token
+
+[Install]
+WantedBy=multi-user.target

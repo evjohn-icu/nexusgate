@@ -1,0 +1,16 @@
+# Compiled binary (go build -o timingdex ./cmd/timingdex)
+/timingdex
+
+# Local Hub data directory: SQLite, cache, admin-token, provider-secrets.
+# Never commit — it holds the Hub administrator token and encrypted keys.
+.timingdex-dev/
+
+# Real configuration. config.example.json is the tracked template.
+config.json
+
+# Worker configuration written by `timingdex worker enroll` (node token).
+worker.json
+
+*.db
+*.db-wal
+*.db-shm
