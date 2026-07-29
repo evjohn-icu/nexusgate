@@ -43,7 +43,7 @@ func TestLeaseNextWorkerDeriveMatchesLibraryRootAndCapability(t *testing.T) {
 			LibraryRoots: []string{"root-other"},
 		},
 	}
-	if leased, err := repo.LeaseNextWorkerDerive(ctx, wrongRoot, time.Minute); err != nil {
+	if leased, err := repo.LeaseNextWorkerDerive(ctx, wrongRoot, time.Minute, domain.LeaseFilter{}); err != nil {
 		t.Fatal(err)
 	} else if leased != nil {
 		t.Fatalf("wrong-root worker leased job: %+v", leased)
@@ -57,7 +57,7 @@ func TestLeaseNextWorkerDeriveMatchesLibraryRootAndCapability(t *testing.T) {
 			LibraryRoots: []string{"root-allowed"},
 		},
 	}
-	leased, err := repo.LeaseNextWorkerDerive(ctx, matching, time.Minute)
+	leased, err := repo.LeaseNextWorkerDerive(ctx, matching, time.Minute, domain.LeaseFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestLeaseNextWorkerDeriveMatchesLibraryRootAndCapability(t *testing.T) {
 		t.Fatalf("leased job has unexpected source details: %+v", leased)
 	}
 
-	if leasedAgain, err := repo.LeaseNextWorkerDerive(ctx, matching, time.Minute); err != nil {
+	if leasedAgain, err := repo.LeaseNextWorkerDerive(ctx, matching, time.Minute, domain.LeaseFilter{}); err != nil {
 		t.Fatal(err)
 	} else if leasedAgain != nil {
 		t.Fatalf("worker leased the same active job twice: %+v", leasedAgain)
@@ -118,7 +118,7 @@ func TestCompleteWorkerDeriveEnqueuesAnalysisWhenNoAudioArtifactExists(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err := repo.LeaseNextWorkerDerive(ctx, worker, time.Minute)
+	job, err := repo.LeaseNextWorkerDerive(ctx, worker, time.Minute, domain.LeaseFilter{})
 	if err != nil || job == nil {
 		t.Fatalf("lease=%+v err=%v", job, err)
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/ev/timingdex/internal/app"
 	"github.com/ev/timingdex/internal/config"
+	"github.com/ev/timingdex/internal/domain"
 	"github.com/ev/timingdex/internal/remote"
 	"github.com/ev/timingdex/internal/repository/sqlite"
 )
@@ -35,7 +36,7 @@ func TestWorkerCredentialDeliveryAllowsLeasedTrustedWorkerWhenExplicitlyEnabled(
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err := repo.LeaseNextJob(ctx, worker.ID, time.Minute)
+	job, err := repo.LeaseNextJob(ctx, worker.ID, time.Minute, domain.LeaseFilter{})
 	if err != nil || job == nil {
 		t.Fatalf("lease=%+v err=%v", job, err)
 	}
@@ -91,7 +92,7 @@ func TestWorkerCannotGetCredentialForAnotherWorkersJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err := repo.LeaseNextJob(ctx, owner.ID, time.Minute)
+	job, err := repo.LeaseNextJob(ctx, owner.ID, time.Minute, domain.LeaseFilter{})
 	if err != nil || job == nil {
 		t.Fatalf("lease=%+v err=%v", job, err)
 	}
@@ -127,7 +128,7 @@ func TestWorkerCredentialDeliveryIsDisabledByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err := repo.LeaseNextJob(ctx, worker.ID, time.Minute)
+	job, err := repo.LeaseNextJob(ctx, worker.ID, time.Minute, domain.LeaseFilter{})
 	if err != nil || job == nil {
 		t.Fatalf("lease=%+v err=%v", job, err)
 	}

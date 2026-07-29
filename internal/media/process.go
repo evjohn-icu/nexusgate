@@ -365,12 +365,17 @@ func PreviewPlanForProbeResult(probe FFProbeResult, probeErr error, src string) 
 	return PreviewRenderPlanFor(probe, nil, src)
 }
 
-func ExtractAudio(ctx context.Context, src, dst string) error {
+// ExtractAudio reads the whole source, so it honours readRate (a multiple of
+// realtime playback; zero means unlimited) for the same reason the proxy render
+// does. See domain.PipelineThrottle.
+func ExtractAudio(ctx context.Context, src, dst string, readRate float64) error {
 	if err := rejectSourceOverwrite(src, dst); err != nil {
 		return err
 	}
 	return atomicFFmpegOutput(dst, func(out string) error {
-		cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", src, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "64k", out)
+		args := append([]string{"-hide_banner", "-loglevel", "error", "-y"}, readRateArgs(readRate)...)
+		args = append(args, "-i", src, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "64k", out)
+		cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 		if raw, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("audio: %w: %s", err, raw)
 		}

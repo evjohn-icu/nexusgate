@@ -38,3 +38,6 @@ coverage.out
 
 # macOS directory metadata.
 .DS_Store
+
+# Server logs from a hand-run `timingdex serve` during testing.
+*.log

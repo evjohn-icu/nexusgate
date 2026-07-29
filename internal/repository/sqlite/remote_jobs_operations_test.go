@@ -15,7 +15,7 @@ func TestWorkerProgressEventsRequireLeaseOwnershipAndPersist(t *testing.T) {
 	ctx := context.Background()
 	repo, jobID, owner, other := newRemoteOperationsFixture(t, "progress")
 
-	job, err := repo.LeaseNextWorkerDerive(ctx, owner, time.Minute)
+	job, err := repo.LeaseNextWorkerDerive(ctx, owner, time.Minute, domain.LeaseFilter{})
 	if err != nil || job == nil {
 		t.Fatalf("lease job=%+v err=%v", job, err)
 	}
@@ -46,7 +46,7 @@ func TestWorkerJobStatusShowsRetryAndLastFailure(t *testing.T) {
 	ctx := context.Background()
 	repo, jobID, owner, _ := newRemoteOperationsFixture(t, "retry")
 
-	job, err := repo.LeaseNextWorkerDerive(ctx, owner, time.Minute)
+	job, err := repo.LeaseNextWorkerDerive(ctx, owner, time.Minute, domain.LeaseFilter{})
 	if err != nil || job == nil {
 		t.Fatalf("lease job=%+v err=%v", job, err)
 	}
@@ -75,7 +75,7 @@ func TestWorkerJobStatusShowsRetryAndLastFailure(t *testing.T) {
 func TestCompletedWorkerFailureRemainsVisible(t *testing.T) {
 	ctx := context.Background()
 	repo, jobID, owner, _ := newRemoteOperationsFixture(t, "terminal-failure")
-	if _, err := repo.LeaseNextWorkerDerive(ctx, owner, time.Minute); err != nil {
+	if _, err := repo.LeaseNextWorkerDerive(ctx, owner, time.Minute, domain.LeaseFilter{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.CompleteWorkerJob(ctx, jobID, owner.ID, domain.JobFailed, "proxy unavailable"); err != nil {
@@ -96,12 +96,12 @@ func TestDeriveWorkerAssignmentRestrictsLeaseAndPreferenceOrders(t *testing.T) {
 	if err := repo.SetDeriveWorkerAssignment(ctx, jobID, owner.ID, remote.WorkerAssignmentRequired); err != nil {
 		t.Fatal(err)
 	}
-	if job, err := repo.LeaseNextWorkerDerive(ctx, other, time.Minute); err != nil {
+	if job, err := repo.LeaseNextWorkerDerive(ctx, other, time.Minute, domain.LeaseFilter{}); err != nil {
 		t.Fatal(err)
 	} else if job != nil {
 		t.Fatalf("required assignment leaked to another worker: %+v", job)
 	}
-	job, err := repo.LeaseNextWorkerDerive(ctx, owner, time.Minute)
+	job, err := repo.LeaseNextWorkerDerive(ctx, owner, time.Minute, domain.LeaseFilter{})
 	if err != nil || job == nil {
 		t.Fatalf("assigned worker could not lease job=%+v err=%v", job, err)
 	}
@@ -121,7 +121,7 @@ func TestPreferredWorkerSelectionIsPersistedButRemainsSoft(t *testing.T) {
 	if err := repo.SetDeriveWorkerAssignment(ctx, jobID, preferred.ID, remote.WorkerAssignmentPreferred); err != nil {
 		t.Fatal(err)
 	}
-	job, err := repo.LeaseNextWorkerDerive(ctx, owner, time.Minute)
+	job, err := repo.LeaseNextWorkerDerive(ctx, owner, time.Minute, domain.LeaseFilter{})
 	if err != nil || job == nil {
 		t.Fatalf("soft preference must not block another capable worker: job=%+v err=%v", job, err)
 	}

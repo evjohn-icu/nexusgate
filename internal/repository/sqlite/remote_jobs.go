@@ -140,7 +140,7 @@ func (r *Repository) RecordProviderCredentialLease(ctx context.Context, jobID, w
 	return tx.Commit()
 }
 
-func (r *Repository) LeaseNextWorkerDerive(ctx context.Context, worker remote.Worker, lease time.Duration) (*remote.WorkerJob, error) {
+func (r *Repository) LeaseNextWorkerDerive(ctx context.Context, worker remote.Worker, lease time.Duration, filter domain.LeaseFilter) (*remote.WorkerJob, error) {
 	if strings.TrimSpace(worker.ID) == "" {
 		return nil, errors.New("worker ID is required")
 	}
@@ -160,15 +160,15 @@ func (r *Repository) LeaseNextWorkerDerive(ctx context.Context, worker remote.Wo
 		args = append(args, root)
 	}
 	now := time.Now().UTC()
-	args = append(args, formatTime(now), formatTime(now), worker.ID)
+	args = append(args, formatTime(now), formatTime(now), filter.MaxAssetBytes, filter.MaxAssetBytes, worker.ID)
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	query := fmt.Sprintf(`SELECT j.id,j.asset_id,al.root_id,al.relative_path,al.modified_ns,j.job_type,j.attempt_count,j.max_attempts,j.current_stage,j.progress,COALESCE(j.preferred_worker_id,''),COALESCE(j.assigned_worker_id,'') FROM jobs j JOIN asset_locations al ON al.asset_id=j.asset_id AND al.is_primary=1 AND al.exists_now=1 WHERE j.job_type=? AND (j.assigned_worker_id IS NULL OR j.assigned_worker_id=?) AND j.state IN ('pending','failed') AND j.terminal=0 AND j.attempt_count<j.max_attempts AND al.root_id IN (%s) AND j.run_after<=? AND (j.lease_expires_at IS NULL OR j.lease_expires_at<=?) ORDER BY CASE WHEN j.preferred_worker_id=? THEN 0 ELSE 1 END,j.priority DESC,j.created_at LIMIT 1`, placeholders)
+	query := fmt.Sprintf(`SELECT j.id,j.asset_id,al.root_id,al.relative_path,al.modified_ns,j.job_type,j.attempt_count,j.max_attempts,j.current_stage,j.progress,COALESCE(j.preferred_worker_id,''),COALESCE(j.assigned_worker_id,''),COALESCE((SELECT a.file_size FROM assets a WHERE a.id=j.asset_id),0) FROM jobs j JOIN asset_locations al ON al.asset_id=j.asset_id AND al.is_primary=1 AND al.exists_now=1 WHERE j.job_type=? AND (j.assigned_worker_id IS NULL OR j.assigned_worker_id=?) AND j.state IN ('pending','failed') AND j.terminal=0 AND j.attempt_count<j.max_attempts AND al.root_id IN (%s) AND j.run_after<=? AND (j.lease_expires_at IS NULL OR j.lease_expires_at<=?) AND (?=0 OR NOT EXISTS (SELECT 1 FROM assets a WHERE a.id=j.asset_id AND a.file_size>?)) ORDER BY CASE WHEN j.preferred_worker_id=? THEN 0 ELSE 1 END,j.priority DESC,j.created_at LIMIT 1`, placeholders)
 	var job remote.WorkerJob
-	err = tx.QueryRowContext(ctx, query, args...).Scan(&job.JobID, &job.AssetID, &job.RootID, &job.RelativePath, &job.ModifiedNS, &job.JobType, &job.AttemptCount, &job.MaxAttempts, &job.CurrentStage, &job.Progress, &job.PreferredWorkerID, &job.AssignedWorkerID)
+	err = tx.QueryRowContext(ctx, query, args...).Scan(&job.JobID, &job.AssetID, &job.RootID, &job.RelativePath, &job.ModifiedNS, &job.JobType, &job.AttemptCount, &job.MaxAttempts, &job.CurrentStage, &job.Progress, &job.PreferredWorkerID, &job.AssignedWorkerID, &job.SourceBytes)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

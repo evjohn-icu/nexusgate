@@ -180,7 +180,7 @@ Usage:
   timingdex pipeline run
   timingdex pipeline retry-failed
   timingdex worker enroll --hub https://nas:8787 --pairing <token> [--name worker] [--mount root-id=/mounted/path] [--provider-operation video_analysis]
-  timingdex worker run [--config path]
+  timingdex worker run [--config path] [--tray]
   timingdex worker doctor [--config path]
   timingdex doctor`)
 	return errors.New("invalid command")
@@ -258,6 +258,7 @@ func runWorkerCommand() error {
 	case "run":
 		fs := flag.NewFlagSet("worker run", flag.ContinueOnError)
 		configPath := fs.String("config", defaultWorkerConfigPath(), "worker config path")
+		tray := fs.Bool("tray", false, "show a notification-area icon with a settings link and a quit item (Windows)")
 		if err := fs.Parse(os.Args[3:]); err != nil {
 			return err
 		}
@@ -271,7 +272,10 @@ func runWorkerCommand() error {
 		_, plan := media.DetectHardware(ctx, media.HardwareConfig{Mode: "auto", AllowFallback: true})
 		deriver := worker.NewFFmpegDeriver(plan)
 		runtime := worker.NewRuntime(client, config, deriver)
-		return runtime.Run(ctx, worker.RunOptions{})
+		if !*tray {
+			return runtime.Run(ctx, worker.RunOptions{})
+		}
+		return runWorkerWithTray(ctx, stop, runtime, *configPath, config)
 	case "doctor":
 		fs := flag.NewFlagSet("worker doctor", flag.ContinueOnError)
 		configPath := fs.String("config", defaultWorkerConfigPath(), "worker config path")
@@ -287,6 +291,55 @@ func runWorkerCommand() error {
 	default:
 		return errors.New("usage: timingdex worker enroll|run|doctor")
 	}
+}
+
+// runWorkerWithTray runs the lease loop in the background while the tray owns the
+// main thread, which Win32 requires: a message pump is bound to the thread that
+// created its window.
+//
+// The tray is the reason the settings server exists at all — without a window
+// there is nowhere to click "settings" — so the two start and stop together. The
+// settings URL carries an access token and is deliberately not logged; the tray
+// hands it to the browser directly.
+func runWorkerWithTray(ctx context.Context, stop context.CancelFunc, runtime *worker.Runtime, configPath string, config worker.Config) error {
+	admin, err := worker.NewLocalAdmin(configPath)
+	if err != nil {
+		return err
+	}
+	defer admin.Close()
+
+	adminCtx, stopAdmin := context.WithCancel(ctx)
+	defer stopAdmin()
+	go func() {
+		if err := admin.Serve(adminCtx); err != nil {
+			slog.Error("worker settings server stopped", "error", err)
+		}
+	}()
+
+	workerErr := make(chan error, 1)
+	go func() { workerErr <- runtime.Run(ctx, worker.RunOptions{}) }()
+
+	name := strings.TrimSpace(config.Registration.Name)
+	if name == "" {
+		name = "Timingdex Worker"
+	}
+	trayErr := worker.ShowTray(ctx, worker.TrayOptions{
+		Tooltip:     name + " → " + config.HubURL,
+		SettingsURL: admin.URL(),
+		// Quitting from the menu has to stop the lease loop rather than kill the
+		// process, so a job in flight is reported back instead of silently
+		// timing out its lease on the Hub.
+		OnQuit: stop,
+	})
+	if trayErr != nil {
+		// Without a tray there is no way to quit and no way to reach settings, so
+		// falling back to a headless run would strand the operator. Stop instead
+		// and say why.
+		stop()
+		<-workerErr
+		return trayErr
+	}
+	return <-workerErr
 }
 
 type repeatedFlag []string

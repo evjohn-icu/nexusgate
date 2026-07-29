@@ -51,7 +51,7 @@ func TestCommitWorkerArtifactRequiresActiveLeaseAndIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err := repo.LeaseNextWorkerDerive(ctx, worker, time.Minute)
+	job, err := repo.LeaseNextWorkerDerive(ctx, worker, time.Minute, domain.LeaseFilter{})
 	if err != nil || job == nil {
 		t.Fatalf("lease job=%+v err=%v", job, err)
 	}

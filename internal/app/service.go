@@ -83,7 +83,7 @@ type Repository interface {
 	AuthenticateWorker(context.Context, string) (remote.Worker, error)
 	HeartbeatWorker(context.Context, string, remote.WorkerCapabilities) error
 	ListWorkers(context.Context) ([]remote.Worker, error)
-	LeaseNextWorkerDerive(context.Context, remote.Worker, time.Duration) (*remote.WorkerJob, error)
+	LeaseNextWorkerDerive(context.Context, remote.Worker, time.Duration, domain.LeaseFilter) (*remote.WorkerJob, error)
 	CompleteWorkerJob(context.Context, string, string, domain.JobState, string) error
 	RecordWorkerJobProgress(context.Context, string, string, string, float64, string, string) error
 	GetWorkerJobStatus(context.Context, string) (remote.WorkerJobStatus, error)
@@ -91,6 +91,7 @@ type Repository interface {
 	PrepareWorkerArtifact(context.Context, string, string, string, string) (string, *domain.DerivedArtifact, error)
 	CommitWorkerArtifact(context.Context, string, string, domain.DerivedArtifact, bool) (domain.DerivedArtifact, bool, error)
 	RecordProviderCredentialLease(context.Context, string, string, string, string, time.Time) error
+	SavePipelineThrottle(context.Context, domain.PipelineThrottle) error
 }
 
 type Service struct {
@@ -255,6 +256,24 @@ func (s *Service) AdminToken() string { return s.adminToken }
 // repurpose plans, never approval or pipeline runs.
 func (s *Service) AgentToken() string { return s.agentToken }
 
+// DataDir is the Hub's state directory. The API layer needs it to serve
+// operator-supplied Worker binaries from a known subdirectory; it is not a
+// general-purpose filesystem escape hatch, and nothing derives a path from
+// request input relative to it.
+func (s *Service) DataDir() string { return s.cfg.DataDir }
+
+// PipelineThrottle reads the current disk-load limits.
+func (s *Service) PipelineThrottle(ctx context.Context) (domain.PipelineThrottle, error) {
+	return s.repo.GetPipelineThrottle(ctx)
+}
+
+// SavePipelineThrottle validates and persists the limits. It takes effect on the
+// next lease rather than on restart: RunUntilIdle re-reads the throttle every
+// iteration, so tightening it stops a scan that is already grinding.
+func (s *Service) SavePipelineThrottle(ctx context.Context, throttle domain.PipelineThrottle) error {
+	return s.repo.SavePipelineThrottle(ctx, throttle)
+}
+
 // TrustedReadNetworks are the CIDR ranges the API layer admits to the read
 // routes that carry no token. Load() has already validated them, so a parse
 // failure here cannot happen; the API layer still falls back to its restrictive
@@ -302,8 +321,23 @@ func (s *Service) ListWorkers(ctx context.Context) ([]remote.Worker, error) {
 	return s.repo.ListWorkers(ctx)
 }
 
+// LeaseNextWorkerDerive applies the same throttle the local pipeline obeys. The
+// Hub decides the rate and the size ceiling rather than the Worker, because the
+// setting protects a disk both of them read and a Worker must not be able to
+// opt itself out of it.
 func (s *Service) LeaseNextWorkerDerive(ctx context.Context, worker remote.Worker) (*remote.WorkerJob, error) {
-	return s.repo.LeaseNextWorkerDerive(ctx, worker, 2*time.Minute)
+	throttle, err := s.repo.GetPipelineThrottle(ctx)
+	if err != nil {
+		slog.Warn("pipeline throttle unreadable; leasing worker derive unthrottled", "error", err)
+		throttle = domain.DefaultPipelineThrottle()
+	}
+	now := time.Now()
+	job, err := s.repo.LeaseNextWorkerDerive(ctx, worker, 2*time.Minute, domain.LeaseFilter{MaxAssetBytes: throttle.MaxAssetBytesAt(now)})
+	if err != nil || job == nil {
+		return job, err
+	}
+	job.ReadRate = throttle.ReadRateFor(job.SourceBytes)
+	return job, nil
 }
 
 func (s *Service) CompleteWorkerJob(ctx context.Context, jobID, workerID string, state domain.JobState, message string) error {

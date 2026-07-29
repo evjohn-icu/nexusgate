@@ -35,10 +35,27 @@ func (e *PreviewRenderError) Error() string {
 // metadata and is never written to source media.
 type PreviewRenderer struct {
 	LUTPath string
+	// ReadRate caps how fast FFmpeg reads the source, as a multiple of realtime
+	// playback. Zero means unlimited. It exists so a full-library derive can be
+	// stopped from saturating a mechanical disk or a NAS link for hours; see
+	// domain.PipelineThrottle for the policy that chooses the value.
+	ReadRate float64
 }
 
 func NewPreviewRenderer(lutPath string) *PreviewRenderer {
 	return &PreviewRenderer{LUTPath: strings.TrimSpace(lutPath)}
+}
+
+// WithReadRate returns a copy carrying the rate cap. It is a chained option
+// rather than a constructor argument because the rate is per-job policy while
+// the LUT is per-install configuration, and callers that do not throttle should
+// not have to mention it.
+func (r *PreviewRenderer) WithReadRate(rate float64) *PreviewRenderer {
+	copied := *r
+	if rate > 0 {
+		copied.ReadRate = rate
+	}
+	return &copied
 }
 
 // ResolvePlan validates the external rendering prerequisite and marks an
@@ -161,13 +178,19 @@ func (r *PreviewRenderer) RenderProxy(ctx context.Context, src, dst string, hard
 	if err != nil {
 		return err
 	}
+	// The proxy is the one derive step that reads the whole source, so it is
+	// where a rate cap actually relieves the disk. The thumbnail decodes a
+	// single frame and is deliberately left unthrottled.
+	rate := readRateArgs(r.ReadRate)
 	return atomicFFmpegOutput(dst, func(out string) error {
 		args := append([]string{"-hide_banner", "-loglevel", "error", "-y"}, hardware.DecoderArgs...)
+		args = append(args, rate...)
 		args = append(args, "-i", src, "-vf", filter)
 		args = append(args, hardware.EncoderArgs...)
 		args = append(args, "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", out)
 		return runWithFallback(ctx, "proxy", args, hardware, func() []string {
-			return []string{"-hide_banner", "-loglevel", "error", "-y", "-i", src, "-vf", softwareFilter, "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", out}
+			fallback := append([]string{"-hide_banner", "-loglevel", "error", "-y"}, rate...)
+			return append(fallback, "-i", src, "-vf", softwareFilter, "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", out)
 		})
 	})
 }

@@ -1343,7 +1343,7 @@ func TestJobsEndpointRedactsFailureTextFromPublicCallers(t *testing.T) {
 	if _, err := service.ScanLibraryRoot(ctx, root.ID); err != nil {
 		t.Fatal(err)
 	}
-	leased, err := repo.LeaseNextJob(ctx, "redaction-test", time.Minute)
+	leased, err := repo.LeaseNextJob(ctx, "redaction-test", time.Minute, domain.LeaseFilter{})
 	if err != nil || leased == nil {
 		t.Fatalf("lease job=%+v err=%v", leased, err)
 	}

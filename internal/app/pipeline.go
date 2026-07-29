@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -32,11 +33,12 @@ type PipelineRepository interface {
 	GetArtifact(context.Context, string, string) (*domain.DerivedArtifact, error)
 	SaveSpeechClassification(context.Context, string, domain.SpeechClassification) error
 	EnqueueJob(context.Context, string, domain.JobType, string, int) error
-	LeaseNextJob(context.Context, string, time.Duration) (*domain.Job, error)
+	LeaseNextJob(context.Context, string, time.Duration, domain.LeaseFilter) (*domain.Job, error)
 	CompleteJob(context.Context, string, domain.JobState, string) error
 	RetryJob(context.Context, string, string, time.Duration) error
 	FailJobTerminally(context.Context, string, string) error
 	RequeueFailedJobs(context.Context) (int, error)
+	GetPipelineThrottle(context.Context) (domain.PipelineThrottle, error)
 	ListJobs(context.Context, int) ([]domain.Job, error)
 	RebuildSearch(context.Context, string) error
 	Search(context.Context, string, int) ([]string, error)
@@ -82,14 +84,24 @@ func (p *Pipeline) EnqueueAsset(ctx context.Context, assetID string) error {
 func (p *Pipeline) RunUntilIdle(ctx context.Context) error {
 	worker := "local-" + idgen.New()
 	for {
-		job, err := p.repo.LeaseNextJob(ctx, worker, 2*time.Minute)
+		// Re-read the throttle each iteration rather than once per run. A run
+		// can last hours, which is longer than the off-peak window it is
+		// supposed to respect, and the operator must be able to tighten the
+		// limit while a scan is already grinding.
+		throttle, err := p.repo.GetPipelineThrottle(ctx)
+		if err != nil {
+			slog.Warn("pipeline throttle unreadable; running unthrottled", "error", err)
+			throttle = domain.DefaultPipelineThrottle()
+		}
+		now := time.Now()
+		job, err := p.repo.LeaseNextJob(ctx, worker, 2*time.Minute, domain.LeaseFilter{MaxAssetBytes: throttle.MaxAssetBytesAt(now)})
 		if err != nil {
 			return err
 		}
 		if job == nil {
 			return nil
 		}
-		if err := p.execute(ctx, *job); err != nil {
+		if err := p.execute(ctx, *job, throttle); err != nil {
 			if isRetryableJobError(err) && job.AttemptCount < job.MaxAttempts {
 				if retryErr := p.repo.RetryJob(ctx, job.ID, err.Error(), retryDelay(job.AttemptCount)); retryErr != nil {
 					return retryErr
@@ -99,11 +111,36 @@ func (p *Pipeline) RunUntilIdle(ctx context.Context) error {
 			// Either the failure is permanent or the attempts ran out. Both are
 			// terminal, so stop the lease predicate from handing it back.
 			_ = p.repo.FailJobTerminally(ctx, job.ID, err.Error())
+			if err := sleepContext(ctx, throttle.CooldownAt(time.Now())); err != nil {
+				return err
+			}
 			continue
 		}
 		if err := p.repo.CompleteJob(ctx, job.ID, domain.JobSucceeded, ""); err != nil {
 			return err
 		}
+		// The pause is what turns a multi-hour scan from continuous disk load
+		// into duty-cycled load; a rate cap alone still reads flat-out forever.
+		if err := sleepContext(ctx, throttle.CooldownAt(time.Now())); err != nil {
+			return err
+		}
+	}
+}
+
+// sleepContext waits without outliving a cancelled run. A plain time.Sleep here
+// would make Ctrl-C on a throttled pipeline take up to a full cooldown to be
+// noticed.
+func sleepContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
@@ -166,7 +203,18 @@ func previewPlanForDerive(ctx context.Context, sourcePath string, m *domain.Medi
 	return media.PreviewPlanForProbeResult(probe, err, sourcePath), nil
 }
 
-func (p *Pipeline) execute(ctx context.Context, j domain.Job) error {
+// sourceSizeBytes reports the source size for the throttle's small-file
+// exemption. An unreadable file returns 0, which the exemption treats as
+// "unknown" and therefore throttles — failing towards the gentler behaviour.
+func sourceSizeBytes(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
+}
+
+func (p *Pipeline) execute(ctx context.Context, j domain.Job, throttle domain.PipelineThrottle) error {
 	loc, err := p.repo.GetPrimaryLocation(ctx, j.AssetID)
 	if err != nil {
 		return err
@@ -210,12 +258,17 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job) error {
 		// resulting SourceColor; reuse it instead of probing again here so a
 		// thumbnail+proxy derive costs at most one extra ffprobe call, and only
 		// when the stored metadata predates this field or is missing.
+		// The rate cap is chosen per asset so the small-file exemption can
+		// apply. Source size comes from a stat rather than the database because
+		// the throttle protects the disk this read is about to hit, and that is
+		// the file on disk right now.
+		readRate := throttle.ReadRateFor(sourceSizeBytes(sourcePath))
 		if needThumb || needProxy {
 			previewPlan, err := previewPlanForDerive(ctx, sourcePath, m)
 			if err != nil {
 				return err
 			}
-			renderer := media.NewPreviewRenderer("")
+			renderer := media.NewPreviewRenderer("").WithReadRate(readRate)
 			if needThumb {
 				if err := renderer.RenderThumbnail(ctx, sourcePath, thumb, p.hardware, previewPlan); err != nil {
 					return err
@@ -236,7 +289,7 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job) error {
 		if m != nil && m.HasAudio {
 			audio := filepath.Join(base, "audio.m4a")
 			if _, err := os.Stat(audio); os.IsNotExist(err) {
-				if err := media.ExtractAudio(ctx, sourcePath, audio); err != nil {
+				if err := media.ExtractAudio(ctx, sourcePath, audio, readRate); err != nil {
 					return err
 				}
 			}

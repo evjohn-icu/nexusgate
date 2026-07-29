@@ -23,6 +23,14 @@ type WorkerJob struct {
 	Progress          float64        `json:"progress"`
 	PreferredWorkerID string         `json:"preferred_worker_id,omitempty"`
 	AssignedWorkerID  string         `json:"assigned_worker_id,omitempty"`
+	// SourceBytes is the Hub's recorded size of the source. It travels with the
+	// lease so the Worker does not have to stat a NAS path to learn it.
+	SourceBytes int64 `json:"source_bytes,omitempty"`
+	// ReadRate caps FFmpeg's input read speed as a multiple of realtime; zero
+	// means unlimited. The Hub decides it, because the throttle is an operator
+	// setting and a Worker must not be able to opt itself out of protecting the
+	// shared disk it is reading from.
+	ReadRate float64 `json:"read_rate,omitempty"`
 }
 
 // WorkerAssignmentMode controls the safety semantics of a manual Worker

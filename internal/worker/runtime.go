@@ -227,7 +227,7 @@ func (d *FFmpegDeriver) Derive(ctx context.Context, job remote.WorkerJob, source
 	probe, probeErr := media.Probe(ctx, sourcePath)
 	previewPlan := media.PreviewPlanForProbeResult(probe, probeErr, sourcePath)
 
-	renderer := media.NewPreviewRenderer("")
+	renderer := media.NewPreviewRenderer("").WithReadRate(job.ReadRate)
 	if err := renderer.RenderThumbnail(ctx, sourcePath, thumbnail, d.Plan, previewPlan); err != nil {
 		return nil, err
 	}
@@ -246,7 +246,7 @@ func (d *FFmpegDeriver) Derive(ctx context.Context, job remote.WorkerJob, source
 			continue
 		}
 		audio := filepath.Join(outputDir, "audio.m4a")
-		if err := media.ExtractAudio(ctx, sourcePath, audio); err != nil {
+		if err := media.ExtractAudio(ctx, sourcePath, audio, job.ReadRate); err != nil {
 			return nil, err
 		}
 		artifacts = append(artifacts, ArtifactUpload{Type: "audio", ProfileHash: "audio-16k-v1", Path: audio})

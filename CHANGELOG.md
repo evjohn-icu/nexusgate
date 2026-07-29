@@ -1,5 +1,64 @@
 # Changelog
 
+## Unreleased — Disk Load Limits and Worker Onboarding
+
+- Added `timingdex worker run --tray`: a Windows notification-area icon with a
+  settings link and a quit item, built on Win32 through stdlib `syscall`. A tray
+  icon is one API plus a message pump, and the alternatives each cost the property
+  the install wizard depends on — one cross-compiled .exe with no DLLs beside it.
+  Qt would need a C++ toolchain and ~50MB of runtime libraries; the CGO tray
+  libraries would need a mingw cross-compiler. CI now cross-compiles and vets for
+  Windows, since no test on a Linux runner can execute that code.
+- Added a loopback settings page on the Worker for the three values the Hub
+  cannot push: the hub URL, the pinned fingerprint and the node token. Those are
+  the trust anchor — a Worker must already know where to look before it can be
+  told anything — so everything else stays Hub-decided. The server binds
+  127.0.0.1 only and every route is gated by a random token in the URL, because a
+  loopback port is reachable by any process on the machine; a token mismatch
+  answers 404 rather than 401, which would confirm the server exists. The node
+  token can be replaced but never read back, and submitting it empty keeps the
+  existing one so the hub address can be changed without re-pasting a credential
+  that is never displayed. Fingerprint validation reuses the client's own
+  canonicalisation so the stored form is the compared form.
+- Added pipeline throttling, editable at `/settings` and effective on the next
+  lease rather than on restart. The pipeline is strictly sequential, so the levers
+  are not concurrency: `read_rate` caps FFmpeg's input read speed via `-readrate`
+  (an input option, hence placed before `-i`, where it is not silently ignored),
+  and a per-job cooldown turns a multi-hour scan from continuous disk load into
+  duty-cycled load. Only whole-file reads honour the rate — thumbnail extraction
+  decodes one frame, where a cap would only slow the seek. Both default to off so
+  an upgrade does not silently slow an existing library.
+- `-readrate` support is probed once before use. It arrived in FFmpeg 5.1, and on
+  the 4.x builds many NAS and LTS installs still ship, passing it makes FFmpeg
+  exit on an unrecognized option before reading a frame — an error matching none
+  of `isRetryableJobError`'s permanent phrases, so enabling the throttle would
+  have retried every derive through the full backoff chain instead of failing
+  usefully. Where the flag is missing the rate limit is skipped with one warning.
+- Added off-peak scheduling with two size thresholds: assets above
+  `defer_above_bytes` run only inside the window, assets at or below
+  `immediate_max_bytes` are exempt from both the deferral and the rate cap. The
+  window is judged in the Hub's local time and the settings page shows the Hub's
+  own clock, because "01:00" configured from another time zone otherwise means
+  something the operator cannot see. Deferral is applied in the lease predicate,
+  not after leasing: leasing increments `attempt_count`, so a held job that were
+  leased and put back would exhaust its retries long before its window opened.
+- The throttle applies to Workers too, decided by the Hub. `remote.WorkerJob`
+  carries the source size and rate; a Worker must not be able to opt itself out of
+  a limit that protects a disk it shares.
+- Added `/worker-setup`, a wizard that generates a ready-to-run install script
+  (PowerShell for Windows, POSIX sh for Linux) with hub URL, certificate
+  fingerprint, one-time pairing token and library-root mounts filled in. The Hub
+  distributes Worker binaries the operator places in
+  `$DATA_DIR/worker-binaries/`, so no separate web server is needed on the LAN.
+  The script endpoint is admin-only because the script embeds a single-use
+  credential, and every request-supplied value is quoted for the target shell.
+- Settings now live in a generic `settings(key, value, updated_at)` table.
+  Runtime-editable configuration should not need a migration per setting, and
+  v0.15 already established SQLite as its home.
+- Fixed a stale test: the lease query-plan assertion held its own copy of the SQL
+  and kept passing after the size ceiling was added to the real query, asserting
+  a plan for a statement nothing executed. The predicate is now shared.
+
 ## Unreleased — Retrieval Performance + Agent Credential Boundary
 
 - The unauthenticated read routes (browse, search, thumbnails, proxy, jobs,

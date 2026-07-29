@@ -762,7 +762,7 @@ func (r *Repository) EnqueueJob(ctx context.Context, assetID string, typ domain.
 	_, err := r.db.ExecContext(ctx, `INSERT OR IGNORE INTO jobs(id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,created_at,updated_at) VALUES(?,?,?,'pending',?,0,3,?,?,?,?)`, idgen.New(), assetID, string(typ), priority, formatTime(time.Now()), inputHash, formatTime(time.Now()), formatTime(time.Now()))
 	return err
 }
-func (r *Repository) LeaseNextJob(ctx context.Context, worker string, lease time.Duration) (*domain.Job, error) {
+func (r *Repository) LeaseNextJob(ctx context.Context, worker string, lease time.Duration, filter domain.LeaseFilter) (*domain.Job, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -778,7 +778,13 @@ func (r *Repository) LeaseNextJob(ctx context.Context, worker string, lease time
 	// ORDER BY sequence, so the scan stops at the first match. Its partial
 	// WHERE clause must keep matching the two terms below or SQLite rejects the
 	// query outright -- a loud failure, which is the point.
-	err = tx.QueryRowContext(ctx, `SELECT id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,last_error_message FROM jobs INDEXED BY idx_jobs_lease_order WHERE state IN ('pending','failed') AND terminal=0 AND attempt_count<max_attempts AND run_after<=? AND (lease_expires_at IS NULL OR lease_expires_at<=?) ORDER BY priority DESC,created_at LIMIT 1`, formatTime(now), formatTime(now)).Scan(&j.ID, &j.AssetID, &j.Type, &j.State, &j.Priority, &j.AttemptCount, &j.MaxAttempts, &run, &j.InputHash, &last)
+	//
+	// The size ceiling is expressed as "no oversized asset exists for this job"
+	// rather than as a join so the shape above survives: a join would give the
+	// planner a second table to order by and could cost the ordered scan. The
+	// subquery is a primary-key lookup, and it is skipped entirely when the
+	// ceiling is zero.
+	err = tx.QueryRowContext(ctx, `SELECT id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,last_error_message FROM jobs INDEXED BY idx_jobs_lease_order WHERE state IN ('pending','failed') AND terminal=0 AND attempt_count<max_attempts AND run_after<=? AND (lease_expires_at IS NULL OR lease_expires_at<=?) AND (?=0 OR NOT EXISTS (SELECT 1 FROM assets a WHERE a.id=jobs.asset_id AND a.file_size>?)) ORDER BY priority DESC,created_at LIMIT 1`, formatTime(now), formatTime(now), filter.MaxAssetBytes, filter.MaxAssetBytes).Scan(&j.ID, &j.AssetID, &j.Type, &j.State, &j.Priority, &j.AttemptCount, &j.MaxAttempts, &run, &j.InputHash, &last)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

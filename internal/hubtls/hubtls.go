@@ -58,6 +58,28 @@ func EnsureSelfSigned(dataDir string) (certificatePath, keyPath, fingerprint str
 	return certificatePath, keyPath, fingerprint, nil
 }
 
+// FingerprintCertificate reports the SHA-256 fingerprint a Worker pins, read
+// from a certificate file on disk. It exists so a running Hub can tell an
+// operator the value to paste into `worker enroll` without the fingerprint
+// having to be threaded through startup and held in memory — the certificate
+// file is already the authoritative copy.
+func FingerprintCertificate(certificatePath string) (string, error) {
+	raw, err := os.ReadFile(certificatePath)
+	if err != nil {
+		return "", err
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", fmt.Errorf("%s does not contain a PEM certificate", certificatePath)
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(certificate.Raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 func validExistingPair(certificatePath, keyPath string) (string, bool) {
 	pair, err := tls.LoadX509KeyPair(certificatePath, keyPath)
 	if err != nil || len(pair.Certificate) == 0 {

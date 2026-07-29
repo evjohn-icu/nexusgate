@@ -36,6 +36,16 @@ jobs:
       - name: build
         run: go build ./...
 
+      # The Worker install wizard hands out one cross-compiled .exe, and the
+      # notification-area icon is Win32 code no test on this runner can execute.
+      # Cross-compiling and vetting it is what keeps it from rotting unnoticed:
+      # vet is what catches unsafe.Pointer misuse in the syscall layer.
+      - name: build windows
+        run: GOOS=windows GOARCH=amd64 go build ./...
+
+      - name: vet windows
+        run: GOOS=windows GOARCH=amd64 go vet ./...
+
       # ffmpeg/ffprobe are installed so internal/media's integration tests run
       # here instead of skipping themselves. Provider adapters are covered by
       # httptest fixtures, so nothing below reaches a real provider API.
