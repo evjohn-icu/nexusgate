@@ -35,6 +35,8 @@ type PipelineRepository interface {
 	LeaseNextJob(context.Context, string, time.Duration) (*domain.Job, error)
 	CompleteJob(context.Context, string, domain.JobState, string) error
 	RetryJob(context.Context, string, string, time.Duration) error
+	FailJobTerminally(context.Context, string, string) error
+	RequeueFailedJobs(context.Context) (int, error)
 	ListJobs(context.Context, int) ([]domain.Job, error)
 	RebuildSearch(context.Context, string) error
 	Search(context.Context, string, int) ([]string, error)
@@ -94,7 +96,9 @@ func (p *Pipeline) RunUntilIdle(ctx context.Context) error {
 				}
 				continue
 			}
-			_ = p.repo.CompleteJob(ctx, job.ID, domain.JobFailed, err.Error())
+			// Either the failure is permanent or the attempts ran out. Both are
+			// terminal, so stop the lease predicate from handing it back.
+			_ = p.repo.FailJobTerminally(ctx, job.ID, err.Error())
 			continue
 		}
 		if err := p.repo.CompleteJob(ctx, job.ID, domain.JobSucceeded, ""); err != nil {
@@ -128,9 +132,15 @@ func isRetryableJobError(err error) bool {
 			return false
 		}
 	}
+	// Everything below is config-shaped: a name that maps to no implementation, a
+	// member an operator switched off, a capability the adapter lacks. None of it
+	// reaches the network, so retrying only delays surfacing a fixable mistake.
+	// "no available route"/"no available member" are deliberately absent — those
+	// clear once a cooldown expires.
 	message := strings.ToLower(err.Error())
 	for _, permanent := range []string{
-		"not configured", "validation_error", "validation error", "unsupported job type",
+		"not configured", "validation_error", "validation error", "unsupported ",
+		"is disabled", "does not support remote file preparation",
 		"metadata missing", "proxy artifact missing", "audio artifact missing", "transcript missing",
 		"media duration missing", "invalid shot", "summary is required",
 	} {
@@ -139,6 +149,21 @@ func isRetryableJobError(err error) bool {
 		}
 	}
 	return true
+}
+
+// previewPlanForDerive picks the preview render plan JobDerive needs for its
+// thumbnail/proxy renders. JobProbe already classified the source and saved
+// the result as MediaMetadata.SourceColor, and SelectPreviewRenderPlan is a
+// pure function of that one value, so the common case reconstructs the plan
+// for free. Only metadata predating this field (or a missing row) falls back
+// to a single fresh probe here, shared by both renders instead of one probe
+// each.
+func previewPlanForDerive(ctx context.Context, sourcePath string, m *domain.MediaMetadata) (media.PreviewRenderPlan, error) {
+	if m != nil && m.SourceColor != "" {
+		return media.SelectPreviewRenderPlan(media.SourceColorClass(m.SourceColor)), nil
+	}
+	probe, err := media.Probe(ctx, sourcePath)
+	return media.PreviewPlanForProbeResult(probe, err, sourcePath), nil
 }
 
 func (p *Pipeline) execute(ctx context.Context, j domain.Job) error {
@@ -171,24 +196,41 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job) error {
 		// must never be relabelled as an NVENC/QSV/VideoToolbox result.
 		thumb := filepath.Join(base, "thumbnail-"+p.hardware.Mode+".jpg")
 		proxy := filepath.Join(base, "proxy-"+p.hardware.Mode+".mp4")
-		if _, err := os.Stat(thumb); os.IsNotExist(err) {
-			if err := media.GenerateThumbnail(ctx, sourcePath, thumb, p.hardware); err != nil {
+		_, thumbStatErr := os.Stat(thumb)
+		_, proxyStatErr := os.Stat(proxy)
+		needThumb := os.IsNotExist(thumbStatErr)
+		needProxy := os.IsNotExist(proxyStatErr)
+
+		m, err := p.repo.GetMediaMetadata(ctx, j.AssetID)
+		if err != nil {
+			return err
+		}
+
+		// JobProbe already ran ffprobe once for this asset and persisted the
+		// resulting SourceColor; reuse it instead of probing again here so a
+		// thumbnail+proxy derive costs at most one extra ffprobe call, and only
+		// when the stored metadata predates this field or is missing.
+		if needThumb || needProxy {
+			previewPlan, err := previewPlanForDerive(ctx, sourcePath, m)
+			if err != nil {
 				return err
+			}
+			renderer := media.NewPreviewRenderer("")
+			if needThumb {
+				if err := renderer.RenderThumbnail(ctx, sourcePath, thumb, p.hardware, previewPlan); err != nil {
+					return err
+				}
+			}
+			if needProxy {
+				if err := renderer.RenderProxy(ctx, sourcePath, proxy, p.hardware, previewPlan); err != nil {
+					return err
+				}
 			}
 		}
 		if err := saveArtifact(p.repo, ctx, j.AssetID, "thumbnail", "thumb-"+p.hardware.Profile(), thumb); err != nil {
 			return err
 		}
-		if _, err := os.Stat(proxy); os.IsNotExist(err) {
-			if err := media.GenerateProxy(ctx, sourcePath, proxy, p.hardware); err != nil {
-				return err
-			}
-		}
 		if err := saveArtifact(p.repo, ctx, j.AssetID, "proxy", "proxy-720-"+p.hardware.Profile(), proxy); err != nil {
-			return err
-		}
-		m, err := p.repo.GetMediaMetadata(ctx, j.AssetID)
-		if err != nil {
 			return err
 		}
 		if m != nil && m.HasAudio {
@@ -388,7 +430,16 @@ func (p *Pipeline) sourcePathForJob(ctx context.Context, typ domain.JobType, loc
 	return p.sourcePath(ctx, location)
 }
 
+// maxAnalysisShots bounds how many shots one analysis may commit. The per-shot
+// checks below validate shape but not cardinality, so a model stuck in a
+// repetition loop could otherwise write an unbounded number of rows into
+// asset_shots and the FTS index. No genuine single asset comes close.
+const maxAnalysisShots = 2000
+
 func validateAnalysisShots(shots []domain.AssetShot, durationMS int64) error {
+	if len(shots) > maxAnalysisShots {
+		return fmt.Errorf("invalid shot count: %d exceeds limit %d", len(shots), maxAnalysisShots)
+	}
 	for i, shot := range shots {
 		if shot.StartMS < 0 || shot.EndMS <= shot.StartMS {
 			return fmt.Errorf("invalid shot time range at ordinal %d: %d-%d", i, shot.StartMS, shot.EndMS)

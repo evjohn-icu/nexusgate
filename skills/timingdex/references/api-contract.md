@@ -1,8 +1,38 @@
-# Timingdex v0.12 Local Agent API Contract
+# Timingdex v0.13 Local Agent API Contract
 
 Base URL: the user’s local Timingdex server, normally `http://127.0.0.1:8787`.
 All requests and responses are JSON unless noted. This Skill is limited to the
 following requests.
+
+## Authentication
+
+Timingdex has two independent bearer credentials, generated once on first Hub
+start and stored under the Hub's data directory (mode 0600, never in SQLite,
+never returned by any API response):
+
+- **Hub administrator token** (`admin-token`) — full control: provider
+  channels, roots, worker pairing, plan approval, pipeline runs. This Skill is
+  never given this token.
+- **Hub agent token** (`agent-token`) — the only credential this Skill holds.
+  Send it as `Authorization: Bearer <agent-token>` on:
+  - `POST /api/v1/repurpose/plans`
+  - `POST /api/v1/repurpose/plans/{id}/revisions`
+
+  Every other write route — most importantly
+  `POST /api/v1/repurpose/plans/{id}/revisions/{revision}/approve` and
+  `POST /api/v1/pipeline/run` — accepts only the administrator token and
+  returns `401 Unauthorized` for the agent token, or for no credential at all.
+  This is enforced by the Hub's route wiring (`requireAgentOrAdmin` vs.
+  `requireHubAdmin` in `internal/api/server.go`), not by this document.
+
+The read-only routes below (`/api/v1/hardware`, `/api/v1/jobs`, search, plan
+inspection) need no credential when the request comes from a trusted network —
+by default loopback, the RFC1918 LAN ranges, and the CGNAT range overlays such
+as Tailscale use. From anywhere else they return `403 Forbidden` unless a
+credential is presented, and the agent token counts. So a Skill running on the
+user's machine or LAN needs no header on reads, and one running elsewhere
+should send the agent token on every request, reads included. `/api/v1/health`
+is always reachable.
 
 ## Capability handshake
 
@@ -12,9 +42,12 @@ GET /api/v1/agent/capabilities
 
 Require `approval_mode` to be `human_required`. `allowed_actions` currently
 contains `inspect_readiness`, `search_shots`, `create_draft_plan`,
-`inspect_plan`, and `revise_draft_plan`. `denied_actions` must include
-`approve_plan`, `run_pipeline`, `read_provider_keys`, and
-`access_original_media_paths`.
+`inspect_plan`, and `revise_draft_plan`. `allowed_write_routes` lists the exact
+routes that accept the agent token (the two `POST /api/v1/repurpose/plans...`
+routes above). `denied_actions` must include `approve_plan`, `run_pipeline`,
+`read_provider_keys`, and `access_original_media_paths`. The response also
+carries an `auth` object describing the header format above; treat it as
+documentation, not as something to branch on.
 
 ## Readiness and retrieval
 
@@ -33,7 +66,7 @@ file path from these IDs.
 
 ## Plan lifecycle
 
-Create a draft:
+Create a draft (send the agent token as described above):
 
 ```json
 POST /api/v1/repurpose/plans
@@ -52,7 +85,7 @@ GET /api/v1/repurpose/plans/{plan-id}
 GET /api/v1/repurpose/plans/{plan-id}/revisions
 ```
 
-Revise it with a complete ordered snapshot:
+Revise it with a complete ordered snapshot (also with the agent token):
 
 ```json
 POST /api/v1/repurpose/plans/{plan-id}/revisions
@@ -83,4 +116,5 @@ POST /api/v1/repurpose/plans/{plan-id}/revisions
 
 When changing a previously locked selected shot, add `"unlock": true` to
 that section in this one request. Do not send the approve endpoint: approval is
-reserved for a human in the Timingdex workspace.
+reserved for a human in the Timingdex workspace, and the agent token would be
+refused with `401` if you tried.

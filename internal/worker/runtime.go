@@ -219,19 +219,27 @@ func (d *FFmpegDeriver) Derive(ctx context.Context, job remote.WorkerJob, source
 	profile := d.Plan.Profile()
 	thumbnail := filepath.Join(outputDir, "thumbnail-"+d.Plan.Mode+".jpg")
 	proxy := filepath.Join(outputDir, "proxy-"+d.Plan.Mode+".mp4")
-	if err := media.GenerateThumbnail(ctx, sourcePath, thumbnail, d.Plan); err != nil {
+
+	// One probe covers the preview plan for both renders below and the
+	// audio-stream check that used to run its own separate probe; a Worker
+	// has no persisted MediaMetadata to reuse the way the Hub pipeline does,
+	// so this is the one ffprobe call a derive here needs instead of three.
+	probe, probeErr := media.Probe(ctx, sourcePath)
+	previewPlan := media.PreviewPlanForProbeResult(probe, probeErr, sourcePath)
+
+	renderer := media.NewPreviewRenderer("")
+	if err := renderer.RenderThumbnail(ctx, sourcePath, thumbnail, d.Plan, previewPlan); err != nil {
 		return nil, err
 	}
-	if err := media.GenerateProxy(ctx, sourcePath, proxy, d.Plan); err != nil {
+	if err := renderer.RenderProxy(ctx, sourcePath, proxy, d.Plan, previewPlan); err != nil {
 		return nil, err
 	}
 	artifacts := []ArtifactUpload{
 		{Type: "thumbnail", ProfileHash: "thumb-" + profile, Path: thumbnail},
 		{Type: "proxy", ProfileHash: "proxy-720-" + profile, Path: proxy},
 	}
-	probe, err := media.Probe(ctx, sourcePath)
-	if err != nil {
-		return nil, err
+	if probeErr != nil {
+		return nil, probeErr
 	}
 	for _, stream := range probe.Streams {
 		if stream.CodecType != "audio" {

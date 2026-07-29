@@ -142,12 +142,19 @@ FROM shoot_sessions WHERE ` + strings.Join(where, " AND ") + ` ORDER BY starts_a
 		return nil, err
 	}
 
+	if len(sessions) == 0 {
+		return sessions, nil
+	}
+	sessionIDs := make([]string, len(sessions))
+	for i, session := range sessions {
+		sessionIDs[i] = session.ID
+	}
+	assetIDsBySession, err := r.listShootSessionAssetIDsBatch(ctx, sessionIDs)
+	if err != nil {
+		return nil, err
+	}
 	for index := range sessions {
-		assetIDs, err := r.listShootSessionAssetIDs(ctx, sessions[index].ID)
-		if err != nil {
-			return nil, err
-		}
-		sessions[index].AssetIDs = assetIDs
+		sessions[index].AssetIDs = assetIDsBySession[sessions[index].ID]
 	}
 	return sessions, nil
 }
@@ -225,6 +232,44 @@ func (r *Repository) listShootSessionAssetIDs(ctx context.Context, sessionID str
 		assetIDs = append(assetIDs, assetID)
 	}
 	return assetIDs, rows.Err()
+}
+
+// listShootSessionAssetIDsBatch answers listShootSessionAssetIDs for every
+// session in sessionIDs with one query instead of one query per session, so
+// ListShootSessions doesn't run a page's worth (up to maxShootSessionLimit)
+// of separate lookups.
+func (r *Repository) listShootSessionAssetIDsBatch(ctx context.Context, sessionIDs []string) (map[string][]string, error) {
+	out := make(map[string][]string, len(sessionIDs))
+	if len(sessionIDs) == 0 {
+		return out, nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(sessionIDs)), ",")
+	args := make([]any, len(sessionIDs))
+	for i, id := range sessionIDs {
+		args[i] = id
+	}
+	query := `SELECT session_id, asset_id FROM asset_shoot_sessions WHERE session_id IN (` + placeholders + `) ORDER BY session_id, is_primary DESC, asset_id`
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sessionID, assetID string
+		if err := rows.Scan(&sessionID, &assetID); err != nil {
+			return nil, err
+		}
+		out[sessionID] = append(out[sessionID], assetID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, id := range sessionIDs {
+		if out[id] == nil {
+			out[id] = make([]string, 0)
+		}
+	}
+	return out, nil
 }
 
 func parseNullableTime(value sql.NullString) *time.Time {

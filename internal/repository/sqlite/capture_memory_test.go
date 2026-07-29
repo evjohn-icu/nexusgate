@@ -145,3 +145,71 @@ func TestGetShootSessionReturnsDetailAndNilForUnknownSession(t *testing.T) {
 }
 
 func timePtr(value time.Time) *time.Time { return &value }
+
+// TestListShootSessionsBatchesAssetIDLookups covers ListShootSessions across
+// several sessions at once. It used to call listShootSessionAssetIDs once
+// per returned session (up to maxShootSessionLimit per page); this checks
+// the batched replacement still assigns the right asset IDs, in the right
+// order, to the right session -- including a session with no memberships.
+func TestListShootSessionsBatchesAssetIDLookups(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "capture-memory-batch.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO library_roots(id,path,created_at,updated_at) VALUES('root-batch','/footage',?,?)`, formatTime(now), formatTime(now)); err != nil {
+		t.Fatal(err)
+	}
+	assetIDs := []string{"batch-asset-1", "batch-asset-2", "batch-asset-3"}
+	for _, id := range assetIDs {
+		if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES(?,?,1,'discovered',?,?)`, id, id+"-fp", formatTime(now), formatTime(now)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sessions := []domain.ShootSession{
+		{ID: "batch-session-solo", RootID: "root-batch", Title: "Solo", State: "manual", StartsAt: timePtr(now.Add(-3 * time.Hour)), AssetIDs: []string{"batch-asset-1"}},
+		{ID: "batch-session-pair", RootID: "root-batch", Title: "Pair", State: "manual", StartsAt: timePtr(now.Add(-2 * time.Hour)), AssetIDs: []string{"batch-asset-2", "batch-asset-3"}},
+		{ID: "batch-session-empty", RootID: "root-batch", Title: "Empty", State: "manual", StartsAt: timePtr(now.Add(-1 * time.Hour))},
+	}
+	for _, session := range sessions {
+		if err := repo.SaveShootSession(ctx, session); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := repo.ListShootSessions(ctx, domain.ShootSessionFilter{RootID: "root-batch", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(sessions) {
+		t.Fatalf("sessions=%+v, want %d", got, len(sessions))
+	}
+	byID := make(map[string]domain.ShootSession, len(got))
+	for _, s := range got {
+		byID[s.ID] = s
+	}
+	if ids := byID["batch-session-solo"].AssetIDs; len(ids) != 1 || ids[0] != "batch-asset-1" {
+		t.Fatalf("solo session assets=%+v", ids)
+	}
+	pairIDs := byID["batch-session-pair"].AssetIDs
+	if len(pairIDs) != 2 {
+		t.Fatalf("pair session assets=%+v", pairIDs)
+	}
+	seen := map[string]bool{}
+	for _, id := range pairIDs {
+		seen[id] = true
+	}
+	if !seen["batch-asset-2"] || !seen["batch-asset-3"] {
+		t.Fatalf("pair session assets=%+v, want batch-asset-2 and batch-asset-3", pairIDs)
+	}
+	if ids := byID["batch-session-empty"].AssetIDs; len(ids) != 0 {
+		t.Fatalf("empty session assets=%+v, want none", ids)
+	}
+}

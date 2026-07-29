@@ -91,8 +91,18 @@ Start the Hub with `timingdex serve`; it creates a self-signed HTTPS identity
 by default and prints the Worker-pinning fingerprint. On first start it also
 creates `$TIMINGDEX_DATA_DIR/admin-token` with mode `0600`. Use that token only
 to call Hub management APIs, including the pairing-token endpoint; it must not
-be entered into Worker configuration or browser storage. Then enroll a trusted
-node:
+be entered into Worker configuration or browser storage.
+
+Library reads — browse, search, thumbnails and proxies — carry no token so the
+browser UI works without one. They are restricted instead to trusted source
+networks: loopback, the RFC1918 ranges, IPv6 unique-local, and the CGNAT range
+Tailscale-style overlays assign, so a Tailnet reaches the Hub while a forwarded
+port does not. Adjust with `hub_security.trusted_read_networks`, remembering
+that an explicit list replaces the defaults. Presenting the admin token works
+from any network, and forwarded headers are ignored, so a reverse-proxied
+deployment has to do this filtering itself.
+
+Then enroll a trusted node:
 
 ```sh
 timingdex worker enroll --hub https://nas:8787 --fingerprint <fingerprint> \

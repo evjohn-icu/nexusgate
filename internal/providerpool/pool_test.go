@@ -253,3 +253,98 @@ func assertNames(t *testing.T, members []Member, want []string) {
 		}
 	}
 }
+
+// MaxInflight is what lets one provider be configured with several keys that are
+// rate limited independently. It round-tripped through SQLite, the admin API and
+// the UI for several releases while never reaching selection, so a member
+// configured with a cap of one still accepted unlimited concurrent work.
+func TestPoolCapsConcurrentLeasesPerMember(t *testing.T) {
+	pool, err := NewPool([]Member{
+		{Name: "capped", Capabilities: []Capability{"vision"}, Enabled: true, MaxInflight: 1},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	held, err := pool.Select("vision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Select("vision"); !errors.Is(err, ErrNoAvailable) {
+		t.Fatalf("second lease on a MaxInflight=1 member err=%v, want ErrNoAvailable", err)
+	}
+	held.Done(nil)
+
+	after, err := pool.Select("vision")
+	if err != nil {
+		t.Fatalf("member should be selectable once the lease completes: %v", err)
+	}
+	after.Done(nil)
+}
+
+func TestPoolSpillsToNextMemberWhenSaturated(t *testing.T) {
+	pool, err := NewPool([]Member{
+		{Name: "primary", Capabilities: []Capability{"vision"}, Enabled: true, MaxInflight: 1},
+		{Name: "spare", Capabilities: []Capability{"vision"}, Enabled: true, MaxInflight: 1},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := pool.Select("vision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := pool.Select("vision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Name() == second.Name() {
+		t.Fatalf("both leases landed on %q despite MaxInflight=1", first.Name())
+	}
+	if _, err := pool.Select("vision"); !errors.Is(err, ErrNoAvailable) {
+		t.Fatalf("third lease err=%v, want ErrNoAvailable", err)
+	}
+	first.Done(nil)
+	second.Done(nil)
+}
+
+// A zero MaxInflight has to stay unlimited: existing routes are built from
+// members that never set the field.
+func TestPoolTreatsZeroMaxInflightAsUnlimited(t *testing.T) {
+	pool, err := NewPool([]Member{
+		{Name: "uncapped", Capabilities: []Capability{"vision"}, Enabled: true},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if _, err := pool.Select("vision"); err != nil {
+			t.Fatalf("lease %d: %v", i, err)
+		}
+	}
+}
+
+func TestPoolWeightBiasesSelectionWithoutDuplicatingTheRoute(t *testing.T) {
+	pool, err := NewPool([]Member{
+		{Name: "heavy", Capabilities: []Capability{"vision"}, Enabled: true, Weight: 3},
+		{Name: "light", Capabilities: []Capability{"vision"}, Enabled: true, Weight: 1},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Route stays deduplicated even though selection is weighted.
+	assertNames(t, pool.Route("vision"), []string{"heavy", "light"})
+
+	counts := map[string]int{}
+	for i := 0; i < 8; i++ {
+		lease, err := pool.Select("vision")
+		if err != nil {
+			t.Fatal(err)
+		}
+		counts[lease.Name()]++
+		lease.Done(nil)
+	}
+	if counts["heavy"] <= counts["light"] {
+		t.Fatalf("weighted selection did not favour the heavier member: %v", counts)
+	}
+}

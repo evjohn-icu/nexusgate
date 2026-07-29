@@ -36,6 +36,10 @@ type Job struct {
 	RunAfter     time.Time `json:"run_after"`
 	InputHash    string    `json:"input_hash"`
 	LastError    string    `json:"last_error,omitempty"`
+	// Terminal marks a failure the pipeline classified as permanent. Such a job
+	// is never leased again regardless of how many attempts it has left, so it
+	// is reported separately from a job that simply ran out of attempts.
+	Terminal bool `json:"terminal"`
 }
 
 type MediaMetadata struct {

@@ -135,13 +135,12 @@ func (r *PreviewRenderer) RenderThumbnail(ctx context.Context, src, dst string, 
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-		return err
-	}
-	args := append([]string{"-hide_banner", "-loglevel", "error", "-y", "-ss", "00:00:01"}, hardware.DecoderArgs...)
-	args = append(args, "-i", src, "-frames:v", "1", "-vf", filter, dst)
-	return runWithFallback(ctx, "thumbnail", args, hardware, func() []string {
-		return []string{"-hide_banner", "-loglevel", "error", "-y", "-ss", "00:00:01", "-i", src, "-frames:v", "1", "-vf", filter, dst}
+	return atomicFFmpegOutput(dst, func(out string) error {
+		args := append([]string{"-hide_banner", "-loglevel", "error", "-y", "-ss", "00:00:01"}, hardware.DecoderArgs...)
+		args = append(args, "-i", src, "-frames:v", "1", "-vf", filter, out)
+		return runWithFallback(ctx, "thumbnail", args, hardware, func() []string {
+			return []string{"-hide_banner", "-loglevel", "error", "-y", "-ss", "00:00:01", "-i", src, "-frames:v", "1", "-vf", filter, out}
+		})
 	})
 }
 
@@ -162,15 +161,14 @@ func (r *PreviewRenderer) RenderProxy(ctx context.Context, src, dst string, hard
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-		return err
-	}
-	args := append([]string{"-hide_banner", "-loglevel", "error", "-y"}, hardware.DecoderArgs...)
-	args = append(args, "-i", src, "-vf", filter)
-	args = append(args, hardware.EncoderArgs...)
-	args = append(args, "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", dst)
-	return runWithFallback(ctx, "proxy", args, hardware, func() []string {
-		return []string{"-hide_banner", "-loglevel", "error", "-y", "-i", src, "-vf", softwareFilter, "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", dst}
+	return atomicFFmpegOutput(dst, func(out string) error {
+		args := append([]string{"-hide_banner", "-loglevel", "error", "-y"}, hardware.DecoderArgs...)
+		args = append(args, "-i", src, "-vf", filter)
+		args = append(args, hardware.EncoderArgs...)
+		args = append(args, "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", out)
+		return runWithFallback(ctx, "proxy", args, hardware, func() []string {
+			return []string{"-hide_banner", "-loglevel", "error", "-y", "-i", src, "-vf", softwareFilter, "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", out}
+		})
 	})
 }
 

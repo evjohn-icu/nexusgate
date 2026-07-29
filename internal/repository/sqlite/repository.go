@@ -247,7 +247,11 @@ func (r *Repository) rebuildCJKBigramFTS(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM asset_search; DELETE FROM asset_shot_search`); err != nil {
+	// asset_search_rowids/asset_shot_search_rowids must be wiped and rebuilt
+	// alongside the FTS shadow tables: this rebuild reinserts every row, which
+	// assigns each one a new FTS5 rowid, so any previously mapped rowid would
+	// otherwise point at the wrong (or no longer existing) row.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM asset_search; DELETE FROM asset_shot_search; DELETE FROM asset_search_rowids; DELETE FROM asset_shot_search_rowids`); err != nil {
 		return err
 	}
 
@@ -275,7 +279,15 @@ FROM assets a LEFT JOIN asset_analysis an ON an.asset_id=a.id`)
 	}
 	assetRows.Close()
 	for _, record := range assets {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO asset_search(asset_id,filename,summary,transcript,scene_tags,subjects,mood_tags,extra_tags,location,editorial_reason) VALUES(?,?,?,?,?,?,?,?,?,?)`, record.id, indexText(filepath.Base(record.filename)), indexText(record.summary), indexText(record.transcript), indexText(record.sceneTags), indexText(record.subjects), indexText(record.moods), indexText(record.extra), "", indexText(record.reason)); err != nil {
+		res, err := tx.ExecContext(ctx, `INSERT INTO asset_search(asset_id,filename,summary,transcript,scene_tags,subjects,mood_tags,extra_tags,location,editorial_reason) VALUES(?,?,?,?,?,?,?,?,?,?)`, record.id, indexText(filepath.Base(record.filename)), indexText(record.summary), indexText(record.transcript), indexText(record.sceneTags), indexText(record.subjects), indexText(record.moods), indexText(record.extra), "", indexText(record.reason))
+		if err != nil {
+			return err
+		}
+		rowid, err := res.LastInsertId()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO asset_search_rowids(asset_id,search_rowid) VALUES(?,?)`, record.id, rowid); err != nil {
 			return err
 		}
 	}
@@ -300,7 +312,15 @@ FROM assets a LEFT JOIN asset_analysis an ON an.asset_id=a.id`)
 	}
 	shotRows.Close()
 	for _, record := range shots {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO asset_shot_search(shot_id,asset_id,description,tags,objects,actions,mood) VALUES(?,?,?,?,?,?,?)`, record.id, record.assetID, indexText(record.description), indexText(record.tags), indexText(record.objects), indexText(record.actions), indexText(record.mood)); err != nil {
+		res, err := tx.ExecContext(ctx, `INSERT INTO asset_shot_search(shot_id,asset_id,description,tags,objects,actions,mood) VALUES(?,?,?,?,?,?,?)`, record.id, record.assetID, indexText(record.description), indexText(record.tags), indexText(record.objects), indexText(record.actions), indexText(record.mood))
+		if err != nil {
+			return err
+		}
+		rowid, err := res.LastInsertId()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO asset_shot_search_rowids(shot_id,asset_id,search_rowid) VALUES(?,?,?)`, record.id, record.assetID, rowid); err != nil {
 			return err
 		}
 	}
@@ -752,7 +772,13 @@ func (r *Repository) LeaseNextJob(ctx context.Context, worker string, lease time
 	var j domain.Job
 	var run string
 	var last sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,last_error_message FROM jobs WHERE state IN ('pending','failed') AND attempt_count<max_attempts AND run_after<=? AND (lease_expires_at IS NULL OR lease_expires_at<=?) ORDER BY priority DESC,created_at LIMIT 1`, formatTime(now), formatTime(now)).Scan(&j.ID, &j.AssetID, &j.Type, &j.State, &j.Priority, &j.AttemptCount, &j.MaxAttempts, &run, &j.InputHash, &last)
+	// INDEXED BY is deliberate, not a hint: without it SQLite picks
+	// idx_jobs_ready and sorts every leasable row into a temp b-tree on each
+	// lease. idx_jobs_lease_order (migration 0018) already stores the rows in
+	// ORDER BY sequence, so the scan stops at the first match. Its partial
+	// WHERE clause must keep matching the two terms below or SQLite rejects the
+	// query outright -- a loud failure, which is the point.
+	err = tx.QueryRowContext(ctx, `SELECT id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,last_error_message FROM jobs INDEXED BY idx_jobs_lease_order WHERE state IN ('pending','failed') AND terminal=0 AND attempt_count<max_attempts AND run_after<=? AND (lease_expires_at IS NULL OR lease_expires_at<=?) ORDER BY priority DESC,created_at LIMIT 1`, formatTime(now), formatTime(now)).Scan(&j.ID, &j.AssetID, &j.Type, &j.State, &j.Priority, &j.AttemptCount, &j.MaxAttempts, &run, &j.InputHash, &last)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -783,6 +809,40 @@ func (r *Repository) CompleteJob(ctx context.Context, id string, state domain.Jo
 	return err
 }
 
+// FailJobTerminally marks a job failed and flags it as terminal so the lease
+// predicate stops returning it. CompleteJob alone leaves state='failed' with
+// attempts still available, and LeaseNextJob deliberately picks failed jobs back
+// up — so a failure the pipeline classified as permanent would otherwise be
+// retried anyway, immediately and without even the backoff a retryable error
+// gets. For a provider 4xx that means paying for the same rejected call again.
+//
+// attempt_count is left alone on purpose. An earlier implementation exhausted it
+// to make the predicate skip the row, which worked but reported a job that ran
+// once as "3/3" on the progress page.
+func (r *Repository) FailJobTerminally(ctx context.Context, id, errMsg string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE jobs SET state=?,terminal=1,last_error_message=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=?`, string(domain.JobFailed), nullString(errMsg), formatTime(time.Now()), id)
+	return err
+}
+
+// RequeueFailedJobs puts every failed job back in the queue with a fresh
+// attempt budget. It exists because the two ways a job stops being retried —
+// exhausting its attempts and being classified permanent — are both one-way:
+// EnqueueJob is INSERT OR IGNORE keyed on (asset_id, job_type, input_hash), so
+// rescanning the library does not revive them. The common case is a provider
+// that was not configured yet; once it is, the operator needs a way to say so.
+//
+// Only failed jobs are touched. A running job belongs to whoever holds its
+// lease, and succeeded or skipped jobs are the idempotency record that keeps
+// re-running the pipeline cheap.
+func (r *Repository) RequeueFailedJobs(ctx context.Context) (int, error) {
+	result, err := r.db.ExecContext(ctx, `UPDATE jobs SET state='pending',terminal=0,attempt_count=0,run_after=?,last_error_message=NULL,last_error_code=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE state='failed'`, formatTime(time.Now()), formatTime(time.Now()))
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	return int(affected), err
+}
+
 // RetryJob returns a leased job to the pending queue after a bounded delay.
 // Leasing already increments attempt_count, so the normal lease predicate
 // enforces max_attempts without a separate mutable retry counter.
@@ -795,7 +855,7 @@ func (r *Repository) RetryJob(ctx context.Context, id, errMsg string, delay time
 	return err
 }
 func (r *Repository) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id,COALESCE(asset_id,''),job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,COALESCE(last_error_message,'') FROM jobs ORDER BY created_at DESC LIMIT ?`, limit)
+	rows, err := r.db.QueryContext(ctx, `SELECT id,COALESCE(asset_id,''),job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,COALESCE(last_error_message,''),terminal FROM jobs ORDER BY created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -804,7 +864,7 @@ func (r *Repository) ListJobs(ctx context.Context, limit int) ([]domain.Job, err
 	for rows.Next() {
 		var j domain.Job
 		var run string
-		if err := rows.Scan(&j.ID, &j.AssetID, &j.Type, &j.State, &j.Priority, &j.AttemptCount, &j.MaxAttempts, &run, &j.InputHash, &j.LastError); err != nil {
+		if err := rows.Scan(&j.ID, &j.AssetID, &j.Type, &j.State, &j.Priority, &j.AttemptCount, &j.MaxAttempts, &run, &j.InputHash, &j.LastError, &j.Terminal); err != nil {
 			return nil, err
 		}
 		j.RunAfter, _ = time.Parse(time.RFC3339Nano, run)
@@ -813,6 +873,10 @@ func (r *Repository) ListJobs(ctx context.Context, limit int) ([]domain.Job, err
 	return out, rows.Err()
 }
 
+// RebuildSearch replaces assetID's row in asset_search with a fresh one
+// computed from its current analysis/transcript. The delete-then-insert pair
+// runs as a single transaction so a crash between them can't leave the asset
+// missing from the FTS index until it happens to be re-analysed.
 func (r *Repository) RebuildSearch(ctx context.Context, assetID string) error {
 	loc, err := r.GetPrimaryLocation(ctx, assetID)
 	if err != nil {
@@ -821,11 +885,50 @@ func (r *Repository) RebuildSearch(ctx context.Context, assetID string) error {
 	var summary, transcript, tags, subjects, moods, extra, reason string
 	_ = r.db.QueryRowContext(ctx, `SELECT summary,scene_tags_json,subjects_json,mood_tags_json,extra_tags_json,editorial_reason FROM asset_analysis WHERE asset_id=?`, assetID).Scan(&summary, &tags, &subjects, &moods, &extra, &reason)
 	_ = r.db.QueryRowContext(ctx, `SELECT full_text FROM transcripts WHERE asset_id=? AND status='succeeded' ORDER BY created_at DESC LIMIT 1`, assetID).Scan(&transcript)
-	_, err = r.db.ExecContext(ctx, `DELETE FROM asset_search WHERE asset_id=?`, assetID)
+
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	_, err = r.db.ExecContext(ctx, `INSERT INTO asset_search(asset_id,filename,summary,transcript,scene_tags,subjects,mood_tags,extra_tags,location,editorial_reason) VALUES(?,?,?,?,?,?,?,?,?,?)`, assetID, indexText(filepath.Base(loc.AbsolutePath)), indexText(summary), indexText(transcript), indexText(tags), indexText(subjects), indexText(moods), indexText(extra), "", indexText(reason))
+	defer tx.Rollback()
+	if err := r.rebuildSearchTx(ctx, tx, assetID, filepath.Base(loc.AbsolutePath), summary, transcript, tags, subjects, moods, extra, reason); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// rebuildSearchTx assumes the caller already owns the transaction, so this
+// delete+insert pair can be composed into a larger transaction later without
+// nesting BeginTx calls. RebuildSearch is currently the only caller and it
+// begins its own transaction, but a future caller inside commitAnalysisTx (or
+// similar) should call this helper directly instead of RebuildSearch.
+func (r *Repository) rebuildSearchTx(ctx context.Context, tx *sql.Tx, assetID, filename, summary, transcript, tags, subjects, moods, extra, reason string) error {
+	if err := r.deleteFromSearchIndexTx(ctx, tx, assetID); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO asset_search(asset_id,filename,summary,transcript,scene_tags,subjects,mood_tags,extra_tags,location,editorial_reason) VALUES(?,?,?,?,?,?,?,?,?,?)`, assetID, indexText(filename), indexText(summary), indexText(transcript), indexText(tags), indexText(subjects), indexText(moods), indexText(extra), "", indexText(reason))
+	if err != nil {
+		return err
+	}
+	rowid, err := res.LastInsertId()
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO asset_search_rowids(asset_id,search_rowid) VALUES(?,?) ON CONFLICT(asset_id) DO UPDATE SET search_rowid=excluded.search_rowid`, assetID, rowid)
+	return err
+}
+
+// deleteFromSearchIndexTx removes assetID's row (if any) from asset_search.
+// asset_search declares asset_id UNINDEXED (migrations/0002_pipeline.sql), so
+// FTS5 builds no secondary index for it and `DELETE ... WHERE asset_id=?`
+// would scan the whole shadow table. asset_search_rowids resolves the FTS5
+// rowid first so the delete can use `WHERE rowid=?` instead, which FTS5 can
+// serve directly. Keep this mapping in sync on every insert/delete path.
+func (r *Repository) deleteFromSearchIndexTx(ctx context.Context, tx *sql.Tx, assetID string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM asset_search WHERE rowid IN (SELECT search_rowid FROM asset_search_rowids WHERE asset_id=?)`, assetID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM asset_search_rowids WHERE asset_id=?`, assetID)
 	return err
 }
 
@@ -852,7 +955,7 @@ func (r *Repository) ReplaceAssetShots(ctx context.Context, assetID, sourceRunID
 // Keeping validation outside the delete/insert sequence protects existing,
 // trusted rows even when a later model response is malformed.
 func (r *Repository) replaceAssetShotsTx(ctx context.Context, tx *sql.Tx, assetID, sourceRunID string, shots []domain.AssetShot) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM asset_shot_search WHERE asset_id=?`, assetID); err != nil {
+	if err := r.deleteFromShotSearchIndexTx(ctx, tx, assetID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM asset_shots WHERE asset_id=?`, assetID); err != nil {
@@ -882,7 +985,15 @@ func (r *Repository) replaceAssetShotsTx(ctx context.Context, tx *sql.Tx, assetI
 		if _, err := tx.ExecContext(ctx, `INSERT INTO asset_shots(id,asset_id,source_run_id,ordinal,start_ms,end_ms,description,tags_json,objects_json,actions_json,mood_json,confidence,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, assetID, nullString(sourceRunID), ordinal, shot.StartMS, shot.EndMS, strings.TrimSpace(shot.Description), shotJSON(shot.Tags), shotJSON(shot.Objects), shotJSON(shot.Actions), shotJSON(shot.Mood), shot.Confidence, formatTime(created)); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO asset_shot_search(shot_id,asset_id,description,tags,objects,actions,mood) VALUES(?,?,?,?,?,?,?)`, id, assetID, indexText(shot.Description), indexText(strings.Join(shot.Tags, " ")), indexText(strings.Join(shot.Objects, " ")), indexText(strings.Join(shot.Actions, " ")), indexText(strings.Join(shot.Mood, " "))); err != nil {
+		res, err := tx.ExecContext(ctx, `INSERT INTO asset_shot_search(shot_id,asset_id,description,tags,objects,actions,mood) VALUES(?,?,?,?,?,?,?)`, id, assetID, indexText(shot.Description), indexText(strings.Join(shot.Tags, " ")), indexText(strings.Join(shot.Objects, " ")), indexText(strings.Join(shot.Actions, " ")), indexText(strings.Join(shot.Mood, " ")))
+		if err != nil {
+			return err
+		}
+		shotRowID, err := res.LastInsertId()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO asset_shot_search_rowids(shot_id,asset_id,search_rowid) VALUES(?,?,?)`, id, assetID, shotRowID); err != nil {
 			return err
 		}
 		vector, err := json.Marshal(discovery.VectorForShot(domain.AssetShot{Description: shot.Description, Tags: shot.Tags, Objects: shot.Objects, Actions: shot.Actions, Mood: shot.Mood}))
@@ -895,6 +1006,21 @@ func (r *Repository) replaceAssetShotsTx(ctx context.Context, tx *sql.Tx, assetI
 		}
 	}
 	return nil
+}
+
+// deleteFromShotSearchIndexTx removes every asset_shot_search row for
+// assetID. asset_shot_search also declares asset_id UNINDEXED
+// (migrations/0006_v080_shots.sql), so `DELETE ... WHERE asset_id=?` would
+// scan the whole shadow table on every analyze commit. Unlike asset_search,
+// an asset can have many shot rows, so asset_shot_search_rowids maps each
+// shot_id to its FTS5 rowid and is looked up by the indexed asset_id column;
+// the delete then targets those rowids directly instead of scanning FTS5.
+func (r *Repository) deleteFromShotSearchIndexTx(ctx context.Context, tx *sql.Tx, assetID string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM asset_shot_search WHERE rowid IN (SELECT search_rowid FROM asset_shot_search_rowids WHERE asset_id=?)`, assetID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM asset_shot_search_rowids WHERE asset_id=?`, assetID)
+	return err
 }
 
 func validateAssetShots(shots []domain.AssetShot) error {
@@ -1229,12 +1355,25 @@ func (r *Repository) Search(ctx context.Context, q string, limit int) ([]string,
 	// Resolve the literal tag, its canonical form and every sibling alias to
 	// the same canonical ID. This keeps an approved "城市夜景 → urban_night"
 	// mapping searchable without rewriting model summaries or raw tags.
+	//
+	// This is written as a UNION of three single-predicate SELECTs rather
+	// than one query with `l.normalized_tag=? OR t.canonical_name=? OR
+	// a.alias_normalized=?`: with a three-way OR spanning columns from
+	// different LEFT-JOINed tables, SQLite cannot push any single disjunct
+	// down as an index seek on the driving table, so it falls back to
+	// scanning every asset_tag_links row regardless of which index exists.
+	// Each UNION branch is instead a single-table (or single-join) predicate
+	// that idx_asset_tag_links_normalized (and the existing canonical/alias
+	// indexes) can seek directly, and UNION (not UNION ALL) preserves the
+	// original query's implicit de-duplication across branches.
 	for _, tag := range searchTagCandidates(q) {
-		rows, err := r.db.QueryContext(ctx, `SELECT DISTINCT l.asset_id
-FROM asset_tag_links l
-LEFT JOIN tag_catalog t ON t.id=l.canonical_tag_id
-LEFT JOIN tag_aliases_v2 a ON a.canonical_tag_id=l.canonical_tag_id
-WHERE l.normalized_tag=? OR t.canonical_name=? OR a.alias_normalized=?
+		rows, err := r.db.QueryContext(ctx, `SELECT asset_id FROM (
+SELECT l.asset_id FROM asset_tag_links l WHERE l.normalized_tag=?
+UNION
+SELECT l.asset_id FROM asset_tag_links l JOIN tag_catalog t ON t.id=l.canonical_tag_id WHERE t.canonical_name=?
+UNION
+SELECT l.asset_id FROM asset_tag_links l JOIN tag_aliases_v2 a ON a.canonical_tag_id=l.canonical_tag_id WHERE a.alias_normalized=?
+)
 LIMIT ?`, tag, tag, tag, limit-len(ids))
 		if err != nil {
 			return nil, err
@@ -1375,7 +1514,14 @@ func (r *Repository) CommitAnalysisWithShots(ctx context.Context, assetID, runID
 	if err := r.replaceAssetShotsTx(ctx, tx, assetID, runID, shots); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Matches CommitAnalysis. replaceAssetShotsTx mints fresh shot IDs, so stale
+	// entries are never read back and this is not a correctness fix — without it
+	// the cache simply grows for the life of the process.
+	r.clearSemanticVectorCache()
+	return nil
 }
 
 func (r *Repository) commitAnalysisTx(ctx context.Context, tx *sql.Tx, assetID, runID, schemaVersion string, a domain.StructuredAnalysis) error {

@@ -13,7 +13,8 @@
     "mode": "auto"
   },
   "hub_security": {
-    "allow_worker_provider_credentials": false
+    "allow_worker_provider_credentials": false,
+    "trusted_read_networks": ["127.0.0.0/8", "192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "100.64.0.0/10", "::1/128", "fc00::/7", "fe80::/10"]
   },
   "providers": {
     "asr_primary": "stepfun",

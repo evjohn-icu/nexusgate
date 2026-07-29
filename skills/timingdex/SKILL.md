@@ -14,11 +14,21 @@ available unless the API returned it.
 1. Ask for the local Timingdex base URL when it is not supplied. Default to
    `http://127.0.0.1:8787` only when that is appropriate for the user’s local
    machine.
-2. Request `GET /api/v1/agent/capabilities` first.
-3. Stop if the response does not declare `approval_mode: human_required`, or
+2. Ask for the Timingdex **agent token** (a credential distinct from the Hub
+   administrator token) if one is not already supplied. Send it as
+   `Authorization: Bearer <agent-token>` on every write request below. Reading
+   endpoints (`/api/v1/hardware`, `/api/v1/jobs`, search, plan inspection) need
+   no credential when the request comes from the Hub's own machine or LAN; from
+   any other network they answer `403 Forbidden` unless the agent token is sent,
+   so send it on reads too whenever the base URL is not local.
+3. Request `GET /api/v1/agent/capabilities` first.
+4. Stop if the response does not declare `approval_mode: human_required`, or
    if the requested action is absent from `allowed_actions`.
-4. Never request, read, retain or print API keys, environment values, raw media
-   paths, or provider configuration.
+5. Never request, read, retain or print API keys, environment values, raw media
+   paths, or provider configuration. The agent token itself is not a provider
+   key: still don't print it back to the user or log it, since Timingdex never
+   accepts it back in a response body and there is no reason for it to appear
+   in transcript output.
 
 ## Workflow
 
@@ -41,7 +51,8 @@ available unless the API returned it.
 
 ### Create a draft plan
 
-1. Send the user’s brief to `POST /api/v1/repurpose/plans`.
+1. Send the user’s brief to `POST /api/v1/repurpose/plans` with the agent
+   token in the `Authorization` header.
 2. Retrieve the resulting plan and explain each section, its selected candidate
    (if any), missing needs and any `reused` candidate.
 3. Treat the response as a draft. Never represent it as an approved edit.
@@ -58,12 +69,18 @@ available unless the API returned it.
    that one revision request; Timingdex consumes this action and does not store
    it in the resulting snapshot.
 5. Submit `POST /api/v1/repurpose/plans/{plan-id}/revisions` with the complete
-   `sections` array and an `editor_note` that records the user’s decision.
+   `sections` array, an `editor_note` that records the user’s decision, and the
+   agent token in the `Authorization` header.
 6. Report the new revision number and the exact selection changes.
 
 ## Human Approval Boundary
 
-Never call `POST /api/v1/repurpose/plans/{id}/revisions/{n}/approve`.
+Never call `POST /api/v1/repurpose/plans/{id}/revisions/{n}/approve`. This is
+not only a convention this Skill follows: the agent token is refused on that
+route by the Hub's own access control (it returns `401`), and on
+`POST /api/v1/pipeline/run` for the same reason. There is no token this Skill
+can hold that would make either call succeed — the Hub administrator token
+that does is deliberately never given to this Skill.
 
 When a draft is ready, show the user the selected shots, remaining gaps,
 exclusions and locked sections, then ask them to approve it in the Timingdex

@@ -1,5 +1,114 @@
 # Changelog
 
+## Unreleased — Retrieval Performance + Agent Credential Boundary
+
+- The unauthenticated read routes (browse, search, thumbnails, proxy, jobs,
+  tags, plan inspection, hardware) are now restricted by source network. They
+  carry no token so the browser UI works without one on a home LAN, which also
+  meant a forwarded port served the entire library to anyone who could reach
+  it. The default allowlist is loopback, the RFC1918 ranges, link-local, IPv6
+  ULA and the CGNAT range that Tailscale-style overlays assign; override it with
+  `hub_security.trusted_read_networks`, where an explicit list replaces the
+  defaults rather than extending them and a malformed range fails startup.
+  Forwarded headers are deliberately ignored — they are attacker-controlled on a
+  directly exposed listener — so a reverse-proxied deployment must filter for
+  itself. A valid admin or agent token is admitted from any network: this closes
+  anonymous reads without breaking remote use. The HTML pages stay open; they
+  hold no library data and are where the token is entered.
+- Added a way back for failed jobs: `timingdex pipeline retry-failed`, and a
+  "重试失败作业" button on `/progress` backed by
+  `POST /api/v1/pipeline/retry-failed` (admin only). Both ways a job stops being
+  retried — exhausted attempts and permanent classification — were one-way, and
+  `EnqueueJob` is `INSERT OR IGNORE`, so rescanning the library did not revive
+  them. Work that failed only because a provider had not been configured yet was
+  stranded permanently once the provider was added. Succeeded and running jobs
+  are left untouched.
+- Permanently failed jobs now report honestly. Marking them terminal by
+  exhausting `attempt_count` kept them out of the lease predicate but showed a
+  job that ran once as `3/3` on the progress page. A `jobs.terminal` column
+  records the fact directly, so the attempt counter is again a count of actual
+  runs and the page labels the job as permanently failed. The Worker derive
+  lease predicate honours the same flag; it previously would have re-dispatched
+  a job the Hub had already given up on.
+- Job leasing no longer sorts on every call. `LeaseNextJob` orders by
+  `priority DESC, created_at`, an order no `state`-leading index can supply once
+  the predicate spans two states, so each lease built a temp b-tree over every
+  leasable row — 170ms per lease measured on a 40k-row queue. A partial index
+  storing exactly the leasable rows in that order removes the sort; the query
+  names it with `INDEXED BY` because SQLite's cost model does not choose it.
+- Added a scoped agent credential (`$DATA_DIR/agent-token`, 0600, same atomic
+  write and constant-time comparison as the admin token). It is accepted on
+  exactly two routes — repurpose plan creation and revision — and refused
+  everywhere else. Plan approval and pipeline runs stay admin-only, so the
+  `approval_mode: human_required` boundary is now enforced by access control
+  rather than by Skill prompt text. Previously the documented agent workflow
+  either failed with 401 or required handing the agent the admin token, which
+  also unlocked the two actions the capability contract declares denied.
+- FTS5 deletes no longer scan the whole shadow table. `asset_search` and
+  `asset_shot_search` declare `asset_id UNINDEXED`, so the per-asset delete
+  that runs at the end of every analyze was a full index scan, making a
+  from-scratch reprocess quadratic in library size. Deletes now resolve the
+  FTS rowid through a mapping table first; existing indexes are backfilled by
+  the migration.
+- Tag search now uses an index. Adding `idx_asset_tag_links_normalized` alone
+  was not sufficient — a three-way `OR` spanning `LEFT JOIN`ed tables prevents
+  SQLite from pushing any single disjunct down as a seek — so the query is now
+  a `UNION` of single-predicate selects, which is set-equivalent and lets every
+  branch seek its own index.
+- `RebuildSearch` is transactional; its delete and insert could previously be
+  interrupted between statements, leaving an asset missing from the search
+  index until it was re-analysed.
+- Removed two N+1 query patterns: asset browse issued two artifact lookups per
+  row (up to 1000 extra queries per page) and shoot-session listing issued one
+  lookup per session.
+- Deriving an asset now runs `ffprobe` once instead of three times on both the
+  Hub and Worker paths, reusing the classification the probe stage already
+  stored. Note this also makes derive agree with the metadata the library
+  reports: Log footage identified only through capture metadata is now
+  consistently reported as needing a LUT instead of being silently rendered as
+  ordinary SDR.
+- Added CI (build, vet, gofmt, tests, race) and removed dead code:
+  `repurposeHTML`, `legacyProvidersHTML`, `legacySetupHTML`, the unregistered
+  `listAssets` handler, a redundant `derived_artifacts` index and the unused
+  top-level `migrations/` directory. The Tag Curator page now carries the brand
+  element its shared page wrapper had been silently failing to substitute.
+
+## Unreleased — Regression Repair
+
+- Restored the browser write surface. v0.14.1 put the Hub admin token in front
+  of Tag governance, pipeline runs and Repurpose writes but only taught
+  `/workers` to send it, so every write button on `/tags`, `/repurpose` and
+  `/progress` had been returning 401 since that release — including plan
+  creation, revision and approval, the product's primary workflow. Each page now
+  carries a token field and attaches the header at its single fetch choke point;
+  the token stays in page memory and is never written to browser storage.
+- Opened `GET /api/v1/jobs` to unauthenticated readers so the progress panel
+  polls without a token, but `last_error` is now disclosed only to admin
+  callers. That field can embed a truncated upstream Provider response body,
+  which is where a relay's echoed key would surface; public callers get a
+  `has_error` boolean instead.
+- Made derived-artifact writes atomic. FFmpeg wrote thumbnails, proxies and
+  extracted audio directly to their final paths, so a run killed midway left a
+  truncated file that the pipeline's `os.Stat` idempotency check then accepted
+  as a finished artifact, silently poisoning every downstream stage until the
+  cache was cleared by hand. Output is now published by rename.
+- Permanent job failures are now terminal. The pipeline classified errors as
+  permanent but still called `CompleteJob`, and the lease predicate accepts
+  failed jobs with attempts remaining — so a permanently failed job was re-run
+  up to `max_attempts` anyway, immediately and without even the backoff a
+  retryable error receives. Provider-channel misconfiguration and unsupported
+  capabilities are also classified permanent now instead of burning the full
+  retry chain.
+- `Weight` and `MaxInflight` now affect Provider-channel selection. Both round
+  tripped through SQLite, the admin API and the UI while never reaching the
+  pool, so a member configured with a concurrency cap of one still accepted
+  unlimited concurrent work.
+- Bounded model output before it reaches canonical tables. Analysis summaries,
+  tag lists and shot counts had no size limits, so a model stuck in a repetition
+  loop could write unbounded text into SQLite and the FTS index. Oversized
+  values are truncated on rune boundaries rather than rejected, keeping the
+  existing lenient normalisation contract.
+
 ## v0.16.0 — Worker Provider Modes + Library Operations
 
 - Added an explicit, default-deny Worker-direct Provider credential path for

@@ -155,7 +155,7 @@ These invariants are the point of several packages — preserve them when editin
 
 `internal/repository/sqlite/migrations/NNNN_*.sql`, `go:embed`-ed and applied in filename
 order inside a transaction, tracked in `schema_migrations`. Add a new numbered file; never
-edit an applied one. The top-level `migrations/` directory is empty and unused.
+edit an applied one.
 
 ### Browser UI
 

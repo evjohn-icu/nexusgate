@@ -339,24 +339,76 @@ func previewPlanForSource(ctx context.Context, src string) (PreviewRenderPlan, e
 		return SelectPreviewRenderPlan(SourceColorRAW), nil
 	}
 	probe, err := Probe(ctx, src)
-	if err != nil {
-		return SelectPreviewRenderPlan(SourceColorUnknown), nil
+	return PreviewPlanForProbeResult(probe, err, src), nil
+}
+
+// PreviewPlanForProbeResult builds a preview plan from a probe the caller
+// already ran (or already attempted), applying the exact same fallbacks
+// previewPlanForSource does internally: a RAW path always resolves to the RAW
+// plan regardless of what the probe returned, and a failed probe on any other
+// path falls back to the direct/"unknown" plan rather than propagating the
+// error.
+//
+// It exists so a caller that needs one FFProbeResult for several purposes
+// (e.g. picking a preview plan for both a thumbnail and a proxy render, and
+// checking for an audio stream) can probe a source exactly once instead of
+// once per purpose -- GenerateThumbnail and GenerateProxy each probing their
+// own copy is what used to turn a single derive into three or four ffprobe
+// invocations over the same file.
+func PreviewPlanForProbeResult(probe FFProbeResult, probeErr error, src string) PreviewRenderPlan {
+	if isRawPath(src) {
+		return SelectPreviewRenderPlan(SourceColorRAW)
 	}
-	return PreviewRenderPlanFor(probe, nil, src), nil
+	if probeErr != nil {
+		return SelectPreviewRenderPlan(SourceColorUnknown)
+	}
+	return PreviewRenderPlanFor(probe, nil, src)
 }
 
 func ExtractAudio(ctx context.Context, src, dst string) error {
 	if err := rejectSourceOverwrite(src, dst); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+	return atomicFFmpegOutput(dst, func(out string) error {
+		cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", src, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "64k", out)
+		if raw, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("audio: %w: %s", err, raw)
+		}
+		return nil
+	})
+}
+
+// atomicFFmpegOutput runs produce against a temporary file and only publishes it
+// to dst once produce succeeds. ffmpeg writes its output path directly, so a run
+// killed midway — Ctrl-C, OOM, a full disk, power loss — used to leave a
+// truncated file at the final path. The pipeline decides "already derived" with
+// a bare os.Stat, so that truncated file was then treated as a finished artifact
+// and silently poisoned every downstream stage until the cache was cleared by
+// hand. Publishing via rename makes the artifact either absent or complete.
+func atomicFFmpegOutput(dst string, produce func(outputPath string) error) error {
+	directory := filepath.Dir(dst)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", src, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "64k", dst)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("audio: %w: %s", err, out)
+	// ffmpeg picks the muxer from the file extension, so the temporary name has
+	// to carry the same one or the artifact is written in the wrong container.
+	extension := filepath.Ext(dst)
+	stem := strings.TrimSuffix(filepath.Base(dst), extension)
+	temporary, err := os.CreateTemp(directory, "."+stem+"-*"+extension)
+	if err != nil {
+		return err
 	}
-	return nil
+	temporaryPath := temporary.Name()
+	if err := temporary.Close(); err != nil {
+		_ = os.Remove(temporaryPath)
+		return err
+	}
+	defer os.Remove(temporaryPath)
+
+	if err := produce(temporaryPath); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, dst)
 }
 
 func runWithFallback(ctx context.Context, label string, args []string, plan HardwarePlan, software func() []string) error {

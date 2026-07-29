@@ -22,6 +22,15 @@ import (
 	"github.com/ev/timingdex/internal/repository/sqlite"
 )
 
+// lanRequest stands in for the browser UI on the home network. httptest's
+// synthetic RemoteAddr is 192.0.2.1 (TEST-NET-1), which requireTrustedRead
+// correctly rejects, so a test that means "a user on the LAN" has to say so.
+func lanRequest(method, target string, body io.Reader) *http.Request {
+	request := httptest.NewRequest(method, target, body)
+	request.RemoteAddr = "192.168.1.50:54321"
+	return request
+}
+
 func TestHandlerServesHybridShotSearch(t *testing.T) {
 	ctx := context.Background()
 	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "api.db"))
@@ -60,7 +69,7 @@ func TestHandlerServesHybridShotSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := NewServer("", service)
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/search/shots/hybrid?q=rainy+city+night", nil)
+	request := lanRequest(http.MethodGet, "/api/v1/search/shots/hybrid?q=rainy+city+night", nil)
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -198,12 +207,12 @@ func TestCollectionsAndProcessingSummaryExposeOnlySafeLibraryFilters(t *testing.
 	handler := NewServer("", service).Handler()
 	body := `{"name":"待处理素材","description":"可重复使用的安全筛选","filter":{"status":"queued","region_label":"深圳"}}`
 	unauthorized := httptest.NewRecorder()
-	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost, "/api/v1/collections", strings.NewReader(body)))
+	handler.ServeHTTP(unauthorized, lanRequest(http.MethodPost, "/api/v1/collections", strings.NewReader(body)))
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthorized collection write=%d", unauthorized.Code)
 	}
 	created := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/collections", strings.NewReader(body))
+	request := lanRequest(http.MethodPost, "/api/v1/collections", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer "+service.AdminToken())
 	handler.ServeHTTP(created, request)
 	if created.Code != http.StatusCreated {
@@ -217,12 +226,12 @@ func TestCollectionsAndProcessingSummaryExposeOnlySafeLibraryFilters(t *testing.
 		t.Fatalf("collection=%+v", collection)
 	}
 	list := httptest.NewRecorder()
-	handler.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/v1/collections", nil))
+	handler.ServeHTTP(list, lanRequest(http.MethodGet, "/api/v1/collections", nil))
 	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), "待处理素材") || strings.Contains(list.Body.String(), "absolute_path") {
 		t.Fatalf("collection list=%d body=%s", list.Code, list.Body.String())
 	}
 	summary := httptest.NewRecorder()
-	handler.ServeHTTP(summary, httptest.NewRequest(http.MethodGet, "/api/v1/library/processing-summary?status=queued", nil))
+	handler.ServeHTTP(summary, lanRequest(http.MethodGet, "/api/v1/library/processing-summary?status=queued", nil))
 	if summary.Code != http.StatusOK || !strings.Contains(summary.Body.String(), "by_status") {
 		t.Fatalf("summary=%d body=%s", summary.Code, summary.Body.String())
 	}
@@ -583,6 +592,152 @@ func hubAdminRequest(service *app.Service, method, target string, body io.Reader
 	return request
 }
 
+func hubAgentRequest(service *app.Service, method, target string, body io.Reader) *http.Request {
+	request := httptest.NewRequest(method, target, body)
+	request.Header.Set("Authorization", "Bearer "+service.AgentToken())
+	return request
+}
+
+// TestAgentTokenScope proves the boundary requireAgentOrAdmin is supposed to
+// enforce: the agent token can create and revise a draft repurpose plan (the
+// two routes documented in skills/timingdex) but is refused, by access
+// control rather than convention, on approval and pipeline runs — the two
+// actions /api/v1/agent/capabilities lists under denied_actions. It also
+// checks the admin token still does all four, and that no credential at all
+// is refused everywhere.
+func TestAgentTokenScope(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "agent-token-scope.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := t.TempDir()
+	videoPath := filepath.Join(rootPath, "fixture.mp4")
+	if err := os.WriteFile(videoPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := repo.CreateLibraryRoot(ctx, rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(videoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.UpsertScannedFile(ctx, root, "fixture.mp4", videoPath, info, "agent-token-scope-fingerprint"); err != nil {
+		t.Fatal(err)
+	}
+	assets, err := repo.ListAssets(ctx, 1, 0)
+	if err != nil || len(assets) != 1 {
+		t.Fatalf("assets=%+v err=%v", assets, err)
+	}
+	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{{ID: "opening-a", StartMS: 0, EndMS: 5000, Description: "城市夜景开场"}}); err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.AgentToken() == "" || service.AgentToken() == service.AdminToken() {
+		t.Fatalf("agent token must be a non-empty credential distinct from the admin token")
+	}
+	handler := NewServer("", service).Handler()
+
+	// (a) the agent token can create a draft plan.
+	create := httptest.NewRecorder()
+	handler.ServeHTTP(create, hubAgentRequest(service, http.MethodPost, "/api/v1/repurpose/plans", bytes.NewBufferString(`{"brief":"深圳城市宣传片"}`)))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("agent create plan status=%d body=%s", create.Code, create.Body.String())
+	}
+	var plan domain.RepurposePlan
+	if err := json.NewDecoder(create.Body).Decode(&plan); err != nil {
+		t.Fatal(err)
+	}
+
+	// (a) the agent token can revise that draft plan.
+	revisionBody := `{"sections":[{"role":"opening","query":"city","duration_ms":5000,"required":true,"selected_shot_id":"opening-a","candidates":[{"shot_id":"opening-a","asset_id":"` + assets[0].ID + `","start_ms":0,"end_ms":5000}]}]}`
+	revise := httptest.NewRecorder()
+	handler.ServeHTTP(revise, hubAgentRequest(service, http.MethodPost, "/api/v1/repurpose/plans/"+plan.ID+"/revisions", bytes.NewBufferString(revisionBody)))
+	if revise.Code != http.StatusCreated {
+		t.Fatalf("agent revise plan status=%d body=%s", revise.Code, revise.Body.String())
+	}
+	var revision domain.RepurposePlanRevision
+	if err := json.NewDecoder(revise.Body).Decode(&revision); err != nil {
+		t.Fatal(err)
+	}
+
+	// (b) the agent token cannot approve that revision.
+	agentApprove := httptest.NewRecorder()
+	handler.ServeHTTP(agentApprove, hubAgentRequest(service, http.MethodPost, "/api/v1/repurpose/plans/"+plan.ID+"/revisions/"+strconv.Itoa(revision.Revision)+"/approve", nil))
+	if agentApprove.Code != http.StatusUnauthorized {
+		t.Fatalf("agent approve status=%d body=%s, want 401", agentApprove.Code, agentApprove.Body.String())
+	}
+
+	// (c) the agent token cannot run the pipeline.
+	agentPipeline := httptest.NewRecorder()
+	handler.ServeHTTP(agentPipeline, hubAgentRequest(service, http.MethodPost, "/api/v1/pipeline/run", nil))
+	if agentPipeline.Code != http.StatusUnauthorized {
+		t.Fatalf("agent pipeline/run status=%d body=%s, want 401", agentPipeline.Code, agentPipeline.Body.String())
+	}
+
+	// (d) the admin token can still do all four: create, revise, approve, run.
+	adminCreate := httptest.NewRecorder()
+	handler.ServeHTTP(adminCreate, hubAdminRequest(service, http.MethodPost, "/api/v1/repurpose/plans", bytes.NewBufferString(`{"brief":"深圳城市宣传片 2"}`)))
+	if adminCreate.Code != http.StatusCreated {
+		t.Fatalf("admin create plan status=%d body=%s", adminCreate.Code, adminCreate.Body.String())
+	}
+	var adminPlan domain.RepurposePlan
+	if err := json.NewDecoder(adminCreate.Body).Decode(&adminPlan); err != nil {
+		t.Fatal(err)
+	}
+	adminRevise := httptest.NewRecorder()
+	handler.ServeHTTP(adminRevise, hubAdminRequest(service, http.MethodPost, "/api/v1/repurpose/plans/"+adminPlan.ID+"/revisions", bytes.NewBufferString(revisionBody)))
+	if adminRevise.Code != http.StatusCreated {
+		t.Fatalf("admin revise plan status=%d body=%s", adminRevise.Code, adminRevise.Body.String())
+	}
+	var adminRevision domain.RepurposePlanRevision
+	if err := json.NewDecoder(adminRevise.Body).Decode(&adminRevision); err != nil {
+		t.Fatal(err)
+	}
+	adminApprove := httptest.NewRecorder()
+	handler.ServeHTTP(adminApprove, hubAdminRequest(service, http.MethodPost, "/api/v1/repurpose/plans/"+adminPlan.ID+"/revisions/"+strconv.Itoa(adminRevision.Revision)+"/approve", nil))
+	if adminApprove.Code != http.StatusOK {
+		t.Fatalf("admin approve status=%d body=%s", adminApprove.Code, adminApprove.Body.String())
+	}
+	adminPipeline := httptest.NewRecorder()
+	handler.ServeHTTP(adminPipeline, hubAdminRequest(service, http.MethodPost, "/api/v1/pipeline/run", nil))
+	if adminPipeline.Code != http.StatusAccepted {
+		t.Fatalf("admin pipeline/run status=%d body=%s", adminPipeline.Code, adminPipeline.Body.String())
+	}
+
+	// (e) no credential at all still 401s on all four routes.
+	noAuthCases := []struct {
+		method string
+		target string
+		body   string
+	}{
+		{http.MethodPost, "/api/v1/repurpose/plans", `{"brief":"深圳城市宣传片"}`},
+		{http.MethodPost, "/api/v1/repurpose/plans/" + plan.ID + "/revisions", revisionBody},
+		{http.MethodPost, "/api/v1/repurpose/plans/" + plan.ID + "/revisions/" + strconv.Itoa(revision.Revision) + "/approve", ""},
+		{http.MethodPost, "/api/v1/pipeline/run", ""},
+	}
+	for _, tc := range noAuthCases {
+		response := httptest.NewRecorder()
+		var body io.Reader
+		if tc.body != "" {
+			body = bytes.NewBufferString(tc.body)
+		}
+		handler.ServeHTTP(response, httptest.NewRequest(tc.method, tc.target, body))
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("no-credential %s %s status=%d body=%s, want 401", tc.method, tc.target, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestHandlerServesLocalWorkspacePages(t *testing.T) {
 	ctx := context.Background()
 	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "workspace-pages.db"))
@@ -728,7 +883,7 @@ func TestPublicAssetDetailHidesPreciseLocationAndAbsolutePath(t *testing.T) {
 	handler := NewServer("", service).Handler()
 
 	public := httptest.NewRecorder()
-	handler.ServeHTTP(public, httptest.NewRequest(http.MethodGet, "/api/v1/assets/"+assets[0].ID, nil))
+	handler.ServeHTTP(public, lanRequest(http.MethodGet, "/api/v1/assets/"+assets[0].ID, nil))
 	if public.Code != http.StatusOK {
 		t.Fatalf("public detail status=%d body=%s", public.Code, public.Body.String())
 	}
@@ -737,13 +892,13 @@ func TestPublicAssetDetailHidesPreciseLocationAndAbsolutePath(t *testing.T) {
 	}
 
 	unauthorized := httptest.NewRecorder()
-	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v1/admin/assets/"+assets[0].ID+"/capture-location", nil))
+	handler.ServeHTTP(unauthorized, lanRequest(http.MethodGet, "/api/v1/admin/assets/"+assets[0].ID+"/capture-location", nil))
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("precise location without admin status=%d", unauthorized.Code)
 	}
 
 	admin := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/admin/assets/"+assets[0].ID+"/capture-location", nil)
+	request := lanRequest(http.MethodGet, "/api/v1/admin/assets/"+assets[0].ID+"/capture-location", nil)
 	request.Header.Set("Authorization", "Bearer "+service.AdminToken())
 	handler.ServeHTTP(admin, request)
 	if admin.Code != http.StatusOK || !strings.Contains(admin.Body.String(), "22.543096") || !strings.Contains(admin.Body.String(), "114.057865") {
@@ -862,7 +1017,7 @@ func TestShootSessionBrowseEndpointFiltersSafely(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/shoot-sessions?region="+url.QueryEscape("中国 · 深圳 · 南山")+"&camera="+url.QueryEscape("Blackmagic Pocket Cinema Camera 6K")+"&date_from=2026-07-25&date_to=2026-07-25", nil)
+	request := lanRequest(http.MethodGet, "/api/v1/shoot-sessions?region="+url.QueryEscape("中国 · 深圳 · 南山")+"&camera="+url.QueryEscape("Blackmagic Pocket Cinema Camera 6K")+"&date_from=2026-07-25&date_to=2026-07-25", nil)
 	response := httptest.NewRecorder()
 	NewServer("", service).Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -1082,7 +1237,7 @@ func TestHandlerDeclaresBoundedAgentCapabilities(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&capabilities); err != nil {
 		t.Fatal(err)
 	}
-	if capabilities.Version != "v0.12" || capabilities.ApprovalMode != "human_required" {
+	if capabilities.Version != "v0.13" || capabilities.ApprovalMode != "human_required" {
 		t.Fatalf("capabilities=%+v", capabilities)
 	}
 	if !containsString(capabilities.AllowedActions, "create_draft_plan") || containsString(capabilities.AllowedActions, "approve_plan") || !containsString(capabilities.DeniedActions, "approve_plan") {
@@ -1120,6 +1275,200 @@ func TestHandlerListsEmptyJobsAsJSONArray(t *testing.T) {
 	}
 	if got := response.Body.String(); got != "[]\n" {
 		t.Fatalf("empty jobs response=%q, want JSON array", got)
+	}
+}
+
+// v0.14.1 put the admin token in front of tag curation, pipeline runs and
+// repurpose writes but only taught /workers to send it, so every write button on
+// these three pages returned 401 for several releases. Pin the plumbing: each
+// page must expose a token field and attach an Authorization header.
+func TestAdminGatedPagesCarryTokenPlumbing(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "page-token.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+	for path, markers := range map[string][]string{
+		"/tags":      {"admin-token", "Authorization", "/api/v1/tags/curate"},
+		"/repurpose": {"admin-token", "Authorization", "/api/v1/repurpose/plans"},
+		"/progress":  {"admin-token", "Authorization", "/api/v1/pipeline/run"},
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status=%d", path, response.Code)
+		}
+		for _, marker := range markers {
+			if !strings.Contains(response.Body.String(), marker) {
+				t.Fatalf("%s page missing %q", path, marker)
+			}
+		}
+	}
+}
+
+// The progress page polls the queue every few seconds, so job status is public.
+// The failure text is not: last_error_message can hold a truncated upstream
+// provider body, which is exactly where a relay's echoed key would surface.
+func TestJobsEndpointRedactsFailureTextFromPublicCallers(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "jobs-redaction.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(rootPath, "DJI_0002.mp4"), []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := service.AddLibraryRoot(ctx, rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ScanLibraryRoot(ctx, root.ID); err != nil {
+		t.Fatal(err)
+	}
+	leased, err := repo.LeaseNextJob(ctx, "redaction-test", time.Minute)
+	if err != nil || leased == nil {
+		t.Fatalf("lease job=%+v err=%v", leased, err)
+	}
+	const upstream = "provider echoed sk-live-DEADBEEF0123"
+	if err := repo.CompleteJob(ctx, leased.ID, domain.JobFailed, upstream); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+
+	public := httptest.NewRecorder()
+	handler.ServeHTTP(public, lanRequest(http.MethodGet, "/api/v1/jobs", nil))
+	if public.Code != http.StatusOK {
+		t.Fatalf("public jobs status=%d body=%s", public.Code, public.Body.String())
+	}
+	if strings.Contains(public.Body.String(), upstream) {
+		t.Fatalf("public jobs response leaked upstream failure text: %s", public.Body.String())
+	}
+	if !strings.Contains(public.Body.String(), `"has_error":true`) {
+		t.Fatalf("public jobs response should still flag the failure: %s", public.Body.String())
+	}
+
+	admin := httptest.NewRecorder()
+	handler.ServeHTTP(admin, hubAdminRequest(service, http.MethodGet, "/api/v1/jobs", nil))
+	if admin.Code != http.StatusOK || !strings.Contains(admin.Body.String(), upstream) {
+		t.Fatalf("admin jobs status=%d body=%s", admin.Code, admin.Body.String())
+	}
+}
+
+// The library browse, search and media routes carry no token so the browser UI
+// works without one on the LAN. That is a sound home-network trade-off and a
+// full disclosure of the library the moment the port is forwarded, so the
+// source network is the boundary that keeps it a trade-off.
+func TestTrustedNetworkGuardOnUnauthenticatedReads(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "trusted-read.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+
+	guarded := []string{"/api/v1/assets", "/api/v1/search?q=x", "/api/v1/jobs", "/api/v1/tags", "/api/v1/shoot-sessions", "/api/v1/collections", "/api/v1/library/summary", "/api/v1/hardware"}
+	for _, target := range guarded {
+		remote := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		request.RemoteAddr = "203.0.113.7:44321"
+		handler.ServeHTTP(remote, request)
+		if remote.Code != http.StatusForbidden {
+			t.Fatalf("%s must not answer an anonymous internet caller: status=%d body=%s", target, remote.Code, remote.Body.String())
+		}
+
+		lan := httptest.NewRecorder()
+		handler.ServeHTTP(lan, lanRequest(http.MethodGet, target, nil))
+		if lan.Code == http.StatusForbidden {
+			t.Fatalf("%s must stay usable from the LAN without a token: body=%s", target, lan.Body.String())
+		}
+
+		// A credential outranks topology: an admin working away from home is
+		// still an admin. Otherwise the guard would break remote use entirely
+		// rather than close the anonymous hole.
+		token := httptest.NewRecorder()
+		handler.ServeHTTP(token, hubAdminRequest(service, http.MethodGet, target, nil))
+		if token.Code == http.StatusForbidden {
+			t.Fatalf("%s must admit an off-network admin token: body=%s", target, token.Body.String())
+		}
+	}
+
+	// A forwarded header is attacker-controlled on a directly exposed
+	// listener, so claiming a LAN address in one must change nothing.
+	spoofed := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/assets", nil)
+	request.RemoteAddr = "203.0.113.7:44321"
+	request.Header.Set("X-Forwarded-For", "192.168.1.50")
+	request.Header.Set("X-Real-IP", "127.0.0.1")
+	handler.ServeHTTP(spoofed, request)
+	if spoofed.Code != http.StatusForbidden {
+		t.Fatalf("forwarded headers must not grant trust: status=%d", spoofed.Code)
+	}
+
+	// The pages themselves carry no library data and are where the token is
+	// pasted, so locking them to the LAN would only make remote access
+	// impossible without protecting anything.
+	page := httptest.NewRecorder()
+	pageRequest := httptest.NewRequest(http.MethodGet, "/", nil)
+	pageRequest.RemoteAddr = "203.0.113.7:44321"
+	handler.ServeHTTP(page, pageRequest)
+	if page.Code != http.StatusOK {
+		t.Fatalf("UI shell status=%d", page.Code)
+	}
+}
+
+// An explicit allowlist replaces the built-in ranges instead of extending them.
+func TestTrustedReadNetworksConfigReplacesDefaults(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "trusted-read-config.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{DataDir: t.TempDir(), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}}
+	cfg.HubSecurity.TrustedReadNetworks = []string{"10.9.0.0/16"}
+	service, err := app.NewService(repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+
+	for address, want := range map[string]int{"10.9.4.4:1": http.StatusOK, "192.168.1.50:1": http.StatusForbidden, "127.0.0.1:1": http.StatusForbidden} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/assets", nil)
+		request.RemoteAddr = address
+		handler.ServeHTTP(response, request)
+		if response.Code != want {
+			t.Fatalf("%s: status=%d want=%d body=%s", address, response.Code, want, response.Body.String())
+		}
 	}
 }
 

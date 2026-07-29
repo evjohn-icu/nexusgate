@@ -1,0 +1,49 @@
+name: CI
+
+# The v0.14.1 admin-token retrofit gated Tag governance, pipeline runs and
+# Repurpose writes but only updated one of the four browser pages, so three
+# pages returned 401 on every write for several releases without anything
+# failing. The whole suite runs in well under a minute — cheap insurance
+# against that class of silent regression.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      # ffmpeg/ffprobe are installed so internal/media's integration tests run
+      # here instead of skipping themselves. Provider adapters are covered by
+      # httptest fixtures, so nothing below reaches a real provider API.
+      - name: install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: test
+        run: go test ./...
+
+      - name: test -race
+        run: go test -race ./internal/...

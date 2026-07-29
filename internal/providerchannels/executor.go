@@ -194,7 +194,7 @@ func normalizeChannel(input Channel, channelIndex int) (Channel, map[string]Memb
 		for _, capability := range member.Capabilities {
 			poolCapabilities = append(poolCapabilities, providerpool.Capability(capability))
 		}
-		poolMembers = append(poolMembers, providerpool.Member{Name: member.ID, Capabilities: poolCapabilities, Enabled: member.Enabled})
+		poolMembers = append(poolMembers, providerpool.Member{Name: member.ID, Capabilities: poolCapabilities, Enabled: member.Enabled, Weight: member.Weight, MaxInflight: member.MaxInflight})
 	}
 	channel.Members = normalizedMembers
 	return channel, members, poolMembers, nil

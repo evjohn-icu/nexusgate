@@ -81,10 +81,22 @@ func run() error {
 		return runRootCommand(context.Background(), service, os.Args[2:])
 
 	case "pipeline":
-		if len(os.Args) < 3 || os.Args[2] != "run" {
-			return errors.New("usage: timingdex pipeline run")
+		if len(os.Args) < 3 {
+			return errors.New("usage: timingdex pipeline run|retry-failed")
 		}
-		return service.RunPipeline(context.Background())
+		switch os.Args[2] {
+		case "run":
+			return service.RunPipeline(context.Background())
+		case "retry-failed":
+			requeued, err := service.RequeueFailedJobs(context.Background())
+			if err != nil {
+				return err
+			}
+			fmt.Printf("requeued %d failed job(s); run `timingdex pipeline run` to process them\n", requeued)
+			return nil
+		default:
+			return errors.New("usage: timingdex pipeline run|retry-failed")
+		}
 
 	case "doctor":
 		fmt.Printf("database: %s\n", cfg.DatabasePath)
@@ -166,6 +178,7 @@ Usage:
   timingdex root list
   timingdex root scan <root-id>
   timingdex pipeline run
+  timingdex pipeline retry-failed
   timingdex worker enroll --hub https://nas:8787 --pairing <token> [--name worker] [--mount root-id=/mounted/path] [--provider-operation video_analysis]
   timingdex worker run [--config path]
   timingdex worker doctor [--config path]

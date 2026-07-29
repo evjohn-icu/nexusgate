@@ -107,13 +107,70 @@ LEFT JOIN transcripts t ON t.id=(SELECT id FROM transcripts t2 WHERE t2.asset_id
 		}
 		_ = json.Unmarshal([]byte(usable), &card.UsableAs)
 		_ = json.Unmarshal([]byte(moods), &card.MoodTags)
-		if artifact, _ := r.GetArtifact(ctx, card.ID, "thumbnail"); artifact != nil {
-			card.ThumbnailURL = "/api/v1/assets/" + card.ID + "/thumbnail"
-		}
-		if artifact, _ := r.GetArtifact(ctx, card.ID, "proxy"); artifact != nil {
-			card.ProxyURL = "/api/v1/assets/" + card.ID + "/proxy"
-		}
 		out = append(out, card)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(out) == 0 {
+		return out, nil
+	}
+	assetIDs := make([]string, len(out))
+	for i, card := range out {
+		assetIDs[i] = card.ID
+	}
+	haveArtifact, err := r.assetArtifactPresence(ctx, assetIDs, []string{"thumbnail", "proxy"})
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if haveArtifact[artifactKey{out[i].ID, "thumbnail"}] {
+			out[i].ThumbnailURL = "/api/v1/assets/" + out[i].ID + "/thumbnail"
+		}
+		if haveArtifact[artifactKey{out[i].ID, "proxy"}] {
+			out[i].ProxyURL = "/api/v1/assets/" + out[i].ID + "/proxy"
+		}
+	}
+	return out, nil
+}
+
+type artifactKey struct {
+	assetID string
+	typ     string
+}
+
+// assetArtifactPresence answers "does asset X have an artifact of type Y" for
+// a batch of assets and types in one query, instead of one GetArtifact call
+// per (card, type) pair. ListAssetCardsFiltered only needs presence, not the
+// artifact's fields, so this doesn't need to pick the newest row per
+// (asset_id, artifact_type) the way GetArtifact does.
+func (r *Repository) assetArtifactPresence(ctx context.Context, assetIDs, artifactTypes []string) (map[artifactKey]bool, error) {
+	if len(assetIDs) == 0 || len(artifactTypes) == 0 {
+		return map[artifactKey]bool{}, nil
+	}
+	assetPlaceholders := strings.TrimRight(strings.Repeat("?,", len(assetIDs)), ",")
+	typePlaceholders := strings.TrimRight(strings.Repeat("?,", len(artifactTypes)), ",")
+	query := `SELECT DISTINCT asset_id, artifact_type FROM derived_artifacts WHERE asset_id IN (` + assetPlaceholders + `) AND artifact_type IN (` + typePlaceholders + `)`
+	args := make([]any, 0, len(assetIDs)+len(artifactTypes))
+	for _, id := range assetIDs {
+		args = append(args, id)
+	}
+	for _, typ := range artifactTypes {
+		args = append(args, typ)
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[artifactKey]bool, len(assetIDs)*len(artifactTypes))
+	for rows.Next() {
+		var key artifactKey
+		if err := rows.Scan(&key.assetID, &key.typ); err != nil {
+			return nil, err
+		}
+		out[key] = true
 	}
 	return out, rows.Err()
 }

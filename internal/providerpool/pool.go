@@ -27,6 +27,13 @@ type Member struct {
 	Capability   Capability
 	Capabilities []Capability
 	Enabled      bool
+	// Weight biases how often the cursor starts on this member. Zero or negative
+	// means one share.
+	Weight int
+	// MaxInflight caps concurrent leases for this member. It exists so one
+	// provider can be configured with several keys that are rate limited
+	// independently. Zero or negative means unlimited.
+	MaxInflight int
 }
 
 // Provider is an alias for callers that prefer provider terminology.
@@ -64,8 +71,12 @@ type Pool struct {
 	mu      sync.Mutex
 	members []memberState
 	routes  map[Capability][]int
-	cursors map[Capability]int
-	options Options
+	// schedule is routes expanded by member weight. Selection walks this so a
+	// heavier member is reached from more cursor positions, while routes stays
+	// deduplicated for callers that just want to see the route.
+	schedule map[Capability][]int
+	cursors  map[Capability]int
+	options  Options
 }
 
 // Channel is a capability-bound view of a Pool. It prevents callers that
@@ -101,10 +112,11 @@ func NewPool(members []Member, options ...Options) (*Pool, error) {
 	}
 
 	p := &Pool{
-		members: make([]memberState, len(members)),
-		routes:  make(map[Capability][]int),
-		cursors: make(map[Capability]int),
-		options: configured,
+		members:  make([]memberState, len(members)),
+		routes:   make(map[Capability][]int),
+		schedule: make(map[Capability][]int),
+		cursors:  make(map[Capability]int),
+		options:  configured,
 	}
 	seen := make(map[Capability]map[string]struct{})
 	for i, member := range members {
@@ -116,6 +128,11 @@ func NewPool(members []Member, options ...Options) (*Pool, error) {
 		member.Capabilities = normalizeCapabilities(member.Capability, member.Capabilities)
 		if len(member.Capabilities) == 0 {
 			return nil, fmt.Errorf("providerpool: member %q has no capabilities", member.Name)
+		}
+
+		weight := member.Weight
+		if weight < 1 {
+			weight = 1
 		}
 
 		p.members[i] = memberState{
@@ -131,6 +148,9 @@ func NewPool(members []Member, options ...Options) (*Pool, error) {
 			}
 			seen[capability][member.Name] = struct{}{}
 			p.routes[capability] = append(p.routes[capability], i)
+			for share := 0; share < weight; share++ {
+				p.schedule[capability] = append(p.schedule[capability], i)
+			}
 			p.members[i].health[capability] = &healthState{}
 		}
 	}
@@ -209,7 +229,7 @@ func (p *Pool) Select(capability Capability) (*Lease, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	route := p.routes[capability]
+	route := p.schedule[capability]
 	if len(route) == 0 {
 		return nil, fmt.Errorf("%w: capability %q", ErrNoAvailable, capability)
 	}
@@ -223,7 +243,7 @@ func (p *Pool) Select(capability Capability) (*Lease, error) {
 		memberIndex := route[routePosition]
 		member := &p.members[memberIndex]
 		health := member.health[capability]
-		if !member.member.Enabled || !eligible(health, now) {
+		if !member.member.Enabled || !eligible(member.member, health, now) {
 			continue
 		}
 		if health.inflight < leastInflight {
@@ -277,8 +297,13 @@ func (c *Channel) Route() []Member {
 	return c.pool.Route(c.capability)
 }
 
-func eligible(health *healthState, now time.Time) bool {
+func eligible(member Member, health *healthState, now time.Time) bool {
 	if health == nil || health.inflight > 0 && health.halfOpen {
+		return false
+	}
+	// A saturated member is skipped rather than queued: Select never blocks, so
+	// the caller either falls back to the next member or gets ErrNoAvailable.
+	if member.MaxInflight > 0 && health.inflight >= member.MaxInflight {
 		return false
 	}
 	if health.cooldownUntil.IsZero() {

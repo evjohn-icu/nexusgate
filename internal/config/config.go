@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -99,6 +100,31 @@ type HubSecurityConfig struct {
 	// in DATA_DIR/admin-token; neither form belongs in config.json or SQLite.
 	AdminToken                     string `json:"-"`
 	AllowWorkerProviderCredentials bool   `json:"allow_worker_provider_credentials"`
+	// TrustedReadNetworks are the CIDR ranges allowed to reach the read routes
+	// that carry no token of their own (browse, search, thumbnails, proxy).
+	// Empty means the built-in private/loopback/Tailnet set. Listing
+	// "0.0.0.0/0" and "::/0" disables the guard, which serves the whole library
+	// to anyone who can reach the port.
+	TrustedReadNetworks []string `json:"trusted_read_networks,omitempty"`
+}
+
+// TrustedReadPrefixes parses TrustedReadNetworks. It is validated at load time
+// so a typo fails at startup rather than silently widening or narrowing access
+// once the server is already serving.
+func (c HubSecurityConfig) TrustedReadPrefixes() ([]netip.Prefix, error) {
+	prefixes := make([]netip.Prefix, 0, len(c.TrustedReadNetworks))
+	for _, raw := range c.TrustedReadNetworks {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(entry)
+		if err != nil {
+			return nil, fmt.Errorf("hub_security.trusted_read_networks: %q is not a CIDR range: %w", entry, err)
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	return prefixes, nil
 }
 
 type Config struct {
@@ -172,6 +198,12 @@ func Load() (Config, error) {
 		if enabled, err := strconv.ParseBool(v); err == nil {
 			cfg.HubSecurity.AllowWorkerProviderCredentials = enabled
 		}
+	}
+	if v := strings.TrimSpace(os.Getenv("TIMINGDEX_TRUSTED_READ_NETWORKS")); v != "" {
+		cfg.HubSecurity.TrustedReadNetworks = strings.Split(v, ",")
+	}
+	if _, err := cfg.HubSecurity.TrustedReadPrefixes(); err != nil {
+		return Config{}, err
 	}
 	resolve := func(p *ProviderConfig) {
 		if p.APIKey == "" && p.APIKeyEnv != "" {

@@ -1,9 +1,20 @@
 # Compiled binary (go build -o timingdex ./cmd/timingdex)
 /timingdex
 
-# Local Hub data directory: SQLite, cache, admin-token, provider-secrets.
-# Never commit — it holds the Hub administrator token and encrypted keys.
+# Local Hub data directory: SQLite, cache, admin-token, agent-token,
+# provider-secrets. Never commit — it holds the Hub credentials and the
+# encrypted provider keys. TIMINGDEX_DATA_DIR can point anywhere, so the
+# credential filenames are also matched on their own below.
 .timingdex-dev/
+.timingdex*/
+
+# Hub credentials by name, wherever a data directory ends up. These are
+# generated at first start and are the whole authorization boundary; the store
+# key decrypts every provider secret.
+admin-token
+agent-token
+provider-secrets/
+store.key
 
 # Real configuration. config.example.json is the tracked template.
 config.json
@@ -14,3 +25,16 @@ worker.json
 *.db
 *.db-wal
 *.db-shm
+
+# Go test binaries (go test -c) and coverage output.
+*.test
+coverage.out
+*.cover
+
+# Media fixtures produced by hand while testing the pipeline. Source footage is
+# never stored in the repo, and internal/media's integration test generates
+# whatever it needs at run time.
+/testdata-local/
+
+# macOS directory metadata.
+.DS_Store

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -102,6 +103,7 @@ type Service struct {
 	planner    providers.RepurposePlanner
 	hardware   media.HardwareReport
 	adminToken string
+	agentToken string
 	secrets    *secretstore.Store
 
 	pipelineMu      sync.Mutex
@@ -146,6 +148,15 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("initialize Hub administrator token: %w", err)
 	}
+	// The agent token is a separate credential from the admin token: it is
+	// handed to a Skill/agent so it can create and revise draft repurpose
+	// plans (see requireAgentOrAdmin in internal/api) without ever holding a
+	// token that can approve a plan or run the pipeline. There is no config
+	// override for it yet, so explicit is always empty here.
+	agentToken, err := hubauth.EnsureAgentToken(cfg.DataDir, "")
+	if err != nil {
+		return nil, fmt.Errorf("initialize Hub agent token: %w", err)
+	}
 	secrets, err := secretstore.Open(cfg.DataDir, adminToken)
 	if err != nil {
 		return nil, fmt.Errorf("initialize Hub provider secret store: %w", err)
@@ -155,7 +166,7 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 		repo: repo, cfg: cfg, scanner: ingest.NewScanner(repo),
 		pipeline: NewPipeline(repo, cfg.CacheDir, channelRuntime.asr(), channelRuntime.asrFallback(), channelRuntime.video(), alignment, plan, sourceStager),
 		curator:  channelRuntime.curator(), embedder: channelRuntime.embedder(), planner: channelRuntime.planner(),
-		hardware: hardware, adminToken: adminToken, secrets: secrets,
+		hardware: hardware, adminToken: adminToken, agentToken: agentToken, secrets: secrets,
 	}, nil
 }
 
@@ -236,6 +247,21 @@ func (s *Service) SaveProviderChannel(ctx context.Context, channel domain.Provid
 // AdminToken is used only by the in-process API authorization boundary. It is
 // intentionally not included in API responses, database records, or logs.
 func (s *Service) AdminToken() string { return s.adminToken }
+
+// AgentToken is used only by the in-process API authorization boundary
+// (requireAgentOrAdmin). Like AdminToken, it is intentionally never included
+// in API responses, database records, or logs. It authorizes a strictly
+// narrower surface than the admin token: creating and revising draft
+// repurpose plans, never approval or pipeline runs.
+func (s *Service) AgentToken() string { return s.agentToken }
+
+// TrustedReadNetworks are the CIDR ranges the API layer admits to the read
+// routes that carry no token. Load() has already validated them, so a parse
+// failure here cannot happen; the API layer still falls back to its restrictive
+// defaults rather than assuming otherwise.
+func (s *Service) TrustedReadNetworks() ([]netip.Prefix, error) {
+	return s.cfg.HubSecurity.TrustedReadPrefixes()
+}
 
 func (s *Service) AddLibraryRoot(ctx context.Context, path string) (domain.LibraryRoot, error) {
 	absolute, err := filepath.Abs(path)
@@ -569,6 +595,14 @@ func (s *Service) PipelineRunning() bool {
 
 func (s *Service) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
 	return s.pipeline.repo.ListJobs(ctx, limit)
+}
+
+// RequeueFailedJobs gives every failed job a fresh attempt budget. Both ways a
+// job stops being retried are one-way, and re-scanning the library does not
+// undo either, so configuring a provider that was previously missing otherwise
+// leaves the work that failed for want of it stranded forever.
+func (s *Service) RequeueFailedJobs(ctx context.Context) (int, error) {
+	return s.pipeline.repo.RequeueFailedJobs(ctx)
 }
 func (s *Service) Search(ctx context.Context, q string, limit int) ([]string, error) {
 	return s.pipeline.repo.Search(ctx, q, limit)

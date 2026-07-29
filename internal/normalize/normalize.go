@@ -3,8 +3,15 @@ package normalize
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ev/timingdex/internal/domain"
+)
+
+const (
+	MaxSummaryLength = 2000
+	MaxTagLength     = 80
+	MaxTagsPerList   = 64
 )
 
 var allowedAssetType = makeSet("b_roll", "talking_to_camera", "conversation", "activity", "performance", "food", "transport", "architecture", "landscape", "animal", "document", "screen_recording", "accidental", "other")
@@ -26,8 +33,8 @@ func ValidateAndNormalize(a domain.StructuredAnalysis) (domain.StructuredAnalysi
 	a.MoodTags = clean(a.MoodTags)
 	a.QualityFlags = clean(a.QualityFlags)
 	a.ExtraTags = clean(a.ExtraTags)
-	a.Summary = strings.TrimSpace(a.Summary)
-	a.EditorialReason = strings.TrimSpace(a.EditorialReason)
+	a.Summary = truncateByRunes(strings.TrimSpace(a.Summary), MaxSummaryLength)
+	a.EditorialReason = truncateByRunes(strings.TrimSpace(a.EditorialReason), MaxSummaryLength)
 	if a.Summary == "" {
 		return a, fmt.Errorf("summary is required")
 	}
@@ -55,6 +62,9 @@ func normList(v []string, set map[string]bool) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, x := range v {
+		if len(out) >= MaxTagsPerList {
+			break
+		}
 		x = strings.ToLower(strings.TrimSpace(x))
 		if set[x] && !seen[x] {
 			out = append(out, x)
@@ -67,11 +77,27 @@ func clean(v []string) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, x := range v {
+		if len(out) >= MaxTagsPerList {
+			break
+		}
 		x = strings.TrimSpace(strings.ToLower(x))
+		if utf8.RuneCountInString(x) > MaxTagLength {
+			x = string([]rune(x)[:MaxTagLength])
+		}
 		if x != "" && !seen[x] {
 			out = append(out, x)
 			seen[x] = true
 		}
 	}
 	return out
+}
+func truncateByRunes(s string, max int) string {
+	if max < 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) > max {
+		return string(r[:max])
+	}
+	return s
 }
