@@ -100,6 +100,15 @@ func (a *ASR) Transcribe(ctx context.Context, req common.TranscribeRequest) (dom
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
+			// The server closes normally once it has sent its last sequence.
+			// Audio that carries no speech legitimately produces no text, so
+			// that closure arrives before any transcript frame. An empty
+			// transcript is the correct answer there, not a failure — treating
+			// it as one fails the job for every clip whose only sound is wind
+			// or room tone, which the speech gate cannot tell from speech.
+			if websocket.CloseStatus(err) == websocket.StatusNormalClosure {
+				return domain.Transcript{Language: req.Language, RawResponse: strings.Join(raw, "\n")}, nil
+			}
 			return domain.Transcript{}, fmt.Errorf("read Volcengine ASR response: %w", err)
 		}
 		payload, responseType, err := decodeFrame(data)

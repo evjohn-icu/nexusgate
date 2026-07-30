@@ -2,9 +2,19 @@ package volcasr
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/ev/timingdex/internal/providers/common"
+	"nhooyr.io/websocket"
 )
 
 func TestBuildRequestFrameRoundTrip(t *testing.T) {
@@ -55,5 +65,55 @@ func TestDecodeServerError(t *testing.T) {
 	text, providerErr := transcriptText(raw)
 	if text != "" || providerErr != "empty audio" {
 		t.Fatalf("text=%q providerErr=%q", text, providerErr)
+	}
+}
+
+// Seed ASR closes the socket normally once it has sent its last sequence.
+// Audio with no speech in it reaches that close without ever producing a
+// transcript frame, and the correct answer is an empty transcript — not a
+// failed job. Every clip whose only sound is wind or room tone lands here,
+// and the speech gate cannot tell those from speech in advance.
+func TestTranscribeTreatsNormalClosureAsEmptyTranscript(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg is required to decode the fixture to PCM")
+	}
+	dir := t.TempDir()
+	audio := filepath.Join(dir, "silence.wav")
+	if output, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-t", "0.3", audio).CombinedOutput(); err != nil {
+		t.Skipf("test fixture cannot be encoded by local ffmpeg: %v: %s", err, output)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		// Drain the config frame and the 200ms audio chunks. The close has to
+		// come from a healthy connection, so it is issued here rather than
+		// after a cancelled read — a read that fails first would tear the
+		// socket down and the client would see EOF instead of a close frame.
+		go func() {
+			for {
+				if _, _, readErr := conn.Read(context.Background()); readErr != nil {
+					return
+				}
+			}
+		}()
+		time.Sleep(300 * time.Millisecond)
+		conn.Close(websocket.StatusNormalClosure, "finish last sequence")
+	}))
+	defer server.Close()
+
+	asr := &ASR{URL: "ws" + strings.TrimPrefix(server.URL, "http"), APIKey: "test-key", TimeoutSeconds: 30}
+	transcript, err := asr.Transcribe(context.Background(), common.TranscribeRequest{AudioPath: audio, Language: "zh"})
+	if err != nil {
+		t.Fatalf("a normal closure must not fail the job: %v", err)
+	}
+	if transcript.Text != "" {
+		t.Fatalf("expected an empty transcript, got %q", transcript.Text)
+	}
+	if transcript.Language != "zh" {
+		t.Fatalf("language = %q, want zh", transcript.Language)
 	}
 }
