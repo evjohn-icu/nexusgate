@@ -297,3 +297,60 @@ func TestReplacingShotsInvalidatesInMemoryFeatureVectorCache(t *testing.T) {
 		t.Fatal("replacing shots must invalidate stale feature vectors")
 	}
 }
+
+// Tags that differ only in punctuation or spacing normalize to one row. Nothing
+// upstream can prevent that: de-duplication there compares lowercased text,
+// while the unique index is on a form that also collapses punctuation. A model
+// producing both spellings is ordinary, and analysing an asset in several
+// windows multiplies the chance of it, so the commit has to tolerate the pair
+// rather than fail the whole analysis.
+func TestCommitAnalysisKeepsOneRowForTagsThatNormalizeAlike(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "timingdex-tag-collision.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := formatTime(time.Now().UTC())
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES('asset-tags','fp-tags',100,'discovered',?,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := repo.CreateModelRun(ctx, "asset-tags", "vision", "fixture", "fixture-model", "tag-hash", "prompt", "asset-analysis/v1", "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.StageModelRun(ctx, run, "{}", "{}"); err != nil {
+		t.Fatal(err)
+	}
+
+	analysis := domain.StructuredAnalysis{
+		AssetType: "b_roll", ShotSize: "wide", CameraMotion: "static",
+		AudioType: "ambient", Lighting: "night", Quality: "usable",
+		Summary: "night street",
+		// All three collapse to everyday_urban.
+		SceneTags: []string{"everyday urban", "everyday-urban", "everyday  urban"},
+		MoodTags:  []string{"calm", "calm."},
+	}
+	if err := repo.CommitAnalysisWithShots(ctx, "asset-tags", run, "asset-analysis/v1", analysis, nil); err != nil {
+		t.Fatalf("tags that normalize alike must not fail the commit: %v", err)
+	}
+
+	var scene, mood int
+	if err := repo.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM asset_tag_links WHERE asset_id='asset-tags' AND tag_type='scene'`).Scan(&scene); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM asset_tag_links WHERE asset_id='asset-tags' AND tag_type='mood'`).Scan(&mood); err != nil {
+		t.Fatal(err)
+	}
+	if scene != 1 {
+		t.Errorf("three spellings of one scene tag must store one row, got %d", scene)
+	}
+	if mood != 1 {
+		t.Errorf("two spellings of one mood tag must store one row, got %d", mood)
+	}
+}

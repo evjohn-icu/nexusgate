@@ -86,7 +86,7 @@ func NewVideoUnderstandingProvider(name string, fallbacks []string, c config.Pro
 		if candidate.cfg.Protocol != "" && candidate.cfg.Protocol != "openai_video" {
 			return nil, fmt.Errorf("video provider %q requires openai_video protocol, got %q", candidate.name, candidate.cfg.Protocol)
 		}
-		if err := registry.Register(&openaivideo.Provider{ProviderName: candidate.name, Endpoint: endpoint(candidate.cfg), ModelName: candidate.cfg.Model, Path: candidate.cfg.Path}); err != nil {
+		if err := registry.Register(&openaivideo.Provider{ProviderName: candidate.name, Endpoint: endpoint(candidate.cfg), ModelName: candidate.cfg.Model, Path: candidate.cfg.Path, MaxInlineBytes: candidate.cfg.MaxInlineVideoBytes}); err != nil {
 			return nil, err
 		}
 	}

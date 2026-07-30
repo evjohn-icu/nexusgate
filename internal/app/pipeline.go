@@ -432,7 +432,7 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, throttle domain.Pi
 				}
 				analyzeReq.RemoteURI, analyzeReq.MIMEType = cachedFile.RemoteURI, cachedFile.MIMEType
 			}
-			result, rawResult, providerErr := p.videoProvider.Analyze(ctx, analyzeReq)
+			result, rawResult, providerErr := p.analyzeVideo(ctx, j.AssetID, analyzeReq, m.DurationMS)
 			raw = rawResult
 			err = providerErr
 			if err != nil {

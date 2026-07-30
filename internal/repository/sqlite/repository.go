@@ -1706,12 +1706,26 @@ func (r *Repository) syncAnalysisTagsTx(ctx context.Context, tx *sql.Tx, assetID
 	}
 	now := formatTime(time.Now())
 	groups := map[string][]string{"scene": a.SceneTags, "subject": a.Subjects, "mood": a.MoodTags, "extra": a.ExtraTags, "usable_as": a.UsableAs}
+	// Two tags can differ as strings and still be one row here. Upstream
+	// de-duplication compares lowercased text, while normalizeTagValue also
+	// collapses every run of punctuation and spacing to "_" — so "everyday
+	// urban" and "everyday-urban" pass as distinct and then collide on the
+	// unique index, failing the whole commit. Model output makes that pairing
+	// ordinary rather than rare, and analysing an asset in several windows
+	// multiplies the chances of it, since each window phrases the same idea
+	// its own way. De-duplicate on the key the index actually uses.
+	inserted := make(map[string]struct{}, len(groups)*4)
 	for typ, values := range groups {
 		for _, raw := range values {
 			n := normalizeTagValue(raw)
 			if n == "" {
 				continue
 			}
+			key := typ + "\x00" + n
+			if _, clash := inserted[key]; clash {
+				continue
+			}
+			inserted[key] = struct{}{}
 			var canonical sql.NullString
 			_ = tx.QueryRowContext(ctx, `SELECT canonical_tag_id FROM tag_aliases_v2 WHERE alias_normalized=? UNION SELECT id FROM tag_catalog WHERE canonical_name=? LIMIT 1`, n, n).Scan(&canonical)
 			_, err := tx.ExecContext(ctx, `INSERT INTO asset_tag_links(asset_id,raw_tag,normalized_tag,canonical_tag_id,tag_type,source,source_run_id,created_at,updated_at) VALUES(?,?,?,?,?,'ai',?,?,?)`, assetID, raw, n, nullableNullString(canonical), typ, runID, now, now)

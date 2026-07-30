@@ -24,6 +24,12 @@ type ProviderConfig struct {
 	AuthScheme     string            `json:"auth_scheme,omitempty"`
 	ExtraHeaders   map[string]string `json:"extra_headers,omitempty"`
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
+	// MaxInlineVideoBytes is the largest video this endpoint accepts inside a
+	// request body. It is per-endpoint rather than a shared constant because
+	// the ceiling varies by more than an order of magnitude between them, and a
+	// relay in front of an API can impose its own lower one. Zero means use the
+	// conservative built-in default.
+	MaxInlineVideoBytes int64 `json:"max_inline_video_bytes,omitempty"`
 }
 
 type ProvidersConfig struct {

@@ -94,6 +94,22 @@ func (r *Router) RequiresVideoPreparation() bool {
 	return ok
 }
 
+// MaxInlineVideoBytes forwards the primary provider's inline ceiling. The
+// router itself has no opinion on request size; answering for the provider that
+// will actually be called is what lets a caller size its windows correctly
+// after a fallback changes the chain.
+func (r *Router) MaxInlineVideoBytes() int64 {
+	provider, ok := r.registry.Get(r.chain[0])
+	if !ok {
+		return 0
+	}
+	limiter, ok := provider.(InlineVideoLimiter)
+	if !ok {
+		return 0
+	}
+	return limiter.MaxInlineVideoBytes()
+}
+
 func (r *Router) PrepareVideo(ctx context.Context, req PrepareVideoRequest) (PreparedVideo, error) {
 	provider, _ := r.registry.Get(r.chain[0])
 	preparer, ok := provider.(VideoPreparer)

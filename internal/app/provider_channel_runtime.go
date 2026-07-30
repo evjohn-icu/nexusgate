@@ -212,6 +212,24 @@ func (p *channelVideo) RequiresVideoPreparation() bool {
 	return false
 }
 
+// MaxInlineVideoBytes reports the inline ceiling for the legacy route only.
+//
+// Building a channel's provider requires resolving its secret, and this is
+// asked before every analysis merely to size the request — decrypting a
+// provider key to read a constant is the wrong trade. A channel route
+// therefore answers 0, which the caller reads as "unknown" and satisfies with
+// the conservative default. The effect is more windows than strictly
+// necessary, never a request too large to send; channels have no field in
+// which to declare a limit yet, so there is nothing more precise to report.
+func (p *channelVideo) MaxInlineVideoBytes() int64 {
+	if p.runtime != nil && p.runtime.legacyVideo != nil {
+		if limiter, ok := p.runtime.legacyVideo.(videoproviders.InlineVideoLimiter); ok {
+			return limiter.MaxInlineVideoBytes()
+		}
+	}
+	return 0
+}
+
 // PrepareVideo selects and uploads through the same Executor route that owns
 // the following analysis. The selected invocation is bound by the returned
 // remote URI, not by a secret value; Analyze consumes that binding once.

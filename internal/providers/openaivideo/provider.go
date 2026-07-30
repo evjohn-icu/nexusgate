@@ -25,9 +25,29 @@ type Provider struct {
 	Endpoint     common.Endpoint
 	ModelName    string
 	Path         string
+	// MaxInlineBytes is the largest video this endpoint accepts in a request
+	// body, before base64 expansion. Zero selects defaultMaxInlineBytes.
+	MaxInlineBytes int64
 }
 
+// defaultMaxInlineBytes is deliberately below every endpoint this adapter is
+// pointed at rather than tuned to the most generous one. Overshooting costs a
+// whole upload before the rejection arrives, and the request body is a third
+// larger than the file once base64-encoded — so the conservative default is
+// the one that fails least expensively when an endpoint does not declare its
+// own limit.
+const defaultMaxInlineBytes = 24 << 20
+
 var _ videoproviders.VideoUnderstandingProvider = (*Provider)(nil)
+var _ videoproviders.InlineVideoLimiter = (*Provider)(nil)
+
+// MaxInlineVideoBytes reports the configured inline ceiling for this endpoint.
+func (p *Provider) MaxInlineVideoBytes() int64 {
+	if p.MaxInlineBytes > 0 {
+		return p.MaxInlineBytes
+	}
+	return defaultMaxInlineBytes
+}
 
 func (p *Provider) Name() string {
 	if p.ProviderName == "" {
