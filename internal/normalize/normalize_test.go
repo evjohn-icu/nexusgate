@@ -305,3 +305,82 @@ func stringSliceEqual(a, b []string) bool {
 func utf8Valid(s string) bool {
 	return utf8.ValidString(s)
 }
+
+// The controlled vocabulary only works if the model is told what it is. These
+// values are what a real model returned when the prompt asked for a bare
+// string: every one was discarded, so asset_type, quality and camera_motion
+// were the same fallback for an entire library.
+func TestVocabularyPromptStatesEveryConstrainedField(t *testing.T) {
+	prompt := VocabularyPrompt()
+	for _, field := range []string{"asset_type", "camera_motion", "shot_size", "audio_type", "quality", "usable_as"} {
+		if !strings.Contains(prompt, field) {
+			t.Errorf("prompt does not name the constrained field %q", field)
+		}
+	}
+	// Spot-check that the values themselves are present, not just the names —
+	// naming the field without listing its values is the bug this fixes.
+	for _, value := range []string{"b_roll", "pan_left", "extreme_wide", "speech_and_music", "not_recommended"} {
+		if !strings.Contains(prompt, value) {
+			t.Errorf("prompt does not list the permitted value %q", value)
+		}
+	}
+}
+
+// The vocabulary the prompt advertises has to be the one the validator accepts,
+// or the two drift apart and the field quietly empties again.
+func TestVocabularyPromptMatchesWhatTheValidatorAccepts(t *testing.T) {
+	for _, tc := range []struct {
+		field  string
+		values []string
+		norm   func(string) string
+	}{
+		{"asset_type", AssetTypeValues, func(v string) string { return normEnum(v, allowedAssetType, "other") }},
+		{"camera_motion", MotionValues, func(v string) string { return normEnum(v, allowedMotion, "unknown") }},
+		{"shot_size", ShotSizeValues, func(v string) string { return normEnum(v, allowedShot, "unknown") }},
+		{"audio_type", AudioTypeValues, func(v string) string { return normEnum(v, allowedAudio, "unknown") }},
+		{"quality", QualityValues, func(v string) string { return normEnum(v, allowedQuality, "unknown") }},
+	} {
+		for _, value := range tc.values {
+			if got := tc.norm(value); got != value {
+				t.Errorf("%s: advertised value %q is rejected by the validator (became %q)", tc.field, value, got)
+			}
+		}
+	}
+}
+
+// Prose spells the vocabulary's multi-word values with hyphens and spaces.
+// Throwing those away over punctuation loses a correct answer.
+func TestNormEnumForgivesSeparatorsButNotMeaning(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"close-up", "close_up"},
+		{"close up", "close_up"},
+		{"pan left", "pan_left"},
+		{"Extreme Wide", "extreme_wide"},
+		{"speech and music", "speech_and_music"},
+		{"not recommended", "not_recommended"},
+	} {
+		set, fallback := allowedShot, "unknown"
+		switch tc.want {
+		case "pan_left":
+			set = allowedMotion
+		case "speech_and_music":
+			set = allowedAudio
+		case "not_recommended":
+			set = allowedQuality
+		}
+		if got := normEnum(tc.in, set, fallback); got != tc.want {
+			t.Errorf("normEnum(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+
+	// Meaning is never guessed at. "no speech, ambient only" contains the word
+	// speech and means its opposite, so it must fall back rather than match.
+	for _, in := range []string{"no speech, ambient only", "high quality 4K resolution", "wide shot with people", "forward walking, occasional panning"} {
+		if got := normEnum(in, allowedAudio, "unknown"); got != "unknown" && !allowedAudio[got] {
+			t.Errorf("normEnum(%q) invented %q", in, got)
+		}
+	}
+	if got := normEnum("no speech, ambient only", allowedAudio, "unknown"); got == "speech" {
+		t.Error("a phrase that negates a permitted value must not match it")
+	}
+}

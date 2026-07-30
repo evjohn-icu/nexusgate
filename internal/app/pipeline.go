@@ -385,7 +385,7 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, throttle domain.Pi
 			return fmt.Errorf("metadata missing")
 		}
 		reqJSON := fmt.Sprintf(`{"asset_id":%q,"path":%q}`, j.AssetID, sourcePath)
-		providerName, modelName, promptVersion := p.videoProvider.Name(), p.videoProvider.Model(), "footage-analysis-v2"
+		providerName, modelName, promptVersion := p.videoProvider.Name(), p.videoProvider.Model(), "footage-analysis-v3"
 		runID, cached, err := p.repo.CreateModelRun(ctx, j.AssetID, "vision", providerName, modelName, j.InputHash, promptVersion, "asset-analysis/v1", reqJSON)
 		if err != nil {
 			return err

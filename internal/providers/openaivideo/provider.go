@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	videoanalysis "github.com/ev/timingdex/internal/domain/video_analysis"
+	"github.com/ev/timingdex/internal/normalize"
 	"github.com/ev/timingdex/internal/providers/common"
 	videoproviders "github.com/ev/timingdex/internal/providers/video"
 )
@@ -169,5 +170,5 @@ func unifiedPrompt(input videoanalysis.Input) string {
 		transcript = input.Transcript.Text
 	}
 	metadata, _ := json.Marshal(input.Metadata)
-	return `Analyze this video and return JSON only. Required schema: {"summary":string,"scenes":[{"description":string,"start_ms":number,"end_ms":number,"tags":[string]}],"objects":[{"name":string,"count":number,"confidence":number}],"actions":[{"name":string,"confidence":number}],"mood":[string],"raw_tags":[string],"shots":[{"start_ms":number,"end_ms":number,"description":string,"tags":[string],"objects":[string],"actions":[string],"mood":[string],"confidence":number}],"confidence":number,"analysis":{"asset_type":string,"scene_tags":[string],"subjects":[string],"people_count":number,"shot_size":string,"camera_motion":string,"lighting":string,"audio_type":string,"has_speech":boolean,"summary":string,"usable_as":[string],"mood_tags":[string],"quality":string,"quality_flags":[string],"extra_tags":[string],"editorial_reason":string}}. Describe only observable footage. Metadata: ` + string(metadata) + ` Transcript: ` + transcript
+	return `Analyze this video and return JSON only. Required schema: {"summary":string,"scenes":[{"description":string,"start_ms":number,"end_ms":number,"tags":[string]}],"objects":[{"name":string,"count":number,"confidence":number}],"actions":[{"name":string,"confidence":number}],"mood":[string],"raw_tags":[string],"shots":[{"start_ms":number,"end_ms":number,"description":string,"tags":[string],"objects":[string],"actions":[string],"mood":[string],"confidence":number}],"confidence":number,"analysis":{"asset_type":string,"scene_tags":[string],"subjects":[string],"people_count":number,"shot_size":string,"camera_motion":string,"lighting":string,"audio_type":string,"has_speech":boolean,"summary":string,"usable_as":[string],"mood_tags":[string],"quality":string,"quality_flags":[string],"extra_tags":[string],"editorial_reason":string}}. Describe only observable footage. ` + normalize.VocabularyPrompt() + `Metadata: ` + string(metadata) + ` Transcript: ` + transcript
 }
