@@ -94,10 +94,23 @@ func DetectHardware(ctx context.Context, cfg HardwareConfig) (HardwareReport, Ha
 	for _, candidate := range preference(mode) {
 		for i := range report.Capabilities {
 			cap := &report.Capabilities[i]
-			if cap.Backend == candidate && cap.DecodeAvailable && cap.EncodeAvailable && cap.RuntimeAvailable {
-				selected, cap.Selected = candidate, true
-				break
+			if cap.Backend != candidate || !cap.DecodeAvailable || !cap.EncodeAvailable || !cap.RuntimeAvailable {
+				continue
 			}
+			// The checks above establish that FFmpeg was built with the encoder
+			// and that a device node is present. Neither means the encoder can
+			// actually run here: a driver too old for the build's NVENC API, a
+			// GPU whose kernel module is loaded but whose firmware is missing,
+			// or a container holding a device node it has no rights to all pass
+			// them and fail on the first real frame. Encoding one throwaway
+			// frame is what tells them apart, and it costs a fraction of a
+			// second once per detection.
+			if !encoderRuns(ctx, cap.Backend, cap.Encoder, device) {
+				cap.RuntimeAvailable = false
+				continue
+			}
+			selected, cap.Selected = candidate, true
+			break
 		}
 		if selected != "software" {
 			break
@@ -128,9 +141,22 @@ func planFor(mode, device string, fallback bool, bitrate int) HardwarePlan {
 	switch mode {
 	case "cuda":
 		p.DecoderArgs = []string{"-hwaccel", "cuda"}
+		// NVENC H.264 encodes 8-bit 4:2:0 only, so a 10-bit source reaches it
+		// as an unsupported surface and the encoder reports "No capable devices
+		// found" — a message that reads like a missing GPU rather than a
+		// pixel format. Cameras make this the common case, not the exception:
+		// HEVC 10-bit and ProRes 4:2:2 10-bit are what drones, phones and
+		// cinema bodies record. vaapi below already converts for the same
+		// reason; videotoolbox does it internally and needs no filter.
+		p.ProxyFilter = ",format=yuv420p"
 		p.EncoderArgs = []string{"-c:v", "h264_nvenc", "-preset", "p4", "-b:v", fmt.Sprintf("%dk", bitrate), "-maxrate", fmt.Sprintf("%dk", bitrate*2), "-bufsize", fmt.Sprintf("%dk", bitrate*4)}
 	case "qsv":
 		p.DecoderArgs = []string{"-hwaccel", "qsv"}
+		// Same 8-bit constraint as NVENC above: h264_qsv encodes 4:2:0 8-bit,
+		// so a 10-bit source has to be converted or the encoder refuses it.
+		// This one matters more than its share of hardware suggests — an Intel
+		// iGPU is what a NAS has, and a NAS is where this runs.
+		p.ProxyFilter = ",format=nv12"
 		p.EncoderArgs = []string{"-c:v", "h264_qsv", "-b:v", fmt.Sprintf("%dk", bitrate)}
 	case "vaapi":
 		p.DecoderArgs = []string{"-vaapi_device", device, "-hwaccel", "vaapi", "-hwaccel_device", device}
@@ -146,6 +172,30 @@ func planFor(mode, device string, fallback bool, bitrate int) HardwarePlan {
 	return p
 }
 
+// encoderRuns encodes a single synthetic frame to confirm the accelerator is
+// usable, discarding the output. It answers "can this machine encode at all
+// with this backend", not "can it encode a given source" — a 10-bit source
+// still needs the pixel-format conversion each plan carries, because a probe
+// frame that is already 8-bit would pass either way.
+func encoderRuns(ctx context.Context, backend, encoder, device string) bool {
+	if encoder == "" {
+		return false
+	}
+	args := []string{"-hide_banner", "-loglevel", "error", "-y"}
+	if backend == "vaapi" {
+		// VAAPI encodes from GPU surfaces, so the frame has to be uploaded;
+		// the other backends accept software frames directly.
+		args = append(args, "-vaapi_device", device)
+	}
+	args = append(args, "-f", "lavfi", "-i", "color=c=black:s=256x144:r=25:d=0.2", "-frames:v", "1")
+	if backend == "vaapi" {
+		args = append(args, "-vf", "format=nv12,hwupload")
+	}
+	args = append(args, "-c:v", encoder, "-f", "null", "-")
+	_, err := ffmpegOutput(ctx, args...)
+	return err == nil
+}
+
 func ffmpegOutput(ctx context.Context, args ...string) (string, error) {
 	out, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
 	return string(out), err
@@ -154,13 +204,29 @@ func hasToken(text, token string) bool {
 	return strings.Contains(strings.ToLower(text), strings.ToLower(token))
 }
 
+// wslNVENCLibrary is where the WSL NVIDIA driver installs the encoder library.
+// It is a variable so the test can point at a fixture instead of requiring a
+// GPU, and is never used as a library search path — FFmpeg dlopens the real one
+// through ldconfig.
+var wslNVENCLibrary = "/usr/lib/wsl/lib/libnvidia-encode.so.1"
+
 func deviceAvailable(backend, device string) bool {
 	switch backend {
 	case "cuda":
 		if _, err := os.Stat("/dev/nvidia0"); err == nil {
 			return true
 		}
-		_, err := exec.LookPath("nvidia-smi")
+		if _, err := exec.LookPath("nvidia-smi"); err == nil {
+			return true
+		}
+		// WSL2 has neither of the above: the GPU arrives through /dev/dxg
+		// instead of /dev/nvidia0, and the driver lands in /usr/lib/wsl/lib
+		// without putting nvidia-smi on PATH. Both checks above therefore fail
+		// on a machine whose NVENC works perfectly.
+		//
+		// Test for the encoder library rather than for /dev/dxg, which is also
+		// present for AMD and Intel GPUs that cannot serve h264_nvenc at all.
+		_, err := os.Stat(wslNVENCLibrary)
 		return err == nil
 	case "qsv", "vaapi":
 		if runtime.GOOS == "windows" {
