@@ -30,10 +30,16 @@ var defaultTrustedReadNetworks = []netip.Prefix{
 // The peer address is taken from RemoteAddr and nothing else. X-Forwarded-For
 // and X-Real-IP are attacker-controlled on a directly exposed listener, so
 // honouring them would let any internet client claim to be 192.168.1.5 and
-// defeat the guard entirely. The consequence is the other direction of the same
-// coin: behind a reverse proxy every request appears to come from the proxy, so
-// a proxied deployment must do this filtering itself or set the allowlist to
-// the empty-of-meaning "0.0.0.0/0,::/0" and rely on tokens alone.
+// defeat the guard entirely.
+//
+// The consequence runs the other way too. Behind a reverse proxy, or behind the
+// NAT of a published Docker port, every request arrives from the proxy or the
+// bridge gateway -- which is itself an RFC1918 address, and therefore trusted --
+// so the guard can no longer tell a LAN client from an internet one. Such a
+// deployment has to filter at the proxy, or set the allowlist to a range no peer
+// can match, which drops every read back to requiring a token. Setting it to
+// "0.0.0.0/0,::/0" does the opposite of that: it trusts every caller and
+// publishes the library.
 func (s *Server) fromTrustedNetwork(r *http.Request) bool {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

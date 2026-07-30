@@ -19,6 +19,12 @@ store.key
 # Real configuration. config.example.json is the tracked template.
 config.json
 
+# Compose reads .env automatically, and docker-compose.yml passes six provider
+# key variables through from it. That makes an untracked .env the intended place
+# for them and a tracked one a committed key.
+.env
+.env.*
+
 # Worker configuration written by `timingdex worker enroll` (node token).
 worker.json
 

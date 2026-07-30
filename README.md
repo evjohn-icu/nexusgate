@@ -93,6 +93,27 @@ go test ./...
 go build -o timingdex ./cmd/timingdex
 ```
 
+Or build nothing locally: `Dockerfile` is multi-stage and compiles inside the
+Go image, so Docker alone is enough — no Go toolchain, and FFmpeg and exiftool
+come with the runtime image. That is the shortest path on Windows.
+
+```bash
+TIMINGDEX_MEDIA_ROOT=/path/to/footage docker compose up -d --build hub
+```
+
+On PowerShell, or to keep provider keys out of your shell history, put the
+variables in an untracked `.env` beside the Compose file instead; Compose reads
+it automatically.
+
+The Hub then answers on `https://127.0.0.1:8787`, and `root add` must be given
+the container path (`/media/library`), not the host path. A published port puts
+Docker's NAT in front of the read guard described under
+[security boundaries](#security-boundaries), so read
+[the deployment notes](docs/v0.14-deployment.md#docker-compose) before widening
+that binding. Note also that a Linux container sees no `/dev/dri`, so Intel QSV
+and VAAPI are unavailable inside it; NVENC needs `--gpus all`, and everything
+else falls back to software x264.
+
 ## Quick start
 
 ```bash
@@ -462,10 +483,25 @@ expect `--tray` to refuse — there is no notification area for a Linux binary, 
 it says so rather than starting a process you cannot quit. Stop it with `Ctrl-C`
 or run it under `systemd` inside the distro.
 
-Then check throughput, which is the entire point of a derive Worker. Reading
-footage through `/mnt/c` or a Windows-mounted network drive crosses WSL's
-filesystem bridge and is **substantially slower than a native read**. If the media
-is on a NAS, mount the share *inside* WSL:
+Reading footage through `/mnt/c` crosses WSL's 9p filesystem bridge, which costs
+roughly 4–8× against a native read. Measured on one WSL2 box with `O_DIRECT`, so
+the page cache is out of the way:
+
+| | native ext4 | `/mnt/c` (9p) |
+| --- | --- | --- |
+| sequential read, 1 MiB blocks | 3.6 GB/s | 422 MB/s |
+| sequential read, 64 KiB blocks | 1.1 GB/s | 268 MB/s |
+| random 64 KiB read | 1.04 ms | 2.51 ms |
+
+Read the absolute column, not the ratio: 268–422 MB/s still exceeds any
+mechanical disk and saturates a 1 GbE NAS link several times over, so for footage
+on spinning disks or a NAS the bridge is not the bottleneck — the source is. It
+only becomes the limit when the media sits on fast local NVMe, where the native
+Windows binary skips the bridge and is the better choice.
+
+If the media is on a NAS, mount the share *inside* WSL rather than through a
+Windows drive letter — one bridge crossing fewer, and the mount options become
+yours:
 
 ```bash
 sudo mount -t cifs //nas/footage /mnt/footage -o ro,username=<user>,vers=3.0
@@ -475,9 +511,17 @@ timingdex worker enroll --hub https://nas:8787 --fingerprint <fingerprint> \
 ```
 
 Mount read-only: Timingdex never writes beside source media, and `ro` makes that a
-property of the mount rather than a promise. If the footage sits on a
-Windows-local disk, the native Windows binary skips the bridge and is the better
-choice.
+property of the mount rather than a promise.
+
+One WSL-specific detection gap to know about: `/dev/dri` does not exist under
+WSL2, so Intel QSV and VAAPI are genuinely unavailable there and `doctor`
+correctly reports software. An NVIDIA GPU does work, but only if FFmpeg was built
+with NVENC — a Homebrew FFmpeg typically is not, and then `-hwaccels` lists
+nothing at all. Check before assuming the GPU is being used:
+
+```bash
+ffmpeg -hide_banner -encoders | grep nvenc
+```
 
 ### Provider calls from a Worker
 

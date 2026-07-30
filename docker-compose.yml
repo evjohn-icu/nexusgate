@@ -5,11 +5,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: timingdex:v0.14
+    image: timingdex:v0.18
     command: ["serve"]
     environment:
       TIMINGDEX_DATA_DIR: /var/lib/timingdex
       TIMINGDEX_LISTEN_ADDRESS: ${TIMINGDEX_LISTEN_ADDRESS:-0.0.0.0:8787}
+      # Publishing a port puts Docker's NAT between the client and the Hub, and
+      # the peer address the read guard sees becomes the bridge gateway -- an
+      # RFC1918 address it trusts. Widening the binding below therefore hands
+      # anonymous read access to anything that reaches the port unless this is
+      # also set to a range no peer can match, which forces reads to carry a
+      # token. Empty keeps the built-in loopback/LAN/CGNAT allowlist.
+      TIMINGDEX_TRUSTED_READ_NETWORKS: ${TIMINGDEX_TRUSTED_READ_NETWORKS:-}
       # `auto` generates a self-signed Hub certificate in the data volume.
       # Use `files` with the two paths below for a managed certificate, or `off`
       # only behind an HTTPS reverse proxy.
@@ -23,16 +30,20 @@ services:
       ARK_API_KEY: ${ARK_API_KEY:-}
       ARK_AGENT_PLAN_API_KEY: ${ARK_AGENT_PLAN_API_KEY:-}
       ARK_CODING_PLAN_API_KEY: ${ARK_CODING_PLAN_API_KEY:-}
-    # Keep the Hub inside the Compose network by default. Publish it only
-    # through an explicitly configured HTTPS reverse proxy.
-    expose:
-      - "8787"
+    # Loopback only by default, so the browser UI works on the Docker host
+    # without the NAT problem described above becoming an exposure. Override
+    # TIMINGDEX_BIND to reach the Hub from the rest of the LAN.
+    ports:
+      - "${TIMINGDEX_BIND:-127.0.0.1}:8787:8787"
     volumes:
       - timingdex-data:/var/lib/timingdex
       # The path must be the same path recorded by root add/scan. It is never
-      # a writable destination for Timingdex artifacts.
+      # a writable destination for Timingdex artifacts. Required rather than
+      # defaulted: a missing default would be created as an empty directory and
+      # scan cleanly against nothing, which reads as a broken library rather
+      # than as unset configuration.
       - type: bind
-        source: ${TIMINGDEX_MEDIA_ROOT:-./media}
+        source: ${TIMINGDEX_MEDIA_ROOT:?set TIMINGDEX_MEDIA_ROOT to the footage directory to bind read-only}
         target: /media/library
         read_only: true
       - type: bind
@@ -42,7 +53,12 @@ services:
     restart: unless-stopped
 
   worker:
-    image: timingdex:v0.14
+    image: timingdex:v0.18
+    # Not started by `docker compose up`: worker.json only exists after
+    # `worker enroll` has run against a live Hub, and without it the container
+    # exits immediately and restarts forever. Enroll first, then
+    # `docker compose --profile worker up -d worker`.
+    profiles: ["worker"]
     command: ["worker", "run", "--config", "/var/lib/timingdex-worker/worker.json"]
     environment:
       # This is deliberately not the Hub data volume. A worker is an executor
@@ -51,7 +67,7 @@ services:
     volumes:
       - timingdex-worker-cache:/var/lib/timingdex-worker
       - type: bind
-        source: ${TIMINGDEX_MEDIA_ROOT:-./media}
+        source: ${TIMINGDEX_MEDIA_ROOT:?set TIMINGDEX_MEDIA_ROOT to the footage directory to bind read-only}
         target: /media/library
         read_only: true
     tmpfs:

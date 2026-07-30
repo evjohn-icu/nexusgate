@@ -1470,6 +1470,18 @@ func TestTrustedReadNetworksConfigReplacesDefaults(t *testing.T) {
 			t.Fatalf("%s: status=%d want=%d body=%s", address, response.Code, want, response.Body.String())
 		}
 	}
+
+	// Narrowing the allowlist to a range nothing arrives from is the documented
+	// way to make reads token-only behind a proxy or Docker's published-port
+	// NAT, where every peer address is the gateway's. That recipe is only worth
+	// recommending if a token still gets through from an untrusted address.
+	authorized := httptest.NewRecorder()
+	request := hubAdminRequest(service, http.MethodGet, "/api/v1/assets", nil)
+	request.RemoteAddr = "127.0.0.1:1"
+	handler.ServeHTTP(authorized, request)
+	if authorized.Code != http.StatusOK {
+		t.Fatalf("a token must still read from outside a narrowed allowlist: status=%d body=%s", authorized.Code, authorized.Body.String())
+	}
 }
 
 func TestHandlerSuppressesMissingFaviconNoise(t *testing.T) {
