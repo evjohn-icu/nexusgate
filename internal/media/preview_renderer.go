@@ -13,6 +13,28 @@ const (
 	PreviewErrorRendererUnavailable = "renderer_unavailable"
 )
 
+// Both preview filters cap one dimension and round the other to an even number
+// with `-2`, and both must stay that way: libx264 rejects an odd dimension
+// under yuv420p, so an odd result is not a cosmetic difference but a derive
+// that fails outright.
+//
+// Do not reintroduce `force_original_aspect_ratio=decrease` here. It recomputes
+// the dimension `-2` was asked to round, which silently reproduces the odd
+// value — that is what made every 16:9 proxy fail to encode, 1920x1080 and
+// 3840x2160 included, while the 4:3 test fixture happened to survive it.
+//
+// `min` keeps a source smaller than the cap from being upscaled into a preview
+// larger than its original. Its comma is escaped because a bare comma separates
+// filters in an FFmpeg filter chain.
+const (
+	// proxyScaleFilter bounds the proxy by height: 720 here is the same 720 a
+	// Worker advertises as MaxProxyHeight, not a width.
+	proxyScaleFilter = `scale=-2:min(720\,ih)`
+	// thumbnailScaleFilter bounds the thumbnail by width instead, because the
+	// library grid lays thumbnails out by width.
+	thumbnailScaleFilter = `scale=min(720\,iw):-2`
+)
+
 // PreviewRenderError reports a source that cannot safely be rendered by the
 // current preview renderer. Recoverable errors are expected for sources that
 // need an operator-provided LUT or a future RAW renderer.
@@ -148,7 +170,7 @@ func (r *PreviewRenderer) RenderThumbnail(ctx context.Context, src, dst string, 
 	if err != nil {
 		return err
 	}
-	filter, err := r.VideoFilter(resolved, "scale=720:-2:force_original_aspect_ratio=decrease")
+	filter, err := r.VideoFilter(resolved, thumbnailScaleFilter)
 	if err != nil {
 		return err
 	}
@@ -169,7 +191,7 @@ func (r *PreviewRenderer) RenderProxy(ctx context.Context, src, dst string, hard
 	if err != nil {
 		return err
 	}
-	baseFilter := "scale=720:-2:force_original_aspect_ratio=decrease"
+	baseFilter := proxyScaleFilter
 	filter, err := r.VideoFilter(resolved, baseFilter+hardware.ProxyFilter)
 	if err != nil {
 		return err
