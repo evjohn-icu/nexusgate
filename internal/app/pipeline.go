@@ -196,6 +196,7 @@ func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 			// it. The new holder's attempt is the one of record now; this
 			// result is discarded rather than overwriting it.
 			slog.Warn("job completed locally but lease was already reclaimed; discarding stale result", "job", job.ID, "job_type", job.Type)
+			continue
 		}
 		// The pause is what turns a multi-hour scan from continuous disk load
 		// into duty-cycled load; a rate cap alone still reads flat-out forever.

@@ -1,3 +1,7 @@
+// Package externalalign implements a Provider that delegates word-level
+// alignment to an external command configured by the operator.  The command
+// is executed via os/exec and runs with the same OS identity (user, groups)
+// as the timingdex process itself.
 package externalalign
 
 import (

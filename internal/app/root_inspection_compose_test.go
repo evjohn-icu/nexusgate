@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -27,7 +28,7 @@ func newComposeTestService(t *testing.T) *Service {
 func TestInspectRootPathOmitsComposeVolumeWhenNotContainerised(t *testing.T) {
 	service := newComposeTestService(t)
 	service.hostOverride = &mount.Host{OS: "linux", UID: 1000, GID: 1000, Container: false}
-	inspection := service.InspectRootPath("//192.0.2.10/Video", "")
+	inspection := service.InspectRootPath(context.Background(), "//192.0.2.10/Video", "")
 	if !inspection.IsShare {
 		t.Fatal("//192.0.2.10/Video should parse as a share")
 	}
@@ -46,7 +47,7 @@ func TestInspectRootPathAddsComposeVolumeWhenContainerised(t *testing.T) {
 	service := newComposeTestService(t)
 	service.hostOverride = &mount.Host{OS: "linux", UID: 1000, GID: 1000, Container: true}
 
-	nfs := service.InspectRootPath("192.0.2.10:/volume1/Video", "")
+	nfs := service.InspectRootPath(context.Background(), "192.0.2.10:/volume1/Video", "")
 	if !nfs.IsShare {
 		t.Fatal("192.0.2.10:/volume1/Video should parse as a share")
 	}
@@ -60,7 +61,7 @@ func TestInspectRootPathAddsComposeVolumeWhenContainerised(t *testing.T) {
 		t.Errorf("NFS compose YAML missing the nfs driver type, got:\n%s", nfs.ComposeVolume.YAML)
 	}
 
-	smb := service.InspectRootPath("//192.0.2.10/Video", "")
+	smb := service.InspectRootPath(context.Background(), "//192.0.2.10/Video", "")
 	if !smb.IsShare {
 		t.Fatal("//192.0.2.10/Video should parse as a share")
 	}
@@ -85,7 +86,7 @@ func TestInspectRootPathComposeVolumeNeverEchoesAPastedPassword(t *testing.T) {
 	service := newComposeTestService(t)
 	service.hostOverride = &mount.Host{OS: "linux", UID: 1000, GID: 1000, Container: true}
 
-	inspection := service.InspectRootPath("smb://ev:hunter2@192.0.2.10/Video", "")
+	inspection := service.InspectRootPath(context.Background(), "smb://ev:hunter2@192.0.2.10/Video", "")
 	if inspection.ComposeVolume == nil {
 		t.Fatal("a containerised host must get a compose-volume suggestion for this SMB share")
 	}

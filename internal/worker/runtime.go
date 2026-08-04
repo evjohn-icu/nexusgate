@@ -240,6 +240,9 @@ func validateArtifact(artifact ArtifactUpload) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("derived artifact is not a regular file: %s", artifact.Path)
 	}
+	if info.Size() <= 0 {
+		return fmt.Errorf("derived artifact is empty or zero-byte: %s", artifact.Path)
+	}
 	return nil
 }
 

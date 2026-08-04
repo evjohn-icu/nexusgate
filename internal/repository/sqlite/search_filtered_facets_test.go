@@ -53,6 +53,9 @@ func seedSearchFacetFixtures(t *testing.T, repo *Repository, n int, token string
 			t.Fatal(err)
 		}
 		analysis := domain.StructuredAnalysis{Summary: token + " common phrase " + id}
+		if err := repo.StageModelRun(ctx, runID, "{}", "{}"); err != nil {
+			t.Fatal(err)
+		}
 		if err := repo.CommitAnalysis(ctx, id, runID, "asset-analysis/v1", analysis); err != nil {
 			t.Fatal(err)
 		}

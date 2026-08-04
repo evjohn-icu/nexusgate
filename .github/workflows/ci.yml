@@ -52,6 +52,11 @@ jobs:
       - name: install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
+      # Any doc that cites a Go source line must still point to the right
+      # place; a reference silently drifting 175 lines is wrong docs.
+      - name: check doc references
+        run: bash scripts/check-doc-refs.sh
+
       - name: test
         run: go test ./...
 

@@ -129,6 +129,28 @@ func TestLibraryPageRendersSemanticFacetControls(t *testing.T) {
 	if strings.Contains(page, `'assets?limit=300'+filterQuery()).then(r=>r.ok?r.json():[])`) {
 		t.Fatalf("load() still swallows a non-ok response into the empty-library state")
 	}
+	// Duration inputs must accept fractional seconds (step="any") so an
+	// editor can type 0.5 for 500 ms. step="1" (the old default) and the
+	// old Number.isInteger guard both silently dropped fractional input.
+	if !strings.Contains(page, `step="any"`) {
+		t.Fatalf("duration inputs must use step=\"any\" to accept fractional seconds")
+	}
+	if strings.Contains(page, `step="1"`) {
+		t.Fatalf("duration inputs must not use step=\"1\" — rejects decimal seconds in browser UI")
+	}
+	// filterQuery() must accept finite floats, not just integers:
+	// Number.isInteger(0.5) is false, which silently dropped the input.
+	if !strings.Contains(page, `!Number.isFinite(sec)`) {
+		t.Fatalf("filterQuery() must use !Number.isFinite(sec) to accept float seconds")
+	}
+	if strings.Contains(page, `Number.isInteger(sec)`) {
+		t.Fatalf("filterQuery() must not use Number.isInteger(sec) — it rejects fractional seconds")
+	}
+	// The ms conversion must round to avoid float-artefact strings like
+	// \"333.3333333333333\" from 0.333 * 1000.
+	if !strings.Contains(page, `Math.round(sec*1000)`) {
+		t.Fatalf("filterQuery() must use Math.round(sec*1000) for correct millisecond conversion")
+	}
 }
 
 // TestLibraryPageSearchNarrowsByFacetsAndLoadsHitsByID pins task O — the

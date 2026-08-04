@@ -174,11 +174,15 @@ single trusted machine:
 Read these before filing — several look like bugs and are not. They are the
 design, and changing them is a design discussion, not a security fix.
 
-- **Provider keys live only in `secretstore`.** Encrypted, Hub-only,
-  `provider-secrets/` at `0700` with `0600` files. Never in SQLite, never in an
-  API response, never in browser storage, never in Worker config, never in a log
-  line, an error string, or a `String()`/`MarshalJSON` rendering. If you find a
-  path that violates this, that *is* the report.
+- **Provider keys are stored in `secretstore` whenever possible.** Provider
+  channel keys are encrypted in `provider-secrets/` at `0700` with `0600` files
+  and never appear in SQLite, API responses, browser storage, Worker config,
+  logs, error strings or serialisation output. **Legacy `providers.*` blocks in
+  `config.json` hold keys in plaintext** alongside other configuration; these
+  keys are read directly into in-memory `Credential` structs at issue time and
+  are never persisted by the application — but they exist on disk in `config.json`
+  until the operator migrates them to provider channels. If you find a path that
+  leaks a key from either source, that *is* the report.
 - **`provider-secrets/store.key` is deliberately not derived from the
   administrator token.** It is its own key file. Deriving it from the token made
   token rotation brick every CLI command, so the derivation was removed on

@@ -95,5 +95,25 @@ func IsCJKToken(value string) bool {
 	return true
 }
 
-func isCJK(r rune) bool  { return r >= '\u3400' && r <= '\u9fff' }
+// isCJK returns true for runes the SQLite unicode61 tokeniser treats as a
+// single character rather than splitting into a word. The ranges include:
+//
+//	CJK Unified Ideographs          \u4E00-\u9FFF
+//	CJK Unified Ideographs Ext-A    \u3400-\u4DBF
+//	Hiragana                        \u3040-\u309F
+//	Katakana                        \u30A0-\u30FF
+//	Hangul Syllables                \uAC00-\uD7AF
+//	CJK Compatibility Ideographs    \uF900-\uFAFF
+//
+// Supplementary-plane characters (\u20000+, including Ext-B through Ext-I)
+// are deliberately excluded because SQLite's unicode61 tokeniser does not
+// handle them; including them here would create bigrams that the tokeniser
+// cannot match.
+func isCJK(r rune) bool {
+	return (r >= '\u3040' && r <= '\u309F') || // Hiragana
+		(r >= '\u30A0' && r <= '\u30FF') || // Katakana
+		(r >= '\u3400' && r <= '\u9FFF') || // CJK Unified (original + Ext-A)
+		(r >= '\uAC00' && r <= '\uD7AF') || // Hangul Syllables
+		(r >= '\uF900' && r <= '\uFAFF') // CJK Compatibility Ideographs
+}
 func isWord(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' }

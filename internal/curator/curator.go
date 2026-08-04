@@ -92,6 +92,15 @@ func semanticKey(v string) string {
 	if mapped, ok := replacements[n]; ok {
 		return mapped
 	}
+	// Strip a trailing "s" to collapse regular English plurals (cars→car).
+	// Do not strip when the word ends in "ss" (class, glass) or when it is
+	// short enough that the trailing 's' is unlikely to be a plural marker
+	// (lens, bus, news). This heuristic errs on the side of keeping the 's'
+	// rather than over-stemming, because semanticKey is a grouping hint and
+	// two variants of the same word will still be surfaced to the curator.
+	if strings.HasSuffix(n, "ss") || len(n) <= 4 {
+		return n
+	}
 	return strings.TrimSuffix(n, "s")
 }
 

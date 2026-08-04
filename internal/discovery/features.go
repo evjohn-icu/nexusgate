@@ -41,8 +41,9 @@ func VectorForText(text string) []float64 {
 	for _, token := range semanticTokens(text) {
 		h := fnv.New32a()
 		_, _ = h.Write([]byte(token))
-		index := int(h.Sum32() % VectorSize)
-		if h.Sum32()&1 == 0 {
+		sum := h.Sum32()
+		index := int(sum % VectorSize)
+		if sum&1 == 0 {
 			vector[index] += 1
 		} else {
 			vector[index] -= 1

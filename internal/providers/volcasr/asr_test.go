@@ -17,6 +17,23 @@ import (
 	"nhooyr.io/websocket"
 )
 
+func TestDecodeFrameRejectsOversizedPayload(t *testing.T) {
+	// A frame whose header declares a payload length that exceeds the actual
+	// remaining bytes. This exercises the len(frame) < offset+size guard.
+	frame := make([]byte, 12)
+	frame[0] = 0x11
+	frame[1] = 0x10                             // messageType 1, flags 0
+	frame[2] = 0x01                             // gzip compression
+	binary.BigEndian.PutUint32(frame[4:8], 100) // claim 100-byte payload
+	_, _, err := decodeFrame(frame)
+	if err == nil {
+		t.Fatal("expected error for oversized declared payload")
+	}
+	if !strings.Contains(err.Error(), "invalid payload length") {
+		t.Fatalf("expected 'invalid payload length', got: %v", err)
+	}
+}
+
 func TestBuildRequestFrameRoundTrip(t *testing.T) {
 	frame := buildFrame(0x1, 0x0, 0x1, gzipBytes([]byte(`{"request":{"model_name":"doubao-seed-asr-2.0"}}`)))
 	if got, want := frame[0], byte(0x11); got != want {
@@ -65,6 +82,59 @@ func TestDecodeServerError(t *testing.T) {
 	text, providerErr := transcriptText(raw)
 	if text != "" || providerErr != "empty audio" {
 		t.Fatalf("text=%q providerErr=%q", text, providerErr)
+	}
+}
+
+// The error-frame path in Transcribe reaches jobs.last_error_message, the same
+// way common.ReadError does. A long server response must be truncated so a
+// relay that echoes the request cannot park a full Provider key in SQLite.
+func TestTranscribeTruncatesLongErrorFrame(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg is required to decode the fixture to PCM")
+	}
+	dir := t.TempDir()
+	audio := filepath.Join(dir, "silence.wav")
+	if output, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono", "-t", "0.3", audio).CombinedOutput(); err != nil {
+		t.Skipf("test fixture cannot be encoded by local ffmpeg: %v: %s", err, output)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "done")
+		// Drain the config frame, then send a long error frame.
+		if _, _, readErr := conn.Read(context.Background()); readErr != nil {
+			return
+		}
+		longPayload := strings.Repeat("x", 4096)
+		// type 0xF (error), no flags, no compression.
+		frame := make([]byte, 8+len(longPayload))
+		frame[0] = 0x11
+		frame[1] = 0xF << 4
+		binary.BigEndian.PutUint32(frame[4:8], uint32(len(longPayload)))
+		copy(frame[8:], longPayload)
+		conn.Write(context.Background(), websocket.MessageBinary, frame)
+	}))
+	defer server.Close()
+
+	asr := &ASR{URL: "ws" + strings.TrimPrefix(server.URL, "http"), APIKey: "test-key", TimeoutSeconds: 30}
+	_, err := asr.Transcribe(context.Background(), common.TranscribeRequest{AudioPath: audio, Language: "zh"})
+	if err == nil {
+		t.Fatal("expected an error from the error frame")
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, "Volcengine ASR error") {
+		t.Fatalf("error message should mention Volcengine ASR, got: %s", errStr)
+	}
+	// The payload should be truncated.
+	if strings.Contains(errStr, strings.Repeat("x", 4096)) {
+		t.Fatal("error payload must be truncated, but full 4096-byte payload found")
+	}
+	if !strings.Contains(errStr, "…(truncated)") {
+		t.Fatal("truncated payload must be marked")
 	}
 }
 

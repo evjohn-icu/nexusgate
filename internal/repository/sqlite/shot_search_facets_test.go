@@ -43,6 +43,9 @@ func seedShotFacetFixtures(t *testing.T, repo *Repository) {
 			AudioType: fx.audioType, Quality: fx.quality, Summary: "shot facet fixture " + fx.assetID,
 		}
 		shots := []domain.AssetShot{{AssetID: fx.assetID, Ordinal: 0, StartMS: fx.startMS, EndMS: fx.endMS, Description: fx.description}}
+		if err := repo.StageModelRun(ctx, runID, "{}", "{}"); err != nil {
+			t.Fatal(err)
+		}
 		if err := repo.CommitAnalysisWithShots(ctx, fx.assetID, runID, "asset-analysis/v1", analysis, shots); err != nil {
 			t.Fatal(err)
 		}

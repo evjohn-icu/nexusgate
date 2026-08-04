@@ -164,13 +164,20 @@ metadata in `internal/providerchannels` + a `httptest` fixture test.
 
 These invariants are the point of several packages — preserve them when editing:
 
-- **Provider keys** live only in `secretstore` (encrypted, Hub-only, `provider-secrets/`
-  0700, files 0600). Never in SQLite, API responses, browser storage, Worker config, logs,
-  error strings or `String()`/`MarshalJSON` output. The data-encryption key is its own
+- **Provider keys** live in `secretstore` (encrypted, Hub-only, `provider-secrets/`
+  0700, files 0600) when configured through provider channels. **Legacy `providers.*`
+  blocks in `config.json` hold keys in plaintext** on disk and should be migrated to
+  provider channels. Keys must never appear in SQLite, API responses, browser storage,
+  Worker config, logs, error strings or `String()`/`MarshalJSON` output.
+  The data-encryption key is its own
   `provider-secrets/store.key` file, deliberately *not* derived from the admin token —
   deriving it made token rotation brick every CLI command. `Open` still takes the admin
   token solely to migrate a pre-`store.key` store on first run (backing the original up to
   `.pre-key-migration`); don't reintroduce it as key material.
+  `Store.Rekey()` rotates the data-encryption key in-place: new key, re-encrypt all
+  secrets with fresh nonces, atomically persist both files, backup old key to
+  `store.key.pre-rekey`. It holds the write lock for its entire duration and rolls
+  back the ciphertext on key-write failure.
 - **Hub admin token** (`hubauth`) is generated at first start, compared with
   `crypto/subtle`, and enforced by `s.requireHubAdmin(...)` on every mutating/administrative
   route. New write endpoints default to wrapped, not open.

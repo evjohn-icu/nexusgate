@@ -13,7 +13,7 @@ import (
 
 type Endpoint struct {
 	BaseURL        string            `json:"base_url"`
-	APIKey         string            `json:"api_key,omitempty"`
+	APIKey         string            `json:"-"`
 	AuthHeader     string            `json:"auth_header,omitempty"`
 	AuthScheme     string            `json:"auth_scheme,omitempty"`
 	ExtraHeaders   map[string]string `json:"extra_headers,omitempty"`

@@ -8,12 +8,19 @@ type AssetCardFilter struct {
 	Limit        int
 	Offset       int
 	CapturedFrom *time.Time
-	CapturedTo   *time.Time
-	RegionLabel  string
-	CameraModel  string
-	SessionID    string
-	Status       ProcessingStatus
-	Facets       FacetFilter
+	// CapturedTo is the exclusive upper bound: the filter selects rows where
+	// captured_at >= CapturedFrom AND captured_at < CapturedTo, i.e. the
+	// half-open interval [CapturedFrom, CapturedTo). This differs from the
+	// FacetFilter duration bounds (MinDurationMS/MaxDurationMS), which are
+	// inclusive (<=). The HTTP API compensates by advancing a user-supplied
+	// date_to by one day (AddDate(0,0,1)) so the endpoint's behaviour is
+	// "up to and including the given date" from the caller's perspective.
+	CapturedTo  *time.Time
+	RegionLabel string
+	CameraModel string
+	SessionID   string
+	Status      ProcessingStatus
+	Facets      FacetFilter
 	// IDs restricts the result to this exact set of asset ids, e.g. the hits
 	// from a facet-aware /api/v1/search. Empty means unset — it does not mean
 	// "match nothing" — so a caller must not send an empty-but-present ids

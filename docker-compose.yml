@@ -69,9 +69,15 @@ services:
         target: /run/timingdex/tls
         read_only: true
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8787/api/v1/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     # --- Optional GPU passthrough for the derive stage -----------------------
-    # Uncomment one block below to hand the Hub a GPU, and switch `image`/
-    # `build.target` above to the `gpu` Dockerfile target -- the plain image
+    # Uncomment one block below to hand the Hub a GPU, and add `target: gpu`
+    # under `build:` above to use the GPU Dockerfile target -- the plain image
     # has no VAAPI userspace installed, so hardware acceleration silently
     # falls back to software either way without it.
     #
@@ -141,10 +147,10 @@ services:
       - hub
     # --- Optional GPU passthrough for the derive stage -----------------------
     # A Worker only ever runs FFmpeg derive jobs, so this is where hardware
-    # acceleration usually matters most. Uncomment one block below and switch
-    # `image`/`build.target` above to the `gpu` Dockerfile target -- see the
-    # matching comment on the `hub` service for why the CPU-only image can't
-    # just be handed a device.
+    # acceleration usually matters most. Uncomment one block below and add
+    # `target: gpu` under `build:` above to use the GPU Dockerfile target --
+    # see the matching comment on the `hub` service for why the CPU-only image
+    # can't just be handed a device.
     #
     # Intel / AMD, via VAAPI on the DRM render node (/dev/dri/renderD128):
     # the container runs as a fixed unprivileged uid (10001), so `devices:`

@@ -26,6 +26,11 @@ func assetBrowseWhere(filter domain.AssetCardFilter) (string, []any) {
 		where = append(where, `COALESCE(cm.captured_at,m.captured_at)>=?`)
 		args = append(args, formatTime(filter.CapturedFrom.UTC()))
 	}
+	// CapturedTo is the exclusive upper bound (<) — the interval is
+	// [CapturedFrom, CapturedTo). This differs from FacetFilter
+	// MaxDurationMS which uses <= (inclusive). The HTTP API compensates
+	// by advancing date_to by one day so callers perceive "up to and
+	// including" semantics.
 	if filter.CapturedTo != nil {
 		where = append(where, `COALESCE(cm.captured_at,m.captured_at)<?`)
 		args = append(args, formatTime(filter.CapturedTo.UTC()))
@@ -172,7 +177,7 @@ LEFT JOIN asset_analysis an ON an.asset_id=a.id
 LEFT JOIN transcripts t ON t.id=(SELECT id FROM transcripts t2 WHERE t2.asset_id=a.id AND t2.status='succeeded' ORDER BY t2.created_at DESC LIMIT 1)`
 	where, args := assetBrowseWhere(filter)
 	query += where
-	query += ` ORDER BY COALESCE(cm.captured_at,m.captured_at,a.first_seen_at) DESC LIMIT ? OFFSET ?`
+	query += ` ORDER BY COALESCE(cm.captured_at,m.captured_at,a.first_seen_at) DESC, a.id DESC LIMIT ? OFFSET ?`
 	args = append(args, filter.Limit, filter.Offset)
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {

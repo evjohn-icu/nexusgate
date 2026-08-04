@@ -45,7 +45,12 @@ contains `inspect_readiness`, `search_shots`, `create_draft_plan`,
 `inspect_plan`, and `revise_draft_plan`. `allowed_write_routes` lists the exact
 routes that accept the agent token (the two `POST /api/v1/repurpose/plans...`
 routes above). `denied_actions` must include `approve_plan`, `run_pipeline`,
-`read_provider_keys`, and `access_original_media_paths`. The response also
+`read_provider_keys`, `access_original_media_paths`, and `export_timeline`.
+The last one covers `GET /api/v1/repurpose/plans/{id}/export.edl` and
+`.fcpxml`: both require the Hub administrator token and reject the agent
+token, because an FCPXML names the absolute path of every original file and
+an EDL is the artifact an editor cuts with. Do not attempt either; hand the
+plan id to the operator instead. The response also
 carries an `auth` object describing the header format above; treat it as
 documentation, not as something to branch on.
 
@@ -61,8 +66,9 @@ GET /api/v1/discover/rare-shots?limit=20
 ```
 
 Shot results contain an `id` (the shot ID), `asset_id`, `start_ms`, `end_ms`,
-`score`, plus description/tags/reasons when available. Never infer a source
-file path from these IDs.
+`score`, `description`, `tags`, and the `lexical_score`/`semantic_score` when
+available. Rare-shot results additionally carry a `rarity_score` and a `reason`.
+Never infer a source file path from these IDs.
 
 ## Plan lifecycle
 

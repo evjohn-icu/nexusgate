@@ -1,6 +1,8 @@
 package worker
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -45,6 +47,29 @@ func TestMergeDetectedCapabilitiesPreservesOperatorDeclaredFields(t *testing.T) 
 	}
 	if merged.MaxParallelProxyJobs != declared.MaxParallelProxyJobs || merged.MaxProxyHeight != declared.MaxProxyHeight {
 		t.Fatalf("parallelism limits are operator-declared; they must survive the merge unchanged, got %+v", merged)
+	}
+}
+
+// validateArtifact must reject a zero-byte file the same way the Hub does —
+// before the upload wastes a network round-trip. A derive that leaves an
+// empty artifact (FFmpeg crash, disk full, etc.) should never reach
+// UploadArtifact.
+func TestValidateArtifactRejectsZeroByteFile(t *testing.T) {
+	tmp := t.TempDir()
+	emptyPath := filepath.Join(tmp, "empty.jpg")
+	if err := os.WriteFile(emptyPath, []byte{}, 0o600); err != nil {
+		t.Fatalf("write empty file: %v", err)
+	}
+	if err := validateArtifact(ArtifactUpload{Type: "thumbnail", ProfileHash: "thumb-v1", Path: emptyPath}); err == nil {
+		t.Fatalf("validateArtifact must reject a zero-byte artifact")
+	}
+
+	okPath := filepath.Join(tmp, "ok.jpg")
+	if err := os.WriteFile(okPath, []byte("not empty"), 0o600); err != nil {
+		t.Fatalf("write non-empty file: %v", err)
+	}
+	if err := validateArtifact(ArtifactUpload{Type: "thumbnail", ProfileHash: "thumb-v1", Path: okPath}); err != nil {
+		t.Fatalf("validateArtifact must accept a non-empty regular file: %v", err)
 	}
 }
 

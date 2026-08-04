@@ -133,6 +133,37 @@ func TestGenerateProxyRejectsRAWByPathBeforeFFmpeg(t *testing.T) {
 	}
 }
 
+// escapeFilterValue must emit forward slashes regardless of the platform
+// path separator, because FFmpeg's filter graph syntax accepts '/' on all
+// platforms. On Windows filepath.Clean would turn '/' into '\', and the
+// replacer would escape each backslash, producing '\\' in the LUT path —
+// which the lut3d filter may or may not handle depending on the FFmpeg build.
+//
+// filepath.ToSlash replaces the OS-specific separator with '/'; on Unix that
+// is a no-op (the separator is already '/'). The Windows-style path below is
+// skipped on Unix because backslash is not a path separator there and
+// filepath.ToSlash cannot convert it.
+func TestEscapeFilterValueUsesForwardSlashes(t *testing.T) {
+	tests := []struct {
+		input string
+	}{
+		{`/home/user/apple-log.cube`},
+		{`../luts/apple-log.cube`},
+	}
+	if runtime.GOOS == "windows" {
+		tests = append(tests, struct{ input string }{`C:\Users\user\apple-log.cube`})
+	}
+	for _, tt := range tests {
+		got := escapeFilterValue(tt.input)
+		if strings.Contains(got, "\\") {
+			t.Fatalf("escapeFilterValue(%q) = %q contains backslash", tt.input, got)
+		}
+		if !strings.Contains(got, "apple-log.cube") {
+			t.Fatalf("escapeFilterValue(%q) = %q missing expected filename", tt.input, got)
+		}
+	}
+}
+
 func TestGenerateProxyPassesClassifiedHDRFilterToFFmpeg(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fixture uses portable POSIX helper scripts")

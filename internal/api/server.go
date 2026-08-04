@@ -63,6 +63,9 @@ func (s *Server) Run(ctx context.Context) error {
 		Addr:              s.address,
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       5 * time.Minute,
+		WriteTimeout:      5 * time.Minute,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	errCh := make(chan error, 1)
@@ -455,7 +458,16 @@ func (s *Server) enrollWorker(w http.ResponseWriter, r *http.Request) {
 		PairingToken string `json:"pairing_token"`
 		remote.WorkerRegistration
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || strings.TrimSpace(request.PairingToken) == "" {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&request); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "invalid worker enrollment", http.StatusBadRequest)
+		}
+		return
+	}
+	if strings.TrimSpace(request.PairingToken) == "" {
 		http.Error(w, "invalid worker enrollment", http.StatusBadRequest)
 		return
 	}
@@ -475,8 +487,13 @@ func (s *Server) workerHeartbeat(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Capabilities remote.WorkerCapabilities `json:"capabilities"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "invalid worker heartbeat", http.StatusBadRequest)
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&request); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "invalid worker heartbeat", http.StatusBadRequest)
+		}
 		return
 	}
 	if err := s.service.HeartbeatWorker(r.Context(), worker.ID, request.Capabilities); err != nil {
@@ -489,6 +506,17 @@ func (s *Server) workerHeartbeat(w http.ResponseWriter, r *http.Request) {
 func (s *Server) workerLease(w http.ResponseWriter, r *http.Request) {
 	worker, ok := s.authenticatedWorker(w, r)
 	if !ok {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	// Enforce the body size limit even though this endpoint does not use the body.
+	if _, err := io.Copy(io.Discard, r.Body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+		}
 		return
 	}
 	job, err := s.service.LeaseNextWorkerDerive(r.Context(), worker)
@@ -599,7 +627,30 @@ func (s *Server) workerCredential(w http.ResponseWriter, r *http.Request) {
 	}
 	// Deliberately do not log the lease or any response fields here: it carries
 	// an in-memory API key for the authenticated Worker.
-	writeJSON(w, http.StatusOK, lease)
+	//
+	// Credential.MarshalJSON redacts api_key to [redacted] as a safety net
+	// against accidental serialisation. This handler is the authorised delivery
+	// path for an explicitly trusted Worker that has cleared authentication and
+	// lease-ownership checks, so it serialises the real key. The local type
+	// alias credentialForDelivery bypasses MarshalJSON.
+	type credentialForDelivery credentials.Credential
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(struct {
+		JobID      string                `json:"job_id"`
+		WorkerID   string                `json:"worker_id"`
+		Provider   string                `json:"provider"`
+		Operation  credentials.Operation `json:"operation"`
+		ExpiresAt  string                `json:"expires_at"`
+		Credential credentialForDelivery `json:"credential"`
+	}{
+		JobID:      lease.JobID,
+		WorkerID:   lease.WorkerID,
+		Provider:   lease.Provider,
+		Operation:  lease.Operation,
+		ExpiresAt:  lease.ExpiresAt,
+		Credential: credentialForDelivery(lease.Credential),
+	})
 }
 
 func (s *Server) workerProviderProxy(w http.ResponseWriter, r *http.Request) {
@@ -808,7 +859,7 @@ func (s *Server) createRoot(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Path string `json:"path"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Path == "" {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request); err != nil || request.Path == "" {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -824,7 +875,7 @@ func (s *Server) createRoot(w http.ResponseWriter, r *http.Request) {
 			// tried to add the root.
 			writeJSON(w, http.StatusUnprocessableEntity, shareNotMountedResponse{
 				Error:      err.Error(),
-				Inspection: s.service.InspectRootPath(request.Path, ""),
+				Inspection: s.service.InspectRootPath(r.Context(), request.Path, ""),
 			})
 			return
 		}
@@ -866,7 +917,7 @@ func (s *Server) inspectRoot(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.service.InspectRootPath(request.Path, request.Mountpoint))
+	writeJSON(w, http.StatusOK, s.service.InspectRootPath(r.Context(), request.Path, request.Mountpoint))
 }
 
 func parseInt(value string, fallback int) int {
@@ -966,7 +1017,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func writeError(w http.ResponseWriter, err error) {
 	slog.Error("request failed", "error", err)
-	http.Error(w, err.Error(), http.StatusInternalServerError)
+	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
 func requestLogger(next http.Handler) http.Handler {
@@ -1697,7 +1748,7 @@ func (s *Server) reviewTagProposal(w http.ResponseWriter, r *http.Request) {
 		Action string `json:"action"`
 		Note   string `json:"note"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -1730,7 +1781,7 @@ func (s *Server) generateLibrarySummary(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) createRepurposePlan(w http.ResponseWriter, r *http.Request) {
 	var brief domain.RepurposeBrief
-	if err := json.NewDecoder(r.Body).Decode(&brief); err != nil || strings.TrimSpace(brief.Brief) == "" {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&brief); err != nil || strings.TrimSpace(brief.Brief) == "" {
 		http.Error(w, "brief is required", http.StatusBadRequest)
 		return
 	}
@@ -1769,7 +1820,7 @@ func (s *Server) reviseRepurposePlan(w http.ResponseWriter, r *http.Request) {
 		Sections   []domain.PlanSection `json:"sections"`
 		EditorNote string               `json:"editor_note"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}

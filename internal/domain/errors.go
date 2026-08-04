@@ -115,6 +115,27 @@ var ErrPlanRevisionNotDraft = errors.New("repurpose plan revision is not a draft
 // silently discarding the edit they made in between.
 var ErrPlanRevisionNotLatest = errors.New("only the latest repurpose plan revision can be approved")
 
+// ErrCommitRunNotValidated reports that CommitAnalysis or CommitAnalysisWithShots
+// was called with a run whose state is not 'validated'. Only a run that passed
+// validation (StageModelRun) can be committed to canonical tables; a run in
+// 'running', 'failed', or 'committed' state is refused, and the transaction
+// rolls back without writing to asset_analysis, asset_shots, or asset_tag_links.
+//
+// The guard lives inside commitAnalysisTx (the single code path both public
+// methods share) as a SELECT before any INSERT, so the check and the write are
+// inside the same transaction and cannot race. The existing UPDATE … WHERE
+// state='validated' clause on the model_runs row stays as a second layer: in
+// the unlikely event of a concurrent commit from another connection the UPDATE
+// would affect 0 rows, and the caller would see a commit with no model_runs
+// transition, which is also caught.
+//
+// It is wrapped with domain.Permanent at the enforcement site because a retry
+// with the same run ID would find the same state — the condition is structural,
+// not transient — but callers that want to distinguish "wrong state" from
+// "model output garbage" can still match this sentinel through Permanent's
+// Unwrap chain.
+var ErrCommitRunNotValidated = errors.New("commit requires a validated model run")
+
 // ErrPermanentFailure marks a failure that a retry cannot change. It replaces
 // the list of message substrings isRetryableJobError (internal/app/pipeline.go)
 // used to keep, and it exists because that list could not stay correct by

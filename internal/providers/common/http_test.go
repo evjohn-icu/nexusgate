@@ -1,6 +1,7 @@
 package common
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -51,6 +52,23 @@ func TestReadErrorPreservesMessageFormat(t *testing.T) {
 // no transport package. StatusCode is a field, so the method is the only thing
 // that probe can find; deleting it still compiles and silently sends every
 // provider failure back to substring matching on the message.
+// APIKey must be excluded from JSON serialisation to avoid leaking a provider
+// key through logs, debug output or configuration export. The field is populated
+// at runtime from secretstore, never from a JSON config block.
+func TestEndpointAPIKeyNotExposedInJSON(t *testing.T) {
+	ep := Endpoint{
+		BaseURL: "https://api.example.com",
+		APIKey:  "sk-secret-key-that-must-not-leak",
+	}
+	data, err := json.Marshal(ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "sk-secret") || strings.Contains(string(data), "api_key") {
+		t.Fatalf("APIKey must not appear in JSON output, got: %s", data)
+	}
+}
+
 func TestStatusErrorExposesStatusThroughAnInterface(t *testing.T) {
 	wrapped := fmt.Errorf("analyze: %w", &StatusError{StatusCode: http.StatusPaymentRequired, Body: "insufficient balance"})
 

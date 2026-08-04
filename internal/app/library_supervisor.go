@@ -30,8 +30,10 @@ import (
 // stack" and "the pipeline pass must stop when the Hub does" are properties of
 // the shape rather than of a lock somebody has to keep correct.
 type LibrarySupervisor struct {
-	service  *Service
-	enabled  bool
+	service *Service
+	enabled bool
+	// interval is set once in newLibrarySupervisor and never written
+	// afterwards; reads without holding s.mu are safe.
 	interval time.Duration
 
 	// ticks replaces the internal time.Ticker. It is nil in every real
@@ -313,6 +315,8 @@ func (s *LibrarySupervisor) Status() LibrarySupervisorStatus {
 	defer s.mu.Unlock()
 	status := s.status
 	if status.Running && !status.Scanning && status.LastPassAt != nil {
+		// s.interval is immutable after construction; reading it here
+		// is safe even though s.mu primarily guards s.status.
 		next := nextSupervisorPass(*status.LastPassAt, s.interval, time.Now())
 		status.NextPassAt = &next
 	}
@@ -323,13 +327,20 @@ func (s *LibrarySupervisor) Status() LibrarySupervisorStatus {
 // which are on the ticker's own phase, so advancing from the last pass by whole
 // intervals lands on the real instant even after a long pass has caused ticks to
 // be dropped.
+//
+// This function is only consulted for the /progress page display. The actual
+// ticker uses the kernel monotonic clock and is unaffected by wall-clock
+// adjustments. When the wall clock has stepped backwards (elapsed < 0),
+// lastPassAt is unreliable and computing a meaningful NextPassAt from it is
+// impossible; we return now so the UI shows "next pass is due" rather than a
+// misleading future timestamp derived from a stale lastPassAt.
 func nextSupervisorPass(lastPassAt time.Time, interval time.Duration, now time.Time) time.Time {
 	if interval <= 0 {
 		return now
 	}
 	elapsed := now.Sub(lastPassAt)
 	if elapsed < 0 {
-		elapsed = 0
+		return now
 	}
 	return lastPassAt.Add((elapsed/interval + 1) * interval)
 }

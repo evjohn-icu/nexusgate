@@ -137,6 +137,27 @@ func TestMergeWindowResultsPassesASingleWindowThrough(t *testing.T) {
 	}
 }
 
+// When two adjacent windows report the same observation with different
+// confidence values, the merge must keep the higher one — the same way
+// mergeObjects does. The wider time range is already kept; confidence was
+// the one field that was silently dropped.
+func TestMergeWindowResultsPreservesHighestConfidenceOnDedupe(t *testing.T) {
+	merged := MergeWindowResults([]WindowResult{
+		{StartMS: 0, EndMS: 300_000, Result: Result{Shots: []Shot{
+			{StartMS: 290_000, EndMS: 300_000, Confidence: 0.6, Description: "drone shot"},
+		}}},
+		{StartMS: 295_000, EndMS: 600_000, Result: Result{Shots: []Shot{
+			{StartMS: 0, EndMS: 12_000, Confidence: 0.9, Description: "drone shot"},
+		}}},
+	})
+	if len(merged.Shots) != 1 {
+		t.Fatalf("expected 1 deduplicated shot, got %d", len(merged.Shots))
+	}
+	if merged.Shots[0].Confidence != 0.9 {
+		t.Fatalf("confidence should be max of the two (0.9), got %v", merged.Shots[0].Confidence)
+	}
+}
+
 func TestMergeWindowResultsHandlesNoWindows(t *testing.T) {
 	if got := MergeWindowResults(nil); got.Summary != "" || len(got.Shots) != 0 {
 		t.Fatalf("empty input must produce an empty result, got %+v", got)

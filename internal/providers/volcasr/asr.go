@@ -116,7 +116,11 @@ func (a *ASR) Transcribe(ctx context.Context, req common.TranscribeRequest) (dom
 			return domain.Transcript{}, fmt.Errorf("decode Volcengine ASR frame: %w", err)
 		}
 		if responseType == 0xF {
-			return domain.Transcript{}, fmt.Errorf("Volcengine ASR error: %s", strings.TrimSpace(string(payload)))
+			payloadStr := strings.TrimSpace(string(payload))
+			if len(payloadStr) > 2048 {
+				payloadStr = payloadStr[:2048] + "…(truncated)"
+			}
+			return domain.Transcript{}, fmt.Errorf("Volcengine ASR error: %s", payloadStr)
 		}
 		if len(payload) == 0 {
 			continue
@@ -230,7 +234,7 @@ func decodeFrame(frame []byte) ([]byte, byte, error) {
 	}
 	size := int(binary.BigEndian.Uint32(frame[offset : offset+4]))
 	offset += 4
-	if size < 0 || len(frame) < offset+size {
+	if len(frame) < offset+size {
 		return nil, messageType, fmt.Errorf("invalid payload length %d", size)
 	}
 	payload := frame[offset : offset+size]

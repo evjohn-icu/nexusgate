@@ -560,6 +560,31 @@ See `docs/v0.21-unattended-and-export.md`,
   covers binary redistribution and not only source, so shipping none of them
   was the kind of omission a public repository gets noticed for.
 
+## Unreleased — 2026-08-04 全库审查与 OpenSpec 落地
+
+- CI 红灯修复：素材根检查对普通空目录不再误报「未挂载的挂载点」——该警告只对已注册的 library root 发出，全量 `go test ./...` 恢复全绿。
+- `model_runs` 边界测试：补充了模型输出写入失败、截断和重入场景的覆盖，
+  `CommitAnalysisWithShots` 在写入规范表之前增加硬守卫，拒绝越界数据。
+- Worker credential 脱敏修复：Worker 凭证路径的若干错误字符串已去除密钥片段，
+  与 Hub 侧脱敏边界对齐。
+- API 硬化：`writeError` 系列不再将内部错误原文写入响应体；上传与代理端点
+  增加 `MaxBytesReader` 限制；`http.Server` 增加读写超时，防止慢客户端占用。
+- 分页 tie-breaker：在排序键相同时，分页游标增加确定性的第二排序键，避免
+  翻页漂移和重复行。
+- `secretstore` Rekey 修复：密钥轮换路径的原子写入和回滚逻辑补齐，旧密钥
+  备份文件不再残留于失败中途。
+- 文档行号门：`docs/` 中文档中的行号引用统一刷新为当前代码实际行号，
+  并增加 CI 检查以防止再次漂移。
+- P2/P3 批量修复清单：合并置信度边界、Curator 词干规范化、CJK 字符范围收紧、
+  JSON tag 补全、volcasr 响应截断与死代码清理、Windows 路径分隔、LEFT JOIN
+  语义、cooldown 默认值、页面 JS 健壮性、Worker 产物校验等，低风险集中修复。
+- Provider 错误路径测试：补齐各适配器在 4xx/5xx/超时/空响应下的行为覆盖，
+  避免错误分类逻辑因缺测回退到文本匹配。
+- Skills 契约恢复：`skills/timingdex/references/api-contract.md` 与
+  `/api/v1/agent/capabilities` 的 `allowed_actions`/`denied_actions` 重新对齐。
+- `openspec/` 引入：新增 `openspec/` 目录，收录本轮审查产生的变更规格与
+  设计记录，作为后续变更的参考基线。
+
 ## v0.19 — GPU Docker Images and Unraid Deployment
 
 - Added a `gpu` Dockerfile build target (`docker build --target gpu`) that

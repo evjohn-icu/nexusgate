@@ -19,6 +19,21 @@ func TestNormalize(t *testing.T) {
 	}
 }
 
+func TestSemanticKeyPreservesNonPluralS(t *testing.T) {
+	cases := map[string]string{
+		"class":   "class",
+		"lens":    "lens",
+		"lights":  "light",
+		"tables":  "table",
+		"windows": "window",
+	}
+	for input, want := range cases {
+		if got := semanticKey(input); got != want {
+			t.Fatalf("semanticKey(%q)=%q want %q", input, got, want)
+		}
+	}
+}
+
 func TestBuildProposalsGroupsAliases(t *testing.T) {
 	items := []domain.UnresolvedTag{
 		{NormalizedTag: "night_city", UsageCount: 4, AssetCount: 4},

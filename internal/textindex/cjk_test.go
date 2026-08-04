@@ -42,6 +42,57 @@ func TestCJKAdjacentToASCIIWordCharsStillBigrams(t *testing.T) {
 	}
 }
 
+// TestCJKSegmentsJapaneseAndKorean confirms that hiragana, katakana, hangul
+// and CJK compatibility ideographs are all recognised as CJK and bigrammed,
+// so Japanese and Korean text is searchable in the same FTS5 index as Chinese.
+func TestCJKSegmentsJapaneseAndKorean(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string // bigram tokens that must appear
+	}{
+		{
+			name:  "hiragana",
+			input: "ありがとう",
+			want:  []string{"あり", "りが", "がと", "とう"},
+		},
+		{
+			name:  "katakana",
+			input: "テスト",
+			want:  []string{"テス", "スト"},
+		},
+		{
+			name:  "hangul",
+			input: "감사합니다",
+			want:  []string{"감사", "사합", "합니", "니다"},
+		},
+		{
+			name:  "mixed japanese",
+			input: "東京タワー",
+			want:  []string{"東京", "京タ", "タワ", "ワー"},
+		},
+		{
+			name:  "cjk compatible",
+			input: "金屬",
+			want:  []string{"金屬"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Segment(tt.input)
+			tokens := make(map[string]bool)
+			for _, tok := range strings.Fields(got) {
+				tokens[tok] = true
+			}
+			for _, want := range tt.want {
+				if !tokens[want] {
+					t.Fatalf("segment=%q missing bigram token %q, got tokens %v", got, want, tokens)
+				}
+			}
+		})
+	}
+}
+
 // TestCJKAdjacentToASCIIMatchesInRealFTS5 is the end-to-end proof: index the
 // same filename the way the Hub repository does (asset_search's own
 // tokenize='unicode61', see migrations/0002_pipeline.sql) into a real FTS5

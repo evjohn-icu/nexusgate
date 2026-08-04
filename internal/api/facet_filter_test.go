@@ -254,6 +254,13 @@ func newFacetTestService(t *testing.T) *app.Service {
 			t.Fatal(err)
 		}
 		analysis := domain.StructuredAnalysis{AssetType: fx.assetType, ShotSize: fx.shotSize, CameraMotion: fx.cameraMotion, Summary: "handler facet fixture " + fx.wantID}
+		// CommitAnalysisWithShots requires the run to have reached 'validated'
+		// first (an active guard introduced with the model_runs boundary work);
+		// the production pipeline always stages before committing, so the
+		// fixture must mirror that or every commit is rejected.
+		if err := repo.StageModelRun(ctx, runID, "{}", "{}"); err != nil {
+			t.Fatal(err)
+		}
 		if err := repo.CommitAnalysisWithShots(ctx, assetID, runID, "asset-analysis/v1", analysis, nil); err != nil {
 			t.Fatal(err)
 		}

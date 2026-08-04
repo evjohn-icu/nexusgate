@@ -93,6 +93,7 @@ type Repository interface {
 	CreateLibraryRoot(ctx context.Context, path string) (domain.LibraryRoot, error)
 	ListLibraryRoots(ctx context.Context) ([]domain.LibraryRoot, error)
 	GetLibraryRoot(ctx context.Context, id string) (domain.LibraryRoot, error)
+	IsLibraryRoot(ctx context.Context, path string) (bool, error)
 	ingest.ScanRepository
 	AssetsWithoutProbeJob(ctx context.Context, rootID string, limit int) ([]string, error)
 	ListAssets(ctx context.Context, limit, offset int) ([]domain.Asset, error)
@@ -433,13 +434,13 @@ func (s *Service) AddLibraryRoot(ctx context.Context, path string) (domain.Libra
 // RootWarnings reports what is true about a root's storage that the operator
 // cannot see from the path alone and that will otherwise show up as unexplained
 // slowness or as a library that scans to nothing.
-func (s *Service) RootWarnings(path string) []string {
+func (s *Service) RootWarnings(path string, registered bool) []string {
 	table := mount.ReadMountTable()
 	if table == "" {
 		return nil
 	}
 	var warnings []string
-	if mount.LooksUnmounted(path, table) {
+	if registered && mount.LooksUnmounted(path, table) {
 		warnings = append(warnings, fmt.Sprintf("%s is empty and is not itself a mount point. If the share should be mounted there, mount it before scanning: a scan of an unmounted directory marks every asset in it as missing.", path))
 	}
 	filesystem, known := mount.FilesystemFor(path, table)
@@ -581,9 +582,13 @@ type ComposeVolumeSuggestion struct {
 // command text (credentials path, uid/gid, the WSL nsenter prefix) is
 // generated here rather than duplicated in JavaScript. Passing "" for
 // mountpoint uses the default.
-func (s *Service) InspectRootPath(path, mountpoint string) RootInspection {
+func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string) RootInspection {
 	trimmed := strings.TrimSpace(path)
 	result := RootInspection{Path: trimmed}
+	registered := false
+	if s.repo != nil {
+		registered, _ = s.repo.IsLibraryRoot(ctx, trimmed)
+	}
 	if trimmed == "" {
 		return result
 	}
@@ -661,7 +666,7 @@ func (s *Service) InspectRootPath(path, mountpoint string) RootInspection {
 		}
 		result.LooksUnmounted = mount.LooksUnmounted(inspected, table)
 	}
-	result.Warnings = s.RootWarnings(trimmed)
+	result.Warnings = s.RootWarnings(trimmed, registered)
 	return result
 }
 
@@ -960,7 +965,7 @@ func (s *Service) Doctor(ctx context.Context, writer io.Writer) error {
 			}
 		}
 		fmt.Fprintf(writer, "  %s: %s\n", root.Path, storage)
-		for _, warning := range s.RootWarnings(root.Path) {
+		for _, warning := range s.RootWarnings(root.Path, true) {
 			fmt.Fprintf(writer, "    %s\n", warning)
 		}
 	}

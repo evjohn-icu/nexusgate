@@ -144,6 +144,9 @@ func TestProcessingSummaryCountsUnanalysedAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := repo.StageModelRun(ctx, runID, "{}", "{}"); err != nil {
+		t.Fatal(err)
+	}
 	if err := repo.CommitAnalysisWithShots(ctx, "analysed-1", runID, "asset-analysis/v1", domain.StructuredAnalysis{AssetType: "b_roll", Summary: "analysed only"}, nil); err != nil {
 		t.Fatal(err)
 	}

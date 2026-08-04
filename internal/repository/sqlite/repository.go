@@ -361,6 +361,12 @@ func (r *Repository) ListLibraryRoots(ctx context.Context) ([]domain.LibraryRoot
 	return roots, rows.Err()
 }
 
+func (r *Repository) IsLibraryRoot(ctx context.Context, path string) (bool, error) {
+	var exists bool
+	err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM library_roots WHERE path=?)`, path).Scan(&exists)
+	return exists, err
+}
+
 func (r *Repository) GetLibraryRoot(ctx context.Context, id string) (domain.LibraryRoot, error) {
 	var root domain.LibraryRoot
 	var created, updated string
@@ -1424,8 +1430,13 @@ func (r *Repository) searchShots(ctx context.Context, q string, limit int, facet
 		return []domain.ShotSearchResult{}, nil
 	}
 	clauses, args := facetWhere(facets)
+	needsAnalysisJoin := len(clauses) > 0
 	clauses, args = appendShotDurationBounds(clauses, args, facets)
-	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,bm25(asset_shot_search) FROM asset_shot_search JOIN asset_shots s ON s.id=asset_shot_search.shot_id LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id WHERE asset_shot_search MATCH ?`
+	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,bm25(asset_shot_search) FROM asset_shot_search JOIN asset_shots s ON s.id=asset_shot_search.shot_id`
+	if needsAnalysisJoin {
+		query += ` LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id`
+	}
+	query += ` WHERE asset_shot_search MATCH ?`
 	queryArgs := append([]any{ftsQuery}, args...)
 	if len(clauses) > 0 {
 		query += ` AND ` + strings.Join(clauses, ` AND `)
@@ -2106,8 +2117,27 @@ func (r *Repository) CommitAnalysisWithShots(ctx context.Context, assetID, runID
 }
 
 func (r *Repository) commitAnalysisTx(ctx context.Context, tx *sql.Tx, assetID, runID, schemaVersion string, a domain.StructuredAnalysis) error {
+	// Guard: only a validated run can be committed. The UPDATE below has
+	// always carried WHERE state='validated' as a passive gate, but the
+	// INSERT ran before it — a failed/committed/nonexistent run would
+	// still write canonical rows while the UPDATE silently affected 0.
+	// This SELECT makes the gate active: it runs first inside the
+	// transaction, so a wrong state means the whole tx rolls back with
+	// zero effect on canonical tables.
+	var guardState string
+	err := tx.QueryRowContext(ctx, `SELECT state FROM model_runs WHERE id=?`, runID).Scan(&guardState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Permanent(fmt.Errorf("%w: run %s not found", domain.ErrCommitRunNotValidated, runID))
+	}
+	if err != nil {
+		return err
+	}
+	if guardState != "validated" {
+		return domain.Permanent(fmt.Errorf("%w: run %s state is %q, not 'validated'", domain.ErrCommitRunNotValidated, runID, guardState))
+	}
+
 	j := func(v any) string { b, _ := json.Marshal(v); return string(b) }
-	_, err := tx.ExecContext(ctx, `INSERT INTO asset_analysis(asset_id,source_run_id,schema_version,asset_type,shot_size,camera_motion,audio_type,lighting,people_count,has_speech,quality,summary,scene_tags_json,subjects_json,mood_tags_json,usable_as_json,quality_flags_json,extra_tags_json,editorial_reason,updated_at)
+	_, err = tx.ExecContext(ctx, `INSERT INTO asset_analysis(asset_id,source_run_id,schema_version,asset_type,shot_size,camera_motion,audio_type,lighting,people_count,has_speech,quality,summary,scene_tags_json,subjects_json,mood_tags_json,usable_as_json,quality_flags_json,extra_tags_json,editorial_reason,updated_at)
 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(asset_id) DO UPDATE SET source_run_id=excluded.source_run_id,schema_version=excluded.schema_version,asset_type=excluded.asset_type,shot_size=excluded.shot_size,camera_motion=excluded.camera_motion,audio_type=excluded.audio_type,lighting=excluded.lighting,people_count=excluded.people_count,has_speech=excluded.has_speech,quality=excluded.quality,summary=excluded.summary,scene_tags_json=excluded.scene_tags_json,subjects_json=excluded.subjects_json,mood_tags_json=excluded.mood_tags_json,usable_as_json=excluded.usable_as_json,quality_flags_json=excluded.quality_flags_json,extra_tags_json=excluded.extra_tags_json,editorial_reason=excluded.editorial_reason,updated_at=excluded.updated_at`, assetID, runID, schemaVersion, a.AssetType, a.ShotSize, a.CameraMotion, a.AudioType, a.Lighting, a.PeopleCount, boolInt(a.HasSpeech), a.Quality, a.Summary, j(a.SceneTags), j(a.Subjects), j(a.MoodTags), j(a.UsableAs), j(a.QualityFlags), j(a.ExtraTags), a.EditorialReason, formatTime(time.Now()))
 	if err != nil {
 		return err

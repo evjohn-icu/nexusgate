@@ -50,6 +50,9 @@ func seedFacetFixtures(t *testing.T, repo *Repository, rootID string, fixtures [
 			UsableAs:     fx.usableAs,
 			Summary:      "facet fixture " + fx.id,
 		}
+		if err := repo.StageModelRun(ctx, runID, "{}", "{}"); err != nil {
+			t.Fatal(err)
+		}
 		if err := repo.CommitAnalysisWithShots(ctx, fx.id, runID, "asset-analysis/v1", analysis, nil); err != nil {
 			t.Fatal(err)
 		}
