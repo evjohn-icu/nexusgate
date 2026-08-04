@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"container/heap"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -17,12 +18,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ev/timingdex/internal/capture"
-	"github.com/ev/timingdex/internal/discovery"
-	"github.com/ev/timingdex/internal/domain"
-	"github.com/ev/timingdex/internal/idgen"
-	"github.com/ev/timingdex/internal/remote"
-	"github.com/ev/timingdex/internal/textindex"
+	"github.com/evjohn-icu/timingdex/internal/capture"
+	"github.com/evjohn-icu/timingdex/internal/discovery"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/idgen"
+	"github.com/evjohn-icu/timingdex/internal/remote"
+	"github.com/evjohn-icu/timingdex/internal/textindex"
 	_ "modernc.org/sqlite"
 )
 
@@ -212,7 +213,7 @@ func (r *Repository) Migrate(ctx context.Context) error {
 			tx.Rollback()
 			return fmt.Errorf("apply migration %s: %w", entry.Name(), err)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)`, entry.Name(), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)`, entry.Name(), formatTime(time.Now())); err != nil {
 			tx.Rollback()
 			return err
 		}
@@ -375,44 +376,57 @@ func (r *Repository) GetLibraryRoot(ctx context.Context, id string) (domain.Libr
 	return root, nil
 }
 
-func (r *Repository) UpsertScannedFile(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (bool, error) {
+func (r *Repository) UpsertScannedFile(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return false, err
+		return domain.ScannedFile{}, err
 	}
 	defer tx.Rollback()
 
 	now := time.Now().UTC()
 	var assetID string
 	err = tx.QueryRowContext(ctx, `SELECT id FROM assets WHERE quick_fingerprint = ? AND file_size = ? LIMIT 1`, fingerprint, info.Size()).Scan(&assetID)
-	created := false
+	result := domain.ScannedFile{}
 	if errors.Is(err, sql.ErrNoRows) {
 		assetID = idgen.New()
 		_, err = tx.ExecContext(ctx, `INSERT INTO assets(id, quick_fingerprint, file_size, state, first_seen_at, last_seen_at) VALUES (?, ?, ?, 'discovered', ?, ?)`, assetID, fingerprint, info.Size(), formatTime(now), formatTime(now))
-		created = true
+		result.Created = true
 	}
 	if err != nil {
-		return false, err
+		return result, err
 	}
+	result.AssetID = assetID
 
+	// Widen the lookup beyond the id so the scan can tell whether this revisit
+	// changed anything the pipeline keys its jobs on (path or mtime) without a
+	// second round trip. Only the id is ever written back; the rest is compared.
 	var locationID string
-	err = tx.QueryRowContext(ctx, `SELECT id FROM asset_locations WHERE root_id = ? AND relative_path = ?`, root.ID, relativePath).Scan(&locationID)
+	var existingAbsolutePath string
+	var existingModifiedNS int64
+	locationExists := true
+	err = tx.QueryRowContext(ctx, `SELECT id, modified_ns, absolute_path FROM asset_locations WHERE root_id = ? AND relative_path = ?`, root.ID, relativePath).Scan(&locationID, &existingModifiedNS, &existingAbsolutePath)
 	if errors.Is(err, sql.ErrNoRows) {
+		locationExists = false
 		locationID = idgen.New()
 		_, err = tx.ExecContext(ctx, `INSERT INTO asset_locations(id, asset_id, root_id, relative_path, absolute_path, modified_ns, exists_now, is_primary, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)`, locationID, assetID, root.ID, relativePath, absolutePath, info.ModTime().UnixNano(), formatTime(now))
 	} else if err == nil {
 		_, err = tx.ExecContext(ctx, `UPDATE asset_locations SET asset_id = ?, absolute_path = ?, modified_ns = ?, exists_now = 1, last_seen_at = ? WHERE id = ?`, assetID, absolutePath, info.ModTime().UnixNano(), formatTime(now), locationID)
 	}
 	if err != nil {
-		return false, err
+		return result, err
 	}
+	// A location that did not exist was inserted — a known asset appearing at
+	// a new path, or a brand-new asset — so it counts as changed. An existing
+	// one counts only when the mtime or path the probe job's input hash is
+	// derived from actually moved.
+	result.Changed = result.Created || !locationExists || existingModifiedNS != info.ModTime().UnixNano() || existingAbsolutePath != absolutePath
 
 	_, err = tx.ExecContext(ctx, `UPDATE assets SET state = 'discovered', last_seen_at = ?, missing_since = NULL WHERE id = ?`, formatTime(now), assetID)
 	if err != nil {
-		return false, err
+		return result, err
 	}
 
-	return created, tx.Commit()
+	return result, tx.Commit()
 }
 
 func (r *Repository) MarkUnseenLocationsMissing(ctx context.Context, rootID string, seenRelativePaths []string) (int, error) {
@@ -453,6 +467,29 @@ func (r *Repository) MarkUnseenLocationsMissing(ctx context.Context, rootID stri
 	return int(count), tx.Commit()
 }
 
+// AssetsWithoutProbeJob returns ids of live assets in a root that have never had
+// a probe job enqueued. The scan's changed set only covers assets whose keying
+// data moved; an asset that never got a probe job at all would otherwise starve
+// the pipeline forever, so the scan catches up on those too. The limit bounds
+// the catch-up so one pathological root cannot turn a scan into an unbounded
+// insert storm.
+func (r *Repository) AssetsWithoutProbeJob(ctx context.Context, rootID string, limit int) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT DISTINCT l.asset_id FROM asset_locations l JOIN assets a ON a.id = l.asset_id WHERE l.root_id = ? AND l.exists_now = 1 AND a.state != 'missing' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.asset_id = l.asset_id AND j.job_type = 'probe') LIMIT ?`, rootID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (r *Repository) ListAssets(ctx context.Context, limit, offset int) ([]domain.Asset, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT id, quick_fingerprint, full_hash, file_size, state, first_seen_at, last_seen_at, missing_since FROM assets ORDER BY last_seen_at DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
@@ -482,7 +519,14 @@ func (r *Repository) ListAssets(ctx context.Context, limit, offset int) ([]domai
 	return assets, rows.Err()
 }
 
-func formatTime(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
+// A fixed-width fraction, not RFC3339Nano's .999999999. Every timestamp in this
+// database is compared as a string by SQL, and RFC3339Nano strips trailing
+// zeros, so its output is variable-length and lexicographic order stops matching
+// chronological order -- see migration 0021 for the rewrite of rows written
+// before this.
+const sortableTimeLayout = "2006-01-02T15:04:05.000000000Z"
+
+func formatTime(value time.Time) string { return value.UTC().Format(sortableTimeLayout) }
 
 func (r *Repository) GetPrimaryLocation(ctx context.Context, assetID string) (domain.AssetLocation, error) {
 	var v domain.AssetLocation
@@ -740,9 +784,34 @@ func (r *Repository) GetMediaMetadata(ctx context.Context, assetID string) (*dom
 	return &m, nil
 }
 
-func (r *Repository) SaveArtifact(ctx context.Context, a domain.DerivedArtifact) error {
-	_, err := r.db.ExecContext(ctx, `INSERT INTO derived_artifacts(id,asset_id,artifact_type,profile_hash,local_path,size_bytes,created_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(asset_id,artifact_type,profile_hash) DO UPDATE SET local_path=excluded.local_path,size_bytes=excluded.size_bytes`, a.ID, a.AssetID, a.Type, a.ProfileHash, a.LocalPath, a.SizeBytes, formatTime(time.Now()))
-	return err
+// SaveArtifact upserts a derived artifact under the job that produced it.
+// jobID and owner tie the write to that job's lease for the same reason
+// CompleteJob does below: JobDerive renders a thumbnail, proxy, and (when the
+// source has audio) an audio extract synchronously, inside one job execution,
+// and that render can run well past the Hub-local pipeline's fixed,
+// never-renewed 2-minute lease on a long clip -- the same window that makes
+// the completion race reachable. Without the same predicate here, a holder
+// that already lost the job to a reclaim (a paired Worker on `derive`, or a
+// second Hub process) would still persist its stale render over whatever the
+// new holder wrote, silently, since this call is the only I/O JobDerive does
+// between renders. See leaseLostErr for what a CAS miss here means to the
+// caller.
+//
+// The predicate is expressed as a WHERE EXISTS on the SELECT side of an
+// INSERT...SELECT rather than a separate check-then-write: this repository's
+// convention (see LeaseNextJob's UPDATE) is to push a compare-and-swap into
+// the write itself, because a preceding read leaves a gap for a concurrent
+// reclaim to land in between.
+func (r *Repository) SaveArtifact(ctx context.Context, a domain.DerivedArtifact, jobID, owner string) error {
+	now := time.Now()
+	res, err := r.db.ExecContext(ctx, `INSERT INTO derived_artifacts(id,asset_id,artifact_type,profile_hash,local_path,size_bytes,created_at) SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM jobs WHERE id=? AND lease_owner=? AND state='running' AND lease_expires_at>?) ON CONFLICT(asset_id,artifact_type,profile_hash) DO UPDATE SET local_path=excluded.local_path,size_bytes=excluded.size_bytes`, a.ID, a.AssetID, a.Type, a.ProfileHash, a.LocalPath, a.SizeBytes, formatTime(now), jobID, owner, formatTime(now))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return leaseLostErr(jobID, owner)
+	}
+	return nil
 }
 func (r *Repository) GetArtifact(ctx context.Context, assetID, typ string) (*domain.DerivedArtifact, error) {
 	var a domain.DerivedArtifact
@@ -769,24 +838,55 @@ func (r *Repository) LeaseNextJob(ctx context.Context, worker string, lease time
 	}
 	defer tx.Rollback()
 	now := time.Now()
+	// A Worker (or the Hub's own local pipeline, which leases through this
+	// same path) that dies mid-job used to leave the job at state='running'
+	// forever: nothing else ever transitioned it back. Reclaiming an exhausted
+	// lease runs inline with every lease attempt rather than through a
+	// background sweeper, so it still resolves even when nobody happens to be
+	// asking for that job's type of work right now. See reclaimExhaustedLeases
+	// (remote_jobs.go) for why it also applies to Worker-derive leases.
+	if err := reclaimExhaustedLeases(ctx, tx, now); err != nil {
+		return nil, err
+	}
 	var j domain.Job
 	var run string
 	var last sql.NullString
 	// INDEXED BY is deliberate, not a hint: without it SQLite picks
 	// idx_jobs_ready and sorts every leasable row into a temp b-tree on each
-	// lease. idx_jobs_lease_order (migration 0018) already stores the rows in
-	// ORDER BY sequence, so the scan stops at the first match. Its partial
-	// WHERE clause must keep matching the two terms below or SQLite rejects the
-	// query outright -- a loud failure, which is the point.
+	// lease. idx_jobs_lease_order (migration 0018, widened by 0020 to also
+	// admit 'running') already stores the rows in ORDER BY sequence, so the
+	// scan stops at the first match. Its partial WHERE clause must keep
+	// matching the terms below or SQLite rejects the query outright -- a loud
+	// failure, which is the point.
+	//
+	// state also admits 'running': an expired lease -- the Worker or the Hub
+	// itself died mid-job -- is exactly as leasable as a job that never
+	// started. The (lease_expires_at IS NULL OR lease_expires_at<=?) term
+	// below is what keeps a *live* running job out of the result, since
+	// pending/failed jobs always carry a NULL lease_expires_at, so widening
+	// the state list costs nothing for the ordinary case.
+	//
+	// assigned_worker_id IS NULL keeps this Hub-local lease from stealing a
+	// job an admin pinned to one specific Worker with
+	// WorkerAssignmentRequired (SetDeriveWorkerAssignment, remote_jobs.go):
+	// the Hub is not that Worker, and "required" means required. Preferred
+	// assignments are unaffected -- those only reorder
+	// LeaseNextWorkerDerive's candidates among capable Workers, they never
+	// restrict who else may take the job.
 	//
 	// The size ceiling is expressed as "no oversized asset exists for this job"
 	// rather than as a join so the shape above survives: a join would give the
 	// planner a second table to order by and could cost the ordered scan. The
 	// subquery is a primary-key lookup, and it is skipped entirely when the
 	// ceiling is zero.
-	err = tx.QueryRowContext(ctx, `SELECT id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,last_error_message FROM jobs INDEXED BY idx_jobs_lease_order WHERE state IN ('pending','failed') AND terminal=0 AND attempt_count<max_attempts AND run_after<=? AND (lease_expires_at IS NULL OR lease_expires_at<=?) AND (?=0 OR NOT EXISTS (SELECT 1 FROM assets a WHERE a.id=jobs.asset_id AND a.file_size>?)) ORDER BY priority DESC,created_at LIMIT 1`, formatTime(now), formatTime(now), filter.MaxAssetBytes, filter.MaxAssetBytes).Scan(&j.ID, &j.AssetID, &j.Type, &j.State, &j.Priority, &j.AttemptCount, &j.MaxAttempts, &run, &j.InputHash, &last)
+	err = tx.QueryRowContext(ctx, `SELECT id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,last_error_message FROM jobs INDEXED BY idx_jobs_lease_order WHERE state IN ('pending','failed','running') AND terminal=0 AND assigned_worker_id IS NULL AND attempt_count<max_attempts AND run_after<=? AND (lease_expires_at IS NULL OR lease_expires_at<=?) AND (?=0 OR NOT EXISTS (SELECT 1 FROM assets a WHERE a.id=jobs.asset_id AND a.file_size>?)) ORDER BY priority DESC,created_at LIMIT 1`, formatTime(now), formatTime(now), filter.MaxAssetBytes, filter.MaxAssetBytes).Scan(&j.ID, &j.AssetID, &j.Type, &j.State, &j.Priority, &j.AttemptCount, &j.MaxAttempts, &run, &j.InputHash, &last)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		// Nothing to lease, but reclaimExhaustedLeases above may still have
+		// terminally failed an unrelated exhausted job in this same
+		// transaction; that write has to survive, or a job that repeatedly
+		// kills its Worker never actually goes terminal -- every attempt to
+		// clean it up would find nothing to lease and roll itself back out.
+		return nil, tx.Commit()
 	}
 	if err != nil {
 		return nil, err
@@ -795,13 +895,23 @@ func (r *Repository) LeaseNextJob(ctx context.Context, worker string, lease time
 	if last.Valid {
 		j.LastError = last.String
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE jobs SET state='running',attempt_count=attempt_count+1,lease_owner=?,lease_expires_at=?,updated_at=? WHERE id=? AND state IN ('pending','failed')`, worker, formatTime(now.Add(lease)), formatTime(now), j.ID)
+	// The "OR (state='running' AND lease_expires_at<=?)" arm re-checks expiry
+	// at UPDATE time, not just at SELECT time, so a lease that got renewed (or
+	// reclaimed by a concurrent transaction) in the gap between this
+	// transaction's SELECT and this UPDATE loses the race instead of stealing
+	// a job that is actually still live -- RowsAffected below reports 0 either
+	// way, the same CAS-miss handling every other lease path in this package
+	// uses.
+	res, err := tx.ExecContext(ctx, `UPDATE jobs SET state='running',attempt_count=attempt_count+1,lease_owner=?,lease_expires_at=?,updated_at=? WHERE id=? AND assigned_worker_id IS NULL AND (state IN ('pending','failed') OR (state='running' AND lease_expires_at<=?))`, worker, formatTime(now.Add(lease)), formatTime(now), j.ID, formatTime(now))
 	if err != nil {
 		return nil, err
 	}
 	n, _ := res.RowsAffected()
 	if n != 1 {
-		return nil, nil
+		// Lost the CAS race for this job, but reclaimExhaustedLeases's write
+		// still needs to survive -- see the comment on the ErrNoRows branch
+		// above.
+		return nil, tx.Commit()
 	}
 	j.State = domain.JobRunning
 	j.AttemptCount++
@@ -810,9 +920,65 @@ func (r *Repository) LeaseNextJob(ctx context.Context, worker string, lease time
 	}
 	return &j, nil
 }
-func (r *Repository) CompleteJob(ctx context.Context, id string, state domain.JobState, errMsg string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE jobs SET state=?,last_error_message=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=?`, string(state), nullString(errMsg), formatTime(time.Now()), id)
-	return err
+
+// leaseLostErr reports that id's lease is no longer held by owner: either
+// something else's compare-and-swap won it first, or this owner's own lease
+// had already expired when the write landed (lease_expires_at>? is checked
+// at write time everywhere below, not just at whatever point the caller
+// started its work, for the same reason LeaseNextJob's UPDATE re-checks
+// expiry instead of trusting its SELECT). Wraps domain.ErrJobLeaseLost —
+// see that sentinel's doc comment for why callers must match it with
+// errors.Is rather than this message, which is free to reword. id and owner
+// stay in the text because they are useful in a log line, not because
+// anything parses them back out.
+func leaseLostErr(id, owner string) error {
+	return fmt.Errorf("job %s: lease no longer held by %s: %w", id, owner, domain.ErrJobLeaseLost)
+}
+
+// jobLeaseActive reports whether id is presently 'running' under owner's
+// unexpired lease. The completion writes below never rely on this read for
+// correctness -- each one's own UPDATE/INSERT WHERE clause is the actual
+// compare-and-swap, exactly like LeaseNextJob's. This exists only to answer
+// a narrower question after a CAS miss: RetryJob's predicate can also miss
+// for a reason that has nothing to do with ownership (attempt_count already
+// at max_attempts, which is an expected, silent no-op -- see
+// TestDeferJobOnTheLastAttemptStillLeavesTheJobLeasable), so RetryJob uses
+// this to tell that apart from an actual lost lease before deciding whether
+// to report leaseLostErr.
+func (r *Repository) jobLeaseActive(ctx context.Context, id, owner string, now time.Time) (bool, error) {
+	var exists int
+	err := r.db.QueryRowContext(ctx, `SELECT 1 FROM jobs WHERE id=? AND lease_owner=? AND state='running' AND lease_expires_at>?`, id, owner, formatTime(now)).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// CompleteJob records a Hub-local job's outcome. owner is the identity
+// RunUntilIdle minted for this pipeline run and passed to LeaseNextJob
+// (pipeline.go); the WHERE clause is the missing half of the
+// compare-and-swap LeaseNextJob performs on acquisition -- this branch made
+// an expired lease reclaimable (state also admits 'running' with a stale
+// lease_expires_at; see LeaseNextJob's comment), and the Hub-local pipeline
+// leases for a fixed, never-renewed 2 minutes while running synchronous work
+// (a software x264 proxy of a long clip, a windowed analysis) that routinely
+// exceeds it. Without owner+expiry here, a holder that already lost the job
+// to a second Hub process or a paired Worker on `derive` would still
+// overwrite whatever the new holder wrote, and the same job could run
+// twice -- on analyze, that is a duplicate paid provider call.
+func (r *Repository) CompleteJob(ctx context.Context, id, owner string, state domain.JobState, errMsg string) error {
+	now := time.Now()
+	res, err := r.db.ExecContext(ctx, `UPDATE jobs SET state=?,last_error_message=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND lease_owner=? AND state='running' AND lease_expires_at>?`, string(state), nullString(errMsg), formatTime(now), id, owner, formatTime(now))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return leaseLostErr(id, owner)
+	}
+	return nil
 }
 
 // FailJobTerminally marks a job failed and flags it as terminal so the lease
@@ -825,9 +991,21 @@ func (r *Repository) CompleteJob(ctx context.Context, id string, state domain.Jo
 // attempt_count is left alone on purpose. An earlier implementation exhausted it
 // to make the predicate skip the row, which worked but reported a job that ran
 // once as "3/3" on the progress page.
-func (r *Repository) FailJobTerminally(ctx context.Context, id, errMsg string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE jobs SET state=?,terminal=1,last_error_message=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=?`, string(domain.JobFailed), nullString(errMsg), formatTime(time.Now()), id)
-	return err
+//
+// owner and the lease_owner/lease_expires_at predicate are the same CAS
+// CompleteJob adds, and for the same reason: a stale holder must not flip a
+// job someone else has already reclaimed to terminal failure out from under
+// them.
+func (r *Repository) FailJobTerminally(ctx context.Context, id, owner, errMsg string) error {
+	now := time.Now()
+	res, err := r.db.ExecContext(ctx, `UPDATE jobs SET state=?,terminal=1,last_error_message=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND lease_owner=? AND state='running' AND lease_expires_at>?`, string(domain.JobFailed), nullString(errMsg), formatTime(now), id, owner, formatTime(now))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return leaseLostErr(id, owner)
+	}
+	return nil
 }
 
 // RequeueFailedJobs puts every failed job back in the queue with a fresh
@@ -852,31 +1030,159 @@ func (r *Repository) RequeueFailedJobs(ctx context.Context) (int, error) {
 // RetryJob returns a leased job to the pending queue after a bounded delay.
 // Leasing already increments attempt_count, so the normal lease predicate
 // enforces max_attempts without a separate mutable retry counter.
-func (r *Repository) RetryJob(ctx context.Context, id, errMsg string, delay time.Duration) error {
+//
+// The WHERE clause carries two independent conditions that can each make it
+// match zero rows, and they mean different things: lease_owner/lease_expires_at
+// is the same CAS CompleteJob adds (a stale holder must not reschedule a job
+// someone else's lease now covers), while attempt_count<max_attempts is the
+// pre-existing, expected case where RetryJob simply cannot help anymore (see
+// TestDeferJobOnTheLastAttemptStillLeavesTheJobLeasable, which is the only
+// path back to leasable once attempts are spent). Only the first is an error
+// worth reporting -- the miss is disambiguated after the fact with
+// jobLeaseActive, which does not change what the CAS above already decided.
+func (r *Repository) RetryJob(ctx context.Context, id, owner, errMsg string, delay time.Duration) error {
 	if delay < 0 {
 		delay = 0
 	}
 	now := time.Now()
-	_, err := r.db.ExecContext(ctx, `UPDATE jobs SET state='pending',run_after=?,last_error_message=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND state='running' AND attempt_count<max_attempts`, formatTime(now.Add(delay)), nullString(errMsg), formatTime(now), id)
-	return err
+	res, err := r.db.ExecContext(ctx, `UPDATE jobs SET state='pending',run_after=?,last_error_message=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND lease_owner=? AND state='running' AND lease_expires_at>? AND attempt_count<max_attempts`, formatTime(now.Add(delay)), nullString(errMsg), formatTime(now), id, owner, formatTime(now))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 1 {
+		return nil
+	}
+	stillOwned, err := r.jobLeaseActive(ctx, id, owner, now)
+	if err != nil {
+		return err
+	}
+	if !stillOwned {
+		return leaseLostErr(id, owner)
+	}
+	return nil
 }
+
+// DeferJob parks a running job on wall-clock time and hands back the attempt
+// this lease spent. It is for failures that are not the job's fault: when every
+// provider key on a capability's route is failing at once — a hard monthly
+// quota answers 429 on all of them together — the job never ran, the account
+// did. Charging that to the job would spend its whole budget on an outage and
+// then fail it permanently for something only waiting can fix.
+//
+// The row is left exactly where the lease predicate can pick it up again once
+// run_after passes: state='pending', terminal untouched at 0, lease_expires_at
+// cleared, and attempt_count back to what it was before this lease — which is
+// by definition still below max_attempts, since the lease predicate is what
+// let the job run. Without the decrement the third defer would leave
+// attempt_count=max_attempts and the job would never be leased again, so the
+// five-hour wait would park it forever rather than resume it.
+//
+// reason is a Hub-assigned constant, never upstream text: ListJobs turns it
+// into the queue's visible "waiting on provider quota" state, while errMsg
+// stays behind the admin token in last_error_message.
+// The lease_owner/lease_expires_at predicate is the same CAS CompleteJob
+// adds, for the same reason: a stale holder must not park a job someone
+// else's lease now covers, handing back an attempt that was never this
+// caller's to hand back.
+func (r *Repository) DeferJob(ctx context.Context, id, owner string, until time.Time, reason, errMsg string) error {
+	now := time.Now()
+	if until.Before(now) {
+		until = now
+	}
+	res, err := r.db.ExecContext(ctx, `UPDATE jobs SET state='pending',run_after=?,attempt_count=MAX(attempt_count-1,0),last_error_code=?,last_error_message=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND lease_owner=? AND state='running' AND lease_expires_at>?`, formatTime(until), nullString(reason), nullString(errMsg), formatTime(now), id, owner, formatTime(now))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return leaseLostErr(id, owner)
+	}
+	return nil
+}
+
+// ResumeDeferredJobs pulls every job waiting on provider quota forward to now
+// and returns how many moved.
+//
+// Without this an operator has no way out of the wait: a deferred job is
+// 'pending', so RequeueFailedJobs — which only touches 'failed' — does not see
+// it, and topping up an account or watching a brief outage clear would still
+// cost the full five hours. It also bounds the cost of deferring on a
+// transient failure, which is the price of treating a whole route going quiet
+// as exhaustion.
+//
+// run_after>? keeps this to jobs actually still waiting, so it cannot disturb
+// the scheduling of work that was postponed for any other reason, and the
+// reason code is cleared because the wait it described is over.
+func (r *Repository) ResumeDeferredJobs(ctx context.Context, reason string) (int, error) {
+	now := time.Now()
+	result, err := r.db.ExecContext(ctx, `UPDATE jobs SET run_after=?,last_error_code=NULL,updated_at=? WHERE state='pending' AND terminal=0 AND last_error_code=? AND run_after>?`, formatTime(now), formatTime(now), reason, formatTime(now))
+	if err != nil {
+		return 0, err
+	}
+	moved, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(moved), nil
+}
+
 func (r *Repository) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id,COALESCE(asset_id,''),job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,COALESCE(last_error_message,''),terminal FROM jobs ORDER BY created_at DESC LIMIT ?`, limit)
+	rows, err := r.db.QueryContext(ctx, `SELECT id,COALESCE(asset_id,''),job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,COALESCE(last_error_message,''),terminal,COALESCE(last_error_code,'') FROM jobs ORDER BY created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	now := time.Now()
 	var out []domain.Job
 	for rows.Next() {
 		var j domain.Job
-		var run string
-		if err := rows.Scan(&j.ID, &j.AssetID, &j.Type, &j.State, &j.Priority, &j.AttemptCount, &j.MaxAttempts, &run, &j.InputHash, &j.LastError, &j.Terminal); err != nil {
+		var run, code string
+		if err := rows.Scan(&j.ID, &j.AssetID, &j.Type, &j.State, &j.Priority, &j.AttemptCount, &j.MaxAttempts, &run, &j.InputHash, &j.LastError, &j.Terminal, &code); err != nil {
 			return nil, err
 		}
 		j.RunAfter, _ = time.Parse(time.RFC3339Nano, run)
+		// A defer is only in force while the job is still parked. Reading the
+		// error code alone would keep reporting "waiting on quota" after the
+		// job resumed and even after it succeeded, because nothing clears the
+		// code of the last failure; state plus run_after is the actual truth
+		// about whether the job is waiting, and it is the same pair the lease
+		// predicate reads.
+		if code == domain.JobDeferProviderRouteExhausted && j.State == domain.JobPending && j.RunAfter.After(now) {
+			j.DeferredReason = code
+		}
 		out = append(out, j)
 	}
 	return out, rows.Err()
+}
+
+// JobSummary counts the queue by category in one pass. The deferred predicate
+// is deliberately the same pair ListJobs uses — the error code alone would keep
+// reporting "waiting on quota" long after the job resumed, because nothing
+// clears the code of the last failure — so the metric row and the table below
+// it cannot disagree about which jobs are parked.
+func (r *Repository) JobSummary(ctx context.Context) (domain.JobSummary, error) {
+	var summary domain.JobSummary
+	// COALESCE, not a bare comparison: last_error_code is nullable and NULL for
+	// every job that has never failed, and `NULL=?` is NULL rather than false.
+	// Negating that in the pending arm below would yield NULL too, quietly
+	// dropping every never-failed pending job out of the count -- which is most
+	// of the queue.
+	deferred := `state='pending' AND COALESCE(last_error_code,'')=? AND run_after>?`
+	query := `SELECT
+        COALESCE(SUM(CASE WHEN state='pending' AND NOT (` + deferred + `) THEN 1 ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN state='running' THEN 1 ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN state='succeeded' THEN 1 ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN state='failed' AND terminal=0 THEN 1 ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN terminal=1 THEN 1 ELSE 0 END),0),
+        COALESCE(SUM(CASE WHEN ` + deferred + ` THEN 1 ELSE 0 END),0),
+        COUNT(*)
+    FROM jobs`
+	now := formatTime(time.Now())
+	err := r.db.QueryRowContext(ctx, query, domain.JobDeferProviderRouteExhausted, now, domain.JobDeferProviderRouteExhausted, now).
+		Scan(&summary.Pending, &summary.Running, &summary.Succeeded, &summary.Failed, &summary.Terminal, &summary.Deferred, &summary.Total)
+	if err != nil {
+		return domain.JobSummary{}, err
+	}
+	return summary, nil
 }
 
 // RebuildSearch replaces assetID's row in asset_search with a fresh one
@@ -1007,7 +1313,7 @@ func (r *Repository) replaceAssetShotsTx(ctx context.Context, tx *sql.Tx, assetI
 			return err
 		}
 		sourceText := strings.Join(append([]string{shot.Description}, append(append(shot.Tags, shot.Objects...), append(shot.Actions, shot.Mood...)...)...), " ")
-		if _, err := tx.ExecContext(ctx, `INSERT INTO shot_semantic_vectors(shot_id,model,vector_json,source_text,created_at) VALUES(?,?,?,?,?)`, id, "semantic-hash-v1", string(vector), sourceText, formatTime(created)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO shot_semantic_vectors(shot_id,model,vector_json,source_text,created_at) VALUES(?,?,?,?,?)`, id, discovery.VectorModel, string(vector), sourceText, formatTime(created)); err != nil {
 			return err
 		}
 	}
@@ -1029,7 +1335,23 @@ func (r *Repository) deleteFromShotSearchIndexTx(ctx context.Context, tx *sql.Tx
 	return err
 }
 
+// validateAssetShots is the last shape check before shots become canonical
+// rows, and every verdict it reaches is a deterministic function of the
+// payload handed to it — the same shots would be rejected identically
+// forever. Marking permanent here rather than at the two call sites means a
+// rule added to assetShotsProblem inherits it, and means both callers
+// (CommitAnalysisWithShots on the model path, ReplaceAssetShots on the human
+// one) get the same answer without either of them restating it. See
+// domain.ErrPermanentFailure for why this is a property of the error rather
+// than an entry in a list somewhere else.
 func validateAssetShots(shots []domain.AssetShot) error {
+	if err := assetShotsProblem(shots); err != nil {
+		return domain.Permanent(err)
+	}
+	return nil
+}
+
+func assetShotsProblem(shots []domain.AssetShot) error {
 	seenIDs := make(map[string]struct{}, len(shots))
 	for i, shot := range shots {
 		if shot.StartMS < 0 || shot.EndMS <= shot.StartMS {
@@ -1079,7 +1401,21 @@ func (r *Repository) ShotExists(ctx context.Context, shotID string) (bool, error
 	return count > 0, nil
 }
 
+// SearchShots is the unfiltered entry point kept for existing callers.
+// Behaviourally identical to SearchShotsFiltered with a zero-value
+// domain.FacetFilter.
 func (r *Repository) SearchShots(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error) {
+	return r.searchShots(ctx, q, limit, domain.FacetFilter{})
+}
+
+// SearchShotsFiltered narrows SearchShots by the controlled vocabulary and a
+// duration range. See the FacetFilter doc comment (internal/domain/asset_browse.go)
+// for why the vocabulary fields are resolved through the shot's asset.
+func (r *Repository) SearchShotsFiltered(ctx context.Context, q string, limit int, facets domain.FacetFilter) ([]domain.ShotSearchResult, error) {
+	return r.searchShots(ctx, q, limit, facets)
+}
+
+func (r *Repository) searchShots(ctx context.Context, q string, limit int, facets domain.FacetFilter) ([]domain.ShotSearchResult, error) {
 	if limit <= 0 || strings.TrimSpace(q) == "" {
 		return []domain.ShotSearchResult{}, nil
 	}
@@ -1087,7 +1423,16 @@ func (r *Repository) SearchShots(ctx context.Context, q string, limit int) ([]do
 	if ftsQuery == "" {
 		return []domain.ShotSearchResult{}, nil
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,bm25(asset_shot_search) FROM asset_shot_search JOIN asset_shots s ON s.id=asset_shot_search.shot_id WHERE asset_shot_search MATCH ? ORDER BY bm25(asset_shot_search),s.ordinal LIMIT ?`, ftsQuery, limit)
+	clauses, args := facetWhere(facets)
+	clauses, args = appendShotDurationBounds(clauses, args, facets)
+	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,bm25(asset_shot_search) FROM asset_shot_search JOIN asset_shots s ON s.id=asset_shot_search.shot_id LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id WHERE asset_shot_search MATCH ?`
+	queryArgs := append([]any{ftsQuery}, args...)
+	if len(clauses) > 0 {
+		query += ` AND ` + strings.Join(clauses, ` AND `)
+	}
+	query += ` ORDER BY bm25(asset_shot_search),s.ordinal LIMIT ?`
+	queryArgs = append(queryArgs, limit)
+	rows, err := r.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -1113,10 +1458,102 @@ func (r *Repository) SearchShots(ctx context.Context, q string, limit int) ([]do
 	return out, rows.Err()
 }
 
-// HybridSearchShots blends local lexical FTS with deterministic semantic
+// maxTopShotPrealloc bounds how much the heap reserves up front. limit reaches
+// these queries straight from a ?limit= query parameter, and parseInt only
+// rejects negatives — so sizing the initial allocation by limit alone would let
+// a read-scoped caller ask for two billion results and have the Hub try to
+// reserve the memory before a single row is read. Capacity is only a hint: the
+// heap still grows to whatever limit genuinely requires, so this costs nothing
+// for real queries and removes the amplification for absurd ones.
+const maxTopShotPrealloc = 1024
+
+// topShotHeap is a bounded min-heap of scored shots for similar/hybrid search.
+// Scoring happens in Go after the rows are read, so a SQL LIMIT cannot shrink
+// the work; the heap keeps at most limit members instead of sorting the whole
+// library. Less is a TOTAL order — score descending, then shot ID ascending —
+// because a heap is not stable: without explicit tie-breaking, equal scores
+// would surface in whatever order the heap happened to hold them, and repeated
+// identical queries would return visibly different orders. The heap is a
+// min-heap on "worse", so Pop always evicts the weakest member.
+type topShotHeap []domain.ShotSearchResult
+
+func (h topShotHeap) Len() int { return len(h) }
+func (h topShotHeap) Less(i, j int) bool {
+	if h[i].Score == h[j].Score {
+		return h[i].ID > h[j].ID
+	}
+	return h[i].Score < h[j].Score
+}
+func (h topShotHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h *topShotHeap) Push(x any)   { *h = append(*h, x.(domain.ShotSearchResult)) }
+func (h *topShotHeap) Pop() any {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	old[n-1] = domain.ShotSearchResult{}
+	*h = old[:n-1]
+	return item
+}
+
+// HybridSearchShots is the unfiltered entry point kept for existing callers
+// (including the repurpose-plan alternatives lookup in service.go).
+// Behaviourally identical to HybridSearchShotsFiltered with a zero-value
+// domain.FacetFilter.
+func (r *Repository) HybridSearchShots(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error) {
+	return r.hybridSearchShots(ctx, q, limit, domain.FacetFilter{})
+}
+
+// HybridSearchShotsFiltered narrows HybridSearchShots by the controlled
+// vocabulary and a duration range.
+func (r *Repository) HybridSearchShotsFiltered(ctx context.Context, q string, limit int, facets domain.FacetFilter) ([]domain.ShotSearchResult, error) {
+	return r.hybridSearchShots(ctx, q, limit, facets)
+}
+
+// bm25HalfScore is the |bm25| that earns exactly half of the lexical term
+// below. bm25 has no upper bound, so any mapping onto 0-1 has to nominate
+// some magnitude as "half marks"; leaving that implicit is how the previous
+// conversion ended up anchored on a bare 1 that meant nothing. This one is
+// read off FTS5's own arithmetic: a single query term contributes at most
+// idf*(k1+1) to the rank, with k1 = 1.2 fixed inside SQLite, so a term that
+// is only just discriminating (idf = 1, i.e. present in roughly a quarter of
+// the corpus) and repeated often enough to saturate bm25's term-frequency
+// term tops out near 2.2. Pinning half marks there reserves the upper half
+// of the scale for what should actually outrank it — rarer terms, or more
+// than one query term matching the same shot.
+const bm25HalfScore = 2.2
+
+// lexicalScoreFromBM25 converts a raw bm25() rank into the 0-1 lexical term
+// of the hybrid blend below. Direction is the whole point of this function:
+// bm25 runs the opposite way from a score — more negative means more
+// relevant, which is why searchShots above orders by bm25 ascending — while
+// the blend below ADDS this term to the semantic one, so it must come back
+// pointing the normal way, larger meaning better matched. |rank| carries the
+// strength; the saturating |rank|/(bm25HalfScore+|rank|) puts it on 0-1
+// while staying strictly increasing, so a shot that matched a query term
+// four times can never be outranked by one that matched it once. Saturation
+// rather than a linear clamp is deliberate: bm25 is unbounded above, and the
+// gap between "barely matched" and "matched" deserves more of the scale than
+// the gap between two already-strong matches.
+//
+// A rank of 0 or above is not a strong match but the absence of one: it is
+// FTS5's IDF floor reporting a term with no discriminating power (a term
+// appearing across most of the corpus never quite reaches a positive rank;
+// SQLite clamps idf to a small positive constant instead, so the weakest
+// real match sits an epsilon below zero). The formula already sends rank 0
+// to 0; the guard is what keeps a positive rank from re-entering through
+// |rank| and scoring as though it were a match.
+func lexicalScoreFromBM25(rank float64) float64 {
+	if rank >= 0 {
+		return 0
+	}
+	strength := -rank
+	return strength / (bm25HalfScore + strength)
+}
+
+// hybridSearchShots blends local lexical FTS with deterministic semantic
 // features generated from the model's already-persisted visual observations.
 // It stays SQLite-first and returns source shot time ranges.
-func (r *Repository) HybridSearchShots(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error) {
+func (r *Repository) hybridSearchShots(ctx context.Context, q string, limit int, facets domain.FacetFilter) ([]domain.ShotSearchResult, error) {
 	if limit <= 0 || strings.TrimSpace(q) == "" {
 		return []domain.ShotSearchResult{}, nil
 	}
@@ -1133,10 +1570,7 @@ func (r *Repository) HybridSearchShots(ctx context.Context, q string, limit int)
 				rows.Close()
 				return nil, err
 			}
-			if rank < 0 {
-				rank = -rank
-			}
-			lexical[id] = 1 / (1 + rank)
+			lexical[id] = lexicalScoreFromBM25(rank)
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
@@ -1144,13 +1578,29 @@ func (r *Repository) HybridSearchShots(ctx context.Context, q string, limit int)
 		}
 		rows.Close()
 	}
+	// The lexical pass above scores by shot_id without a facet filter — it is
+	// only a lookup table for the score blend below, so an id absent from it
+	// simply contributes a zero lexical score. Facets are applied once, here,
+	// to the candidate set that actually becomes the result.
 	queryVector := discovery.VectorForText(q)
-	rows, err := r.db.QueryContext(ctx, `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,v.vector_json FROM asset_shots s JOIN shot_semantic_vectors v ON v.shot_id=s.id`)
+	// v.model=? is mandatory, not one more optional facet clause: a vector
+	// written under a superseded embedding scheme must never be scored
+	// against a query vector from the current one (see semanticVector below
+	// and the discovery.VectorModel doc comment). Facets narrow further, but
+	// never replace this filter.
+	clauses, args := facetWhere(facets)
+	clauses, args = appendShotDurationBounds(clauses, args, facets)
+	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,v.vector_json FROM asset_shots s JOIN shot_semantic_vectors v ON v.shot_id=s.id LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id WHERE v.model=?`
+	queryArgs := append([]any{discovery.VectorModel}, args...)
+	if len(clauses) > 0 {
+		query += ` AND ` + strings.Join(clauses, ` AND `)
+	}
+	rows, err := r.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	results := make([]domain.ShotSearchResult, 0)
+	top := make(topShotHeap, 0, min(limit, maxTopShotPrealloc))
 	for rows.Next() {
 		var result domain.ShotSearchResult
 		var tags, objects, actions, mood, created, encodedVector string
@@ -1170,32 +1620,54 @@ func (r *Repository) HybridSearchShots(ctx context.Context, q string, limit int)
 		result.LexicalScore = lexical[result.ID]
 		result.Score = 0.70*result.SemanticScore + 0.30*result.LexicalScore
 		if result.Score > 0 {
-			results = append(results, result)
+			heap.Push(&top, result)
+			if top.Len() > limit {
+				heap.Pop(&top)
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	sort.SliceStable(results, func(i, j int) bool {
-		if results[i].Score == results[j].Score {
-			return results[i].ID < results[j].ID
-		}
-		return results[i].Score > results[j].Score
-	})
-	if len(results) > limit {
-		results = results[:limit]
+	results := make([]domain.ShotSearchResult, 0, top.Len())
+	for top.Len() > 0 {
+		results = append(results, heap.Pop(&top).(domain.ShotSearchResult))
+	}
+	// Draining pops the weakest member first; flip for score-descending order.
+	for i, j := 0, len(results)-1; i < j; i, j = i+1, j-1 {
+		results[i], results[j] = results[j], results[i]
 	}
 	return results, nil
 }
 
+// SimilarShots is the unfiltered entry point kept for existing callers.
+// Behaviourally identical to SimilarShotsFiltered with a zero-value
+// domain.FacetFilter.
 func (r *Repository) SimilarShots(ctx context.Context, shotID string, limit int) ([]domain.ShotSearchResult, error) {
+	return r.similarShots(ctx, shotID, limit, domain.FacetFilter{})
+}
+
+// SimilarShotsFiltered narrows SimilarShots by the controlled vocabulary and
+// a duration range. The source shot itself is looked up unfiltered — a facet
+// only prunes the candidates it is compared against, not the reference point.
+func (r *Repository) SimilarShotsFiltered(ctx context.Context, shotID string, limit int, facets domain.FacetFilter) ([]domain.ShotSearchResult, error) {
+	return r.similarShots(ctx, shotID, limit, facets)
+}
+
+func (r *Repository) similarShots(ctx context.Context, shotID string, limit int, facets domain.FacetFilter) ([]domain.ShotSearchResult, error) {
 	if strings.TrimSpace(shotID) == "" || limit <= 0 {
 		return []domain.ShotSearchResult{}, nil
 	}
 	var encoded string
-	err := r.db.QueryRowContext(ctx, `SELECT vector_json FROM shot_semantic_vectors WHERE shot_id=?`, shotID).Scan(&encoded)
+	err := r.db.QueryRowContext(ctx, `SELECT vector_json FROM shot_semantic_vectors WHERE shot_id=? AND model=?`, shotID, discovery.VectorModel).Scan(&encoded)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("shot not found: %s", shotID)
+		// Now that the lookup is scoped to the current scheme, no-rows covers
+		// two different situations, and the message must not claim the first
+		// when it is the second: the shot may genuinely not exist, or it may
+		// exist with a vector from a superseded scheme and simply need
+		// re-analysis. Saying "not found" about a shot the operator can see in
+		// the library would send them looking for the wrong problem.
+		return nil, fmt.Errorf("%w: %s is either unknown or was embedded under a scheme older than %s and needs re-analysis", domain.ErrShotVectorNotFound, shotID, discovery.VectorModel)
 	}
 	if err != nil {
 		return nil, err
@@ -1204,11 +1676,11 @@ func (r *Repository) SimilarShots(ctx context.Context, shotID string, limit int)
 	if err != nil {
 		return nil, fmt.Errorf("decode source shot vector: %w", err)
 	}
-	records, err := r.loadSemanticShotRecords(ctx)
+	records, err := r.loadSemanticShotRecords(ctx, facets)
 	if err != nil {
 		return nil, err
 	}
-	results := make([]domain.ShotSearchResult, 0, len(records))
+	top := make(topShotHeap, 0, min(limit, maxTopShotPrealloc))
 	for _, record := range records {
 		if record.result.ID == shotID {
 			continue
@@ -1216,12 +1688,19 @@ func (r *Repository) SimilarShots(ctx context.Context, shotID string, limit int)
 		record.result.SemanticScore = discovery.Cosine(queryVector, record.vector)
 		record.result.Score = record.result.SemanticScore
 		if record.result.Score > 0 {
-			results = append(results, record.result)
+			heap.Push(&top, record.result)
+			if top.Len() > limit {
+				heap.Pop(&top)
+			}
 		}
 	}
-	sort.SliceStable(results, func(i, j int) bool { return results[i].Score > results[j].Score })
-	if len(results) > limit {
-		results = results[:limit]
+	results := make([]domain.ShotSearchResult, 0, top.Len())
+	for top.Len() > 0 {
+		results = append(results, heap.Pop(&top).(domain.ShotSearchResult))
+	}
+	// Draining pops the weakest member first; flip for score-descending order.
+	for i, j := 0, len(results)-1; i < j; i, j = i+1, j-1 {
+		results[i], results[j] = results[j], results[i]
 	}
 	return results, nil
 }
@@ -1230,7 +1709,14 @@ func (r *Repository) DiscoverRareShots(ctx context.Context, limit int) ([]domain
 	if limit <= 0 {
 		return []domain.RareShot{}, nil
 	}
-	records, err := r.loadSemanticShotRecords(ctx)
+	// This one legitimately reads the whole corpus: rarity is defined by token
+	// frequency computed across every shot, so top-k cannot be applied without
+	// changing the answer. Unlike SimilarShots/HybridSearchShots, leave this
+	// uncapped. It's also not one of the faceted endpoints in this brief, so it
+	// always loads the unfiltered set — a zero-value domain.FacetFilter adds no
+	// WHERE clause beyond loadSemanticShotRecords' own mandatory v.model=? scope
+	// filter.
+	records, err := r.loadSemanticShotRecords(ctx, domain.FacetFilter{})
 	if err != nil {
 		return nil, err
 	}
@@ -1285,8 +1771,20 @@ type semanticShotRecord struct {
 	vector []float64
 }
 
-func (r *Repository) loadSemanticShotRecords(ctx context.Context) ([]semanticShotRecord, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,v.vector_json FROM asset_shots s JOIN shot_semantic_vectors v ON v.shot_id=s.id`)
+// loadSemanticShotRecords always scopes to discovery.VectorModel — see the
+// mandatory v.model=? filter in hybridSearchShots above for why a vector from
+// a superseded embedding scheme must never reach a caller that scores it
+// against a current-scheme query vector. facets narrows the candidate set
+// further; a zero-value domain.FacetFilter leaves only the model filter.
+func (r *Repository) loadSemanticShotRecords(ctx context.Context, facets domain.FacetFilter) ([]semanticShotRecord, error) {
+	clauses, args := facetWhere(facets)
+	clauses, args = appendShotDurationBounds(clauses, args, facets)
+	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,v.vector_json FROM asset_shots s JOIN shot_semantic_vectors v ON v.shot_id=s.id LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id WHERE v.model=?`
+	queryArgs := append([]any{discovery.VectorModel}, args...)
+	if len(clauses) > 0 {
+		query += ` AND ` + strings.Join(clauses, ` AND `)
+	}
+	rows, err := r.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -1323,6 +1821,9 @@ func (r *Repository) semanticVector(shotID, encoded string) ([]float64, error) {
 	if err := json.Unmarshal([]byte(encoded), &vector); err != nil {
 		return nil, err
 	}
+	if len(vector) != discovery.VectorSize {
+		return nil, fmt.Errorf("shot %s vector has %d dimensions, want %d", shotID, len(vector), discovery.VectorSize)
+	}
 	r.semanticVectorMu.Lock()
 	if existing, exists := r.semanticVectorCache[shotID]; exists {
 		vector = existing
@@ -1345,7 +1846,41 @@ func (r *Repository) semanticVectorCacheLen() int {
 	return len(r.semanticVectorCache)
 }
 
+// Search is the unfiltered entry point kept for existing callers.
+// Behaviourally identical to SearchFiltered with a zero domain.FacetFilter,
+// and — because facetExistsGuard builds no guard for a zero filter — emits
+// byte-identical SQL to the pre-facet version of this function as well; see
+// TestSearchFilteredZeroFacetProducesTodaysSQL.
 func (r *Repository) Search(ctx context.Context, q string, limit int) ([]string, error) {
+	return r.SearchFiltered(ctx, q, limit, domain.FacetFilter{})
+}
+
+// searchSQLTrace, when non-nil, is called with the exact SQL text
+// SearchFiltered sends to SQLite, once per query it issues, in order. It is
+// nil in production and costs nothing there; it exists only so a test can
+// capture the literal query text and diff it against a golden pre-facet
+// baseline, instead of a human eyeballing the two versions of this function
+// and asserting they match.
+var searchSQLTrace func(query string)
+
+// SearchFiltered narrows Search by domain.FacetFilter — the same six-field
+// controlled vocabulary and duration bounds as the shot-search *Filtered
+// methods (facetWhere / assetFacetWhereClauses in asset_browse.go), applied
+// at asset granularity: MinDurationMS/MaxDurationMS bound the asset's own
+// duration, not a shot's span (see the FacetFilter doc comment in
+// internal/domain/asset_browse.go).
+//
+// The facet predicate is folded into each query below as a correlated EXISTS
+// guard (facetExistsGuard), not applied as a pass over already-fetched
+// results: LIMIT ? must count facet-matching rows, or a caller asking for
+// `limit` ids from a large library would silently get "the facet-matching
+// subset of the first `limit` hits" — fewer than `limit`, and wrong in
+// exactly the case (a large library) where the limit is doing real work.
+// facetExistsGuard returns "" for a zero FacetFilter, so every query text
+// below is unchanged from before facets existed, which keeps the query plans
+// the "Resolve the literal tag..." comment further down was written to
+// protect.
+func (r *Repository) SearchFiltered(ctx context.Context, q string, limit int, facets domain.FacetFilter) ([]string, error) {
 	if limit <= 0 || strings.TrimSpace(q) == "" {
 		return []string{}, nil
 	}
@@ -1357,6 +1892,11 @@ func (r *Repository) Search(ctx context.Context, q string, limit int) ([]string,
 			ids = append(ids, id)
 		}
 	}
+
+	// tagGuard is folded into each of the three UNION branches below (all
+	// scoped to alias "l" from asset_tag_links), so its args must be repeated
+	// once per branch, same as the tag placeholder itself.
+	tagGuard, tagGuardArgs := facetExistsGuard("l.asset_id", facets)
 
 	// Resolve the literal tag, its canonical form and every sibling alias to
 	// the same canonical ID. This keeps an approved "城市夜景 → urban_night"
@@ -1373,14 +1913,24 @@ func (r *Repository) Search(ctx context.Context, q string, limit int) ([]string,
 	// indexes) can seek directly, and UNION (not UNION ALL) preserves the
 	// original query's implicit de-duplication across branches.
 	for _, tag := range searchTagCandidates(q) {
-		rows, err := r.db.QueryContext(ctx, `SELECT asset_id FROM (
-SELECT l.asset_id FROM asset_tag_links l WHERE l.normalized_tag=?
+		query := `SELECT asset_id FROM (
+SELECT l.asset_id FROM asset_tag_links l WHERE l.normalized_tag=?` + tagGuard + `
 UNION
-SELECT l.asset_id FROM asset_tag_links l JOIN tag_catalog t ON t.id=l.canonical_tag_id WHERE t.canonical_name=?
+SELECT l.asset_id FROM asset_tag_links l JOIN tag_catalog t ON t.id=l.canonical_tag_id WHERE t.canonical_name=?` + tagGuard + `
 UNION
-SELECT l.asset_id FROM asset_tag_links l JOIN tag_aliases_v2 a ON a.canonical_tag_id=l.canonical_tag_id WHERE a.alias_normalized=?
+SELECT l.asset_id FROM asset_tag_links l JOIN tag_aliases_v2 a ON a.canonical_tag_id=l.canonical_tag_id WHERE a.alias_normalized=?` + tagGuard + `
 )
-LIMIT ?`, tag, tag, tag, limit-len(ids))
+LIMIT ?`
+		args := make([]any, 0, 3*(1+len(tagGuardArgs))+1)
+		for i := 0; i < 3; i++ {
+			args = append(args, tag)
+			args = append(args, tagGuardArgs...)
+		}
+		args = append(args, limit-len(ids))
+		if searchSQLTrace != nil {
+			searchSQLTrace(query)
+		}
+		rows, err := r.db.QueryContext(ctx, query, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -1405,7 +1955,14 @@ LIMIT ?`, tag, tag, tag, limit-len(ids))
 	if ftsQuery == "" {
 		return ids, nil
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT asset_id FROM asset_search WHERE asset_search MATCH ? LIMIT ?`, ftsQuery, limit-len(ids))
+	ftsGuard, ftsGuardArgs := facetExistsGuard("asset_search.asset_id", facets)
+	query := `SELECT asset_id FROM asset_search WHERE asset_search MATCH ?` + ftsGuard + ` LIMIT ?`
+	args := append([]any{ftsQuery}, ftsGuardArgs...)
+	args = append(args, limit-len(ids))
+	if searchSQLTrace != nil {
+		searchSQLTrace(query)
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1418,6 +1975,24 @@ LIMIT ?`, tag, tag, tag, limit-len(ids))
 		appendID(id)
 	}
 	return ids, rows.Err()
+}
+
+// facetExistsGuard returns a SQL "AND EXISTS (...)" fragment (and its args)
+// that narrows a query producing asset ids under idColumn to the ids whose
+// asset matches facets, or "" (with nil args) when facets is the zero value.
+// idColumn is the column expression for the id being tested in the enclosing
+// query — "l.asset_id" inside SearchFiltered's tag UNION branches,
+// "asset_search.asset_id" in its FTS fallback. The guard is a correlated
+// subquery rather than a join so it drops into either query shape without
+// restructuring it, and building it only when facets is non-empty is what
+// keeps SearchFiltered's SQL byte-identical to Search's for a zero
+// FacetFilter.
+func facetExistsGuard(idColumn string, facets domain.FacetFilter) (string, []any) {
+	clauses, args := assetFacetWhereClauses(facets)
+	if len(clauses) == 0 {
+		return "", nil
+	}
+	return ` AND EXISTS (SELECT 1 FROM assets fa LEFT JOIN asset_analysis an ON an.asset_id=fa.id LEFT JOIN media_metadata m ON m.asset_id=fa.id WHERE fa.id=` + idColumn + ` AND ` + strings.Join(clauses, ` AND `) + `)`, args
 }
 
 func searchTagCandidates(q string) []string {
@@ -1892,11 +2467,20 @@ func (r *Repository) LatestLibrarySummary(ctx context.Context) (*domain.LibraryS
 	return &item, nil
 }
 
+// SaveRepurposePlan refuses to overwrite a plan a human already approved.
+// This check and the ones in SaveRepurposePlanRevision and
+// ApproveRepurposePlanRevision below are where the human-approval boundary is
+// actually enforced -- they are the only ones that run against state no
+// concurrent caller can change underneath them, so they are also the only
+// ones that can be trusted. They wrap domain sentinels rather than returning
+// bare prose so the layers above can react to what was refused with errors.Is
+// instead of re-deriving it from a second, unlocked read; see
+// internal/domain/errors.go.
 func (r *Repository) SaveRepurposePlan(ctx context.Context, plan domain.RepurposePlan) (domain.RepurposePlan, error) {
 	var currentState string
 	err := r.db.QueryRowContext(ctx, `SELECT status FROM repurpose_plans WHERE id=?`, plan.ID).Scan(&currentState)
 	if err == nil && currentState == "approved" {
-		return domain.RepurposePlan{}, fmt.Errorf("approved repurpose plan is immutable: %s", plan.ID)
+		return domain.RepurposePlan{}, fmt.Errorf("%w: plan %s is approved and accepts no further writes", domain.ErrPlanImmutable, plan.ID)
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return domain.RepurposePlan{}, err
@@ -1948,10 +2532,10 @@ func (r *Repository) SaveRepurposePlanRevision(ctx context.Context, plan domain.
 		return domain.RepurposePlanRevision{}, err
 	}
 	if current == nil {
-		return domain.RepurposePlanRevision{}, fmt.Errorf("repurpose plan not found: %s", plan.ID)
+		return domain.RepurposePlanRevision{}, fmt.Errorf("%w: no plan matches id %s", domain.ErrPlanNotFound, plan.ID)
 	}
 	if current.Status == "approved" {
-		return domain.RepurposePlanRevision{}, fmt.Errorf("approved repurpose plan is immutable: %s", plan.ID)
+		return domain.RepurposePlanRevision{}, fmt.Errorf("%w: plan %s is approved and accepts no further revisions", domain.ErrPlanImmutable, plan.ID)
 	}
 	plan.ID = current.ID
 	plan.CreatedAt = current.CreatedAt
@@ -2013,6 +2597,14 @@ func (r *Repository) ListRepurposePlanRevisions(ctx context.Context, planID stri
 	return items, rows.Err()
 }
 
+// ApproveRepurposePlanRevision is the write that makes a human's approval
+// real, so its three preconditions -- the revision exists, it is still a
+// draft, and it is the plan's latest -- are checked inside the same
+// transaction as the two UPDATEs rather than by the caller beforehand. A
+// caller's check cannot hold anything between its read and this write, so a
+// concurrent approval can always land in that gap; only these can't be raced.
+// They wrap domain sentinels for the reason SaveRepurposePlan's comment
+// gives.
 func (r *Repository) ApproveRepurposePlanRevision(ctx context.Context, planID string, revisionNumber int) (domain.RepurposePlanRevision, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2022,20 +2614,20 @@ func (r *Repository) ApproveRepurposePlanRevision(ctx context.Context, planID st
 	var id, state, snapshot, editorNote, created string
 	err = tx.QueryRowContext(ctx, `SELECT id,state,snapshot_json,editor_note,created_at FROM repurpose_plan_revisions WHERE plan_id=? AND revision=?`, planID, revisionNumber).Scan(&id, &state, &snapshot, &editorNote, &created)
 	if errors.Is(err, sql.ErrNoRows) {
-		return domain.RepurposePlanRevision{}, fmt.Errorf("repurpose plan revision not found: %s/%d", planID, revisionNumber)
+		return domain.RepurposePlanRevision{}, fmt.Errorf("%w: plan %s has no revision %d", domain.ErrPlanRevisionNotFound, planID, revisionNumber)
 	}
 	if err != nil {
 		return domain.RepurposePlanRevision{}, err
 	}
 	if state != "draft" {
-		return domain.RepurposePlanRevision{}, fmt.Errorf("repurpose plan revision is not draft: %s/%d", planID, revisionNumber)
+		return domain.RepurposePlanRevision{}, fmt.Errorf("%w: %s/%d is %s", domain.ErrPlanRevisionNotDraft, planID, revisionNumber, state)
 	}
 	var latest int
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision),0) FROM repurpose_plan_revisions WHERE plan_id=?`, planID).Scan(&latest); err != nil {
 		return domain.RepurposePlanRevision{}, err
 	}
 	if revisionNumber != latest {
-		return domain.RepurposePlanRevision{}, fmt.Errorf("only latest repurpose plan revision can be approved")
+		return domain.RepurposePlanRevision{}, fmt.Errorf("%w: %s/%d, latest is %d", domain.ErrPlanRevisionNotLatest, planID, revisionNumber, latest)
 	}
 	var plan domain.RepurposePlan
 	if err := json.Unmarshal([]byte(snapshot), &plan); err != nil {

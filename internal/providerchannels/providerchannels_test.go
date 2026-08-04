@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ev/timingdex/internal/config"
-	"github.com/ev/timingdex/internal/providerpool"
+	"github.com/evjohn-icu/timingdex/internal/config"
+	"github.com/evjohn-icu/timingdex/internal/providerpool"
 )
 
 func TestLegacyConfigConversionPreservesOrderedRoutesWithoutSecretValues(t *testing.T) {
@@ -59,7 +59,9 @@ func TestLegacyConfigConversionPreservesOrderedRoutesWithoutSecretValues(t *test
 	}
 }
 
-func TestExecutorRetriesOneSameProviderMemberThenUsesNextProviderRoute(t *testing.T) {
+// "Every key gets three tries" is the operator-facing promise, so a channel is
+// worth three members before the route moves on to the next provider.
+func TestExecutorTriesThreeMembersOfOneProviderThenUsesNextProviderRoute(t *testing.T) {
 	channels := []Channel{
 		{
 			ID: "channel-a", Label: "Provider A", ProviderName: "provider-a", Enabled: true, RouteOrder: 0,
@@ -67,7 +69,7 @@ func TestExecutorRetriesOneSameProviderMemberThenUsesNextProviderRoute(t *testin
 			Members: []Member{
 				{ID: "a-1", ChannelID: "channel-a", ProviderName: "provider-a", Label: "primary", SecretRef: "provider/a-1", Enabled: true},
 				{ID: "a-2", ChannelID: "channel-a", ProviderName: "provider-a", Label: "backup", SecretRef: "provider/a-2", Enabled: true},
-				{ID: "a-3", ChannelID: "channel-a", ProviderName: "provider-a", Label: "unused", SecretRef: "provider/a-3", Enabled: true},
+				{ID: "a-3", ChannelID: "channel-a", ProviderName: "provider-a", Label: "third", SecretRef: "provider/a-3", Enabled: true},
 			},
 		},
 		{
@@ -97,10 +99,10 @@ func TestExecutorRetriesOneSameProviderMemberThenUsesNextProviderRoute(t *testin
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	if got := invocationIDs(calls); !equalStrings(got, []string{"a-1", "a-2", "b-1"}) {
-		t.Fatalf("video invocation order = %v, want [a-1 a-2 b-1]", got)
+	if got := invocationIDs(calls); !equalStrings(got, []string{"a-1", "a-2", "a-3", "b-1"}) {
+		t.Fatalf("video invocation order = %v, want [a-1 a-2 a-3 b-1]", got)
 	}
-	if calls[0].ProviderName != "provider-a" || calls[1].ProviderName != "provider-a" || calls[2].ProviderName != "provider-b" {
+	if calls[0].ProviderName != "provider-a" || calls[1].ProviderName != "provider-a" || calls[2].ProviderName != "provider-a" || calls[3].ProviderName != "provider-b" {
 		t.Fatalf("provider route crossed unexpectedly: %+v", calls)
 	}
 	for _, call := range calls {
@@ -189,9 +191,11 @@ func TestExecutorDoesNotCrossProviderOnNonRetryableFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	var calls []Invocation
+	// 400: the request is what the provider rejected, and the fallback would
+	// reject it identically. Crossing the boundary would only buy a second bill.
 	err = executor.Execute(context.Background(), CapabilityASR, func(_ context.Context, invocation Invocation) error {
 		calls = append(calls, invocation)
-		return providerpool.HTTPError{Code: 401, Err: errors.New("unauthorized")}
+		return providerpool.HTTPError{Code: 400, Err: errors.New("bad request")}
 	})
 	if err == nil || len(calls) != 1 || calls[0].ProviderName != "primary" {
 		t.Fatalf("non-retryable execution err=%v calls=%+v", err, calls)
@@ -216,6 +220,98 @@ func TestExecutorSupportsIDAndSecretReferenceOperation(t *testing.T) {
 	}
 	if memberID != "member-a" || secretRef != "provider/member-a" {
 		t.Fatalf("operation received memberID=%q secretRef=%q", memberID, secretRef)
+	}
+}
+
+// A spent monthly quota answers 429 on every key at once. The caller has to be
+// able to tell that from one unlucky call without reading error text, because
+// the two need opposite handling: back off for seconds, or stop asking for
+// hours.
+func TestExecutorReportsRouteExhaustionWhenEveryKeyFailsRetryably(t *testing.T) {
+	channels := []Channel{
+		{
+			ID: "channel-a", ProviderName: "provider-a", Enabled: true, RouteOrder: 0,
+			Capabilities: []Capability{CapabilityVideoAnalysis},
+			Members: []Member{
+				{ID: "a-1", Enabled: true}, {ID: "a-2", Enabled: true}, {ID: "a-3", Enabled: true},
+			},
+		},
+		{
+			ID: "channel-b", ProviderName: "provider-b", Enabled: true, RouteOrder: 1,
+			Capabilities: []Capability{CapabilityVideoAnalysis},
+			Members:      []Member{{ID: "b-1", Enabled: true}},
+		},
+	}
+	executor, err := NewExecutor(channels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quota := providerpool.HTTPError{Code: 429, Err: errors.New("monthly quota exhausted")}
+	var calls []string
+	err = executor.Execute(context.Background(), CapabilityVideoAnalysis, func(_ context.Context, invocation Invocation) error {
+		calls = append(calls, invocation.MemberID)
+		return quota
+	})
+	if !errors.Is(err, ErrRouteExhausted) {
+		t.Fatalf("every key failing must surface as ErrRouteExhausted, got %v", err)
+	}
+	// The underlying failure has to stay reachable: it is what the operator
+	// reads on the progress page to find out which wall they hit.
+	if !strings.Contains(err.Error(), "monthly quota exhausted") {
+		t.Fatalf("exhaustion error dropped the cause: %v", err)
+	}
+	if !equalStrings(calls, []string{"a-1", "a-2", "a-3", "b-1"}) {
+		t.Fatalf("every enabled member must be tried before exhaustion is claimed: %v", calls)
+	}
+
+	// The second call is the shape that matters most in practice: providerpool
+	// has now cooled every member, so no request is issued at all. That must
+	// still read as exhaustion, or the next job spends its whole attempt
+	// budget discovering a wall this one already found.
+	before := len(calls)
+	err = executor.Execute(context.Background(), CapabilityVideoAnalysis, func(_ context.Context, invocation Invocation) error {
+		calls = append(calls, invocation.MemberID)
+		return quota
+	})
+	if len(calls) != before {
+		t.Fatalf("cooled route should not have issued a request: %v", calls)
+	}
+	if !errors.Is(err, ErrRouteExhausted) {
+		t.Fatalf("a fully cooled route must still report exhaustion, got %v", err)
+	}
+}
+
+// The distinction only means anything if it is narrow: a single failure, or a
+// route that was never tried, must not be dressed up as exhaustion.
+func TestExecutorDoesNotClaimExhaustionWhileAKeyIsStillUntried(t *testing.T) {
+	channels := []Channel{{
+		ID: "channel-a", ProviderName: "provider-a", Enabled: true,
+		Capabilities: []Capability{CapabilityVideoAnalysis},
+		Members: []Member{
+			{ID: "a-1", Enabled: true}, {ID: "a-2", Enabled: true}, {ID: "a-3", Enabled: true},
+			{ID: "a-4", Enabled: true},
+		},
+	}}
+	executor, err := NewExecutor(channels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = executor.Execute(context.Background(), CapabilityVideoAnalysis, func(_ context.Context, _ Invocation) error {
+		return providerpool.HTTPError{Code: 503, Err: errors.New("temporary provider failure")}
+	})
+	if err == nil {
+		t.Fatal("expected the retryable failure to be returned")
+	}
+	if errors.Is(err, ErrRouteExhausted) {
+		t.Fatalf("three attempts left a fourth key untried; that is not exhaustion: %v", err)
+	}
+
+	// An unroutable capability is a configuration mistake, not an outage: it
+	// must keep reporting ErrNoRoute so the operator is told to fix it rather
+	// than being made to wait hours for nothing to change.
+	err = executor.Execute(context.Background(), CapabilityASR, func(_ context.Context, _ Invocation) error { return nil })
+	if !errors.Is(err, ErrNoRoute) || errors.Is(err, ErrRouteExhausted) {
+		t.Fatalf("missing route must stay ErrNoRoute, got %v", err)
 	}
 }
 

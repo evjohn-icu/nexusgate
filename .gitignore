@@ -47,3 +47,4 @@ coverage.out
 
 # Server logs from a hand-run `timingdex serve` during testing.
 *.log
+*.tar.gz

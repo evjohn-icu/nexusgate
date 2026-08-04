@@ -5,21 +5,25 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/ev/timingdex/internal/app"
-	"github.com/ev/timingdex/internal/credentials"
-	"github.com/ev/timingdex/internal/domain"
-	"github.com/ev/timingdex/internal/remote"
+	"github.com/evjohn-icu/timingdex/internal/app"
+	"github.com/evjohn-icu/timingdex/internal/credentials"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/nleexport"
+	"github.com/evjohn-icu/timingdex/internal/normalize"
+	"github.com/evjohn-icu/timingdex/internal/remote"
 )
 
 type Server struct {
@@ -98,6 +102,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/hub/worker-pairings", s.requireHubAdmin(s.createWorkerPairing))
 	mux.HandleFunc("GET /api/v1/hub/workers", s.requireHubAdmin(s.listWorkers))
 	mux.HandleFunc("GET /api/v1/admin/provider-channels", s.requireHubAdmin(s.listProviderChannels))
+	mux.HandleFunc("GET /api/v1/admin/provider-channels/status", s.requireHubAdmin(s.providerChannelRuntimeStatus))
 	mux.HandleFunc("POST /api/v1/admin/provider-channels", s.requireHubAdmin(s.saveProviderChannel))
 	mux.HandleFunc("PATCH /api/v1/admin/provider-channels/{id}", s.requireHubAdmin(s.updateProviderChannel))
 	mux.HandleFunc("POST /api/v1/admin/provider-channels/{id}/enable", s.requireHubAdmin(s.enableProviderChannel))
@@ -116,10 +121,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/worker/jobs/{id}/artifacts/{type}", s.workerUploadArtifactRaw)
 	mux.HandleFunc("POST /api/v1/roots", s.requireHubAdmin(s.createRoot))
 	mux.HandleFunc("POST /api/v1/roots/{id}/scan", s.requireHubAdmin(s.scanRoot))
+	mux.HandleFunc("POST /api/v1/roots/inspect", s.requireHubAdmin(s.inspectRoot))
 	mux.HandleFunc("GET /", s.index)
 	mux.HandleFunc("GET /setup", s.setupPage)
 	mux.HandleFunc("GET /progress", s.progressPage)
 	mux.HandleFunc("GET /workers", s.workersPage)
+	mux.HandleFunc("GET /library-roots", s.libraryRootsPage)
 	mux.HandleFunc("GET /repurpose", s.repurposePage)
 	mux.HandleFunc("GET /tags", s.tagsPage)
 	mux.HandleFunc("GET /providers", s.providersPage)
@@ -138,10 +145,16 @@ func (s *Server) Handler() http.Handler {
 	// Queue status is readable without a token from a trusted network; the
 	// failure text stays admin-only regardless — see jobView.
 	mux.HandleFunc("GET /api/v1/jobs", s.requireTrustedRead(s.listJobs))
+	mux.HandleFunc("GET /api/v1/jobs/summary", s.requireTrustedRead(s.jobSummary))
 	mux.HandleFunc("GET /api/v1/admin/worker-jobs/{id}", s.requireHubAdmin(s.workerJobStatus))
 	mux.HandleFunc("POST /api/v1/admin/worker-jobs/{id}/assignment", s.requireHubAdmin(s.setWorkerJobAssignment))
 	mux.HandleFunc("POST /api/v1/pipeline/run", s.requireHubAdmin(s.runPipeline))
 	mux.HandleFunc("POST /api/v1/pipeline/retry-failed", s.requireHubAdmin(s.retryFailedJobs))
+	mux.HandleFunc("POST /api/v1/pipeline/resume-deferred", s.requireHubAdmin(s.resumeDeferredJobs))
+	// Same reasoning as /api/v1/jobs: the schedule is ordinary status the
+	// progress page polls without a token, and only the failure text is held
+	// back from unauthenticated callers.
+	mux.HandleFunc("GET /api/v1/pipeline/supervisor", s.requireTrustedRead(s.librarySupervisorStatus))
 	// Readable from a trusted network so the settings page can show the current
 	// limits without a token; changing them is administrative.
 	mux.HandleFunc("GET /api/v1/pipeline/throttle", s.requireTrustedRead(s.getPipelineThrottle))
@@ -166,6 +179,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/repurpose/plans/{id}/revisions", s.requireTrustedRead(s.listRepurposePlanRevisions))
 	mux.HandleFunc("POST /api/v1/repurpose/plans/{id}/revisions", s.requireAgentOrAdmin(s.reviseRepurposePlan))
 	mux.HandleFunc("POST /api/v1/repurpose/plans/{id}/revisions/{revision}/approve", s.requireHubAdmin(s.approveRepurposePlanRevision))
+	// Export is administrator-only, and deliberately not reachable with the
+	// agent token even though the plan it renders is readable with one. An
+	// FCPXML names the absolute path of every original file, which is the one
+	// thing access_original_media_paths denies; an EDL does not, but it is the
+	// artifact someone cuts with, so both sit on the human side of the line.
+	mux.HandleFunc("GET /api/v1/repurpose/plans/{id}/export.edl", s.requireHubAdmin(s.exportRepurposePlanEDL))
+	mux.HandleFunc("GET /api/v1/repurpose/plans/{id}/export.fcpxml", s.requireHubAdmin(s.exportRepurposePlanFCPXML))
 
 	return requestLogger(mux)
 }
@@ -266,6 +286,28 @@ func (s *Server) listProviderChannels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, channels)
 }
 
+// providerChannelRuntimeStatus answers "what is the Hub actually doing about
+// a provider route right now" -- distinct from listProviderChannels, which
+// only echoes the provider_channels table. A key that has retired itself
+// (providerpool.MemberSpent on a 401/402/403) narrows a route silently; this
+// is the only place that state becomes visible outside process memory. See
+// app.ProviderChannelCapabilityStatus for why a capability nothing has
+// routed through yet reports has_runtime_data=false rather than a fabricated
+// all-healthy snapshot.
+func (s *Server) providerChannelRuntimeStatus(w http.ResponseWriter, r *http.Request) {
+	statuses := s.service.ProviderChannelRuntimeStatus(r.Context())
+	if capability := strings.TrimSpace(r.URL.Query().Get("capability")); capability != "" {
+		filtered := make([]app.ProviderChannelCapabilityStatus, 0, len(statuses))
+		for _, status := range statuses {
+			if string(status.Capability) == capability {
+				filtered = append(filtered, status)
+			}
+		}
+		statuses = filtered
+	}
+	writeJSON(w, http.StatusOK, statuses)
+}
+
 func (s *Server) saveProviderChannel(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		ID           string `json:"id"`
@@ -291,11 +333,12 @@ func (s *Server) saveProviderChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	channel := domain.ProviderChannel{ID: input.ID, Capability: strings.TrimSpace(input.Capability), Label: strings.TrimSpace(input.Label), ProviderName: strings.TrimSpace(input.ProviderName), Protocol: strings.TrimSpace(input.Protocol), Endpoint: strings.TrimSpace(input.Endpoint), Model: strings.TrimSpace(input.Model), Enabled: input.Enabled, RouteOrder: input.RouteOrder}
-	// keys is positional, aligned with channel.Members below: a channel
-	// allows several members sharing the same label (Weight/MaxInflight
-	// exist so one provider can be configured with multiple keys), so a
-	// label-keyed map here would let one input silently clobber or
-	// misassign another member's key.
+	// keys is positional, aligned with channel.Members below. Labels are
+	// unique per channel (UNIQUE(channel_id, label), migration 0013), so
+	// keys is positional because Members itself is positional — not because
+	// two members could share a label: a label-keyed map here would still
+	// let one input silently clobber or misassign another member's key
+	// ahead of SaveProviderChannel's duplicate-label check.
 	keys := make([]string, 0, len(input.Members))
 	for _, member := range input.Members {
 		channel.Members = append(channel.Members, domain.ProviderChannelMember{ID: member.ID, Label: strings.TrimSpace(member.Label), Enabled: member.Enabled, Weight: member.Weight, MaxInflight: member.MaxInflight})
@@ -303,7 +346,16 @@ func (s *Server) saveProviderChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	saved, err := s.service.SaveProviderChannel(r.Context(), channel, keys)
 	if err != nil {
-		http.Error(w, "provider channel rejected: "+err.Error(), http.StatusBadRequest)
+		// Only a validation failure's text was written to be shown to an
+		// operator. SaveProviderChannel also calls UpsertProviderChannel and
+		// the secret store, and neither of those errors is safe to echo — a
+		// duplicate label used to reach this response as a bare SQLite
+		// UNIQUE-constraint string.
+		if errors.Is(err, app.ErrProviderChannelValidation) {
+			http.Error(w, "provider channel rejected: "+err.Error(), http.StatusBadRequest)
+		} else {
+			http.Error(w, "provider channel rejected", http.StatusBadRequest)
+		}
 		return
 	}
 	// Match the read contract: neither a key nor a secret reference belongs in
@@ -332,7 +384,15 @@ func (s *Server) updateProviderChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	updated, err := s.service.UpdateProviderChannel(r.Context(), r.PathValue("id"), patch)
 	if err != nil {
-		http.Error(w, "provider channel update rejected", http.StatusBadRequest)
+		// Same split as the create handler: a validation failure (e.g. two
+		// patched members sharing a label) names the label so the operator
+		// can fix it; anything else keeps the generic message rather than
+		// echoing a downstream layer's error text.
+		if errors.Is(err, app.ErrProviderChannelValidation) {
+			http.Error(w, "provider channel update rejected: "+err.Error(), http.StatusBadRequest)
+		} else {
+			http.Error(w, "provider channel update rejected", http.StatusBadRequest)
+		}
 		return
 	}
 	s.writeProviderChannel(w, r, http.StatusOK, updated)
@@ -479,7 +539,7 @@ func (s *Server) workerProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.service.RecordWorkerJobProgress(r.Context(), r.PathValue("id"), worker.ID, strings.TrimSpace(request.Stage), request.Progress, strings.TrimSpace(request.Event), strings.TrimSpace(request.Message)); err != nil {
-		if strings.Contains(err.Error(), "does not own active job") {
+		if errors.Is(err, domain.ErrJobLeaseLost) {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
@@ -501,8 +561,37 @@ func (s *Server) workerCredential(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "worker provider credential delivery is disabled", http.StatusForbidden)
 			return
 		}
-		if strings.Contains(err.Error(), "does not own active job") {
+		if errors.Is(err, domain.ErrJobLeaseLost) {
 			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		// The operation name is already the Worker's own path parameter, so
+		// echoing it back carries nothing it didn't already know. Neither
+		// message is built from err.Error(): ErrWorkerProviderConfiguredAsChannelOnly
+		// and ErrWorkerProviderNotConfigured are wrapped with operation/provider
+		// names only (see their doc comments in internal/app/service.go and
+		// credentials.Broker.resolve/Issue), but the fixed wording here is
+		// chosen deliberately, not merely because the wrapped text happens to
+		// be safe -- it keeps a maintainer's edit to the sentinel's own
+		// errors.New string from silently changing this response.
+		if errors.Is(err, app.ErrWorkerProviderConfiguredAsChannelOnly) {
+			// 403, not 400: the Worker's request is well-formed and the
+			// capability is genuinely configured -- Worker direct-credential
+			// access deliberately never reads provider channels (CLAUDE.md's
+			// Worker trust boundary), so this is a standing policy refusal for
+			// this capability via this route, the same shape as the
+			// AllowWorkerProviderCredentials-disabled 403 above, not a
+			// malformed request.
+			http.Error(w, fmt.Sprintf("worker provider credential rejected: capability %q is configured as a provider channel, which worker direct-credential access does not read; configure providers.* for this capability or use the Hub provider proxy instead", operation), http.StatusForbidden)
+			return
+		}
+		if errors.Is(err, app.ErrWorkerProviderNotConfigured) {
+			// 503, not 400: nothing about the Worker's request is wrong --
+			// the Hub simply has no provider for this capability yet, by
+			// either configuration method. An operator configuring one later
+			// makes the identical request succeed, which is what 503 signals
+			// and 400 does not.
+			http.Error(w, fmt.Sprintf("worker provider credential rejected: no provider is configured for capability %q", operation), http.StatusServiceUnavailable)
 			return
 		}
 		http.Error(w, "credential request rejected", http.StatusBadRequest)
@@ -544,8 +633,21 @@ func (s *Server) workerProviderProxy(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "provider proxy request failed", http.StatusBadGateway)
 			return
 		}
-		if strings.Contains(err.Error(), "does not own active job") || strings.Contains(err.Error(), "credential operation") {
+		if errors.Is(err, domain.ErrJobLeaseLost) {
 			http.Error(w, "worker does not own active job for provider proxy", http.StatusConflict)
+			return
+		}
+		// Same split, same reasoning and same status codes as workerCredential's
+		// classification above: the operation name is the Worker's own path
+		// parameter, so the message is built from it rather than from
+		// err.Error(), and 403/503 replace the old flat 400 because neither
+		// sentinel means the Worker's request was wrong.
+		if errors.Is(err, app.ErrWorkerProviderConfiguredAsChannelOnly) {
+			http.Error(w, fmt.Sprintf("provider proxy request rejected: capability %q is configured as a provider channel, which the worker provider proxy does not read; configure providers.* for this capability instead", operation), http.StatusForbidden)
+			return
+		}
+		if errors.Is(err, app.ErrWorkerProviderNotConfigured) {
+			http.Error(w, fmt.Sprintf("provider proxy request rejected: no provider is configured for capability %q", operation), http.StatusServiceUnavailable)
 			return
 		}
 		http.Error(w, "provider proxy request rejected", http.StatusBadRequest)
@@ -650,6 +752,16 @@ func (s *Server) hardwareReport(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) agentCapabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
+		// version is the agent contract version, not the product version. The
+		// skills/timingdex package — its SKILL.md and
+		// references/api-contract.md, titled "Timingdex v0.13 Local Agent API
+		// Contract" — is written against this exact string, and server_test.go
+		// pins it, so it only moves when the contract itself changes: a route,
+		// an action, or a field in this document. It must not track Hub
+		// releases; the product is at v0.21 while this stays v0.13, and the
+		// gap is the contract not having changed, not this endpoint being
+		// stale. Bumping it means re-versioning and re-validating the skills
+		// package in the same change.
 		"version":       "v0.13",
 		"approval_mode": "human_required",
 		"auth": map[string]any{
@@ -678,6 +790,7 @@ func (s *Server) agentCapabilities(w http.ResponseWriter, r *http.Request) {
 			"run_pipeline",
 			"read_provider_keys",
 			"access_original_media_paths",
+			"export_timeline",
 		},
 	})
 }
@@ -701,10 +814,31 @@ func (s *Server) createRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	root, err := s.service.AddLibraryRoot(r.Context(), request.Path)
 	if err != nil {
+		var shareErr app.ErrShareNotMounted
+		if errors.As(err, &shareErr) {
+			// A bare 500 here would be indistinguishable from a stat failure or a
+			// permissions problem, and an API caller that never opens
+			// /library-roots still deserves the mount commands rather than a dead
+			// end — so this gets its own status and a body carrying the same
+			// inspection the wizard would have shown before the operator ever
+			// tried to add the root.
+			writeJSON(w, http.StatusUnprocessableEntity, shareNotMountedResponse{
+				Error:      err.Error(),
+				Inspection: s.service.InspectRootPath(request.Path, ""),
+			})
+			return
+		}
 		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, root)
+}
+
+// shareNotMountedResponse is what createRoot answers with when AddLibraryRoot
+// finds a network share where a mounted path was expected.
+type shareNotMountedResponse struct {
+	Error      string             `json:"error"`
+	Inspection app.RootInspection `json:"inspection"`
 }
 
 func (s *Server) scanRoot(w http.ResponseWriter, r *http.Request) {
@@ -716,12 +850,112 @@ func (s *Server) scanRoot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// inspectRoot is the read-only counterpart to createRoot: it answers whether a
+// path parses as a network share (with the exact mount commands when it does),
+// whether the path exists and is a directory, and what its filesystem looks
+// like — everything the /library-roots wizard needs before it ever commits to
+// adding a root. It never accepts a password (mount.Share has nowhere to put
+// one) and never reports on anything beyond the single path given: no
+// directory listing, no globbing.
+func (s *Server) inspectRoot(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Path       string `json:"path"`
+		Mountpoint string `json:"mountpoint"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&request); err != nil || strings.TrimSpace(request.Path) == "" {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.service.InspectRootPath(request.Path, request.Mountpoint))
+}
+
 func parseInt(value string, fallback int) int {
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed < 0 {
 		return fallback
 	}
 	return parsed
+}
+
+// facetQueryFields pairs each facet query parameter with the normalize
+// vocabulary it must be drawn from, listed once so the browse endpoint and
+// the three shot-search endpoints can't drift out of sync on param names or
+// allowed values.
+var facetQueryFields = []struct {
+	param  string
+	values []string
+}{
+	{"asset_type", normalize.AssetTypeValues},
+	{"shot_size", normalize.ShotSizeValues},
+	{"camera_motion", normalize.MotionValues},
+	{"audio_type", normalize.AudioTypeValues},
+	{"quality", normalize.QualityValues},
+	{"usable_as", normalize.UsableAsValues},
+}
+
+// parseFacetFilter reads the controlled-vocabulary and duration query
+// parameters shared by the asset browse endpoint and the three shot-search
+// endpoints (see domain.FacetFilter). A facet parameter takes a
+// comma-separated list of values that are OR'd together; different facet
+// parameters are AND'd by the caller's SQL. An unrecognized value is
+// rejected here — a typo must 400, not silently compile into a WHERE clause
+// that matches nothing and reads as "you have no footage".
+func parseFacetFilter(query url.Values) (domain.FacetFilter, error) {
+	var f domain.FacetFilter
+	targets := map[string]*[]string{
+		"asset_type":    &f.AssetTypes,
+		"shot_size":     &f.ShotSizes,
+		"camera_motion": &f.CameraMotions,
+		"audio_type":    &f.AudioTypes,
+		"quality":       &f.Qualities,
+		"usable_as":     &f.UsableAs,
+	}
+	for _, spec := range facetQueryFields {
+		raw := strings.TrimSpace(query.Get(spec.param))
+		if raw == "" {
+			continue
+		}
+		allowed := make(map[string]bool, len(spec.values))
+		for _, v := range spec.values {
+			allowed[v] = true
+		}
+		var values []string
+		for _, part := range strings.Split(raw, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if !allowed[part] {
+				return domain.FacetFilter{}, fmt.Errorf("invalid %s value: %q", spec.param, part)
+			}
+			values = append(values, part)
+		}
+		*targets[spec.param] = values
+	}
+	if raw := strings.TrimSpace(query.Get("min_duration_ms")); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return domain.FacetFilter{}, fmt.Errorf("invalid min_duration_ms value: %q", raw)
+		}
+		f.MinDurationMS = &v
+	}
+	if raw := strings.TrimSpace(query.Get("max_duration_ms")); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return domain.FacetFilter{}, fmt.Errorf("invalid max_duration_ms value: %q", raw)
+		}
+		f.MaxDurationMS = &v
+	}
+	// An inverted range is the same class of mistake as a misspelled facet
+	// value: both parse cleanly and compile into SQL that matches nothing, and
+	// an empty result is indistinguishable from "you have no footage". Equal
+	// bounds stay valid — both ends are inclusive, so that is a legitimate
+	// exact-duration query, not an empty one. The check sits after both values
+	// have parsed so an unparseable bound still reports as unparseable.
+	if f.MinDurationMS != nil && f.MaxDurationMS != nil && *f.MinDurationMS > *f.MaxDurationMS {
+		return domain.FacetFilter{}, fmt.Errorf("invalid duration range: min_duration_ms=%d exceeds max_duration_ms=%d", *f.MinDurationMS, *f.MaxDurationMS)
+	}
+	return f, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -771,6 +1005,19 @@ func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, views)
 }
 
+// jobSummary needs no admin gate even though listJobs withholds error text from
+// anonymous callers: a count carries no upstream response body, only how much
+// work exists and in what state, which is the same class of fact the job list's
+// states and attempt counts already are.
+func (s *Server) jobSummary(w http.ResponseWriter, r *http.Request) {
+	summary, err := s.service.JobSummary(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
+}
+
 func (s *Server) workerJobStatus(w http.ResponseWriter, r *http.Request) {
 	status, err := s.service.GetWorkerJobStatus(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -806,6 +1053,27 @@ func (s *Server) runPipeline(w http.ResponseWriter, r *http.Request) {
 	} else {
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "already_running"})
 	}
+}
+
+// librarySupervisorView adds the one bit an unauthenticated caller may know
+// about a failed pass. The text itself follows jobView's rule: a scan error
+// carries filesystem paths, and error strings are exactly where upstream detail
+// leaks, so it stays behind the admin token.
+type librarySupervisorView struct {
+	app.LibrarySupervisorStatus
+	HasError bool `json:"has_error"`
+}
+
+// librarySupervisorStatus is how an operator tells an unattended loop that is
+// running from one that has quietly died. A background loop nobody can see is
+// indistinguishable from one that stopped.
+func (s *Server) librarySupervisorStatus(w http.ResponseWriter, r *http.Request) {
+	status := s.service.LibrarySupervisorStatus()
+	view := librarySupervisorView{LibrarySupervisorStatus: status, HasError: strings.TrimSpace(status.LastError) != ""}
+	if !s.isHubAdmin(r) {
+		view.LastError = ""
+	}
+	writeJSON(w, http.StatusOK, view)
 }
 
 func (s *Server) getPipelineThrottle(w http.ResponseWriter, r *http.Request) {
@@ -871,13 +1139,40 @@ func (s *Server) retryFailedJobs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int{"requeued": requeued})
 }
 
+func (s *Server) resumeDeferredJobs(w http.ResponseWriter, r *http.Request) {
+	resumed, err := s.service.ResumeDeferredJobs(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"resumed": resumed})
+}
+
 func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	if q == "" {
 		http.Error(w, "missing q", http.StatusBadRequest)
 		return
 	}
-	ids, err := s.service.Search(r.Context(), q, parseInt(r.URL.Query().Get("limit"), 100))
+	facets, err := parseFacetFilter(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// The browser turns this id list into cards with a follow-up GET
+	// /api/v1/assets?ids=..., which 400s past maxListedAssetIDs rather than
+	// silently truncate. An uncapped limit here would just move that failure
+	// one request later: search would "succeed" with a list the second leg
+	// can never consume. Clamping instead of erroring is deliberate — unlike
+	// ids=, which reflects a caller-supplied exact set where dropping members
+	// is data loss the caller can't detect, a limit has always been a
+	// best-effort cap, so capping it at the ceiling the next request enforces
+	// isn't a new kind of loss, only today's existing one landing sooner.
+	limit := parseInt(r.URL.Query().Get("limit"), 100)
+	if limit > maxListedAssetIDs {
+		limit = maxListedAssetIDs
+	}
+	ids, err := s.service.SearchFiltered(r.Context(), q, limit, facets)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -891,7 +1186,12 @@ func (s *Server) searchShots(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing q", http.StatusBadRequest)
 		return
 	}
-	hits, err := s.service.SearchShots(r.Context(), q, parseInt(r.URL.Query().Get("limit"), 100))
+	facets, err := parseFacetFilter(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	hits, err := s.service.SearchShotsFiltered(r.Context(), q, parseInt(r.URL.Query().Get("limit"), 100), facets)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -905,7 +1205,12 @@ func (s *Server) hybridSearchShots(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing q", http.StatusBadRequest)
 		return
 	}
-	hits, err := s.service.HybridSearchShots(r.Context(), q, parseInt(r.URL.Query().Get("limit"), 100))
+	facets, err := parseFacetFilter(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	hits, err := s.service.HybridSearchShotsFiltered(r.Context(), q, parseInt(r.URL.Query().Get("limit"), 100), facets)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -914,9 +1219,19 @@ func (s *Server) hybridSearchShots(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) similarShots(w http.ResponseWriter, r *http.Request) {
-	hits, err := s.service.SimilarShots(r.Context(), r.PathValue("id"), parseInt(r.URL.Query().Get("limit"), 20))
+	facets, err := parseFacetFilter(r.URL.Query())
 	if err != nil {
-		if strings.HasPrefix(err.Error(), "shot not found:") {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	hits, err := s.service.SimilarShotsFiltered(r.Context(), r.PathValue("id"), parseInt(r.URL.Query().Get("limit"), 20), facets)
+	if err != nil {
+		// Matched as a sentinel rather than by message prefix: this used to be
+		// strings.HasPrefix(err.Error(), "shot not found:"), which made the
+		// difference between 404 and 500 depend on repository wording that no
+		// compiler checks. Rewording the error there — ordinary maintenance —
+		// silently downgraded a missing shot to a 500.
+		if errors.Is(err, domain.ErrShotVectorNotFound) {
 			http.NotFound(w, r)
 			return
 		}
@@ -935,15 +1250,69 @@ func (s *Server) rareShots(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+// maxListedAssetIDs bounds GET /api/v1/assets?ids=... . The endpoint exists
+// so a facet-aware /api/v1/search result can be rendered by id instead of
+// re-derived from a capped card listing (see parseFacetFilter's doc comment
+// and Repository.SearchFiltered); silently truncating an over-cap id list
+// would reintroduce the same silent loss this endpoint was added to remove,
+// so parseAssetIDs 400s instead.
+const maxListedAssetIDs = 200
+
+// parseAssetIDs reads the comma-separated "ids" query parameter. An absent
+// or empty value returns (nil, nil) — unset, matching every asset — because
+// an empty-but-present ids filter would otherwise be indistinguishable from
+// "match nothing", which is not a state a caller can usefully ask for (a
+// client that computed zero search hits should skip calling this endpoint
+// rather than send ids= empty).
+func parseAssetIDs(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var ids []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		ids = append(ids, part)
+	}
+	if len(ids) > maxListedAssetIDs {
+		return nil, fmt.Errorf("too many ids: %d exceeds limit of %d", len(ids), maxListedAssetIDs)
+	}
+	return ids, nil
+}
+
 func (s *Server) listAssetCards(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
+	facets, err := parseFacetFilter(query)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ids, err := parseAssetIDs(query.Get("ids"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// A caller narrowing by ids without an explicit limit gets a default sized
+	// to the id list, not the ordinary browse default of 100: an id set larger
+	// than 100 (up to maxListedAssetIDs) silently truncating back to 100 would
+	// reintroduce, one field over, the exact silent-loss bug ids= was added to
+	// remove. An explicit limit still wins either way.
+	defaultLimit := 100
+	if len(ids) > 0 && strings.TrimSpace(query.Get("limit")) == "" {
+		defaultLimit = len(ids)
+	}
 	filter := domain.AssetCardFilter{
-		Limit:       parseInt(query.Get("limit"), 100),
+		Limit:       parseInt(query.Get("limit"), defaultLimit),
 		Offset:      parseInt(query.Get("offset"), 0),
 		RegionLabel: query.Get("region"),
 		CameraModel: query.Get("camera"),
 		SessionID:   query.Get("session"),
 		Status:      domain.ProcessingStatus(query.Get("status")),
+		Facets:      facets,
+		IDs:         ids,
 	}
 	if value, err := time.Parse("2006-01-02", query.Get("date_from")); err == nil {
 		filter.CapturedFrom = &value
@@ -960,21 +1329,39 @@ func (s *Server) listAssetCards(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, cards)
 }
 
-func collectionFilterFromQuery(query map[string][]string) domain.AssetCollectionFilter {
+func collectionFilterFromQuery(query map[string][]string) (domain.AssetCollectionFilter, error) {
 	filter := domain.AssetCollectionFilter{
 		RegionLabel: queryValue(query, "region"),
 		CameraModel: queryValue(query, "camera"),
 		SessionID:   queryValue(query, "session"),
 		Status:      domain.ProcessingStatus(queryValue(query, "status")),
 	}
-	if value, err := time.Parse("2006-01-02", queryValue(query, "date_from")); err == nil {
-		filter.CapturedFrom = &value
+	facets, err := parseFacetFilter(url.Values(query))
+	if err != nil {
+		return domain.AssetCollectionFilter{}, err
 	}
-	if value, err := time.Parse("2006-01-02", queryValue(query, "date_to")); err == nil {
-		value = value.AddDate(0, 0, 1)
-		filter.CapturedTo = &value
+	filter.FacetFilter = facets
+	// An unparseable date is the same failure class as an invalid facet
+	// value — both would silently compile into a WHERE clause that matches
+	// nothing and read as "no footage" — so it must error and 400, matching
+	// parseFacetFilter's decision. Empty stays unset: the browser's date
+	// input either sends nothing or a valid "2006-01-02" value.
+	if value := queryValue(query, "date_from"); value != "" {
+		parsed, err := time.Parse("2006-01-02", value)
+		if err != nil {
+			return domain.AssetCollectionFilter{}, fmt.Errorf("invalid date_from value: %q", value)
+		}
+		filter.CapturedFrom = &parsed
 	}
-	return filter
+	if value := queryValue(query, "date_to"); value != "" {
+		parsed, err := time.Parse("2006-01-02", value)
+		if err != nil {
+			return domain.AssetCollectionFilter{}, fmt.Errorf("invalid date_to value: %q", value)
+		}
+		parsed = parsed.AddDate(0, 0, 1)
+		filter.CapturedTo = &parsed
+	}
+	return filter, nil
 }
 
 func queryValue(query map[string][]string, key string) string {
@@ -985,7 +1372,12 @@ func queryValue(query map[string][]string, key string) string {
 }
 
 func (s *Server) processingSummary(w http.ResponseWriter, r *http.Request) {
-	summary, err := s.service.GetAssetProcessingSummary(r.Context(), collectionFilterFromQuery(r.URL.Query()))
+	filter, err := collectionFilterFromQuery(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	summary, err := s.service.GetAssetProcessingSummary(r.Context(), filter)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1172,11 +1564,11 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 }
 
 const legacyLibraryIndexHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · 素材库</title><style>
-:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0c1422;color:#edf3ff;font:14px ui-sans-serif,system-ui,-apple-system,sans-serif}header{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:18px;padding:15px max(24px,5vw);background:#0c1422ee;backdrop-filter:blur(15px);border-bottom:1px solid #273750}a{color:#b7c8eb;text-decoration:none;font-size:14px}.brand{font-size:16px;font-weight:850;color:#fff;margin-right:auto;letter-spacing:-.02em}.nav-active{color:#fff}.search{width:min(360px,31vw);display:flex;gap:7px}input{min-width:0;flex:1;padding:10px 11px;border:1px solid #354965;border-radius:9px;background:#111d30;color:#fff;font:inherit}button{border:0;border-radius:9px;padding:10px 13px;background:#324767;color:#eaf1ff;font:inherit;font-weight:750;cursor:pointer}button.primary{background:#91a9ff;color:#0a1324}.wrap{width:min(1440px,100%);margin:auto;padding:36px max(24px,5vw) 64px}.top{display:flex;justify-content:space-between;gap:28px;align-items:end;margin-bottom:26px}.eyebrow{color:#93aaff;font-size:11px;font-weight:850;letter-spacing:.12em}.top h1{margin:8px 0 7px;font-size:clamp(31px,4vw,50px);line-height:1;letter-spacing:-.05em}.muted{margin:0;color:#9fb0ce;line-height:1.6}.legend{display:flex;gap:12px;color:#9fb0ce;font-size:12px;align-items:center}.legend i{width:8px;height:8px;border-radius:50%;display:inline-block;background:#95aaff}.legend i:nth-child(2){background:#70d7b1}.legend i:nth-child(3){background:#ffc783}.library{display:grid;gap:13px}.asset-row{display:grid;grid-template-columns:220px minmax(220px,.75fr) minmax(380px,1.75fr);gap:18px;align-items:stretch;padding:13px;background:#121f34;border:1px solid #2b3e5b;border-radius:16px;transition:border-color .15s,transform .15s}.asset-row:hover{border-color:#506e9d;transform:translateY(-1px)}.thumb,.thumb-empty{width:100%;height:100%;min-height:126px;aspect-ratio:16/9;object-fit:cover;border-radius:10px;background:#070d17}.thumb-empty{display:grid;place-items:center;color:#8193b0;font-size:12px;border:1px dashed #3e536f}.asset-info{display:flex;min-width:0;flex-direction:column;justify-content:center;padding:4px 0}.filename{font-size:16px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:-.02em}.asset-meta{margin-top:7px;color:#a9bad7;font-size:12px}.summary{margin:10px 0;color:#d8e2f4;line-height:1.45}.chips{display:flex;flex-wrap:wrap;gap:5px}.chip{border-radius:99px;padding:4px 7px;background:#223653;color:#b8caef;font-size:11px}.chip.voice{color:#9bf0c6;background:#173e36}.asset-details{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}.detail{font-size:11px;color:#a9bad7;background:#172a43;border-radius:6px;padding:3px 6px}.detail b{color:#d4e0f8;margin-right:4px}.timeline-card{min-width:0;display:flex;flex-direction:column;justify-content:center;padding:4px 3px}.timeline-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}.timeline-title{font-size:12px;font-weight:800;color:#c9d7ed}.duration{color:#91a3c1;font-size:12px;font-variant-numeric:tabular-nums}.semantic-timeline{position:relative;height:94px;border-radius:10px;border:1px solid #334967;background:linear-gradient(90deg,#0d1727 0%,#111e32 50%,#0d1727 100%);overflow:hidden}.ticks{position:absolute;inset:0;display:flex;justify-content:space-between;padding:6px 9px;color:#71849f;font-size:10px;pointer-events:none}.ticks:before{content:"";position:absolute;top:37px;left:0;right:0;border-top:1px solid #2b405e}.cut-marker{position:absolute;top:4px;left:calc(var(--cut)*1%);z-index:2;max-width:155px;padding-left:7px;color:#c6d4ef;font-size:10px;font-weight:750;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transform:translateX(-4px);pointer-events:none}.cut-marker:before{content:"";position:absolute;left:0;top:18px;height:16px;border-left:1px dashed #8399c0}.shot{position:absolute;top:47px;left:calc(var(--left)*1%);width:max(2%,calc(var(--width)*1%));min-width:13px;height:31px;border-radius:6px;background:var(--tone);border:1px solid #c9d7ff;box-shadow:0 3px 10px #0004;overflow:hidden;cursor:default}.shot-label{display:block;padding:7px 8px;color:#071321;font-size:11px;font-weight:850;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.shot:nth-of-type(4n+1){--tone:#8eaaff}.shot:nth-of-type(4n+2){--tone:#75d9b6}.shot:nth-of-type(4n+3){--tone:#ffc77f}.shot:nth-of-type(4n){--tone:#d69df3}.timeline-empty{height:94px;display:grid;place-items:center;border:1px dashed #405775;border-radius:10px;color:#a0b2ce;font-size:12px}.empty{padding:58px 20px;border:1px dashed #3b5070;border-radius:16px;color:#a8b9d2;text-align:center}.error{color:#ffb2bf}.loading{color:#a3b4cf;font-size:13px;padding:24px}@media(max-width:980px){header{gap:12px}.search{width:260px}.asset-row{grid-template-columns:170px minmax(190px,.8fr) minmax(280px,1.4fr)}}@media(max-width:720px){header{flex-wrap:wrap;padding:14px 20px}.brand{margin-right:0}.search{order:3;width:100%}.wrap{padding:28px 20px 44px}.top{display:block}.legend{margin-top:16px}.asset-row{grid-template-columns:1fr;gap:13px}.thumb,.thumb-empty{min-height:auto;height:auto}.timeline-card{padding:0}.asset-info{padding:0}.semantic-timeline,.timeline-empty{height:98px}.shot{top:51px}.ticks:before{top:41px}.cut-marker:before{height:20px}}</style></head><body><header><span class="brand">Timingdex</span><a class="nav-active" href="/">素材库</a><a href="/setup">启动配置</a><a href="/progress">处理进度</a><a href="/settings">设置</a><a href="/repurpose">翻新方案</a><a href="/tags">Tag Curator</a><div class="search"><input id="q" placeholder="搜索内容、口述或标签"><button class="primary" onclick="search()">搜索</button><button onclick="load()">全部</button></div></header><main class="wrap" data-library-browser><section class="top"><div><div class="eyebrow">FOOTAGE LIBRARY · SHOT LEVEL</div><h1>素材库 · 镜头浏览</h1><p class="muted">从缩略图、素材语义到每个时间段的镜头内容，一眼看清你的素材里有什么可以用。</p></div><div class="legend"><span><i></i> 不同镜头</span><span><i></i> 时间范围</span><span><i></i> 语义描述</span></div></section><section id="library" class="library" aria-live="polite"><div class="loading">正在读取素材库…</div></section></main><script>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0c1422;color:#edf3ff;font:14px ui-sans-serif,system-ui,-apple-system,sans-serif}header{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:18px;padding:15px max(24px,5vw);background:#0c1422ee;backdrop-filter:blur(15px);border-bottom:1px solid #273750}a{color:#b7c8eb;text-decoration:none;font-size:14px}.brand{font-size:16px;font-weight:850;color:#fff;margin-right:auto;letter-spacing:-.02em}.nav-active{color:#fff}.search{width:min(360px,31vw);display:flex;gap:7px}input{min-width:0;flex:1;padding:10px 11px;border:1px solid #354965;border-radius:9px;background:#111d30;color:#fff;font:inherit}button{border:0;border-radius:9px;padding:10px 13px;background:#324767;color:#eaf1ff;font:inherit;font-weight:750;cursor:pointer}button.primary{background:#91a9ff;color:#0a1324}.wrap{width:min(1440px,100%);margin:auto;padding:36px max(24px,5vw) 64px}.top{display:flex;justify-content:space-between;gap:28px;align-items:end;margin-bottom:26px}.eyebrow{color:#93aaff;font-size:11px;font-weight:850;letter-spacing:.12em}.top h1{margin:8px 0 7px;font-size:clamp(31px,4vw,50px);line-height:1;letter-spacing:-.05em}.muted{margin:0;color:#9fb0ce;line-height:1.6}.legend{display:flex;gap:12px;color:#9fb0ce;font-size:12px;align-items:center}.legend i{width:8px;height:8px;border-radius:50%;display:inline-block;background:#95aaff}.legend i:nth-child(2){background:#70d7b1}.legend i:nth-child(3){background:#ffc783}.library{display:grid;gap:13px}.asset-row{display:grid;grid-template-columns:220px minmax(220px,.75fr) minmax(380px,1.75fr);gap:18px;align-items:stretch;padding:13px;background:#121f34;border:1px solid #2b3e5b;border-radius:16px;transition:border-color .15s,transform .15s}.asset-row:hover{border-color:#506e9d;transform:translateY(-1px)}.thumb,.thumb-empty{width:100%;height:100%;min-height:126px;aspect-ratio:16/9;object-fit:cover;border-radius:10px;background:#070d17}.thumb-empty{display:grid;place-items:center;color:#8193b0;font-size:12px;border:1px dashed #3e536f}.asset-info{display:flex;min-width:0;flex-direction:column;justify-content:center;padding:4px 0}.filename{font-size:16px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:-.02em}.asset-meta{margin-top:7px;color:#a9bad7;font-size:12px}.summary{margin:10px 0;color:#d8e2f4;line-height:1.45}.chips{display:flex;flex-wrap:wrap;gap:5px}.chip{border-radius:99px;padding:4px 7px;background:#223653;color:#b8caef;font-size:11px}.chip.voice{color:#9bf0c6;background:#173e36}.asset-details{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}.detail{font-size:11px;color:#a9bad7;background:#172a43;border-radius:6px;padding:3px 6px}.detail b{color:#d4e0f8;margin-right:4px}.timeline-card{min-width:0;display:flex;flex-direction:column;justify-content:center;padding:4px 3px}.timeline-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}.timeline-title{font-size:12px;font-weight:800;color:#c9d7ed}.duration{color:#91a3c1;font-size:12px;font-variant-numeric:tabular-nums}.semantic-timeline{position:relative;height:94px;border-radius:10px;border:1px solid #334967;background:linear-gradient(90deg,#0d1727 0%,#111e32 50%,#0d1727 100%);overflow:hidden}.ticks{position:absolute;inset:0;display:flex;justify-content:space-between;padding:6px 9px;color:#71849f;font-size:10px;pointer-events:none}.ticks:before{content:"";position:absolute;top:37px;left:0;right:0;border-top:1px solid #2b405e}.cut-marker{position:absolute;top:4px;left:calc(var(--cut)*1%);z-index:2;max-width:155px;padding-left:7px;color:#c6d4ef;font-size:10px;font-weight:750;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transform:translateX(-4px);pointer-events:none}.cut-marker:before{content:"";position:absolute;left:0;top:18px;height:16px;border-left:1px dashed #8399c0}.shot{position:absolute;top:47px;left:calc(var(--left)*1%);width:max(2%,calc(var(--width)*1%));min-width:13px;height:31px;border-radius:6px;background:var(--tone);border:1px solid #c9d7ff;box-shadow:0 3px 10px #0004;overflow:hidden;cursor:default}.shot-label{display:block;padding:7px 8px;color:#071321;font-size:11px;font-weight:850;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.shot:nth-of-type(4n+1){--tone:#8eaaff}.shot:nth-of-type(4n+2){--tone:#75d9b6}.shot:nth-of-type(4n+3){--tone:#ffc77f}.shot:nth-of-type(4n){--tone:#d69df3}.timeline-empty{height:94px;display:grid;place-items:center;border:1px dashed #405775;border-radius:10px;color:#a0b2ce;font-size:12px}.empty{padding:58px 20px;border:1px dashed #3b5070;border-radius:16px;color:#a8b9d2;text-align:center}.error{color:#ffb2bf}.loading{color:#a3b4cf;font-size:13px;padding:24px}@media(max-width:980px){header{gap:12px}.search{width:260px}.asset-row{grid-template-columns:170px minmax(190px,.8fr) minmax(280px,1.4fr)}}@media(max-width:720px){header{flex-wrap:wrap;padding:14px 20px}.brand{margin-right:0}.search{order:3;width:100%}.wrap{padding:28px 20px 44px}.top{display:block}.legend{margin-top:16px}.asset-row{grid-template-columns:1fr;gap:13px}.thumb,.thumb-empty{min-height:auto;height:auto}.timeline-card{padding:0}.asset-info{padding:0}.semantic-timeline,.timeline-empty{height:98px}.shot{top:51px}.ticks:before{top:41px}.cut-marker:before{height:20px}}</style></head><body><header><span class="brand">Timingdex</span><a class="nav-active" href="/">素材库</a><a href="/setup">启动配置</a><a href="/progress">处理进度</a><a href="/library-roots">添加素材目录</a><a href="/settings">设置</a><a href="/repurpose">翻新方案</a><a href="/tags">Tag Curator</a><div class="search"><input id="q" placeholder="搜索内容、口述或标签"><button class="primary" onclick="search()">搜索</button><button onclick="load()">全部</button></div></header><main class="wrap" data-library-browser><section class="top"><div><div class="eyebrow">FOOTAGE LIBRARY · SHOT LEVEL</div><h1>素材库 · 镜头浏览</h1><p class="muted">从缩略图、素材语义到每个时间段的镜头内容，一眼看清你的素材里有什么可以用。</p></div><div class="legend"><span><i></i> 不同镜头</span><span><i></i> 时间范围</span><span><i></i> 语义描述</span></div></section><section id="library" class="library" aria-live="polite"><div class="loading">正在读取素材库…</div></section></main><script>
 const library=document.getElementById('library');const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=ms=>{ms=Math.max(0,Math.floor((ms||0)/1000));return String(Math.floor(ms/60)).padStart(2,'0')+':'+String(ms%60).padStart(2,'0')};
 function loadShots(id){return fetch('/api/v1/assets/'+encodeURIComponent(id)+'/shots').then(r=>r.ok?r.json():[]).then(x=>Array.isArray(x)?x:[]).catch(()=>[])}
 function chips(x){const values=[x.asset_type,x.camera_motion,x.lighting,...(x.mood_tags||[])].filter(Boolean).slice(0,5);return values.map(v=>'<span class="chip">'+esc(v)+'</span>').join('')+(x.has_speech?'<span class="chip voice">有口述</span>':'')}
-function timeline(x,shots){const duration=Math.max(Number(x.duration_ms)||0,1);if(!shots.length)return '<div class="timeline-empty">尚未生成镜头理解；完成分析后会显示可用时间段。</div>';const labels=['00:00',fmt(duration/2),fmt(duration)];const blocks=shots.map(s=>{const start=Math.max(0,Number(s.start_ms)||0),end=Math.max(start,Number(s.end_ms)||start),left=Math.min(100,start/duration*100),width=Math.max(1,(end-start)/duration*100),description=s.description||((s.tags||[]).join(' · '))||'未命名镜头',title=fmt(start)+' — '+fmt(end)+' · '+description;return '<div class="shot" style="--left:'+left.toFixed(3)+';--width:'+width.toFixed(3)+'" title="'+esc(title)+'"><span class="shot-label">'+esc(description)+'</span></div>'}).join('');const cuts=shots.slice(1).map(s=>{const start=Math.max(0,Number(s.start_ms)||0),left=Math.min(100,start/duration*100),description=s.description||((s.tags||[]).join(' · '))||'下一个镜头',time=fmt(start);return '<div class="cut-marker" data-cut-time="'+esc(time)+'" style="--cut:'+left.toFixed(3)+'" title="'+esc(time+' 切入 · '+description)+'">'+esc(time)+'</div>'}).join('');return '<div class="semantic-timeline" aria-label="镜头语义时间轴"><div class="ticks"><span>'+labels[0]+'</span><span>'+labels[1]+'</span><span>'+labels[2]+'</span></div>'+cuts+blocks+'</div>'}
+function timeline(x,shots){const duration=Math.max(Number(x.duration_ms)||0,1);if(!shots.length)return '<div class="timeline-empty">尚未生成镜头理解；完成分析后会显示可用时间段。</div>';const labels=['00:00',fmt(duration/2),fmt(duration)];const blocks=shots.map(s=>{const start=Math.max(0,Number(s.start_ms)||0),end=Math.max(start,Number(s.end_ms)||start),left=Math.min(100,start/duration*100),width=Math.max(1,(end-start)/duration*100),description=s.description||((s.tags||[]).join(' · '))||'未命名镜头',title=fmt(start)+' — '+fmt(end)+' · '+description;return '<div class="shot" style="--left:'+left.toFixed(3)+';--width:'+width.toFixed(3)+'" title="'+esc(title)+'"><span class="shot-label">'+esc(description)+'</span></div>'}).join('');const cuts=shots.slice(1).map(s=>{const start=Math.max(0,Number(s.start_ms)||0),left=Math.min(100,start/duration*100),description=s.description||((s.tags||[]).join(' · '))||'下一个镜头',time=fmt(start);return '<div class="cut-marker" data-cut-time="'+esc(time)+'" style="--cut:'+left.toFixed(3)+'" title="'+esc(time+' 段落边界 · '+description)+'">'+esc(time)+'</div>'}).join('');return '<div class="semantic-timeline" aria-label="镜头语义时间轴"><div class="ticks"><span>'+labels[0]+'</span><span>'+labels[1]+'</span><span>'+labels[2]+'</span></div>'+cuts+blocks+'</div>'}
 function thumbnail(x){return x.thumbnail_url?'<img class="thumb" loading="lazy" src="'+esc(x.thumbnail_url)+'" alt="'+esc(x.filename)+' 的缩略图" onerror="this.outerHTML=\'<div class=&quot;thumb-empty&quot;>缩略图不可用</div>\'">':'<div class="thumb-empty">暂无缩略图</div>'}
 function optionalDetails(x){const fields=[['相机',x.camera_model],['区域',x.region_label],['场次',x.session_id],['色彩',x.source_color],['配置',x.color_profile],['原始格式',x.raw_format],['预览',x.preview_status]].filter(([,value])=>value);return fields.length?'<div class="asset-details" aria-label="拍摄与预览信息">'+fields.map(([label,value])=>'<span class="detail"><b>'+esc(label)+'</b>'+esc(value)+'</span>').join('')+'</div>':''}
 function row(x,shots){return '<article class="asset-row"><div>'+thumbnail(x)+'</div><div class="asset-info"><div class="filename" title="'+esc(x.filename)+'">'+esc(x.filename||'未命名素材')+'</div><div class="asset-meta">'+fmt(x.duration_ms)+' · '+esc(x.orientation||'方向未知')+' · '+esc(x.state||'未知状态')+'</div><p class="summary">'+esc(x.summary||'正在等待视频理解结果。')+'</p><div class="chips">'+chips(x)+'</div>'+optionalDetails(x)+'</div><div class="timeline-card"><div class="timeline-head"><span class="timeline-title">镜头语义时间轴</span><span class="duration">'+fmt(x.duration_ms)+'</span></div>'+timeline(x,shots)+'</div></article>'}
@@ -1199,10 +1591,31 @@ func (s *Server) progressPage(w http.ResponseWriter, r *http.Request) {
 }
 
 const progressHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · 处理进度</title><style>
-:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101827;color:#edf3ff;font:14px ui-sans-serif,system-ui,-apple-system,sans-serif}header{padding:15px 5vw;border-bottom:1px solid #293953;display:flex;gap:18px;align-items:center;background:#101827ee;position:sticky;top:0;z-index:1;backdrop-filter:blur(12px)}a{color:#b8c8ff;text-decoration:none}.brand{color:#fff;font-weight:800;margin-right:auto}.wrap{max-width:1180px;margin:auto;padding:32px 24px}.top{display:flex;justify-content:space-between;gap:18px;align-items:flex-end}.top h1{font-size:32px;margin:0;letter-spacing:-.04em}.muted{color:#aab8d0;line-height:1.5}button{background:#86a3ff;color:#091227;border:0;border-radius:9px;padding:10px 14px;font-weight:800;cursor:pointer}.metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:24px 0}.metric,.panel{background:#172238;border:1px solid #2c3d5b;border-radius:14px}.metric{padding:16px}.number{font-size:30px;font-weight:800;letter-spacing:-.04em;margin-top:5px}.panels{display:grid;grid-template-columns:1.4fr .8fr;gap:16px}.panel{padding:18px}.panel h2{margin:0 0 14px;font-size:17px}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:10px 7px;border-bottom:1px solid #2b3b55;font-size:13px;vertical-align:top}.state{border-radius:99px;padding:3px 8px;font-size:12px;font-weight:700;background:#34445e}.state.succeeded{background:#164b39;color:#9cf0c2}.state.failed{background:#612c3a;color:#ffc0c8}.state.running{background:#3a376b;color:#d8d4ff}.log{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.55;color:#b9c7e3;min-height:280px;max-height:480px;overflow:auto;white-space:pre-wrap}.log div{padding:6px 0;border-bottom:1px solid #263650}@media(max-width:760px){.metrics{grid-template-columns:repeat(2,1fr)}.panels{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}header input{width:auto;max-width:260px;padding:9px 10px;border-radius:8px;border:1px solid #354764;background:#0e1728;color:#fff;font:inherit}</style></head><body><header><span class="brand">Timingdex</span><a href="/">素材库</a><a href="/setup">启动配置</a><a href="/repurpose">翻新方案</a><a href="/tags">Tag Curator</a><input id="admin-token" type="password" autocomplete="off" placeholder="Hub 管理 Token（仅存于本页内存）"></header><main class="wrap"><div class="top"><div><h1>处理进度</h1><p class="muted">状态每 2.5 秒更新。右侧是本次浏览器会话的操作记录；下方作业错误来自本地任务队列。</p></div><div style="display:flex;gap:10px"><button id="retry" onclick="retryFailed()" style="background:#31446a;color:#dbe6ff">重试失败作业</button><button id="run" onclick="runPipeline()">运行待处理任务</button></div></div><section id="metrics" class="metrics"></section><section class="panels"><div class="panel"><h2>最近作业</h2><div id="jobs" class="muted">正在读取…</div></div><div class="panel"><h2>本次操作</h2><div id="log" class="log"></div></div></section></main><script>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101827;color:#edf3ff;font:14px ui-sans-serif,system-ui,-apple-system,sans-serif}header{padding:15px 5vw;border-bottom:1px solid #293953;display:flex;gap:18px;align-items:center;background:#101827ee;position:sticky;top:0;z-index:1;backdrop-filter:blur(12px)}a{color:#b8c8ff;text-decoration:none}.brand{color:#fff;font-weight:800;margin-right:auto}.wrap{max-width:1180px;margin:auto;padding:32px 24px}.top{display:flex;justify-content:space-between;gap:18px;align-items:flex-end}.top h1{font-size:32px;margin:0;letter-spacing:-.04em}.muted{color:#aab8d0;line-height:1.5}button{background:#86a3ff;color:#091227;border:0;border-radius:9px;padding:10px 14px;font-weight:800;cursor:pointer}.metrics{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin:24px 0}.metric,.panel{background:#172238;border:1px solid #2c3d5b;border-radius:14px}.metric{padding:16px}.number{font-size:30px;font-weight:800;letter-spacing:-.04em;margin-top:5px}.panels{display:grid;grid-template-columns:1.4fr .8fr;gap:16px}.panel{padding:18px}.panel h2{margin:0 0 14px;font-size:17px}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:10px 7px;border-bottom:1px solid #2b3b55;font-size:13px;vertical-align:top}.state{border-radius:99px;padding:3px 8px;font-size:12px;font-weight:700;background:#34445e}.state.succeeded{background:#164b39;color:#9cf0c2}.state.failed{background:#612c3a;color:#ffc0c8}.state.running{background:#3a376b;color:#d8d4ff}.state.deferred{background:#5a4a1f;color:#ffdfa6}.log{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.55;color:#b9c7e3;min-height:280px;max-height:480px;overflow:auto;white-space:pre-wrap}.log div{padding:6px 0;border-bottom:1px solid #263650}@media(max-width:760px){.metrics{grid-template-columns:repeat(2,1fr)}.panels{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}header input{width:auto;max-width:260px;padding:9px 10px;border-radius:8px;border:1px solid #354764;background:#0e1728;color:#fff;font:inherit}</style></head><body><header><span class="brand">Timingdex</span><a href="/">素材库</a><a href="/setup">启动配置</a><a href="/library-roots">添加素材目录</a><a href="/repurpose">翻新方案</a><a href="/tags">Tag Curator</a><input id="admin-token" type="password" autocomplete="off" placeholder="Hub 管理 Token（仅存于本页内存）"></header><main class="wrap"><div class="top"><div><h1>处理进度</h1><p class="muted">状态每 2.5 秒更新。右侧是本次浏览器会话的操作记录；下方作业错误来自本地任务队列。若通道内所有 API Key 都失败（多为额度用尽），作业会转入「等待额度」并在若干小时后自动重试，不消耗尝试次数。</p></div><div style="display:flex;gap:10px"><button id="resume" onclick="resumeDeferred()" style="background:#31446a;color:#dbe6ff">立即重试等待额度的作业</button><button id="retry" onclick="retryFailed()" style="background:#31446a;color:#dbe6ff">重试失败作业</button><button id="run" onclick="runPipeline()">运行待处理任务</button></div></div><section id="supervisor" class="muted" style="margin-top:18px">无人值守巡检：正在读取…</section><section id="metrics" class="metrics"></section><section class="panels"><div class="panel"><h2>最近作业</h2><div id="jobs" class="muted">正在读取…</div></div><div class="panel"><h2>本次操作</h2><div id="log" class="log"></div></div></section></main><script>
 function adminToken(){const el=document.getElementById('admin-token');return el?el.value.trim():''}
 function authHeaders(base){const headers=new Headers(base||{});const token=adminToken();if(token)headers.set('Authorization','Bearer '+token);return headers}
-const logEl=document.getElementById('log');let logs=[];function log(m){logs.unshift(new Date().toLocaleTimeString()+'  '+m);logs=logs.slice(0,30);logEl.innerHTML=logs.map(x=>'<div>'+x+'</div>').join('')}function esc(s){return String(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}function render(jobs){const counts={pending:0,running:0,succeeded:0,failed:0,skipped:0};let terminal=0;jobs.forEach(j=>{counts[j.state]=(counts[j.state]||0)+1;if(j.terminal)terminal++});document.getElementById('metrics').innerHTML=['待处理','处理中','已完成','需处理','永久失败'].map((n,i)=>'<div class="metric"><div class="muted">'+n+'</div><div class="number">'+[counts.pending,counts.running,counts.succeeded,counts.failed-terminal,terminal][i]+'</div></div>').join('');document.getElementById('jobs').innerHTML=jobs.length?'<table><tr><th>类型</th><th>状态</th><th>尝试</th><th>错误 / 下次运行</th></tr>'+jobs.map(j=>'<tr><td>'+esc(j.job_type)+'</td><td><span class="state '+esc(j.state)+'">'+esc(j.terminal?j.state+'（永久，不再重试）':j.state)+'</span></td><td>'+j.attempt_count+'/'+j.max_attempts+'</td><td>'+esc(j.last_error||(j.has_error?'有错误（填入管理 Token 查看详情）':'')||j.run_after||'—')+'</td></tr>').join('')+'</table>':'暂无作业。先在素材根目录扫描视频。'}async function refresh(){try{const jobs=await fetch('/api/v1/jobs?limit=100',{headers:authHeaders()}).then(async r=>{if(!r.ok)throw Error(await r.text());return r.json()});render(jobs)}catch(e){document.getElementById('jobs').textContent='无法读取作业：'+e.message}}async function retryFailed(){const b=document.getElementById('retry');b.disabled=true;log('已请求重试失败作业');try{const r=await fetch('/api/v1/pipeline/retry-failed',{method:'POST',headers:authHeaders()});if(!r.ok)throw Error(await r.text());const d=await r.json();log('已重新排队 '+d.requeued+' 个失败作业；点击「运行待处理任务」开始处理')}catch(e){log('重试失败：'+e.message)}finally{b.disabled=false;refresh()}}async function runPipeline(){const b=document.getElementById('run');b.disabled=true;b.textContent='正在运行…';log('已请求执行待处理任务');try{const r=await fetch('/api/v1/pipeline/run',{method:'POST',headers:authHeaders()});if(!r.ok)throw Error(await r.text());const d=await r.json().catch(()=>({}));log(d.status==='already_running'?'已有处理任务在后台运行':'处理任务已在后台启动，可关闭本页')}catch(e){log('执行失败：'+e.message)}finally{b.disabled=false;b.textContent='运行待处理任务';refresh()}}refresh();setInterval(refresh,2500);log('进度面板已打开');</script></body></html>`
+const logEl=document.getElementById('log');let logs=[];function log(m){logs.unshift(new Date().toLocaleTimeString()+'  '+m);logs=logs.slice(0,30);logEl.innerHTML=logs.map(x=>'<div>'+x+'</div>').join('')}function esc(s){return String(s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}function when(v){const t=new Date(v);return isNaN(t.getTime())?String(v||''):t.toLocaleString()}
+function stateCell(j){if(j.deferred_reason)return '<span class="state deferred">等待服务商额度</span>';return '<span class="state '+esc(j.state)+'">'+esc(j.terminal?j.state+'（永久，不再重试）':j.state)+'</span>'}
+function detailCell(j){if(j.deferred_reason)return '通道内所有 API Key 都失败（多为套餐额度用尽）。已暂停，'+esc(when(j.run_after))+' 自动重试，本次不计入尝试次数。';return esc(j.last_error||(j.has_error?'有错误（填入管理 Token 查看详情）':'')||j.run_after||'—')}
+// The metric row is counted by the database, not tallied from the rows below
+// it. Those rows are the newest hundred jobs, which during a scan are all
+// freshly enqueued work -- tallying them reported a library with thousands of
+// finished jobs as "0 done" and left it there.
+function renderMetrics(s){document.getElementById('metrics').innerHTML=[['待处理',s.pending],['处理中',s.running],['已完成',s.succeeded],['需处理',s.failed],['永久失败',s.terminal],['等待额度',s.deferred]].map(m=>'<div class="metric"><div class="muted">'+m[0]+'</div><div class="number">'+(m[1]||0)+'</div></div>').join('')}
+function render(jobs){document.getElementById('jobs').innerHTML=jobs.length?'<table><tr><th>类型</th><th>状态</th><th>尝试</th><th>错误 / 下次运行</th></tr>'+jobs.map(j=>'<tr><td>'+esc(j.job_type)+'</td><td>'+stateCell(j)+'</td><td>'+j.attempt_count+'/'+j.max_attempts+'</td><td>'+detailCell(j)+'</td></tr>').join('')+'</table>':'暂无作业。先在素材根目录扫描视频。'}async function refresh(){try{const jobs=await fetch('/api/v1/jobs?limit=100',{headers:authHeaders()}).then(async r=>{if(!r.ok)throw Error(await r.text());return r.json()});render(jobs)}catch(e){document.getElementById('jobs').textContent='无法读取作业：'+e.message}try{const s=await fetch('/api/v1/jobs/summary',{headers:authHeaders()}).then(async r=>{if(!r.ok)throw Error(await r.text());return r.json()});renderMetrics(s)}catch(e){log('无法读取队列统计：'+e.message)}refreshSupervisor()}
+function supervisorText(d){if(!d.enabled)return '无人值守巡检：<b>未开启</b>。在 Hub 的 config.json 设置 library_supervisor.enabled=true 并重启 Hub 后，Hub 会自动定时扫描素材目录并处理队列（会消耗服务商额度）。';
+if(!d.running)return '无人值守巡检：<b>已配置但未在运行</b>。当前进程可能不是 timingdex serve。';
+const parts=['无人值守巡检：<b>运行中</b>','每 '+Math.round(d.interval_seconds/60)+' 分钟扫描一次'];
+parts.push(d.last_pass_at?'上次 '+esc(when(d.last_pass_at)):'尚未扫描');
+parts.push(d.scanning?'正在扫描…':(d.next_pass_at?'下次 '+esc(when(d.next_pass_at)):'—'));
+if(d.last_outcome==='held_off_peak')parts.push('当前在凌晨时段之外，'+esc(d.held_until?when(d.held_until):'时段开始时')+'才会扫描');
+else if(d.last_outcome==='pipeline_busy')parts.push('已有处理任务在运行，本次只扫描');
+else if(d.last_outcome==='error')parts.push('上次巡检有错误：'+esc(d.last_error||'填入管理 Token 查看详情'));
+else if(d.last_outcome==='scanned')parts.push('上次扫描 '+d.roots_scanned+' 个目录，新增 '+d.discovered+' 个素材');
+return parts.join(' · ')}
+async function refreshSupervisor(){const el=document.getElementById('supervisor');try{const r=await fetch('/api/v1/pipeline/supervisor',{headers:authHeaders()});if(!r.ok)throw Error(await r.text());el.innerHTML=supervisorText(await r.json())}catch(e){el.textContent='无法读取无人值守巡检状态：'+e.message}}
+async function retryFailed(){const b=document.getElementById('retry');b.disabled=true;log('已请求重试失败作业');try{const r=await fetch('/api/v1/pipeline/retry-failed',{method:'POST',headers:authHeaders()});if(!r.ok)throw Error(await r.text());const d=await r.json();log('已重新排队 '+d.requeued+' 个失败作业；点击「运行待处理任务」开始处理')}catch(e){log('重试失败：'+e.message)}finally{b.disabled=false;refresh()}}async function resumeDeferred(){const b=document.getElementById('resume');b.disabled=true;log('已请求提前释放等待额度的作业');try{const r=await fetch('/api/v1/pipeline/resume-deferred',{method:'POST',headers:authHeaders()});if(!r.ok)throw Error(await r.text());const d=await r.json();log(d.resumed?'已释放 '+d.resumed+' 个等待额度的作业；点击「运行待处理任务」开始处理':'当前没有等待额度的作业')}catch(e){log('释放失败：'+e.message)}finally{b.disabled=false;refresh()}}
+async function runPipeline(){const b=document.getElementById('run');b.disabled=true;b.textContent='正在运行…';log('已请求执行待处理任务');try{const r=await fetch('/api/v1/pipeline/run',{method:'POST',headers:authHeaders()});if(!r.ok)throw Error(await r.text());const d=await r.json().catch(()=>({}));log(d.status==='already_running'?'已有处理任务在后台运行':'处理任务已在后台启动，可关闭本页')}catch(e){log('执行失败：'+e.message)}finally{b.disabled=false;b.textContent='运行待处理任务';refresh()}}refresh();setInterval(refresh,2500);log('进度面板已打开');</script></body></html>`
 
 func (s *Server) repurposePage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1215,10 +1628,15 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 function adminToken(){const el=document.getElementById('admin-token');return el?el.value.trim():''}
 function authHeaders(base){const headers=new Headers(base||{});const token=adminToken();if(token)headers.set('Authorization','Bearer '+token);return headers}
 async function api(url,opt){opt=opt||{};const r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok){if(r.status===401)throw Error('需要 Hub 管理 Token：请先在顶部填入');throw Error(await r.text())}return r.json()}
+// Exports are fetched rather than linked because the route needs the admin
+// token in a header, which an <a href> cannot carry. The response is handed to
+// the browser as a Blob so the file never round-trips through a URL that would
+// put the token in history.
+async function downloadExport(kind){if(!activePlan)return;try{const r=await fetch('/api/v1/repurpose/plans/'+encodeURIComponent(activePlan.id)+'/export.'+kind,{headers:authHeaders()});if(!r.ok){if(r.status===401)throw Error('需要 Hub 管理 Token：请先在顶部填入');throw Error(await r.text())}const url=URL.createObjectURL(await r.blob());const a=document.createElement('a');a.href=url;a.download=activePlan.id+'.'+kind;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)}catch(e){alert('导出失败：'+e.message)}}
 function section(role){return activePlan.sections.find(s=>s.role===role)}
 function rerender(){render(activePlan);dirty=true;document.getElementById('statusline').textContent='有未保存的编辑。保存后会创建新的 revision。'}
 function candidate(s,c){const selected=s.selected_shot_id===c.shot_id,excluded=(s.excluded_shot_ids||[]).includes(c.shot_id),image='/api/v1/assets/'+encodeURIComponent(c.asset_id)+'/thumbnail',why=(c.reasons||[]).map(esc).join(' · ')||'由检索得分匹配';return '<article class="candidate '+(selected?'selected ':'')+(excluded?'excluded':'')+'"><img class="thumb" loading="lazy" src="'+image+'" onerror="this.style.visibility=\'hidden\'" alt="候选镜头缩略图"><div><b>'+fmt(c.start_ms)+' — '+fmt(c.end_ms)+'</b> <span class="pill">匹配 '+Math.round((c.score||0)*100)+'%</span>'+(c.reused?' <span class="pill warn">复用镜头</span>':'')+(selected?' <span class="pill">已选</span>':'')+'<div class="small">素材 '+esc(c.asset_id)+' · 镜头 '+esc(c.shot_id)+'</div><div class="small">'+why+'</div><div class="candidate-actions"><button class="select '+(selected?'on':'')+'" data-role="'+esc(s.role)+'" data-shot="'+esc(c.shot_id)+'" onclick="choose(this.dataset.role,this.dataset.shot)">'+(selected?'已选择':'选择此镜头')+'</button><button class="exclude" data-role="'+esc(s.role)+'" data-shot="'+esc(c.shot_id)+'" onclick="toggleExclude(this.dataset.role,this.dataset.shot)" '+(selected?'disabled':'')+'>'+ (excluded?'恢复候选':'排除')+'</button></div></div></article>'}
-function render(p){activePlan=p;const sections=(p.sections||[]).map(s=>'<section class="section"><div class="sectionhead"><div><div class="role">'+esc(s.role)+'</div><div class="small">目标 '+fmt(s.duration_ms)+' · 查询：'+esc(s.query)+'</div></div><div class="sectionactions"><span class="pill">'+(s.required?'必需':'可选')+'</span>'+(s.locked?'<button class="secondary" data-role="'+esc(s.role)+'" onclick="unlock(this.dataset.role)">解除锁定</button>':'<button class="secondary" data-role="'+esc(s.role)+'" onclick="lock(this.dataset.role)">锁定选择</button>')+'<button class="secondary" data-role="'+esc(s.role)+'" onclick="findAlternatives(this.dataset.role)">找替代镜头</button></div></div><div class="rationale">'+esc(s.rationale||'')+(s.locked?' · 此段已锁定':'')+'</div>'+(s.candidates&&s.candidates.length?s.candidates.map(c=>candidate(s,c)).join(''):'<div class="empty">此段没有足够的匹配镜头。可以尝试找替代镜头，或保留缺口以便补拍。</div>')+'</section>').join('');document.getElementById('result').innerHTML='<div class="planhead"><div><div class="eyebrow">'+esc(p.provider||'deterministic')+' · '+esc(p.model||'')+'</div><h2>'+esc(p.title||p.brief)+'</h2><p class="muted">'+fmt(p.duration_ms)+' · '+esc(p.style||'未设定风格')+' · '+esc(p.audience||'未设定受众')+'</p></div><div><span class="pill">'+esc(p.status)+'</span> '+(p.status==='draft'?'<button class="approve" onclick="approve()">批准这一版</button>':'')+'</div></div>'+(p.missing_needs&&p.missing_needs.length?'<p class="warn">还缺：'+p.missing_needs.map(esc).join('、')+'</p>':'')+sections+(p.status==='draft'?'<div class="editor"><div class="editorbar"><div style="flex:1"><label class="small" for="editorNote">这次编辑的说明</label><textarea id="editorNote" placeholder="例如：将雨夜航拍锁为开场，排除手持街拍"></textarea><div id="statusline" class="statusline">选择镜头后，保存为新的编辑版。</div></div><button class="save" onclick="saveRevision()">保存编辑版</button></div></div>':'')}
+function render(p){activePlan=p;const sections=(p.sections||[]).map(s=>'<section class="section"><div class="sectionhead"><div><div class="role">'+esc(s.role)+'</div><div class="small">目标 '+fmt(s.duration_ms)+' · 查询：'+esc(s.query)+'</div></div><div class="sectionactions"><span class="pill">'+(s.required?'必需':'可选')+'</span>'+(s.locked?'<button class="secondary" data-role="'+esc(s.role)+'" onclick="unlock(this.dataset.role)">解除锁定</button>':'<button class="secondary" data-role="'+esc(s.role)+'" onclick="lock(this.dataset.role)">锁定选择</button>')+'<button class="secondary" data-role="'+esc(s.role)+'" onclick="findAlternatives(this.dataset.role)">找替代镜头</button></div></div><div class="rationale">'+esc(s.rationale||'')+(s.locked?' · 此段已锁定':'')+'</div>'+(s.candidates&&s.candidates.length?s.candidates.map(c=>candidate(s,c)).join(''):'<div class="empty">此段没有足够的匹配镜头。可以尝试找替代镜头，或保留缺口以便补拍。</div>')+'</section>').join('');document.getElementById('result').innerHTML='<div class="planhead"><div><div class="eyebrow">'+esc(p.provider||'deterministic')+' · '+esc(p.model||'')+'</div><h2>'+esc(p.title||p.brief)+'</h2><p class="muted">'+fmt(p.duration_ms)+' · '+esc(p.style||'未设定风格')+' · '+esc(p.audience||'未设定受众')+'</p></div><div><span class="pill">'+esc(p.status)+'</span> '+(p.status==='draft'?'<button class="approve" onclick="approve()">批准这一版</button>':'')+(p.status==='approved'?'<button class="secondary" onclick="downloadExport(\'edl\')">导出 EDL</button> <button class="secondary" onclick="downloadExport(\'fcpxml\')">导出 FCPXML</button>':'')+'</div></div>'+(p.missing_needs&&p.missing_needs.length?'<p class="warn">还缺：'+p.missing_needs.map(esc).join('、')+'</p>':'')+sections+(p.status==='draft'?'<div class="editor"><div class="editorbar"><div style="flex:1"><label class="small" for="editorNote">这次编辑的说明</label><textarea id="editorNote" placeholder="例如：将雨夜航拍锁为开场，排除手持街拍"></textarea><div id="statusline" class="statusline">选择镜头后，保存为新的编辑版。</div></div><button class="save" onclick="saveRevision()">保存编辑版</button></div></div>':'')}
 function choose(role,shot){const s=section(role);if(s.locked){alert('此段已锁定，请先解除锁定。');return}s.selected_shot_id=shot;s.excluded_shot_ids=(s.excluded_shot_ids||[]).filter(id=>id!==shot);rerender()}
 function lock(role){const s=section(role);if(!s.selected_shot_id){alert('请先选择此段要使用的镜头。');return}s.locked=true;s.unlock=false;rerender()}
 function unlock(role){const s=section(role);s.locked=false;s.unlock=true;rerender()}
@@ -1357,15 +1775,21 @@ func (s *Server) reviseRepurposePlan(w http.ResponseWriter, r *http.Request) {
 	}
 	revision, err := s.service.ReviseRepurposePlan(r.Context(), r.PathValue("id"), request.Sections, request.EditorNote)
 	if err != nil {
+		// Classified structurally, with errors.Is against sentinels the app
+		// layer returns, rather than by message text -- see writeExportError
+		// (export.go) for the export boundary this mirrors and why a
+		// substring match on "immutable"/"not found" was the wrong tool: a
+		// reworded message, or an unrelated lower-layer error that happened
+		// to contain the same phrase, silently reclassified the response.
 		if errors.Is(err, app.ErrInvalidRepurposeRevision) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if strings.Contains(err.Error(), "immutable") {
+		if errors.Is(err, app.ErrPlanImmutable) {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, app.ErrPlanNotFound) {
 			http.NotFound(w, r)
 			return
 		}
@@ -1387,11 +1811,11 @@ func (s *Server) approveRepurposePlanRevision(w http.ResponseWriter, r *http.Req
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, app.ErrPlanRevisionNotFound) {
 			http.NotFound(w, r)
 			return
 		}
-		if strings.Contains(err.Error(), "latest") || strings.Contains(err.Error(), "not draft") {
+		if errors.Is(err, app.ErrPlanRevisionNotDraft) || errors.Is(err, app.ErrPlanRevisionNotLatest) {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
@@ -1399,6 +1823,61 @@ func (s *Server) approveRepurposePlanRevision(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, approved)
+}
+
+func (s *Server) exportRepurposePlanEDL(w http.ResponseWriter, r *http.Request) {
+	planID := r.PathValue("id")
+	document, err := s.service.ExportPlanEDL(r.Context(), planID)
+	if err != nil {
+		writeExportError(w, r, err)
+		return
+	}
+	writeExport(w, "text/plain; charset=utf-8", planID+".edl", document)
+}
+
+func (s *Server) exportRepurposePlanFCPXML(w http.ResponseWriter, r *http.Request) {
+	planID := r.PathValue("id")
+	document, err := s.service.ExportPlanFCPXML(r.Context(), planID)
+	if err != nil {
+		writeExportError(w, r, err)
+		return
+	}
+	writeExport(w, "application/xml; charset=utf-8", planID+".fcpxml", document)
+}
+
+// writeExport sends a finished export as a download. The filename is built from
+// the plan id rather than its title: titles are model-authored free text, and a
+// Content-Disposition header is one of the few places where unescaped text
+// crosses back out of the JSON layer. Plan ids are Hub-generated and safe.
+func writeExport(w http.ResponseWriter, contentType, filename, document string) {
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, document)
+}
+
+// writeExportError separates "this plan is not ready to be cut" from "the Hub
+// failed". Everything nleexport rejects — a mixed frame rate, a shot past the
+// end of its file, a section whose selection no longer resolves — is a fact
+// about the library that the operator has to act on, so it must not arrive as a
+// 500 that reads like a Hub bug and gets retried. A plan id that names nothing
+// is a 404, and because GetRepurposePlan returns (nil, nil) rather than
+// sql.ErrNoRows that refusal has no structural marker of its own — which is
+// exactly why it gets one. The boundaries are matched structurally, with
+// errors.Is against sentinels the app and nleexport return, rather than by
+// message text: a reworded error is ordinary maintenance, and classification
+// must survive it.
+func writeExportError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, app.ErrPlanNotFound):
+		http.NotFound(w, r)
+	case errors.Is(err, app.ErrPlanNotApproved):
+		http.Error(w, err.Error(), http.StatusConflict)
+	case errors.Is(err, app.ErrPlanNotExportable), errors.Is(err, nleexport.ErrInvalidTimeline):
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+	default:
+		writeError(w, err)
+	}
 }
 
 func (s *Server) tagsPage(w http.ResponseWriter, r *http.Request) {

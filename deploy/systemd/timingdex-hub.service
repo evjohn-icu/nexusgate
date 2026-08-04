@@ -1,6 +1,6 @@
 [Unit]
-Description=Timingdex v0.14 Hub
-Documentation=man:timingdex  https://github.com/ev/timingdex
+Description=Timingdex Hub
+Documentation=man:timingdex  https://github.com/evjohn-icu/timingdex
 Wants=network-online.target
 After=network-online.target
 

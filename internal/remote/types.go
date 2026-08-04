@@ -5,7 +5,7 @@ package remote
 import (
 	"time"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 // WorkerJob contains only a portable source locator. Hub absolute paths never

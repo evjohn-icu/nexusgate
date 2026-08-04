@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ev/timingdex/internal/remote"
+	"github.com/evjohn-icu/timingdex/internal/remote"
 )
 
 func TestConfigRoundTripKeepsNodeTokenButNotProviderSecrets(t *testing.T) {

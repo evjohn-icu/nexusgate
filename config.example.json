@@ -12,6 +12,13 @@
   "hub_tls": {
     "mode": "auto"
   },
+  "library_supervisor": {
+    "enabled": false,
+    "scan_interval_minutes": 15
+  },
+  "pipeline": {
+    "provider_route_deferral_minutes": 300
+  },
   "hub_security": {
     "allow_worker_provider_credentials": false,
     "trusted_read_networks": ["127.0.0.0/8", "192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "100.64.0.0/10", "::1/128", "fc00::/7", "fe80::/10"]
@@ -118,8 +125,8 @@
       "path": "chat/completions",
       "api_key_env": "ARK_AGENT_PLAN_API_KEY",
       "model": "doubao-seed-2.0-mini",
-      "auth_header": "X-Api-Key",
-      "auth_scheme": "raw",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer",
       "timeout_seconds": 120
     },
     "volc_coding_plan": {
@@ -129,8 +136,8 @@
       "path": "chat/completions",
       "api_key_env": "ARK_CODING_PLAN_API_KEY",
       "model": "ark-code-latest",
-      "auth_header": "X-Api-Key",
-      "auth_scheme": "raw",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer",
       "timeout_seconds": 120
     },
     "volc_agent_plan_embedding": {
@@ -140,8 +147,8 @@
       "path": "embeddings",
       "api_key_env": "ARK_AGENT_PLAN_API_KEY",
       "model": "doubao-embedding-vision-251215",
-      "auth_header": "X-Api-Key",
-      "auth_scheme": "raw",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer",
       "timeout_seconds": 120
     },
     "volc_coding_plan_embedding": {
@@ -151,8 +158,8 @@
       "path": "embeddings",
       "api_key_env": "ARK_CODING_PLAN_API_KEY",
       "model": "doubao-embedding-vision-251215",
-      "auth_header": "X-Api-Key",
-      "auth_scheme": "raw",
+      "auth_header": "Authorization",
+      "auth_scheme": "Bearer",
       "timeout_seconds": 120
     },
     "volc_asr": {

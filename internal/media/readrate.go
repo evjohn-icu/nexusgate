@@ -14,9 +14,9 @@ import (
 // on an unrecognized option before it reads a single frame.
 //
 // That failure mode is the reason this probe exists rather than a documented
-// minimum version: the error text matches none of isRetryableJobError's permanent
-// phrases, so it would be treated as transient and retried through the whole
-// backoff chain. Turning on a throttle in the settings page would quietly break
+// minimum version: nothing marks it domain.Permanent, and isRetryableJobError
+// retries by default, so it would be treated as transient and retried through the
+// whole backoff chain. Turning on a throttle in the settings page would quietly break
 // every derive on that machine. Probing once and dropping the flag instead makes
 // the feature a no-op there, which is the honest behaviour for a setting the
 // installed FFmpeg cannot honour.

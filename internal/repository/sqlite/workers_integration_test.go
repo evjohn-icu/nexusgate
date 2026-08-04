@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ev/timingdex/internal/remote"
+	"github.com/evjohn-icu/timingdex/internal/remote"
 )
 
 func TestWorkerPairingTokenCanEnrollOnlyOnce(t *testing.T) {

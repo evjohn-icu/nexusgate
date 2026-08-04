@@ -7,7 +7,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 // GetPipelineThrottle reads the throttle from the settings table. When the row

@@ -9,10 +9,10 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/ev/timingdex/internal/domain"
-	videoanalysis "github.com/ev/timingdex/internal/domain/video_analysis"
-	"github.com/ev/timingdex/internal/media"
-	videoproviders "github.com/ev/timingdex/internal/providers/video"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	videoanalysis "github.com/evjohn-icu/timingdex/internal/domain/video_analysis"
+	"github.com/evjohn-icu/timingdex/internal/media"
+	videoproviders "github.com/evjohn-icu/timingdex/internal/providers/video"
 )
 
 // recordingVideoProvider answers every call with a shot at a fixed offset

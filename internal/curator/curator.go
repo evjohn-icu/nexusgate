@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 // BuildProposals is intentionally bounded: it only proposes deterministic,

@@ -6,12 +6,22 @@ import "strings"
 // configuration namespace and protocol name so existing libraries and Workers
 // stay compatible while the UI makes the product promise more memorable.
 const productName = "Re:Footage"
-const productTagline = "Expired Footage, Reclaimed."
+
+// brandReplacements are the exact-match string replacements brandedPage
+// applies to every served page. The anchors are the pre-branding text on the
+// page constants; TestBrandedPageAnchorsBite requires every anchor to occur in
+// at least one served page so a stale anchor fails the build instead of
+// silently no-oping (the same guard TestLibraryPagePatchesApplyInOrderAndBite
+// gives the library overlay).
+var brandReplacements = []pagePatch{
+	{anchor: "<title>Timingdex", replacement: "<title>" + productName},
+	{anchor: `<span class="brand">Timingdex</span>`, replacement: `<span class="brand">` + productName + `</span>`},
+}
 
 func brandedPage(page string) string {
-	return strings.NewReplacer(
-		"<title>Timingdex", "<title>"+productName,
-		`<span class="brand">Timingdex · 素材库</span>`, `<span class="brand">`+productName+` · `+productTagline+`</span>`,
-		`<span class="brand">Timingdex</span>`, `<span class="brand">`+productName+`</span>`,
-	).Replace(page)
+	var pairs []string
+	for _, p := range brandReplacements {
+		pairs = append(pairs, p.anchor, p.replacement)
+	}
+	return strings.NewReplacer(pairs...).Replace(page)
 }

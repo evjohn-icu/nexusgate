@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 const (

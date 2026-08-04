@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ev/timingdex/internal/providers/common"
+	"github.com/evjohn-icu/timingdex/internal/providers/common"
 	"nhooyr.io/websocket"
 )
 

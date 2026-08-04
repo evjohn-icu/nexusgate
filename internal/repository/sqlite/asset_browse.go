@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 const processingStatusSQL = `CASE
@@ -46,10 +46,104 @@ func assetBrowseWhere(filter domain.AssetCardFilter) (string, []any) {
 		where = append(where, processingStatusSQL+`=?`)
 		args = append(args, value)
 	}
+	facetClauses, facetArgs := assetFacetWhereClauses(filter.Facets)
+	where = append(where, facetClauses...)
+	args = append(args, facetArgs...)
+	if len(filter.IDs) > 0 {
+		where = append(where, `a.id IN (`+strings.TrimRight(strings.Repeat(`?,`, len(filter.IDs)), `,`)+`)`)
+		for _, id := range filter.IDs {
+			args = append(args, id)
+		}
+	}
 	if len(where) == 0 {
 		return "", args
 	}
 	return ` WHERE ` + strings.Join(where, ` AND `), args
+}
+
+// facetWhere builds the WHERE-clause fragments for the six normalize.*Values
+// enum fields, assuming asset_analysis is joined under the alias "an". It is
+// shared by the asset browse query above and the shot-search queries in
+// repository.go — see the FacetFilter doc comment in
+// internal/domain/asset_browse.go for why a shot-level search still resolves
+// these through the shot's asset rather than a per-shot column.
+//
+// Values must already be validated against normalize's exported *Values
+// lists by the caller (internal/app); this only assembles placeholders, it
+// does not check membership, so an invalid value here would silently build a
+// clause that matches nothing rather than reporting a typo.
+func facetWhere(f domain.FacetFilter) ([]string, []any) {
+	var clauses []string
+	var args []any
+	in := func(column string, values []string) {
+		if len(values) == 0 {
+			return
+		}
+		clauses = append(clauses, column+` IN (`+strings.TrimRight(strings.Repeat(`?,`, len(values)), `,`)+`)`)
+		for _, v := range values {
+			args = append(args, v)
+		}
+	}
+	in(`an.asset_type`, f.AssetTypes)
+	in(`an.shot_size`, f.ShotSizes)
+	in(`an.camera_motion`, f.CameraMotions)
+	in(`an.audio_type`, f.AudioTypes)
+	in(`an.quality`, f.Qualities)
+	// usable_as is a list per asset (usable_as_json), not a single enum, so
+	// membership needs json_each rather than a plain column comparison: an
+	// asset matches if any of its usable_as values is one of the requested
+	// values.
+	if len(f.UsableAs) > 0 {
+		clauses = append(clauses, `EXISTS (SELECT 1 FROM json_each(an.usable_as_json) usable_as_je WHERE usable_as_je.value IN (`+strings.TrimRight(strings.Repeat(`?,`, len(f.UsableAs)), `,`)+`))`)
+		for _, v := range f.UsableAs {
+			args = append(args, v)
+		}
+	}
+	return clauses, args
+}
+
+// assetFacetWhereClauses builds the complete asset-level facet predicate:
+// facetWhere's six vocabulary clauses (against alias "an") plus the asset's
+// own duration bounds (against alias "m", media_metadata.duration_ms). It is
+// shared by assetBrowseWhere and Repository.SearchFiltered's EXISTS guard so
+// the two entry points cannot drift on what an asset-level facet means.
+//
+// Duration here is the asset's own probed length, unlike the shot-search
+// facet queries in repository.go where the same MinDurationMS/MaxDurationMS
+// bound a single shot's span instead (appendShotDurationBounds) — see the
+// FacetFilter doc comment in internal/domain/asset_browse.go for why that
+// asymmetry is deliberate and must not be unified. NULL duration_ms (not yet
+// probed) fails both comparisons under SQL's NULL semantics, so an unprobed
+// asset is correctly excluded rather than treated as zero-length.
+func assetFacetWhereClauses(f domain.FacetFilter) ([]string, []any) {
+	clauses, args := facetWhere(f)
+	if f.MinDurationMS != nil {
+		clauses = append(clauses, `m.duration_ms>=?`)
+		args = append(args, *f.MinDurationMS)
+	}
+	if f.MaxDurationMS != nil {
+		clauses = append(clauses, `m.duration_ms<=?`)
+		args = append(args, *f.MaxDurationMS)
+	}
+	return clauses, args
+}
+
+// appendShotDurationBounds adds the shot-span duration clauses used by the
+// shot-search queries in repository.go, where MinDurationMS/MaxDurationMS
+// bound an individual shot's (end_ms-start_ms) rather than the asset's total
+// duration — see the FacetFilter doc comment in
+// internal/domain/asset_browse.go. Both bounds are inclusive, matching
+// assetBrowseWhere's asset-level duration clauses.
+func appendShotDurationBounds(clauses []string, args []any, f domain.FacetFilter) ([]string, []any) {
+	if f.MinDurationMS != nil {
+		clauses = append(clauses, `(s.end_ms-s.start_ms)>=?`)
+		args = append(args, *f.MinDurationMS)
+	}
+	if f.MaxDurationMS != nil {
+		clauses = append(clauses, `(s.end_ms-s.start_ms)<=?`)
+		args = append(args, *f.MaxDurationMS)
+	}
+	return clauses, args
 }
 
 func (r *Repository) ListAssetCardsFiltered(ctx context.Context, filter domain.AssetCardFilter) ([]domain.AssetCard, error) {

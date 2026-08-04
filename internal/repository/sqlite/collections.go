@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ev/timingdex/internal/domain"
-	"github.com/ev/timingdex/internal/idgen"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/idgen"
 )
 
 func collectionToAssetCardFilter(filter domain.AssetCollectionFilter) domain.AssetCardFilter {
@@ -21,6 +21,7 @@ func collectionToAssetCardFilter(filter domain.AssetCollectionFilter) domain.Ass
 		CameraModel:  filter.CameraModel,
 		SessionID:    filter.SessionID,
 		Status:       filter.Status,
+		Facets:       filter.FacetFilter,
 	}
 }
 
@@ -118,25 +119,28 @@ func (r *Repository) ListAssetCardsInCollection(ctx context.Context, collectionI
 	if collection == nil {
 		return nil, nil
 	}
-	return r.ListAssetCardsFiltered(ctx, domain.AssetCardFilter{
-		Limit:        limit,
-		Offset:       offset,
-		CapturedFrom: collection.Filter.CapturedFrom,
-		CapturedTo:   collection.Filter.CapturedTo,
-		RegionLabel:  collection.Filter.RegionLabel,
-		CameraModel:  collection.Filter.CameraModel,
-		SessionID:    collection.Filter.SessionID,
-		Status:       collection.Filter.Status,
-	})
+	// collectionToAssetCardFilter carries the facets across, so a saved
+	// collection narrows its cards the same way its summary does — the two
+	// must never describe different sets of assets.
+	cardFilter := collectionToAssetCardFilter(collection.Filter)
+	cardFilter.Limit = limit
+	cardFilter.Offset = offset
+	return r.ListAssetCardsFiltered(ctx, cardFilter)
 }
 
 func (r *Repository) GetAssetProcessingSummary(ctx context.Context, filter domain.AssetCollectionFilter) (domain.AssetProcessingSummary, error) {
 	cardFilter := collectionToAssetCardFilter(filter)
 	where, args := assetBrowseWhere(cardFilter)
+	// assetBrowseWhere emits facet predicates against the alias "an", which is
+	// why the analysis join below is needed at all. It must be a LEFT JOIN: an
+	// inner join would silently drop every asset with no asset_analysis row —
+	// in a freshly scanned library, nearly all of them — and the count strip
+	// would read near-zero with no filter applied at all.
 	query := `SELECT ` + processingStatusSQL + ` AS processing_status,COUNT(*)
 FROM assets a
 LEFT JOIN media_metadata m ON m.asset_id=a.id
-LEFT JOIN capture_metadata cm ON cm.asset_id=a.id` + where + ` GROUP BY processing_status`
+LEFT JOIN capture_metadata cm ON cm.asset_id=a.id
+LEFT JOIN asset_analysis an ON an.asset_id=a.id` + where + ` GROUP BY processing_status`
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return domain.AssetProcessingSummary{ByStatus: map[domain.ProcessingStatus]int{}}, err

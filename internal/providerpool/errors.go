@@ -16,6 +16,12 @@ type FailureClass string
 const (
 	Retryable    FailureClass = "retryable"
 	NonRetryable FailureClass = "non_retryable"
+	// MemberSpent means the credential failed, not the call. Waiting cannot fix
+	// it and the next member can, so the pool stops selecting this one rather
+	// than cooling it or letting one dead key end the route. The name is about
+	// what the pool does with the member; the statuses that produce it are
+	// ClassifyFailure's business alone.
+	MemberSpent FailureClass = "member_spent"
 )
 
 // HTTPError is a transport-independent status-bearing error useful to callers
@@ -47,6 +53,14 @@ func ClassifyFailure(err error) FailureClass {
 		switch {
 		case code == 408 || code == 429 || code >= 500 && code <= 599:
 			return Retryable
+		// 401, 402 and 403 describe the key: revoked, out of credit, or not
+		// entitled to this model. An operator is encouraged to pool several
+		// plan keys in one channel, so the same request on the next member can
+		// still succeed. Every other 4xx describes the request, which no other
+		// key would answer differently — sending it again is a paid call spent
+		// on a certain refusal.
+		case code == 401 || code == 402 || code == 403:
+			return MemberSpent
 		case code >= 400 && code <= 499:
 			return NonRetryable
 		}
@@ -62,11 +76,35 @@ func ClassifyFailure(err error) FailureClass {
 		return Retryable
 	}
 
+	// Below here nothing carries a status. What is left is adapters that never
+	// spoke HTTP (the WebSocket ASR path, a local aligner, a capability that is
+	// not configured) plus anything that lost its status on the way up, so the
+	// text is all there is. It deliberately never yields MemberSpent: retiring a
+	// member is a durable decision about a key, and "unauthorized" in a sentence
+	// is as likely to be a Hub-side misconfiguration as a dead credential.
+	// Guessing wrong here removes a working key from the route; guessing wrong
+	// the other way only fails one request.
+	//
+	// Matching is by vocabulary only, never by a bare three-digit run. This
+	// block used to also treat any text containing "500".."599" (and a few
+	// other codes) as though it named an HTTP status, on the theory that a
+	// status could show up in prose instead of a field. Nothing in this
+	// codebase does that: every adapter that speaks HTTP reports its status
+	// through *common.StatusError, via common.ReadError, and the probe above
+	// already classifies that before this code runs (see statusCode). What
+	// the digit check actually saw in production was internal/providers/
+	// volcasr's WebSocket ASR path, which has no status to carry and forwards
+	// the provider's raw payload verbatim into the error text -- and a
+	// Volcengine error code such as 45000002 contains "500" as a plain
+	// substring, with no relationship to HTTP semantics. A permanent
+	// provider rejection landing on that substring burned the full backoff
+	// for nothing. Removing the digit check costs nothing real: no adapter
+	// in this repository relies on a status number appearing only in prose.
 	message := strings.ToLower(err.Error())
-	if hasAny(message, "configuration", "configured", "config error", "schema", "unauthorized", "forbidden", "bad request", "unprocessable", "invalid request") || hasStatusText(message, 400, 401, 403, 422) {
+	if hasAny(message, "configuration", "configured", "config error", "schema", "unauthorized", "forbidden", "bad request", "unprocessable", "invalid request") {
 		return NonRetryable
 	}
-	if hasAny(message, "timeout", "timed out", "deadline exceeded", "network", "connection reset", "connection refused", "connection aborted", "temporary", "temporarily unavailable", "too many requests", "service unavailable", "server error", "5xx") || hasStatusText(message, 408, 429) || statusTextIs5xx(message) {
+	if hasAny(message, "timeout", "timed out", "deadline exceeded", "network", "connection reset", "connection refused", "connection aborted", "temporary", "temporarily unavailable", "too many requests", "service unavailable", "server error", "5xx") {
 		return Retryable
 	}
 	return NonRetryable
@@ -90,24 +128,6 @@ func statusCode(err error) int {
 func hasAny(value string, fragments ...string) bool {
 	for _, fragment := range fragments {
 		if strings.Contains(value, fragment) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasStatusText(value string, codes ...int) bool {
-	for _, code := range codes {
-		if strings.Contains(value, strconv.Itoa(code)) {
-			return true
-		}
-	}
-	return false
-}
-
-func statusTextIs5xx(value string) bool {
-	for code := 500; code <= 599; code++ {
-		if strings.Contains(value, strconv.Itoa(code)) {
 			return true
 		}
 	}

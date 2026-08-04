@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ev/timingdex/internal/config"
+	"github.com/evjohn-icu/timingdex/internal/config"
 )
 
 func TestBrokerIssuesOnlyConfiguredCredentialForVideoAnalysis(t *testing.T) {

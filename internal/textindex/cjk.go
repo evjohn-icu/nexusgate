@@ -46,8 +46,16 @@ func Chunks(text string) []Chunk {
 			continue
 		}
 		if isWord(runes[i]) {
+			// unicode.IsLetter is true for CJK runes too, so this scan must
+			// stop at a CJK boundary itself rather than relying on the
+			// isCJK branch above ever getting a turn: once absorbed here, a
+			// CJK run adjacent to an ASCII letter/digit/underscore (e.g.
+			// "clip_雨夜街道_final") would keep extending this single word
+			// token straight through it, leaving no bigrams for the CJK
+			// text to be found by (see FTSQuery, which always matches on
+			// bigram phrases).
 			start := i
-			for i < len(runes) && isWord(runes[i]) {
+			for i < len(runes) && isWord(runes[i]) && !isCJK(runes[i]) {
 				i++
 			}
 			chunks = append(chunks, Chunk{Tokens: []string{string(runes[start:i])}})

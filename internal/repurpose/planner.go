@@ -4,7 +4,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 func HeuristicDraft(brief domain.RepurposeBrief) domain.RepurposePlanDraft {

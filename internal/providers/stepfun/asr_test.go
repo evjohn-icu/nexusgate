@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ev/timingdex/internal/providers/common"
+	"github.com/evjohn-icu/timingdex/internal/providers/common"
 )
 
 func TestTranscribeSSEFixture(t *testing.T) {

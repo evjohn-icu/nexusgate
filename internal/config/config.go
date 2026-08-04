@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ev/timingdex/internal/media"
+	"github.com/evjohn-icu/timingdex/internal/media"
 )
 
 type ProviderConfig struct {
@@ -56,6 +56,14 @@ type ProvidersConfig struct {
 	// Their API keys and quota pools must never be substituted for each other.
 	// Both expose an OpenAI-compatible chat/embeddings surface, so they can be
 	// selected for the curator, library summary, or tag embeddings.
+	//
+	// Their defaults authenticate with `Authorization: Bearer <key>`, verified
+	// against an Agent Plan account that answers the previously shipped
+	// `X-Api-Key`/raw pairing with 401. Header and scheme are stated
+	// explicitly rather than left blank because blank has two meanings here:
+	// common.Endpoint.NewRequest treats an empty scheme as Bearer, while the
+	// Worker JSON proxy sends the key unprefixed. Only the explicit form is
+	// correct on both request paths.
 	VolcAgentPlan           ProviderConfig  `json:"volc_agent_plan"`
 	VolcCodingPlan          ProviderConfig  `json:"volc_coding_plan"`
 	VolcAgentPlanEmbedding  ProviderConfig  `json:"volc_agent_plan_embedding"`
@@ -94,6 +102,54 @@ type AlignmentConfig struct {
 type SourceStagingConfig struct {
 	Mode string `json:"mode"`
 }
+
+// LibrarySupervisorConfig turns `timingdex serve` into an unattended library:
+// the Hub rescans every root on a timer and drains the queue itself, instead of
+// waiting for someone to run `root scan` and `pipeline run`.
+//
+// It lives in config.json rather than in the settings table that holds
+// PipelineThrottle, for two reasons. It decides whether a process starts a
+// background loop at all, so it is read once at startup like listen_address and
+// hub_tls — unlike the throttle, which the pipeline re-reads before every job
+// precisely so it can be tightened mid-scan. And turning it on commits the Hub
+// to spending Provider quota with nobody watching, which should take the same
+// kind of deliberate act as opening a port: an edit on the Hub box, not a
+// toggle in a browser page.
+//
+// Disabled is the only safe default. An install that upgrades into this must
+// behave exactly as it did before until someone opts in.
+type LibrarySupervisorConfig struct {
+	Enabled bool `json:"enabled"`
+	// ScanIntervalMinutes is the polling period. Polling, not fsnotify: the
+	// libraries this is for live on SMB/NFS shares where inotify is unreliable
+	// or absent, and the Docker media bind uses rslave propagation, so a share
+	// can appear or disappear underneath the bind while the Hub is running. A
+	// dropped event there means footage that is silently never indexed, which
+	// is worse than a walk that costs a few stat calls every quarter hour.
+	ScanIntervalMinutes int `json:"scan_interval_minutes"`
+}
+
+// PipelineConfig carries how a pipeline pass treats work that cannot run yet.
+// It is read once at startup rather than re-read per job like the throttle,
+// because the deferral only sets a wall-clock park time — there is nothing to
+// tighten mid-scan.
+type PipelineConfig struct {
+	// ProviderRouteDeferralMinutes is how long a job waits after every
+	// provider key on its route has failed at once. On the recommended plan
+	// that is a spent monthly quota, which clears on its own, so the wait
+	// exists to stop the queue from re-asking a dead route in seconds; an
+	// operator on a different plan shortens it here instead of rebuilding.
+	// Zero or negative is treated as a typo and floored at the point of use,
+	// where the busy-retry loop it would cause is actually prevented.
+	ProviderRouteDeferralMinutes int `json:"provider_route_deferral_minutes"`
+}
+
+// defaultProviderRouteDeferralMinutes is the five-hour wait, in the units the
+// field above is read in. It matches the failure the deferral exists for: the
+// recommended plan's quota is monthly and hard, so a handful of probe calls a
+// day still recovers on its own once the account is topped up or the month
+// rolls over.
+const defaultProviderRouteDeferralMinutes = 5 * 60
 
 type HubTLSConfig struct {
 	Mode            string `json:"mode"` // auto, files, off
@@ -134,15 +190,17 @@ func (c HubSecurityConfig) TrustedReadPrefixes() ([]netip.Prefix, error) {
 }
 
 type Config struct {
-	DataDir       string               `json:"data_dir"`
-	CacheDir      string               `json:"cache_dir"`
-	DatabasePath  string               `json:"database_path"`
-	ListenAddress string               `json:"listen_address"`
-	Providers     ProvidersConfig      `json:"providers"`
-	Hardware      media.HardwareConfig `json:"hardware"`
-	SourceStaging SourceStagingConfig  `json:"source_staging"`
-	HubTLS        HubTLSConfig         `json:"hub_tls"`
-	HubSecurity   HubSecurityConfig    `json:"hub_security"`
+	DataDir           string                  `json:"data_dir"`
+	CacheDir          string                  `json:"cache_dir"`
+	DatabasePath      string                  `json:"database_path"`
+	ListenAddress     string                  `json:"listen_address"`
+	Providers         ProvidersConfig         `json:"providers"`
+	Hardware          media.HardwareConfig    `json:"hardware"`
+	SourceStaging     SourceStagingConfig     `json:"source_staging"`
+	HubTLS            HubTLSConfig            `json:"hub_tls"`
+	HubSecurity       HubSecurityConfig       `json:"hub_security"`
+	LibrarySupervisor LibrarySupervisorConfig `json:"library_supervisor"`
+	Pipeline          PipelineConfig          `json:"pipeline"`
 }
 
 func Load() (Config, error) {
@@ -150,7 +208,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	cfg := Config{DataDir: dataDir, CacheDir: filepath.Join(dataDir, "cache"), DatabasePath: filepath.Join(dataDir, "timingdex.db"), ListenAddress: "127.0.0.1:8787", Hardware: media.HardwareConfig{Mode: "auto", AllowFallback: true, ProxyBitrateKbps: 1800}, SourceStaging: SourceStagingConfig{Mode: "none"}, HubTLS: HubTLSConfig{Mode: "auto"}, Providers: ProvidersConfig{
+	cfg := Config{DataDir: dataDir, CacheDir: filepath.Join(dataDir, "cache"), DatabasePath: filepath.Join(dataDir, "timingdex.db"), ListenAddress: "127.0.0.1:8787", Hardware: media.HardwareConfig{Mode: "auto", AllowFallback: true, ProxyBitrateKbps: 1800}, SourceStaging: SourceStagingConfig{Mode: "none"}, HubTLS: HubTLSConfig{Mode: "auto"}, LibrarySupervisor: LibrarySupervisorConfig{Enabled: false, ScanIntervalMinutes: 15}, Pipeline: PipelineConfig{ProviderRouteDeferralMinutes: defaultProviderRouteDeferralMinutes}, Providers: ProvidersConfig{
 		ASRPrimary: "stepfun", ASRFallback: "qwen", VisionPrimary: "none", AlignmentPrimary: "external_command",
 		TagCuratorPrimary: "openai_chat", TagCuratorFallbackHeuristic: true,
 		EmbeddingPrimary: "none", RepurposePrimary: "none", RepurposeFallbackHeuristic: true,
@@ -163,10 +221,10 @@ func Load() (Config, error) {
 		TagCurator:              ProviderConfig{Enabled: false, Protocol: "openai_chat", BaseURL: "http://127.0.0.1:1234/v1", Path: "chat/completions", Model: "local-small-instruct", TimeoutSeconds: 120},
 		Embedding:               ProviderConfig{Enabled: false, Protocol: "openai_embeddings", BaseURL: "http://127.0.0.1:1234/v1", Path: "embeddings", Model: "text-embedding-model", TimeoutSeconds: 120},
 		Repurpose:               ProviderConfig{Enabled: false, Protocol: "openai_chat", BaseURL: "http://127.0.0.1:1234/v1", Path: "chat/completions", Model: "local-small-instruct", TimeoutSeconds: 120},
-		VolcAgentPlan:           ProviderConfig{Enabled: false, Protocol: "openai_chat", BaseURL: "https://ark.cn-beijing.volces.com/api/plan/v3", Path: "chat/completions", APIKeyEnv: "ARK_AGENT_PLAN_API_KEY", Model: "doubao-seed-2.0-mini", AuthHeader: "X-Api-Key", AuthScheme: "raw", TimeoutSeconds: 120},
-		VolcCodingPlan:          ProviderConfig{Enabled: false, Protocol: "openai_chat", BaseURL: "https://ark.cn-beijing.volces.com/api/coding/v3", Path: "chat/completions", APIKeyEnv: "ARK_CODING_PLAN_API_KEY", Model: "ark-code-latest", AuthHeader: "X-Api-Key", AuthScheme: "raw", TimeoutSeconds: 120},
-		VolcAgentPlanEmbedding:  ProviderConfig{Enabled: false, Protocol: "openai_embeddings", BaseURL: "https://ark.cn-beijing.volces.com/api/plan/v3", Path: "embeddings", APIKeyEnv: "ARK_AGENT_PLAN_API_KEY", Model: "doubao-embedding-vision-251215", AuthHeader: "X-Api-Key", AuthScheme: "raw", TimeoutSeconds: 120},
-		VolcCodingPlanEmbedding: ProviderConfig{Enabled: false, Protocol: "openai_embeddings", BaseURL: "https://ark.cn-beijing.volces.com/api/coding/v3", Path: "embeddings", APIKeyEnv: "ARK_CODING_PLAN_API_KEY", Model: "doubao-embedding-vision-251215", AuthHeader: "X-Api-Key", AuthScheme: "raw", TimeoutSeconds: 120},
+		VolcAgentPlan:           ProviderConfig{Enabled: false, Protocol: "openai_chat", BaseURL: "https://ark.cn-beijing.volces.com/api/plan/v3", Path: "chat/completions", APIKeyEnv: "ARK_AGENT_PLAN_API_KEY", Model: "doubao-seed-2.0-mini", AuthHeader: "Authorization", AuthScheme: "Bearer", TimeoutSeconds: 120},
+		VolcCodingPlan:          ProviderConfig{Enabled: false, Protocol: "openai_chat", BaseURL: "https://ark.cn-beijing.volces.com/api/coding/v3", Path: "chat/completions", APIKeyEnv: "ARK_CODING_PLAN_API_KEY", Model: "ark-code-latest", AuthHeader: "Authorization", AuthScheme: "Bearer", TimeoutSeconds: 120},
+		VolcAgentPlanEmbedding:  ProviderConfig{Enabled: false, Protocol: "openai_embeddings", BaseURL: "https://ark.cn-beijing.volces.com/api/plan/v3", Path: "embeddings", APIKeyEnv: "ARK_AGENT_PLAN_API_KEY", Model: "doubao-embedding-vision-251215", AuthHeader: "Authorization", AuthScheme: "Bearer", TimeoutSeconds: 120},
+		VolcCodingPlanEmbedding: ProviderConfig{Enabled: false, Protocol: "openai_embeddings", BaseURL: "https://ark.cn-beijing.volces.com/api/coding/v3", Path: "embeddings", APIKeyEnv: "ARK_CODING_PLAN_API_KEY", Model: "doubao-embedding-vision-251215", AuthHeader: "Authorization", AuthScheme: "Bearer", TimeoutSeconds: 120},
 		VolcASR:                 VolcASRConfig{Enabled: false, URL: "wss://openspeech.bytedance.com/api/v3/plan/sauc/bigmodel_nostream", APIKeyEnv: "ARK_AGENT_PLAN_API_KEY", ResourceID: "volc.seedasr.sauc.duration", RequestModel: "bigmodel", Model: "doubao-seed-asr-2.0", UID: "timingdex", TimeoutSeconds: 300},
 		Alignment:               AlignmentConfig{Enabled: false, Command: "timingdex-align", Model: "qwen3-forced-aligner"},
 	}}
@@ -203,6 +261,21 @@ func Load() (Config, error) {
 	if v := strings.TrimSpace(os.Getenv("TIMINGDEX_ALLOW_WORKER_PROVIDER_CREDENTIALS")); v != "" {
 		if enabled, err := strconv.ParseBool(v); err == nil {
 			cfg.HubSecurity.AllowWorkerProviderCredentials = enabled
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("TIMINGDEX_LIBRARY_SUPERVISOR")); v != "" {
+		if enabled, err := strconv.ParseBool(v); err == nil {
+			cfg.LibrarySupervisor.Enabled = enabled
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("TIMINGDEX_LIBRARY_SUPERVISOR_INTERVAL_MINUTES")); v != "" {
+		if minutes, err := strconv.Atoi(v); err == nil {
+			cfg.LibrarySupervisor.ScanIntervalMinutes = minutes
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("TIMINGDEX_PIPELINE_PROVIDER_ROUTE_DEFERRAL_MINUTES")); v != "" {
+		if minutes, err := strconv.Atoi(v); err == nil {
+			cfg.Pipeline.ProviderRouteDeferralMinutes = minutes
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv("TIMINGDEX_TRUSTED_READ_NETWORKS")); v != "" {

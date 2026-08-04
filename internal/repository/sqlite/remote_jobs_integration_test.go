@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ev/timingdex/internal/domain"
-	"github.com/ev/timingdex/internal/remote"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/remote"
 )
 
 func TestLeaseNextWorkerDeriveMatchesLibraryRootAndCapability(t *testing.T) {

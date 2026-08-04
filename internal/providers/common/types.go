@@ -3,7 +3,7 @@ package common
 import (
 	"context"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 type TranscribeRequest struct {

@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/ev/timingdex/internal/domain"
-	"github.com/ev/timingdex/internal/providers/common"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/providers/common"
 )
 
 func TestCurateValidatesOpenAICompatibleDraft(t *testing.T) {

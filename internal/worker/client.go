@@ -21,9 +21,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ev/timingdex/internal/credentials"
-	"github.com/ev/timingdex/internal/domain"
-	"github.com/ev/timingdex/internal/remote"
+	"github.com/evjohn-icu/timingdex/internal/credentials"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/remote"
 )
 
 type Enrollment struct {

@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 type ScanRepository interface {
-	UpsertScannedFile(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (created bool, err error)
+	UpsertScannedFile(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error)
 	MarkUnseenLocationsMissing(ctx context.Context, rootID string, seenRelativePaths []string) (int, error)
 }
 
@@ -26,6 +26,10 @@ func NewScanner(repo ScanRepository) *Scanner {
 func (s *Scanner) Scan(ctx context.Context, root domain.LibraryRoot) (domain.ScanResult, error) {
 	result := domain.ScanResult{}
 	seen := make([]string, 0, 1024)
+	// The same asset can be reached through two paths in one walk (its
+	// fingerprint matches twice, e.g. a copy inside the root), so deduplicate
+	// while keeping first-seen order for a deterministic result.
+	changedAssets := make(map[string]struct{})
 
 	err := filepath.WalkDir(root.Path, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -58,15 +62,21 @@ func (s *Scanner) Scan(ctx context.Context, root domain.LibraryRoot) (domain.Sca
 			return nil
 		}
 
-		created, err := s.repo.UpsertScannedFile(ctx, root, relative, path, info, fingerprint)
+		scanned, err := s.repo.UpsertScannedFile(ctx, root, relative, path, info, fingerprint)
 		if err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("persist %s: %v", path, err))
 			return nil
 		}
-		if created {
+		if scanned.Created {
 			result.Discovered++
 		} else {
 			result.Linked++
+		}
+		if scanned.Changed {
+			if _, already := changedAssets[scanned.AssetID]; !already {
+				changedAssets[scanned.AssetID] = struct{}{}
+				result.ChangedAssetIDs = append(result.ChangedAssetIDs, scanned.AssetID)
+			}
 		}
 		return nil
 	})

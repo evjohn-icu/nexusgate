@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ev/timingdex/internal/domain"
-	"github.com/ev/timingdex/internal/media"
-	"github.com/ev/timingdex/internal/remote"
-	"github.com/ev/timingdex/internal/staging"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/media"
+	"github.com/evjohn-icu/timingdex/internal/remote"
+	"github.com/evjohn-icu/timingdex/internal/staging"
 )
 
 type RuntimeClient interface {
@@ -29,14 +29,47 @@ type Runtime struct {
 	client  RuntimeClient
 	config  Config
 	deriver Deriver
+	// capabilities is what heartbeats actually send. It starts as whatever
+	// was declared at `worker enroll` time but is meant to be replaced with
+	// MergeDetectedCapabilities' output at `worker run` startup, so a
+	// container that gained /dev/dri after a template edit stops being
+	// mislabelled the moment it restarts — which a template edit forces
+	// anyway. It is deliberately not config.Registration.Capabilities: that
+	// field is what got written to worker.json at enrollment and must stay
+	// untouched as the on-disk record of what enroll saw.
+	capabilities remote.WorkerCapabilities
 }
 
 type progressReporter interface {
 	Progress(context.Context, string, string, string, float64, string, string) error
 }
 
-func NewRuntime(client RuntimeClient, config Config, deriver Deriver) *Runtime {
-	return &Runtime{client: client, config: config, deriver: deriver}
+// NewRuntime wires a Runtime for the lease loop. capabilities is what
+// heartbeats report; pass the output of MergeDetectedCapabilities so a fresh
+// hardware detection, not the one frozen into worker.json at enroll time,
+// reaches the Hub.
+func NewRuntime(client RuntimeClient, config Config, deriver Deriver, capabilities remote.WorkerCapabilities) *Runtime {
+	return &Runtime{client: client, config: config, deriver: deriver, capabilities: capabilities}
+}
+
+// MergeDetectedCapabilities combines a fresh hardware detection with the
+// capabilities recorded at enroll time. Everything DetectHardware can
+// actually observe — the FFmpeg-derived Proxy/Thumbnail/AudioExtract
+// booleans and the selected accelerator — is replaced with what this
+// process just measured; everything an operator declared by hand, that no
+// probe can infer, is carried over unchanged: which library roots are
+// mounted, which Provider operations this node is trusted for, its speed
+// class, and its parallelism limits. Without that split, a container that
+// gains /dev/dri after a template edit would either keep reporting stale
+// hardware forever, or — if the whole struct were simply replaced — forget
+// its declared roots and operations the next time it restarted.
+func MergeDetectedCapabilities(declared remote.WorkerCapabilities, report media.HardwareReport) remote.WorkerCapabilities {
+	merged := declared
+	merged.Proxy = report.FFmpegFound
+	merged.Thumbnail = report.FFmpegFound
+	merged.AudioExtract = report.FFmpegFound
+	merged.Hardware = report.SelectedBackends()
+	return merged
 }
 
 // RunOnce sends a liveness signal, leases at most one job, and processes that
@@ -46,7 +79,7 @@ func (r *Runtime) RunOnce(ctx context.Context) (bool, error) {
 	if r == nil || r.client == nil || r.deriver == nil {
 		return false, fmt.Errorf("worker runtime is not configured")
 	}
-	if err := r.client.Heartbeat(ctx, r.config.Token, r.config.Registration.Capabilities); err != nil {
+	if err := r.client.Heartbeat(ctx, r.config.Token, r.capabilities); err != nil {
 		return false, err
 	}
 	job, err := r.client.Lease(ctx, r.config.Token)
@@ -95,7 +128,13 @@ func (r *Runtime) Run(ctx context.Context, options RunOptions) error {
 	lastHeartbeat := time.Time{}
 	for {
 		if lastHeartbeat.IsZero() || time.Since(lastHeartbeat) >= options.HeartbeatInterval {
-			if err := r.client.Heartbeat(ctx, r.config.Token, r.config.Registration.Capabilities); err != nil {
+			// Capabilities are re-detected once, at Run's caller (worker run
+			// startup in cmd/timingdex/main.go), not on this cadence. A device
+			// becoming available requires a container recreate, which restarts
+			// the process anyway, so nothing here would ever observe a change;
+			// re-probing on every 30s heartbeat would only tax the GPU with a
+			// throwaway encode for no new information.
+			if err := r.client.Heartbeat(ctx, r.config.Token, r.capabilities); err != nil {
 				return err
 			}
 			lastHeartbeat = time.Now()

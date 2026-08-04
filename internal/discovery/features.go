@@ -8,11 +8,17 @@ import (
 	"math"
 	"strings"
 
-	"github.com/ev/timingdex/internal/domain"
-	"github.com/ev/timingdex/internal/textindex"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/textindex"
 )
 
 const VectorSize = 64
+
+// VectorModel identifies the hashing scheme in VectorForText. Stored vectors
+// carry it, so vectors produced by a different scheme are never scored against
+// vectors from this one: a scheme change must re-embed rather than silently
+// compare across dimension spaces.
+const VectorModel = "semantic-hash-v1"
 
 func VectorForShot(shot domain.AssetShot) []float64 {
 	parts := append([]string{shot.Description}, shot.Tags...)
@@ -48,6 +54,13 @@ func VectorForText(text string) []float64 {
 
 func Cosine(left, right []float64) float64 {
 	if len(left) == 0 || len(left) != len(right) {
+		// This branch is silent by necessity — 0 is also a legitimate cosine
+		// value, so nothing downstream can tell "orthogonal" from "wrong
+		// dimensions" — and that is exactly why it must not be the place a
+		// scheme change is caught. Callers reject mismatched vectors before
+		// reaching here: the model filter on shot_semantic_vectors and the
+		// length check in sqlite's semanticVector. Kept as a defensive floor
+		// so a future caller that forgets both degrades instead of panicking.
 		return 0
 	}
 	var dot, leftNorm, rightNorm float64

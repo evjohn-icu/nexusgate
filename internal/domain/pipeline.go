@@ -40,7 +40,49 @@ type Job struct {
 	// is never leased again regardless of how many attempts it has left, so it
 	// is reported separately from a job that simply ran out of attempts.
 	Terminal bool `json:"terminal"`
+	// DeferredReason is set while a job is parked on wall-clock time for a
+	// reason that is not the job's fault, so a queue that is deliberately quiet
+	// is not mistaken for a stuck one. RunAfter carries when it resumes. It is
+	// empty for an ordinary retry backoff, which is seconds rather than hours.
+	DeferredReason string `json:"deferred_reason,omitempty"`
 }
+
+// JobSummary counts the whole queue. /progress used to derive its figures by
+// tallying the hundred rows it had already fetched for the table, which is a
+// sample, not a count — and a biased one, since those rows are the newest by
+// creation and the chain creates each job as the previous one finishes. During
+// a large scan that sample is all freshly enqueued work, so the page reported a
+// library with thousands of finished jobs as "0 done, 100 pending" and stayed
+// there. The categories are disjoint and already have the page's meaning baked
+// in, so no arithmetic happens in the browser.
+type JobSummary struct {
+	// Pending excludes Deferred: a job parked on an empty provider account is
+	// not waiting for a turn, and counting it as backlog reads as a stall.
+	Pending   int `json:"pending"`
+	Running   int `json:"running"`
+	Succeeded int `json:"succeeded"`
+	// Failed counts failures that will be retried; Terminal counts the ones the
+	// pipeline classified as permanent and will never lease again.
+	Failed   int `json:"failed"`
+	Terminal int `json:"terminal"`
+	Deferred int `json:"deferred"`
+	// Total is every row in the queue. The six categories above are disjoint and
+	// currently exhaust it — JobSkipped is declared but never written — so a
+	// consumer that finds them not summing to Total has found a state nothing
+	// here accounts for, which is worth noticing rather than rounding away.
+	Total int `json:"total"`
+}
+
+// JobDeferProviderRouteExhausted is the DeferReason recorded when every
+// provider key on a capability's route is failing at once. The recommended
+// deployment runs on a plan with a hard monthly quota, so an exhausted account
+// answers 429 on every key together; that is a fact about the account, not
+// about the job, and the job's attempt budget must survive it.
+//
+// The value is a Hub-assigned constant rather than upstream text on purpose:
+// /progress renders it to any viewer, while last_error_message — which can
+// embed a truncated provider response body — stays behind the admin token.
+const JobDeferProviderRouteExhausted = "provider_route_exhausted"
 
 type MediaMetadata struct {
 	DurationMS         int64      `json:"duration_ms"`

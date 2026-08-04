@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ev/timingdex/internal/providerpool"
+	"github.com/evjohn-icu/timingdex/internal/providerpool"
 )
 
 var (
@@ -19,7 +19,20 @@ var (
 	// ErrInvalidOperation means the caller did not provide a supported
 	// operation function.
 	ErrInvalidOperation = errors.New("providerchannels: invalid operation")
+	// ErrRouteExhausted means every enabled member on a capability's route is
+	// failing retryably — not one call that went wrong, but no key left to try.
+	// It is a sentinel so callers can match it with errors.Is instead of
+	// reading error text; app.Pipeline already classifies several failure modes
+	// by substring and this must not join them.
+	ErrRouteExhausted = errors.New("providerchannels: every provider key on this route is failing")
 )
+
+// attemptsPerChannel is how many members of one channel Execute will try
+// before moving to the next ordered provider route. Three is the operator-
+// facing promise ("every key gets three tries"): a channel is the unit an
+// operator configures their keys into, so the count is per channel rather
+// than per route.
+const attemptsPerChannel = 3
 
 // Invocation is the non-secret context passed to a caller operation. A
 // caller can use SecretRef to resolve a Hub-side secret; no secret value is
@@ -70,12 +83,19 @@ type memberStats struct {
 	failures         uint64
 	lastFailureAt    time.Time
 	lastFailureRetry bool
+	// lastOutcomeDeferrable records whether the *most recent* outcome was a
+	// failure that leaves the route worth trying later — a retryable one, or a
+	// key that retired itself. lastFailureRetry cannot answer that: it stays
+	// true forever once set, even after the member starts succeeding again.
+	// Route exhaustion is a statement about the route right now, so it needs
+	// the current outcome, not the last bad one.
+	lastOutcomeDeferrable bool
 }
 
 // Executor selects a capability-bound provider channel and executes at most
-// two members on that channel before moving to the next ordered provider
-// route. Each channel owns its providerpool, so a retry cannot silently jump
-// across a provider boundary or capability.
+// attemptsPerChannel members on that channel before moving to the next ordered
+// provider route. Each channel owns its providerpool, so a retry cannot
+// silently jump across a provider boundary or capability.
 type Executor struct {
 	mu       sync.RWMutex
 	now      func() time.Time
@@ -255,7 +275,7 @@ func (e *Executor) Execute(ctx context.Context, capability Capability, operation
 		return fmt.Errorf("%w: %w: capability %q", ErrNoRoute, providerpool.ErrNoAvailable, capability)
 	}
 
-	var lastRetryable error
+	var lastNonTerminal error
 	for _, channelIndex := range route {
 		e.mu.RLock()
 		runtime := &e.channels[channelIndex]
@@ -265,7 +285,14 @@ func (e *Executor) Execute(ctx context.Context, capability Capability, operation
 			continue
 		}
 
-		for attempt := 0; attempt < 2; attempt++ {
+		// Retiring a spent key does not spend one of the channel's three tries.
+		// The budget exists for a call that might go differently next time, and
+		// a retired member is never selected again — charging the budget for it
+		// would let two dead keys hide a live third. The loop still terminates:
+		// every retirement permanently shrinks the route, so Select runs out of
+		// members. The retirements bound is a belt on that, not the usual exit.
+		attempts, retirements := 0, 0
+		for attempts < attemptsPerChannel && retirements <= len(channel.Members) {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -291,16 +318,88 @@ func (e *Executor) Execute(ctx context.Context, capability Capability, operation
 			if callErr == nil {
 				return nil
 			}
-			if !providerpool.IsRetryable(callErr) {
+			switch providerpool.ClassifyFailure(callErr) {
+			case providerpool.NonRetryable:
 				return callErr
+			case providerpool.MemberSpent:
+				// lease.Done has already retired the member, so the next Select
+				// moves past it on its own. The error is still kept: if it turns
+				// out nothing on the route survives, it is what tells the
+				// operator which key died and why.
+				retirements++
+			default:
+				attempts++
 			}
-			lastRetryable = callErr
+			lastNonTerminal = callErr
 		}
 	}
-	if lastRetryable != nil {
-		return lastRetryable
+	// Reaching here means no member succeeded and none failed in a way the
+	// request itself caused (both return early). What is left is the difference
+	// the caller actually has to act on: one unlucky call, or a route with
+	// nothing left to try — every key cooled, retired, or both.
+	if e.routeFailingEverywhere(capability, route) {
+		if lastNonTerminal != nil {
+			return fmt.Errorf("%w: %w", ErrRouteExhausted, lastNonTerminal)
+		}
+		return fmt.Errorf("%w: %w: capability %q", ErrRouteExhausted, providerpool.ErrNoAvailable, capability)
+	}
+	if lastNonTerminal != nil {
+		return lastNonTerminal
 	}
 	return fmt.Errorf("%w: %w: capability %q", ErrNoRoute, providerpool.ErrNoAvailable, capability)
+}
+
+// routeFailingEverywhere reports whether every enabled member that can serve
+// capability last ended in a failure that leaves the route worth trying later:
+// a retryable one, or a key that retired itself.
+//
+// Retired members are counted rather than skipped. They are what exhaustion is
+// made of on a channel of pooled plan keys, and skipping them would leave a
+// wholly retired route looking like a route with no members at all — reported
+// as a configuration mistake instead of the outage it is.
+//
+// It deliberately looks at recorded outcomes rather than only at what this
+// call did. A spent monthly quota answers 429 on every key at once, and
+// providerpool cools each key as it fails, so the *next* Execute can find the
+// whole route unavailable without issuing a single request — pool.Select
+// returns ErrNoAvailable and no attempt is made. If that shape reached the
+// caller as an ordinary retryable error, the second job of a run would spend
+// its whole attempt budget on a wall the first job already found, inside the
+// few seconds the backoff allows, and fail permanently.
+//
+// A member that has never been called (attempts == 0) makes this false: a
+// route that was never tried is not an exhausted one, and a misconfigured or
+// entirely disabled route must keep reporting itself as ErrNoRoute.
+func (e *Executor) routeFailingEverywhere(capability Capability, route []int) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	considered := 0
+	for _, channelIndex := range route {
+		runtime := &e.channels[channelIndex]
+		if !runtime.channel.Enabled {
+			continue
+		}
+		for _, member := range runtime.channel.Members {
+			if !member.Enabled || !servesCapability(member.Capabilities, capability) {
+				continue
+			}
+			considered++
+			stats := e.stats[statsKey(runtime.channel.ID, member.ID)]
+			if stats.attempts == 0 || !stats.lastOutcomeDeferrable {
+				return false
+			}
+		}
+	}
+	return considered > 0
+}
+
+func servesCapability(capabilities []Capability, capability Capability) bool {
+	for _, candidate := range capabilities {
+		if candidate == capability {
+			return true
+		}
+	}
+	return false
 }
 
 // Run is an alias for Execute.
@@ -339,10 +438,17 @@ func (e *Executor) record(invocation Invocation, err error) {
 	stats.attempts++
 	if err == nil {
 		stats.successes++
+		stats.lastOutcomeDeferrable = false
 	} else {
 		stats.failures++
 		stats.lastFailureAt = e.now().UTC()
-		stats.lastFailureRetry = providerpool.IsRetryable(err)
+		class := providerpool.ClassifyFailure(err)
+		// A retired key is a failure the operator has to fix, not a transient
+		// one, so it must not be reported as retryable in the status view. It
+		// still leaves the route deferrable: a route with no key left is worth
+		// asking about later, not worth failing a job over now.
+		stats.lastFailureRetry = class == providerpool.Retryable
+		stats.lastOutcomeDeferrable = class == providerpool.Retryable || class == providerpool.MemberSpent
 	}
 	e.stats[key] = stats
 }
@@ -374,7 +480,9 @@ type ChannelStatus struct {
 	Members        []MemberStatus `json:"members"`
 }
 
-// MemberStatus is the secret-free status view of one member.
+// MemberStatus is the secret-free status view of one member. Enabled is what
+// configuration says; Retired is what the pool has since decided about the key
+// behind it, which no configuration row records.
 type MemberStatus struct {
 	ID                   string    `json:"id"`
 	ChannelID            string    `json:"channel_id"`
@@ -382,6 +490,7 @@ type MemberStatus struct {
 	Provider             string    `json:"provider"`
 	ProviderName         string    `json:"provider_name"`
 	Enabled              bool      `json:"enabled"`
+	Retired              bool      `json:"retired,omitempty"`
 	SecretConfigured     bool      `json:"secret_configured"`
 	Attempts             uint64    `json:"attempts"`
 	Successes            uint64    `json:"successes"`
@@ -424,8 +533,19 @@ func (e *Executor) Snapshot(capabilities ...Capability) StatusSnapshot {
 		status := ChannelStatus{ID: runtime.channel.ID, Label: runtime.channel.Label, Provider: runtime.channel.Provider, ProviderName: runtime.channel.ProviderName, Protocol: runtime.channel.Protocol, Endpoint: runtime.channel.Endpoint, Path: runtime.channel.Path, Model: runtime.channel.Model, AuthHeader: runtime.channel.AuthHeader, AuthScheme: runtime.channel.AuthScheme, TimeoutSeconds: runtime.channel.TimeoutSeconds, Capabilities: append([]Capability(nil), runtime.channel.capabilities()...), Enabled: runtime.channel.Enabled, RouteOrder: runtime.channel.RouteOrder, Members: make([]MemberStatus, 0, len(runtime.channel.Members))}
 		for _, member := range runtime.channel.Members {
 			stats := e.stats[statsKey(runtime.channel.ID, member.ID)]
-			memberStatus := MemberStatus{ID: member.ID, ChannelID: runtime.channel.ID, Label: member.Label, Provider: runtime.channel.Provider, ProviderName: runtime.channel.ProviderName, Enabled: member.Enabled, SecretConfigured: member.SecretConfigured || strings.TrimSpace(member.SecretRef) != "", Attempts: stats.attempts, Successes: stats.successes, Failures: stats.failures, LastFailureAt: stats.lastFailureAt, LastFailureRetryable: stats.lastFailureRetry}
-			if member.Enabled && len(member.Capabilities) > 0 {
+			// Retired: configuration still enables this member, but the pool
+			// stopped selecting it because the provider answered 401/402/403 on
+			// its key. It is runtime state — editing the channel or restarting
+			// the Hub clears it, which is also the only way to give the key
+			// another try.
+			live, known := runtime.pool.EnabledState(member.ID)
+			retired := member.Enabled && known && !live
+			memberStatus := MemberStatus{ID: member.ID, ChannelID: runtime.channel.ID, Label: member.Label, Provider: runtime.channel.Provider, ProviderName: runtime.channel.ProviderName, Enabled: member.Enabled, Retired: retired, SecretConfigured: member.SecretConfigured || strings.TrimSpace(member.SecretRef) != "", Attempts: stats.attempts, Successes: stats.successes, Failures: stats.failures, LastFailureAt: stats.lastFailureAt, LastFailureRetryable: stats.lastFailureRetry}
+			// A channel every one of whose keys has retired is not available,
+			// whatever configuration still says. Reporting it as available is
+			// how an operator ends up staring at a green route while every job
+			// on it parks.
+			if member.Enabled && !retired && len(member.Capabilities) > 0 {
 				status.Available = status.Available || runtime.channel.Enabled
 			}
 			status.Members = append(status.Members, memberStatus)

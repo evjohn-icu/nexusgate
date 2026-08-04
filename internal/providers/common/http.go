@@ -78,8 +78,11 @@ func (e Endpoint) NewRequest(ctx context.Context, method, path string, body any)
 const maxErrorBodyBytes = 2048
 
 // StatusError carries the upstream HTTP status alongside the message so the
-// pipeline can classify a failure without matching on error text. A 4xx is a
-// deterministic setup error; retrying it only spends paid quota again.
+// pipeline can classify a failure without matching on error text. Most 4xx are
+// deterministic setup errors; retrying one only spends paid quota again. The
+// exceptions are 401, 402 and 403: those answer about the credential, not the
+// request, so another key on the same channel can still succeed. providerpool
+// retires that member instead of failing the route — see providerpool.MemberSpent.
 type StatusError struct {
 	StatusCode int
 	Body       string
@@ -88,6 +91,15 @@ type StatusError struct {
 func (e *StatusError) Error() string {
 	return fmt.Sprintf("provider returned HTTP %d: %s", e.StatusCode, e.Body)
 }
+
+// HTTPStatusCode exposes the status as a method because StatusCode is a field,
+// and a field satisfies no interface. Classifiers outside this package probe
+// for a status-bearing error rather than importing it (providerpool holds no
+// transport dependency on purpose), and without this method that probe finds
+// nothing and silently drops to substring matching on Error(). Nothing fails to
+// compile when it is removed; every provider failure is just classified by
+// reading digits out of a sentence again.
+func (e *StatusError) HTTPStatusCode() int { return e.StatusCode }
 
 func ReadError(resp *http.Response) error {
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

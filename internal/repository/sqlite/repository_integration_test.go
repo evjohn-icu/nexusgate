@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 func TestTagCurationApprovalAndAliasSearchIntegration(t *testing.T) {

@@ -2,10 +2,11 @@ package sqlite
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 func TestRepurposePlanPersistsStructuredRecommendations(t *testing.T) {
@@ -77,5 +78,73 @@ func TestRepurposePlanRevisionsPreserveHistoryAndApprovedPlanIsImmutable(t *test
 	}
 	if _, err := repo.SaveRepurposePlanRevision(ctx, plan, "must fail"); err == nil {
 		t.Fatal("expected approved plan to reject further revisions")
+	}
+}
+
+// TestRepurposePlanWritesWrapDomainSentinels pins the human-approval
+// boundary's five refusals to errors.Is against the domain sentinels, driven
+// through the repository directly with no service layer above it.
+//
+// It belongs here and not in internal/app because internal/app's tests run
+// against in-memory fakes that enforce no schema constraint: a fake can hand
+// back whatever error its author wrote, so a green app test proves nothing
+// about what SQLite actually refuses or about which sentinel the real write
+// wraps. These checks run inside the repository's own transaction and are the
+// only ones that cannot be raced, which is what makes them the enforcement
+// and this the place to assert on them.
+func TestRepurposePlanWritesWrapDomainSentinels(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "repurpose-sentinels.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// A plan that does not exist: the revision write finds no row to revise.
+	if _, err := repo.SaveRepurposePlanRevision(ctx, domain.RepurposePlan{ID: "no-such-plan"}, "orphan"); !errors.Is(err, domain.ErrPlanNotFound) {
+		t.Fatalf("SaveRepurposePlanRevision on a missing plan: want errors.Is(err, domain.ErrPlanNotFound); got %v", err)
+	}
+
+	plan, err := repo.SaveRepurposePlan(ctx, domain.RepurposePlan{Brief: "sentinel coverage", DurationMS: 30000, Title: "sentinels", Status: "draft", Provider: "deterministic", Model: "heuristic-v1", Sections: []domain.PlanSection{{Role: "opening", Query: "city", DurationMS: 5000, Required: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.SaveRepurposePlanRevision(ctx, plan, "rev 1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.SaveRepurposePlanRevision(ctx, plan, "rev 2"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A revision number the plan does not have.
+	if _, err := repo.ApproveRepurposePlanRevision(ctx, plan.ID, 99); !errors.Is(err, domain.ErrPlanRevisionNotFound) {
+		t.Fatalf("approving revision 99: want errors.Is(err, domain.ErrPlanRevisionNotFound); got %v", err)
+	}
+
+	// Revision 1 is a draft, but revision 2 superseded it: approving it would
+	// resurrect a selection the operator already moved past.
+	if _, err := repo.ApproveRepurposePlanRevision(ctx, plan.ID, 1); !errors.Is(err, domain.ErrPlanRevisionNotLatest) {
+		t.Fatalf("approving the superseded revision 1: want errors.Is(err, domain.ErrPlanRevisionNotLatest); got %v", err)
+	}
+
+	if _, err := repo.ApproveRepurposePlanRevision(ctx, plan.ID, 2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Revision 2 is approved now, so approving it again is acting on state
+	// that already moved -- not an idempotent repeat.
+	if _, err := repo.ApproveRepurposePlanRevision(ctx, plan.ID, 2); !errors.Is(err, domain.ErrPlanRevisionNotDraft) {
+		t.Fatalf("re-approving revision 2: want errors.Is(err, domain.ErrPlanRevisionNotDraft); got %v", err)
+	}
+
+	// Approval was the last write the plan accepts, at both write sites.
+	if _, err := repo.SaveRepurposePlanRevision(ctx, plan, "after approval"); !errors.Is(err, domain.ErrPlanImmutable) {
+		t.Fatalf("revising an approved plan: want errors.Is(err, domain.ErrPlanImmutable); got %v", err)
+	}
+	if _, err := repo.SaveRepurposePlan(ctx, plan); !errors.Is(err, domain.ErrPlanImmutable) {
+		t.Fatalf("overwriting an approved plan: want errors.Is(err, domain.ErrPlanImmutable); got %v", err)
 	}
 }

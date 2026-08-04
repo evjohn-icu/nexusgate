@@ -1,6 +1,8 @@
 package common
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -30,13 +32,33 @@ func TestReadErrorTruncatesUpstreamBody(t *testing.T) {
 	}
 }
 
-// The message format is relied upon by existing provider tests and by the
-// substring classification that remains in isRetryableJobError.
+// The message format is relied upon by existing provider tests, and it is what
+// reaches jobs.last_error_message and the /progress page. Nothing classifies on
+// it any more — retry decisions read the status through errors.As and the
+// domain.ErrPermanentFailure marker — so this test pins what an operator reads,
+// not what the code branches on.
 func TestReadErrorPreservesMessageFormat(t *testing.T) {
 	resp := &http.Response{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader("  invalid api key  "))}
 
 	err := ReadError(resp)
 	if got, want := err.Error(), "provider returned HTTP 401: invalid api key"; got != want {
 		t.Fatalf("error text = %q, want %q", got, want)
+	}
+}
+
+// Callers outside this package classify a failure by probing a wrapped error
+// for a status-bearing interface, because providerpool deliberately depends on
+// no transport package. StatusCode is a field, so the method is the only thing
+// that probe can find; deleting it still compiles and silently sends every
+// provider failure back to substring matching on the message.
+func TestStatusErrorExposesStatusThroughAnInterface(t *testing.T) {
+	wrapped := fmt.Errorf("analyze: %w", &StatusError{StatusCode: http.StatusPaymentRequired, Body: "insufficient balance"})
+
+	var probe interface{ HTTPStatusCode() int }
+	if !errors.As(wrapped, &probe) {
+		t.Fatal("a wrapped *StatusError is invisible to a status probe")
+	}
+	if got := probe.HTTPStatusCode(); got != http.StatusPaymentRequired {
+		t.Fatalf("HTTPStatusCode() = %d, want 402", got)
 	}
 }

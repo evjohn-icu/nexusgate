@@ -1,4 +1,4 @@
-module github.com/ev/timingdex
+module github.com/evjohn-icu/timingdex
 
 go 1.23.0
 

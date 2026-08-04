@@ -3,8 +3,8 @@ package video
 import (
 	"context"
 
-	videoanalysis "github.com/ev/timingdex/internal/domain/video_analysis"
-	"github.com/ev/timingdex/internal/providers/common"
+	videoanalysis "github.com/evjohn-icu/timingdex/internal/domain/video_analysis"
+	"github.com/evjohn-icu/timingdex/internal/providers/common"
 )
 
 type Capability string

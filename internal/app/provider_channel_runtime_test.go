@@ -13,13 +13,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ev/timingdex/internal/config"
-	"github.com/ev/timingdex/internal/domain"
-	videoanalysis "github.com/ev/timingdex/internal/domain/video_analysis"
-	"github.com/ev/timingdex/internal/providerchannels"
-	"github.com/ev/timingdex/internal/providers"
-	"github.com/ev/timingdex/internal/providers/common"
-	videoproviders "github.com/ev/timingdex/internal/providers/video"
+	"github.com/evjohn-icu/timingdex/internal/config"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	videoanalysis "github.com/evjohn-icu/timingdex/internal/domain/video_analysis"
+	"github.com/evjohn-icu/timingdex/internal/providerchannels"
+	"github.com/evjohn-icu/timingdex/internal/providers"
+	"github.com/evjohn-icu/timingdex/internal/providers/common"
+	videoproviders "github.com/evjohn-icu/timingdex/internal/providers/video"
 )
 
 type runtimeChannelRepo struct {

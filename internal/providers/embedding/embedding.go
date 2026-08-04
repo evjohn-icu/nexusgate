@@ -7,7 +7,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/ev/timingdex/internal/providers/common"
+	"github.com/evjohn-icu/timingdex/internal/providers/common"
 )
 
 // Provider implements real remote embeddings. OpenAI-compatible endpoints

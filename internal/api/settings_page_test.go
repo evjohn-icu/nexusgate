@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ev/timingdex/internal/app"
-	"github.com/ev/timingdex/internal/config"
-	"github.com/ev/timingdex/internal/domain"
-	"github.com/ev/timingdex/internal/media"
-	"github.com/ev/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/timingdex/internal/app"
+	"github.com/evjohn-icu/timingdex/internal/config"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/media"
+	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 )
 
 func throttleTestService(t *testing.T, name string) *app.Service {

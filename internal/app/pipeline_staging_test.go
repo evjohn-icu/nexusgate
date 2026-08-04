@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ev/timingdex/internal/domain"
-	"github.com/ev/timingdex/internal/staging"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/staging"
 )
 
 func TestPipelineSourcePathStagesNetworkSourceBeforeMediaWork(t *testing.T) {

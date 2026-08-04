@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ev/timingdex/internal/providers/common"
+	"github.com/evjohn-icu/timingdex/internal/providers/common"
 )
 
 func TestTranscribeOpenAICompatibleFixture(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ev/timingdex/internal/config"
+	"github.com/evjohn-icu/timingdex/internal/config"
 )
 
 type Operation string

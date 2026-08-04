@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 func TestAssetCollectionsPersistNamedNonSecretFilters(t *testing.T) {
@@ -135,7 +135,10 @@ func TestCollectionCardsFilterByProcessingStatusWithoutPrivateBrowseFields(t *te
 			t.Fatal(err)
 		}
 		if fixture.id == "ready-1" {
-			if err := repo.SaveArtifact(ctx, domain.DerivedArtifact{ID: "artifact-ready", AssetID: fixture.id, Type: "proxy", ProfileHash: "proxy-v1", LocalPath: "/derived/ready.mp4"}); err != nil {
+			// Raw SQL, not repo.SaveArtifact: this fixture has no job behind it,
+			// and SaveArtifact now requires one to own -- see the ownership
+			// predicate added in jobs_lease_ownership_test.go.
+			if _, err := repo.db.ExecContext(ctx, `INSERT INTO derived_artifacts(id,asset_id,artifact_type,profile_hash,local_path,size_bytes,created_at) VALUES(?,?,?,?,?,?,?)`, "artifact-ready", fixture.id, "proxy", "proxy-v1", "/derived/ready.mp4", 0, stamp); err != nil {
 				t.Fatal(err)
 			}
 		}
