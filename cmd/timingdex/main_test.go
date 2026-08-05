@@ -221,3 +221,12 @@ func TestSetupLoggingInvalidLevelFallsBackToInfo(t *testing.T) {
 		t.Fatalf("invalid level fell back to debug instead of info")
 	}
 }
+
+func TestSetupLoggingInvalidFormatFallsBackToText(t *testing.T) {
+	t.Setenv("TIMINGDEX_LOG_FORMAT", "bogus")
+	t.Setenv("TIMINGDEX_LOG_LEVEL", "debug")
+	setupLogging() // must not panic; falls back to text with a warning
+	if strings.Contains(fmt.Sprintf("%T", slog.Default().Handler()), "JSONHandler") {
+		t.Fatalf("invalid format fell back to JSONHandler instead of TextHandler")
+	}
+}

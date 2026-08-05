@@ -56,8 +56,12 @@ func setupLogging() {
 		slog.Warn("ignoring invalid TIMINGDEX_LOG_LEVEL; using info", "level", os.Getenv("TIMINGDEX_LOG_LEVEL"))
 	}
 	var handler slog.Handler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("TIMINGDEX_LOG_FORMAT")), "json") {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("TIMINGDEX_LOG_FORMAT"))) {
+	case "", "text":
+	case "json":
 		handler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})
+	default:
+		slog.Warn("ignoring invalid TIMINGDEX_LOG_FORMAT; using text", "format", os.Getenv("TIMINGDEX_LOG_FORMAT"))
 	}
 	slog.SetDefault(slog.New(handler))
 }
