@@ -77,8 +77,19 @@ func TestLibraryPageRendersSemanticFacetControls(t *testing.T) {
 		if !strings.Contains(page, `<select id="`+id+`"`) {
 			t.Fatalf("library page missing facet select %q", id)
 		}
-		if !strings.Contains(page, "document.getElementById('"+id+"').value=''") {
-			t.Fatalf("clearFilters() does not reset facet select %q", id)
+	}
+	// asset-type-select stays single-select, cleared via .value=''.
+	if !strings.Contains(page, "document.getElementById('asset-type-select').value=''") {
+		t.Fatalf("clearFilters() does not reset asset-type-select")
+	}
+	// shot-size, camera-motion, audio-type, quality, usable-as are multi-select,
+	// cleared via selectedIndex=-1.
+	if !strings.Contains(page, ".selectedIndex=-1") {
+		t.Fatalf("clearFilters() must use selectedIndex=-1 to reset multi-select facets")
+	}
+	for _, id := range []string{"shot-size-select", "camera-motion-select", "audio-type-select", "quality-select", "usable-as-select"} {
+		if !strings.Contains(page, id) {
+			t.Fatalf("clearFilters() does not reference multi-select facet %q", id)
 		}
 	}
 	for _, id := range []string{"min-duration", "max-duration"} {

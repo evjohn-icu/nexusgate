@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,7 +138,7 @@ UNION
 SELECT l.asset_id FROM asset_tag_links l JOIN tag_aliases_v2 a ON a.canonical_tag_id=l.canonical_tag_id WHERE a.alias_normalized=?
 )
 LIMIT ?`
-	const wantFTSQuery = `SELECT asset_id FROM asset_search WHERE asset_search MATCH ? LIMIT ?`
+	const wantFTSQuery = `SELECT asset_id FROM asset_search WHERE asset_search MATCH ? ORDER BY bm25(asset_search) LIMIT ?`
 
 	var captured []string
 	searchSQLTrace = func(q string) { captured = append(captured, q) }
@@ -204,5 +205,60 @@ func TestSearchFilteredZeroFacetMatchesSearch(t *testing.T) {
 	}
 	if len(ids) != 1 || ftsID == "" {
 		t.Fatalf("fixture setup: ids=%v", ids)
+	}
+}
+
+// TestSearchFilteredFTSOrderedByRelevance proves the FTS fallback orders hits
+// by bm25 relevance (most relevant first) rather than FTS5's internal docid.
+// Two assets share the same keyword but with different term frequency: the
+// higher-frequency one must sort first. This is the asset-level counterpart
+// to the shot-level `ORDER BY bm25(asset_shot_search)`.
+func TestSearchFilteredFTSOrderedByRelevance(t *testing.T) {
+	repo := openSearchFacetTestRepo(t, "search-facets-relevance.db")
+	ctx := context.Background()
+	now := formatTime(time.Now().UTC())
+
+	if _, err := repo.db.ExecContext(ctx, `INSERT OR IGNORE INTO library_roots(id,path,created_at,updated_at) VALUES('relevance-root','/footage',?,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	seedRelevanceAsset := func(id, summary string) {
+		t.Helper()
+		if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES(?,?,1,'discovered',?,?)`, id, id, now, now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.db.ExecContext(ctx, `INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,exists_now,is_primary,last_seen_at) VALUES(?,?,'relevance-root',?,?,1,1,1,?)`,
+			"loc-"+id, id, id+".mp4", "/footage/"+id+".mp4", now); err != nil {
+			t.Fatal(err)
+		}
+		runID, _, err := repo.CreateModelRun(ctx, id, "vision", "fixture", "fixture-model", "hash-"+id, "facet-prompt-v1", "asset-analysis/v1", "{}")
+		if err != nil {
+			t.Fatal(err)
+		}
+		analysis := domain.StructuredAnalysis{Summary: summary}
+		if err := repo.StageModelRun(ctx, runID, "{}", "{}"); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.CommitAnalysis(ctx, id, runID, "asset-analysis/v1", analysis); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.RebuildSearch(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Both assets match the keyword "sunset", but asset-relevance-high mentions
+	// it far more often, so it should rank above asset-relevance-low under bm25.
+	seedRelevanceAsset("asset-relevance-high", strings.Repeat("sunset ", 12)+"golden hour wide shot")
+	seedRelevanceAsset("asset-relevance-low", "one sunset at the beach")
+
+	got, err := repo.Search(ctx, "sunset", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("Search(sunset) returned %d ids, want 2: %v", len(got), got)
+	}
+	if got[0] != "asset-relevance-high" {
+		t.Fatalf("Search(sunset) relevance order = %v, want asset-relevance-high first (bm25 should rank higher term frequency above lower)", got)
 	}
 }

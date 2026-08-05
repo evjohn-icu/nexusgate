@@ -84,13 +84,14 @@ var facetLabels = map[string]string{
 var facetFields = []struct {
 	id, name, empty string
 	values          []string
+	multiple        bool
 }{
 	{id: "asset-type-select", name: "素材类型", empty: "全部类型", values: normalize.AssetTypeValues},
-	{id: "shot-size-select", name: "景别", empty: "全部景别", values: normalize.ShotSizeValues},
-	{id: "camera-motion-select", name: "运镜", empty: "全部运镜", values: normalize.MotionValues},
-	{id: "audio-type-select", name: "音频", empty: "全部音频", values: normalize.AudioTypeValues},
-	{id: "quality-select", name: "质量", empty: "全部质量", values: normalize.QualityValues},
-	{id: "usable-as-select", name: "用途", empty: "全部用途", values: normalize.UsableAsValues},
+	{id: "shot-size-select", name: "景别", empty: "全部景别", values: normalize.ShotSizeValues, multiple: true},
+	{id: "camera-motion-select", name: "运镜", empty: "全部运镜", values: normalize.MotionValues, multiple: true},
+	{id: "audio-type-select", name: "音频", empty: "全部音频", values: normalize.AudioTypeValues, multiple: true},
+	{id: "quality-select", name: "质量", empty: "全部质量", values: normalize.QualityValues, multiple: true},
+	{id: "usable-as-select", name: "用途", empty: "全部用途", values: normalize.UsableAsValues, multiple: true},
 }
 
 // pagePatch is one exact-match string replacement over the legacy constant.
@@ -118,7 +119,7 @@ var libraryPagePatches = []pagePatch{
 	{anchor: `<section id="library" class="library"`,
 		replacement: filterPanelsHTML() + `<section id="library" class="library"`},
 	{anchor: `async function load(ids)`,
-		replacement: `let activeCollection='';function filterQuery(){const values={date_from:document.getElementById('date-from').value,date_to:document.getElementById('date-to').value,region:document.getElementById('region-filter').value.trim(),camera:document.getElementById('camera-filter').value,session:document.getElementById('session-filter').value,status:document.getElementById('status-filter').value};const query=new URLSearchParams();Object.entries(values).forEach(([key,value])=>{if(value)query.set(key,value)});[['asset-type-select','asset_type'],['shot-size-select','shot_size'],['camera-motion-select','camera_motion'],['audio-type-select','audio_type'],['quality-select','quality'],['usable-as-select','usable_as']].forEach(([id,param])=>{const value=document.getElementById(id).value;if(value)query.set(param,value)});[['min-duration','min_duration_ms'],['max-duration','max_duration_ms']].forEach(([id,param])=>{const raw=document.getElementById(id).value.trim();if(raw==='')return;const sec=Number(raw);if(!Number.isFinite(sec)||sec<0)return;query.set(param,String(Math.round(sec*1000)))});return query.toString()?'&'+query.toString():''}function clearFilters(){activeCollection='';['date-from','date-to','region-filter','camera-filter'].forEach(id=>document.getElementById(id).value='');document.getElementById('session-filter').value='';document.getElementById('status-filter').value='';document.getElementById('collection-filter').value='';document.getElementById('asset-type-select').value='';document.getElementById('shot-size-select').value='';document.getElementById('camera-motion-select').value='';document.getElementById('audio-type-select').value='';document.getElementById('quality-select').value='';document.getElementById('usable-as-select').value='';document.getElementById('min-duration').value='';document.getElementById('max-duration').value='';load()}function groupKey(x){const date=x.captured_at?String(x.captured_at).slice(0,10):'日期未知';return [date,x.region_label||'地区未知',x.camera_model||'相机未知',x.session_id||'未归类场次'].join(' · ')}async function loadSessions(){const select=document.getElementById('session-filter');try{const response=await fetch('/api/v1/shoot-sessions?limit=500');if(!response.ok)throw Error('sessions unavailable');const sessions=await response.json();(Array.isArray(sessions)?sessions:[]).forEach(s=>{const option=document.createElement('option');option.value=s.id;const date=s.starts_at?String(s.starts_at).slice(0,10):'日期未知';const details=[date,s.camera_label,s.region_label].filter(Boolean).join(' · ');option.textContent=(s.title||s.id)+(details?' · '+details:'');select.appendChild(option)})}catch(_){select.innerHTML='<option value="">场次列表暂不可用</option>'}}async function loadCollections(){const select=document.getElementById('collection-filter');try{const items=await fetch('/api/v1/collections').then(r=>r.ok?r.json():[]);items.forEach(item=>{const option=document.createElement('option');option.value=item.id;option.textContent=item.name;select.appendChild(option)})}catch(_){}}async function loadSummary(){try{const data=await fetch('/api/v1/library/processing-summary?limit=300'+filterQuery()).then(r=>r.ok?r.json():null);if(!data)return;const labels={ready:'可用',processing:'处理中',queued:'等待中',failed:'失败',discovered:'未处理',missing:'原片缺失'};document.getElementById('processing-summary').innerHTML=Object.entries(labels).map(([key,label])=>'<span class="status-pill">'+label+' <b>'+esc((data.by_status||{})[key]||0)+'</b></span>').join('')}catch(_){}}async function loadCollection(id){activeCollection=id||'';load()}function loadLibrary(){loadSessions();loadCollections();load()}async function load(ids)`},
+		replacement: `let activeCollection='';function filterQuery(){const values={date_from:document.getElementById('date-from').value,date_to:document.getElementById('date-to').value,region:document.getElementById('region-filter').value.trim(),camera:document.getElementById('camera-filter').value,session:document.getElementById('session-filter').value,status:document.getElementById('status-filter').value};const query=new URLSearchParams();Object.entries(values).forEach(([key,value])=>{if(value)query.set(key,value)});[['asset-type-select','asset_type']].forEach(([id,param])=>{const value=document.getElementById(id).value;if(value)query.set(param,value)});[['shot-size-select','shot_size'],['camera-motion-select','camera_motion'],['audio-type-select','audio_type'],['quality-select','quality'],['usable-as-select','usable_as']].forEach(([id,param])=>{const sel=document.getElementById(id);const vals=Array.from(sel.selectedOptions).map(o=>o.value).filter(Boolean);if(vals.length)query.set(param,vals.join(','))});[['min-duration','min_duration_ms'],['max-duration','max_duration_ms']].forEach(([id,param])=>{const raw=document.getElementById(id).value.trim();if(raw==='')return;const sec=Number(raw);if(!Number.isFinite(sec)||sec<0)return;query.set(param,String(Math.round(sec*1000)))});return query.toString()?'&'+query.toString():''}function clearFilters(){activeCollection='';['date-from','date-to','region-filter','camera-filter'].forEach(id=>document.getElementById(id).value='');document.getElementById('session-filter').value='';document.getElementById('status-filter').value='';document.getElementById('collection-filter').value='';document.getElementById('asset-type-select').value='';['shot-size-select','camera-motion-select','audio-type-select','quality-select','usable-as-select'].forEach(id=>document.getElementById(id).selectedIndex=-1);document.getElementById('min-duration').value='';document.getElementById('max-duration').value='';load()}function groupKey(x){const date=x.captured_at?String(x.captured_at).slice(0,10):'日期未知';return [date,x.region_label||'地区未知',x.camera_model||'相机未知',x.session_id||'未归类场次'].join(' · ')}async function loadSessions(){const select=document.getElementById('session-filter');try{const response=await fetch('/api/v1/shoot-sessions?limit=500');if(!response.ok)throw Error('sessions unavailable');const sessions=await response.json();(Array.isArray(sessions)?sessions:[]).forEach(s=>{const option=document.createElement('option');option.value=s.id;const date=s.starts_at?String(s.starts_at).slice(0,10):'日期未知';const details=[date,s.camera_label,s.region_label].filter(Boolean).join(' · ');option.textContent=(s.title||s.id)+(details?' · '+details:'');select.appendChild(option)})}catch(_){select.innerHTML='<option value="">场次列表暂不可用</option>'}}async function loadCollections(){const select=document.getElementById('collection-filter');try{const items=await fetch('/api/v1/collections').then(r=>r.ok?r.json():[]);items.forEach(item=>{const option=document.createElement('option');option.value=item.id;option.textContent=item.name;select.appendChild(option)})}catch(_){}}async function loadSummary(){try{const data=await fetch('/api/v1/library/processing-summary?limit=300'+filterQuery()).then(r=>r.ok?r.json():null);if(!data)return;const labels={ready:'可用',processing:'处理中',queued:'等待中',failed:'失败',discovered:'未处理',missing:'原片缺失'};document.getElementById('processing-summary').innerHTML=Object.entries(labels).map(([key,label])=>'<span class="status-pill">'+label+' <b>'+esc((data.by_status||{})[key]||0)+'</b></span>').join('')}catch(_){}}async function loadCollection(id){activeCollection=id||'';load()}function loadLibrary(){loadSessions();loadCollections();load()}async function load(ids)`},
 	// The pre-facet page fetched up to 300 cards and, when ids came from a
 	// search, intersected them client-side (see the anchor removed just
 	// below) — two independently capped windows whose overlap silently
@@ -172,7 +173,7 @@ func semanticFiltersSection() string {
 	var b strings.Builder
 	b.WriteString(`<section class="semantic-filters" aria-label="语义筛选">`)
 	for _, f := range facetFields {
-		b.WriteString(facetSelectHTML(f.id, f.name, f.empty, f.values))
+		b.WriteString(facetSelectHTML(f.id, f.name, f.empty, f.values, f.multiple))
 	}
 	// Duration is entered in seconds, the unit an editor thinks in, and the JS
 	// converts to milliseconds before sending; empty means unset.
@@ -182,9 +183,16 @@ func semanticFiltersSection() string {
 	return b.String()
 }
 
-func facetSelectHTML(id, name, empty string, values []string) string {
+func facetSelectHTML(id, name, empty string, values []string, multiple bool) string {
 	var b strings.Builder
-	b.WriteString(`<div><label for="` + id + `">` + name + `</label><select id="` + id + `" onchange="load()"><option value="">` + empty + `</option>`)
+	b.WriteString(`<div><label for="` + id + `">` + name + `</label><select id="` + id + `" onchange="load()"`)
+	if multiple {
+		b.WriteString(` multiple size="4"`)
+	}
+	b.WriteString(`>`)
+	if !multiple {
+		b.WriteString(`<option value="">` + empty + `</option>`)
+	}
 	for _, v := range values {
 		fmt.Fprintf(&b, `<option value="%s">%s</option>`, v, facetLabels[v])
 	}

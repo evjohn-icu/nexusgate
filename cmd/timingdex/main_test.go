@@ -1,11 +1,13 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/evjohn-icu/timingdex/internal/config"
+	"github.com/evjohn-icu/timingdex/internal/secretstore"
 )
 
 func TestUsage(t *testing.T) {
@@ -129,5 +131,63 @@ func TestHubTLSFilesModes(t *testing.T) {
 				t.Fatalf("hubTLSFiles() off mode returned %q/%q, want empty", cert, key)
 			}
 		})
+	}
+}
+
+func TestRunSecretsCommandRekeySmoke(t *testing.T) {
+	dataDir := t.TempDir()
+	const adminToken = "cli-smoke-admin-token"
+
+	// Seed a store with one secret, the same way Service construction would.
+	store, err := secretstore.Open(dataDir, adminToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put("provider-channel/c1/m1", "sk-smoke"); err != nil {
+		t.Fatal(err)
+	}
+
+	keyFile := filepath.Join(dataDir, "provider-secrets", "store.key")
+	before, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Drive the CLI rekey path with an explicit token (config.AdminToken is
+	// environment-only and empty by default, so EnsureAdminToken falls through
+	// to data-dir creation — the explicit path is what a real operator uses).
+	cfg := config.Config{DataDir: dataDir, HubSecurity: config.HubSecurityConfig{AdminToken: adminToken}}
+	origArgs := os.Args
+	os.Args = []string{"timingdex", "secrets", "rekey"}
+	t.Cleanup(func() { os.Args = origArgs })
+	if err := runSecretsCommand(cfg); err != nil {
+		t.Fatalf("runSecretsCommand(rekey) = %v", err)
+	}
+
+	after, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) == string(after) {
+		t.Fatal("store.key did not change after CLI rekey")
+	}
+
+	// Backup of the previous key must exist and hold the pre-rekey key.
+	backupPath := filepath.Join(dataDir, "provider-secrets", "store.key.pre-rekey")
+	backup, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("pre-rekey backup missing: %v", err)
+	}
+	if string(backup) != string(before) {
+		t.Fatal("pre-rekey backup does not hold the original key")
+	}
+
+	// The secret must still resolve with the same ref.
+	reopened, err := secretstore.Open(dataDir, adminToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := reopened.Resolve("provider-channel/c1/m1"); err != nil || !ok || got != "sk-smoke" {
+		t.Fatalf("secret after CLI rekey = %q, %t, %v; want sk-smoke", got, ok, err)
 	}
 }

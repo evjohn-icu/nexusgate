@@ -18,10 +18,12 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/api"
 	"github.com/evjohn-icu/timingdex/internal/app"
 	"github.com/evjohn-icu/timingdex/internal/config"
+	"github.com/evjohn-icu/timingdex/internal/hubauth"
 	"github.com/evjohn-icu/timingdex/internal/hubtls"
 	"github.com/evjohn-icu/timingdex/internal/media"
 	"github.com/evjohn-icu/timingdex/internal/remote"
 	sqliterepo "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/timingdex/internal/secretstore"
 	"github.com/evjohn-icu/timingdex/internal/worker"
 )
 
@@ -128,8 +130,41 @@ func run() error {
 		fmt.Printf("listen:   %s\n", cfg.ListenAddress)
 		return service.Doctor(context.Background(), os.Stdout)
 
+	case "secrets":
+		return runSecretsCommand(cfg)
+
 	default:
 		return usage()
+	}
+}
+
+// runSecretsCommand exposes secretstore operations on the CLI. Currently the
+// only subcommand is `rekey`, which rotates the data-encryption key and
+// re-encrypts every stored provider secret (see secretstore.Store.Rekey). It
+// needs the Hub administrator token the same way the serving process derives
+// it, so an operator does not have to copy the key material out of the store
+// or the running process.
+func runSecretsCommand(cfg config.Config) error {
+	if len(os.Args) < 3 {
+		return errors.New("usage: timingdex secrets rekey")
+	}
+	switch os.Args[2] {
+	case "rekey":
+		adminToken, err := hubauth.EnsureAdminToken(cfg.DataDir, cfg.HubSecurity.AdminToken)
+		if err != nil {
+			return fmt.Errorf("resolve Hub administrator token: %w", err)
+		}
+		store, err := secretstore.Open(cfg.DataDir, adminToken)
+		if err != nil {
+			return fmt.Errorf("open secret store: %w", err)
+		}
+		if err := store.Rekey(); err != nil {
+			return fmt.Errorf("rekey secret store: %w", err)
+		}
+		fmt.Printf("rekeyed provider secret store; previous key backed up to %s\n", filepath.Join(cfg.DataDir, "provider-secrets", "store.key.pre-rekey"))
+		return nil
+	default:
+		return errors.New("usage: timingdex secrets rekey")
 	}
 }
 

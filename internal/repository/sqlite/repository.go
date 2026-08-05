@@ -1967,7 +1967,7 @@ LIMIT ?`
 		return ids, nil
 	}
 	ftsGuard, ftsGuardArgs := facetExistsGuard("asset_search.asset_id", facets)
-	query := `SELECT asset_id FROM asset_search WHERE asset_search MATCH ?` + ftsGuard + ` LIMIT ?`
+	query := `SELECT asset_id FROM asset_search WHERE asset_search MATCH ?` + ftsGuard + ` ORDER BY bm25(asset_search) LIMIT ?`
 	args := append([]any{ftsQuery}, ftsGuardArgs...)
 	args = append(args, limit-len(ids))
 	if searchSQLTrace != nil {

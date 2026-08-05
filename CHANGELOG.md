@@ -14,6 +14,21 @@
 - **CI 门禁**：`go test -race` 从 `./internal/...` 扩为全量 `./...`；新增覆盖率
   门槛 step（全量语句覆盖率 ≥ 65%，低于即红，输出低覆盖包 top5）。
 
+## Unreleased — 2026-08-05 优化轮（S2：搜索相关度、分面多选、Rekey CLI）
+
+- **素材级搜索相关度**：`SearchFiltered` 的 FTS 兜底分支加
+  `ORDER BY bm25(asset_search)`——素材命中按相关度降序（此前为 FTS5 内部 docid
+  顺序），tag 精确命中仍优先于 FTS 文本匹配；golden SQL 测试基线同步更新，
+  新增 bm25 相关度排序验证测试。
+- **页面分面多选**：景别/运镜/音频/画质/可用性 5 个分面控件从单选改为
+  `<select multiple>`，多选值 `join(',')` 传入（后端 `facetWhere` 本就支持
+  `IN(...)` 多值），素材类型保持单选；清除筛选同步清空多选。
+- **secretstore Rekey CLI**：新增 `timingdex secrets rekey`——轮换数据加密密钥、
+  全量重加密、旧 key 备份到 `provider-secrets/store.key.pre-rekey`；复用
+  `EnsureAdminToken` 取凭证，无 store/token 时报错不 panic；docs 补轮换操作说明。
+- **0027（设计结论）**：`providers.*` → `/providers` 通道双轨经查为刻意 Worker
+  信任边界（Worker 不读通道，防通道密钥推给远端节点），关闭为设计决策不迁移。
+
 ## v0.21.0 — 2026-08-04（首个 GitHub release）
 
 合并 `hardware-and-mounts` 全量（v0.20 NAS 挂载 + v0.21 无人值守巡检/时间线导出，此前均未发布）与 2026-08-04 全库审查批（OpenSpec 落地、API 硬化、model_runs 边界、21 个 change，见下方对应小节）。Docker 镜像 tag：`timingdex:v0.21.0`。
