@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.24.0 — 2026-08-05（全量 review 修复批：8 reviewer 覆盖全部 21 包）
+
+8 子代理并行审查全库（5.4 万行/251 文件）后的 P1/P2 修复，覆盖依赖合规、
+API 加固、性能、密钥安全、测试覆盖。
+
+- **依赖合规（P1）**：THIRD-PARTY-LICENSES 真正落盘重写（上次声称修复未生效）
+  ——19 依赖全覆盖、删 nhooyr/x-exp、版本对齐 go.mod；CI race 加 `-count=1`、
+  timeout-minutes 15、测试合并两步；Dockerfile 基础镜像 1.23→1.25。
+- **API 加固（P1）**：workerCompleteJob 加 MaxBytesReader(32KB)；4 处错误回显
+  改 writeError（enrollWorker/workerCompleteJob/setWorkerJobAssignment/
+  saveCollection）——DB 错误原文不再泄漏给调用方。
+- **API（P2）**：serveArtifact 加 cacheDir 前缀防御；denied_actions 补 5 个
+  admin-only 写路由；新增 `DELETE /api/v1/admin/webdav/spaces/{id}`。
+- **app 健壮性**：provider channel identity 调用 2s 超时（原 Background 无限
+  阻塞）；ScanLibraryRoot 连续失败周期性 Error；RunUntilIdle 日志风暴抑制；
+  buildClusters 空输入守卫。
+- **repository 性能/正确性**：RebuildSearch 不再静默吞 I/O 错误；
+  ListProviderChannels N+1 改批量；时间戳解析失败加 debug 日志。
+- **media 卫生**：ffmpeg stderr 截断 4KB（防 last_error_message 膨胀）；删
+  死代码 firstExifString；probeReadRate 加 5s 超时。
+- **密钥安全**：Credential 实现 GoStringer/Formatter（`%+v` 不再泄漏
+  APIKey，含测试）；worker 错误消息 redactSecrets 过滤；postJSON 限长；
+  UploadArtifact goroutine 感知 ctx 取消；volcasr APIKey 加 `json:"-"`。
+- **测试覆盖**：cmd/timingdex 17.4%→55.9%（run() 子命令分发 table-driven）；
+  internal/remote 新增 12 个 wire type 往返测试。
+
+Docker 镜像 tag：`timingdex:v0.24.0`。
+
 ## v0.23.1 — 2026-08-05（review 修复批）
 
 8 子代理全库审查后的修复（P1/P2/P3 全收），集中于 v0.23 新增的剪辑 agent 接入层。
