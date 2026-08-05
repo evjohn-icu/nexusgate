@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "timingdex": {
+      "type": "stdio",
+      "command": "timingdex-mcp",
+      "args": [],
+      "env": {
+        "TIMINGDEX_BASE_URL": "http://127.0.0.1:8787",
+        "TIMINGDEX_AGENT_TOKEN": "put-your-agent-token-here",
+        "TIMINGDEX_ADMIN_TOKEN": "put-your-admin-token-here"
+      }
+    }
+  }
+}

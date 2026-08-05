@@ -32,6 +32,27 @@ available unless the API returned it.
 
 ## Workflow
 
+### Via MCP (recommended when the agent supports MCP)
+
+If this agent runs with MCP access to `timingdex-mcp` (see
+`mcp/.mcp.json.example` and `references/mcp-usage.md`), prefer the MCP tools over
+hand-built HTTP calls:
+
+1. `inspect_library` first — confirm the library is healthy before planning.
+2. `search_footage(q, limit)` — find shots (returns shot id, asset id, time
+   ranges, score, description).
+3. `create_edit_plan(brief)` — draft the edit plan.
+4. `revise_edit_plan(plan_id, sections_json)` — fill sections with concrete
+   shot selections.
+5. `request_source_media(space_id, asset_id)` — when the user wants the
+   footage delivered for editing, link the original media into the operator's
+   on-demand WebDAV space and return the mount path.
+
+The same boundaries apply: approval stays human, the pipeline is never run,
+and provider keys are never read.
+
+### Via HTTP (when MCP is unavailable)
+
 ### Inspect readiness
 
 1. Read `/api/v1/health`, `/api/v1/hardware` and `/api/v1/jobs?limit=100`.

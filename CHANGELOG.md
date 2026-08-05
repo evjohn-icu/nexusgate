@@ -2,13 +2,22 @@
 
 ## Unreleased — 2026-08-05 剪辑 agent 接入（MCP + 按需 WebDAV 交付）
 
+- **MCP server（`cmd/timingdex-mcp`）**：独立 stdio 二进制，Codex 等 MCP 客户端
+  可接入。5 个剪辑语义工具：`inspect_library` / `search_footage` /
+  `create_edit_plan` / `revise_edit_plan` / `request_source_media`。agent token
+  用于计划类，admin token 用于 WebDAV 软链（该端点 admin-only）。启动不写
+  stderr（MCP stdio 严格要求）；基于 `mark3labs/mcp-go`。
 - **按需 WebDAV 交付空间**：空间初始为空，素材经软链（虚拟映射）按需可见；
   只读（PUT/MKCOL 拒绝）、字节从 NAS 原文件流式读取、真实路径不泄露、
   未请求素材 404。账号 bcrypt 哈希落库（`golang.org/x/crypto`），
   虚拟 FileSystem 基于 `golang.org/x/net/webdav`。
 - **管理端点**：admin 建账号/建空间/软链 asset（`/api/v1/admin/webdav/*`），
   WebDAV Basic Auth 挂载于 `/spaces/{id}/...`。
-- 新增依赖：`golang.org/x/net`、`golang.org/x/crypto`。
+- **skills**：SKILL.md 补 MCP 优先工作流；references 补 `mcp-usage.md`；
+  `mcp/.mcp.json.example` 供 Codex 加载。
+- 新增依赖：`mark3labs/mcp-go`、`golang.org/x/net`、`golang.org/x/crypto`。
+
+## v0.22.0 — 2026-08-05（优化轮：依赖卫生、测试覆盖、CI 门禁、搜索、可观测性）
 
 ## v0.22.0 — 2026-08-05（优化轮：依赖卫生、测试覆盖、CI 门禁、搜索、可观测性）
 
