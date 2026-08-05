@@ -29,6 +29,17 @@
 - **0027（设计结论）**：`providers.*` → `/providers` 通道双轨经查为刻意 Worker
   信任边界（Worker 不读通道，防通道密钥推给远端节点），关闭为设计决策不迁移。
 
+## Unreleased — 2026-08-05 优化轮（S3：离线检测、结构化日志、SQLite integrity）
+
+- **Worker 离线检测**：`ListWorkers` 按 `last_seen_at` 距今是否超过 90s 派生
+  offline 状态（此前心跳把 status 写死 online 永不回落，挂掉的节点永远显示
+  "在线"）；阈值 = 3× 默认 30s 心跳间隔，容忍丢 1–2 个心跳；revoked 不被覆盖。
+- **结构化日志**：`TIMINGDEX_LOG_FORMAT`（text|json，默认 text）+
+  `TIMINGDEX_LOG_LEVEL`（debug|info|warn|error，默认 info）环境变量配置
+  slog handler；无变量时行为与默认一致，非法值回退并告警。
+- **SQLite integrity**：`timingdex doctor` 增加 `PRAGMA integrity_check`，
+  健康库输出 `sqlite: ok`，损坏库报告错误并非零退出。
+
 ## v0.21.0 — 2026-08-04（首个 GitHub release）
 
 合并 `hardware-and-mounts` 全量（v0.20 NAS 挂载 + v0.21 无人值守巡检/时间线导出，此前均未发布）与 2026-08-04 全库审查批（OpenSpec 落地、API 硬化、model_runs 边界、21 个 change，见下方对应小节）。Docker 镜像 tag：`timingdex:v0.21.0`。

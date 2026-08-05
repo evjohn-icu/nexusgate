@@ -34,7 +34,35 @@ func main() {
 	}
 }
 
+// setupLogging installs the process-wide slog handler from environment
+// variables. TIMINGDEX_LOG_FORMAT selects text (default) or JSON output;
+// TIMINGDEX_LOG_LEVEL selects debug|info|warn|error (default info). With no
+// variables set the behaviour is byte-identical to the default slog output, so
+// existing deployments see no change until they opt in. Invalid values fall
+// back to the default and log a warning rather than aborting startup.
+func setupLogging() {
+	level := slog.LevelInfo
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("TIMINGDEX_LOG_LEVEL"))) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	case "", "info":
+		level = slog.LevelInfo
+	default:
+		slog.Warn("ignoring invalid TIMINGDEX_LOG_LEVEL; using info", "level", os.Getenv("TIMINGDEX_LOG_LEVEL"))
+	}
+	var handler slog.Handler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("TIMINGDEX_LOG_FORMAT")), "json") {
+		handler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})
+	}
+	slog.SetDefault(slog.New(handler))
+}
+
 func run() error {
+	setupLogging()
 	if len(os.Args) < 2 {
 		return usage()
 	}

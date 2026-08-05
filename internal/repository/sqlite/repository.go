@@ -118,6 +118,26 @@ func (r *Repository) HeartbeatWorker(ctx context.Context, workerID string, capab
 	return err
 }
 
+// workerOfflineAfter bounds how stale a worker's last heartbeat may be before
+// ListWorkers derives its status as offline. It is 3x the default 30s
+// HeartbeatInterval so a single dropped heartbeat does not flap the fleet view.
+const workerOfflineAfter = 90 * time.Second
+
+// IntegrityCheck runs SQLite's own self-check (PRAGMA integrity_check). It
+// returns nil when the database is consistent and an error naming the first
+// problem otherwise. Exposed for the `timingdex doctor` command so an operator
+// can confirm a library survived a NAS power event without guessing.
+func (r *Repository) IntegrityCheck(ctx context.Context) error {
+	var result string
+	if err := r.db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&result); err != nil {
+		return err
+	}
+	if result != "ok" {
+		return fmt.Errorf("SQLite integrity_check reported: %s", result)
+	}
+	return nil
+}
+
 func (r *Repository) ListWorkers(ctx context.Context) ([]remote.Worker, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT id,name,platform,version,status,capabilities_json,last_seen_at,created_at FROM workers ORDER BY created_at DESC`)
 	if err != nil {
@@ -136,6 +156,14 @@ func (r *Repository) ListWorkers(ctx context.Context) ([]remote.Worker, error) {
 		}
 		w.LastSeenAt, _ = time.Parse(time.RFC3339Nano, last)
 		w.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		// A worker that has not heartbeated within the threshold is derived as
+		// offline even though its stored status is still 'online' (heartbeats
+		// write online and never fall back). This is the only place the derived
+		// view is computed; the stored status stays untouched so a revoked row is
+		// never flipped back and heartbeats keep writing 'online' truthfully.
+		if w.Status == remote.WorkerOnline && time.Since(w.LastSeenAt) > workerOfflineAfter {
+			w.Status = remote.WorkerOffline
+		}
 		out = append(out, w)
 	}
 	return out, rows.Err()

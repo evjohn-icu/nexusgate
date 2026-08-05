@@ -90,6 +90,7 @@ var ErrWorkerProviderConfiguredAsChannelOnly = errors.New("worker provider acces
 
 type Repository interface {
 	PipelineRepository
+	IntegrityCheck(ctx context.Context) error
 	CreateLibraryRoot(ctx context.Context, path string) (domain.LibraryRoot, error)
 	ListLibraryRoots(ctx context.Context) ([]domain.LibraryRoot, error)
 	GetLibraryRoot(ctx context.Context, id string) (domain.LibraryRoot, error)
@@ -947,6 +948,11 @@ func (s *Service) Doctor(ctx context.Context, writer io.Writer) error {
 		}
 		fmt.Fprintf(writer, "%s: %s\n", binary, path)
 	}
+	if err := s.repo.IntegrityCheck(ctx); err != nil {
+		fmt.Fprintf(writer, "sqlite: %v\n", err)
+		return err
+	}
+	fmt.Fprintf(writer, "sqlite: ok\n")
 	report := s.HardwareReport()
 	media.FormatHardwareReport(writer, report)
 

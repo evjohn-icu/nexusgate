@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -189,5 +192,32 @@ func TestRunSecretsCommandRekeySmoke(t *testing.T) {
 	}
 	if got, ok, err := reopened.Resolve("provider-channel/c1/m1"); err != nil || !ok || got != "sk-smoke" {
 		t.Fatalf("secret after CLI rekey = %q, %t, %v; want sk-smoke", got, ok, err)
+	}
+}
+
+func TestSetupLoggingJSONFormatAndLevel(t *testing.T) {
+	t.Setenv("TIMINGDEX_LOG_FORMAT", "json")
+	t.Setenv("TIMINGDEX_LOG_LEVEL", "debug")
+	setupLogging()
+	if !strings.Contains(fmt.Sprintf("%T", slog.Default().Handler()), "JSONHandler") {
+		t.Fatalf("handler = %T, want JSONHandler", slog.Default().Handler())
+	}
+}
+
+func TestSetupLoggingTextDefault(t *testing.T) {
+	t.Setenv("TIMINGDEX_LOG_FORMAT", "text")
+	t.Setenv("TIMINGDEX_LOG_LEVEL", "info")
+	setupLogging()
+	if strings.Contains(fmt.Sprintf("%T", slog.Default().Handler()), "JSONHandler") {
+		t.Fatalf("handler = %T, want TextHandler for text format", slog.Default().Handler())
+	}
+}
+
+func TestSetupLoggingInvalidLevelFallsBackToInfo(t *testing.T) {
+	t.Setenv("TIMINGDEX_LOG_FORMAT", "text")
+	t.Setenv("TIMINGDEX_LOG_LEVEL", "bogus")
+	setupLogging() // must not panic; falls back to info with a warning
+	if got := slog.Default().Enabled(context.Background(), slog.LevelDebug); got {
+		t.Fatalf("invalid level fell back to debug instead of info")
 	}
 }
