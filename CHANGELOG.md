@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased — 2026-08-05 优化轮（S1：依赖卫生 + 测试覆盖 + CI 门禁）
+## v0.22.0 — 2026-08-05（优化轮：依赖卫生、测试覆盖、CI 门禁、搜索、可观测性）
+
+三轮并行优化的合集（openspec changes 0021–0033），覆盖：依赖升级、测试覆盖
+提升、CI 门禁强化、素材级搜索相关度、分面多选、Rekey CLI、Worker 离线检测、
+结构化日志、SQLite integrity 检查。Docker 镜像 tag：`timingdex:v0.22.0`。
+
+### S1 — 依赖卫生 + 测试覆盖 + CI 门禁
 
 - **依赖升级**：`modernc.org/sqlite v1.37.1 → v1.56.0`（落后 19 个 minor，纯 Go
   sqlite 的稳定性/性能修复）；`nhooyr.io/websocket` → `github.com/coder/websocket`
@@ -14,7 +20,7 @@
 - **CI 门禁**：`go test -race` 从 `./internal/...` 扩为全量 `./...`；新增覆盖率
   门槛 step（全量语句覆盖率 ≥ 65%，低于即红，输出低覆盖包 top5）。
 
-## Unreleased — 2026-08-05 优化轮（S2：搜索相关度、分面多选、Rekey CLI）
+### S2 — 搜索相关度、分面多选、Rekey CLI
 
 - **素材级搜索相关度**：`SearchFiltered` 的 FTS 兜底分支加
   `ORDER BY bm25(asset_search)`——素材命中按相关度降序（此前为 FTS5 内部 docid
@@ -29,7 +35,7 @@
 - **0027（设计结论）**：`providers.*` → `/providers` 通道双轨经查为刻意 Worker
   信任边界（Worker 不读通道，防通道密钥推给远端节点），关闭为设计决策不迁移。
 
-## Unreleased — 2026-08-05 优化轮（S3：离线检测、结构化日志、SQLite integrity）
+### S3 — 离线检测、结构化日志、SQLite integrity
 
 - **Worker 离线检测**：`ListWorkers` 按 `last_seen_at` 距今是否超过 90s 派生
   offline 状态（此前心跳把 status 写死 online 永不回落，挂掉的节点永远显示
