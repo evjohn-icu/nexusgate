@@ -2,6 +2,30 @@ package config
 
 import "testing"
 
+// The Ark plan endpoints authenticate with a bearer token. Shipping any other
+// header/scheme pairing here is not a cosmetic default: the provider answers
+// 401, and because the failure happens against the operator's own key it reads
+// as a bad key rather than a bad default. Both fields are asserted explicitly
+// because leaving them blank is only correct on the in-process request path —
+// the Worker JSON proxy sends an unprefixed key when the scheme is empty.
+func TestVolcPlanProvidersDefaultToBearerAuth(t *testing.T) {
+	t.Setenv("TIMINGDEX_DATA_DIR", t.TempDir())
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, provider := range map[string]ProviderConfig{
+		"volc_agent_plan":            cfg.Providers.VolcAgentPlan,
+		"volc_coding_plan":           cfg.Providers.VolcCodingPlan,
+		"volc_agent_plan_embedding":  cfg.Providers.VolcAgentPlanEmbedding,
+		"volc_coding_plan_embedding": cfg.Providers.VolcCodingPlanEmbedding,
+	} {
+		if provider.AuthHeader != "Authorization" || provider.AuthScheme != "Bearer" {
+			t.Fatalf("%s auth_header=%q auth_scheme=%q want Authorization/Bearer", name, provider.AuthHeader, provider.AuthScheme)
+		}
+	}
+}
+
 func TestLoadReadsSourceStagingModeFromEnvironment(t *testing.T) {
 	t.Setenv("TIMINGDEX_DATA_DIR", t.TempDir())
 	t.Setenv("TIMINGDEX_SOURCE_STAGING_MODE", "copy")

@@ -15,11 +15,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ev/timingdex/internal/app"
-	"github.com/ev/timingdex/internal/config"
-	"github.com/ev/timingdex/internal/domain"
-	"github.com/ev/timingdex/internal/media"
-	"github.com/ev/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/timingdex/internal/app"
+	"github.com/evjohn-icu/timingdex/internal/config"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/media"
+	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 )
 
 // lanRequest stands in for the browser UI on the home network. httptest's
@@ -165,6 +165,67 @@ func TestWorkerCanPairAndHeartbeatThroughHubAPI(t *testing.T) {
 	handler.ServeHTTP(heartbeat, req)
 	if heartbeat.Code != http.StatusNoContent {
 		t.Fatalf("heartbeat status=%d body=%s", heartbeat.Code, heartbeat.Body.String())
+	}
+}
+
+// TestWorkerProgressRejectsAJobItDoesNotOwn drives the real progress endpoint
+// for an enrolled, authenticated Worker reporting against a job id nobody
+// ever leased to it. assertActiveWorkerLease (internal/repository/sqlite/
+// remote_jobs.go) finds no matching row and wraps domain.ErrJobLeaseLost --
+// the same sentinel the Hub-local pipeline's own lease-CAS misses use (see
+// that sentinel's doc comment for why one name covers both) -- and the
+// handler used to recognize the refusal only by matching "does not own
+// active job" in the message. Rewording that message, or the repository
+// producing an unrelated error that happened to contain the same phrase,
+// would have silently turned the 409 into a 400 that reads as a bad request
+// rather than a lease conflict a Worker should react to differently.
+func TestWorkerProgressRejectsAJobItDoesNotOwn(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "worker-progress-lease.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+
+	pair := httptest.NewRecorder()
+	pairRequest := httptest.NewRequest(http.MethodPost, "/api/v1/hub/worker-pairings", nil)
+	pairRequest.Header.Set("Authorization", "Bearer "+service.AdminToken())
+	handler.ServeHTTP(pair, pairRequest)
+	if pair.Code != http.StatusCreated {
+		t.Fatalf("pair status=%d body=%s", pair.Code, pair.Body.String())
+	}
+	var pairing struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(pair.Body).Decode(&pairing); err != nil {
+		t.Fatal(err)
+	}
+	enroll := httptest.NewRecorder()
+	handler.ServeHTTP(enroll, httptest.NewRequest(http.MethodPost, "/api/v1/worker/enroll", strings.NewReader(`{"pairing_token":"`+pairing.Token+`","name":"lease-probe","platform":"linux-amd64","capabilities":{"proxy":true,"library_roots":["root-a"]}}`)))
+	if enroll.Code != http.StatusCreated {
+		t.Fatalf("enroll status=%d body=%s", enroll.Code, enroll.Body.String())
+	}
+	var enrolled struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(enroll.Body).Decode(&enrolled); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/worker/jobs/no-such-job/progress", strings.NewReader(`{"stage":"analyze","progress":10,"event":"progress","message":"probe"}`))
+	request.Header.Set("Authorization", "Bearer "+enrolled.Token)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -333,6 +394,167 @@ func TestHandlerRevisesAndApprovesRepurposePlan(t *testing.T) {
 	handler.ServeHTTP(locked, hubAdminRequest(service, http.MethodPost, "/api/v1/repurpose/plans/"+plan.ID+"/revisions", bytes.NewBufferString(revisionBody)))
 	if locked.Code != http.StatusConflict {
 		t.Fatalf("locked status=%d body=%s", locked.Code, locked.Body.String())
+	}
+}
+
+// TestReviseRepurposePlanRejectsUnknownPlan pins that revising a plan id that
+// names nothing arrives as 404. GetRepurposePlan returns (nil, nil) for a
+// missing plan, so this refusal has no structural marker of its own -- the
+// API used to recognize it by the literal phrase "not found" in the message
+// ReviseRepurposePlan built; rewording that message, or an unrelated
+// lower-layer error that happened to contain the phrase, would have silently
+// turned the 404 into a 500. Classification is structural now, via
+// app.ErrPlanNotFound (the same sentinel the export boundary already uses
+// for this exact condition), so the status survives ordinary message
+// maintenance.
+func TestReviseRepurposePlanRejectsUnknownPlan(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "revise-unknown-plan.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+
+	revise := httptest.NewRecorder()
+	handler.ServeHTTP(revise, hubAdminRequest(service, http.MethodPost, "/api/v1/repurpose/plans/does-not-exist/revisions", bytes.NewBufferString(`{"sections":[]}`)))
+	if revise.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", revise.Code, revise.Body.String())
+	}
+}
+
+// TestApproveRepurposePlanRevisionClassifiesEveryRefusal drives the real
+// approve handler through the three refusals ApproveRepurposePlanRevision
+// (internal/repository/sqlite/repository.go) enforces inside its write
+// transaction: a revision number that does not exist, one that is not the
+// plan's latest, and one that is no longer a draft. The API used to recognize
+// all three by matching "not found"/"latest"/"not draft" in the message
+// forwarded verbatim from the repository, so rewording any of those three
+// messages -- ordinary maintenance -- would have silently turned a 404 or 409
+// into a 500. Classification is structural now, via
+// app.ErrPlanRevisionNotFound / app.ErrPlanRevisionNotLatest /
+// app.ErrPlanRevisionNotDraft, which are aliases of the domain sentinels the
+// repository wraps at the three sites above: the rule is applied once, where
+// it cannot be raced, and the status rides up on errors.Is.
+func TestApproveRepurposePlanRevisionClassifiesEveryRefusal(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "approve-classification.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+
+	create := httptest.NewRecorder()
+	handler.ServeHTTP(create, hubAdminRequest(service, http.MethodPost, "/api/v1/repurpose/plans", bytes.NewBufferString(`{"brief":"approve classification"}`)))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", create.Code, create.Body.String())
+	}
+	var plan domain.RepurposePlan
+	if err := json.NewDecoder(create.Body).Decode(&plan); err != nil {
+		t.Fatal(err)
+	}
+
+	// CreateRepurposePlan already saved revision 1 as a draft; this adds
+	// revision 2, so revision 1 is now stale.
+	revisionBody := `{"sections":[{"role":"opening","query":"city","duration_ms":5000,"required":true}]}`
+	revise := httptest.NewRecorder()
+	handler.ServeHTTP(revise, hubAdminRequest(service, http.MethodPost, "/api/v1/repurpose/plans/"+plan.ID+"/revisions", bytes.NewBufferString(revisionBody)))
+	if revise.Code != http.StatusCreated {
+		t.Fatalf("revise status=%d body=%s", revise.Code, revise.Body.String())
+	}
+
+	// Approving the superseded revision 1 would resurrect an edit the
+	// operator already moved past by drafting revision 2.
+	notLatest := httptest.NewRecorder()
+	handler.ServeHTTP(notLatest, hubAdminRequest(service, http.MethodPost, "/api/v1/repurpose/plans/"+plan.ID+"/revisions/1/approve", nil))
+	if notLatest.Code != http.StatusConflict {
+		t.Fatalf("not-latest status=%d body=%s", notLatest.Code, notLatest.Body.String())
+	}
+
+	approve := httptest.NewRecorder()
+	handler.ServeHTTP(approve, hubAdminRequest(service, http.MethodPost, "/api/v1/repurpose/plans/"+plan.ID+"/revisions/2/approve", nil))
+	if approve.Code != http.StatusOK {
+		t.Fatalf("approve status=%d body=%s", approve.Code, approve.Body.String())
+	}
+
+	// Revision 2 is now approved, not draft: approving it again is not
+	// idempotent, it is acting on state that already moved.
+	notDraft := httptest.NewRecorder()
+	handler.ServeHTTP(notDraft, hubAdminRequest(service, http.MethodPost, "/api/v1/repurpose/plans/"+plan.ID+"/revisions/2/approve", nil))
+	if notDraft.Code != http.StatusConflict {
+		t.Fatalf("not-draft status=%d body=%s", notDraft.Code, notDraft.Body.String())
+	}
+
+	notFound := httptest.NewRecorder()
+	handler.ServeHTTP(notFound, hubAdminRequest(service, http.MethodPost, "/api/v1/repurpose/plans/"+plan.ID+"/revisions/99/approve", nil))
+	if notFound.Code != http.StatusNotFound {
+		t.Fatalf("not-found status=%d body=%s", notFound.Code, notFound.Body.String())
+	}
+}
+
+// TestReviseRepurposePlanRejectsEmptySections pins that an empty section list
+// against a real, revisable plan arrives as 400, not the 500 it used to be.
+// Every other refusal on this path carries a sentinel from app
+// (ErrInvalidRepurposeRevision, ErrPlanImmutable, ErrPlanNotFound) that
+// reviseRepurposePlan classifies with errors.Is before falling back to
+// writeError's 500; this one used to reach fmt.Errorf with no sentinel at
+// all and fall straight through. TestReviseRepurposePlanRejectsUnknownPlan
+// above sends the same {"sections":[]} body but against a plan id that
+// names nothing, so it proves the 404 guard runs first -- it does not touch
+// this code path, because ReviseRepurposePlan never reaches the empty-list
+// check for a plan it cannot load. This test needs a plan that exists and
+// is still a draft so the empty-list check is the one that fires.
+func TestReviseRepurposePlanRejectsEmptySections(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "revise-empty-sections.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+
+	create := httptest.NewRecorder()
+	handler.ServeHTTP(create, hubAdminRequest(service, http.MethodPost, "/api/v1/repurpose/plans", bytes.NewBufferString(`{"brief":"深圳城市宣传片"}`)))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", create.Code, create.Body.String())
+	}
+	var plan domain.RepurposePlan
+	if err := json.NewDecoder(create.Body).Decode(&plan); err != nil {
+		t.Fatal(err)
+	}
+
+	// The status assertion is deliberately the only thing pinned here: the
+	// classification reviseRepurposePlan does is errors.Is against
+	// ErrInvalidRepurposeRevision, not a match on this message's wording, so
+	// this test must keep passing if the message text changes and must stop
+	// passing if the errors.Is branch is removed. Asserting the message text
+	// too would make the first half of that a lie.
+	revise := httptest.NewRecorder()
+	handler.ServeHTTP(revise, hubAdminRequest(service, http.MethodPost, "/api/v1/repurpose/plans/"+plan.ID+"/revisions", bytes.NewBufferString(`{"sections":[]}`)))
+	if revise.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", revise.Code, revise.Body.String())
 	}
 }
 
@@ -1254,6 +1476,89 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
+// scanOneAsset registers a single file the way a library scan would, so a test
+// that needs a job can satisfy the jobs.asset_id foreign key without reaching
+// into the repository's SQL.
+func scanOneAsset(t *testing.T, repo *sqlite.Repository, name string) string {
+	t.Helper()
+	ctx := context.Background()
+	rootDir := t.TempDir()
+	source := filepath.Join(rootDir, name)
+	if err := os.WriteFile(source, []byte("footage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := repo.CreateLibraryRoot(ctx, rootDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.UpsertScannedFile(ctx, root, name, source, info, "fp-"+name); err != nil {
+		t.Fatal(err)
+	}
+	assets, err := repo.ListAssets(ctx, 10, 0)
+	if err != nil || len(assets) != 1 {
+		t.Fatalf("assets=%+v err=%v", assets, err)
+	}
+	return assets[0].ID
+}
+
+// A job parked for hours on an exhausted provider quota is indistinguishable
+// from a stuck queue unless the progress page says otherwise, and that is the
+// exact failure this deferral exists to avoid causing. The reason is a
+// Hub-assigned constant, so unlike last_error_message it is safe for any
+// viewer of the page — which polls without a token.
+func TestProgressSurfacesJobsWaitingOnProviderQuota(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "deferred-jobs.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetID := scanOneAsset(t, repo, "deferred-clip.mov")
+	if err := repo.EnqueueJob(ctx, assetID, domain.JobAnalyze, "deferred-input", 10); err != nil {
+		t.Fatal(err)
+	}
+	job, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+	if err != nil || job == nil {
+		t.Fatalf("lease job=%+v err=%v", job, err)
+	}
+	if err := repo.DeferJob(ctx, job.ID, "worker", time.Now().Add(5*time.Hour), domain.JobDeferProviderRouteExhausted, "provider body that must stay admin-only"); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewServer("", service).Handler()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, lanRequest(http.MethodGet, "/api/v1/jobs", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, `"deferred_reason":"`+domain.JobDeferProviderRouteExhausted+`"`) {
+		t.Fatalf("queue must report the wait to the progress page: %s", body)
+	}
+	if strings.Contains(body, "provider body that must stay admin-only") {
+		t.Fatalf("failure text leaked to an unauthenticated caller: %s", body)
+	}
+
+	page := httptest.NewRecorder()
+	handler.ServeHTTP(page, lanRequest(http.MethodGet, "/progress", nil))
+	for _, marker := range []string{"deferred_reason", "等待服务商额度", "等待额度"} {
+		if !strings.Contains(page.Body.String(), marker) {
+			t.Fatalf("progress page does not render the quota wait: missing %q", marker)
+		}
+	}
+}
+
 func TestHandlerListsEmptyJobsAsJSONArray(t *testing.T) {
 	ctx := context.Background()
 	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "empty-jobs.db"))
@@ -1348,7 +1653,7 @@ func TestJobsEndpointRedactsFailureTextFromPublicCallers(t *testing.T) {
 		t.Fatalf("lease job=%+v err=%v", leased, err)
 	}
 	const upstream = "provider echoed sk-live-DEADBEEF0123"
-	if err := repo.CompleteJob(ctx, leased.ID, domain.JobFailed, upstream); err != nil {
+	if err := repo.CompleteJob(ctx, leased.ID, "redaction-test", domain.JobFailed, upstream); err != nil {
 		t.Fatal(err)
 	}
 	handler := NewServer("", service).Handler()
@@ -1482,6 +1787,129 @@ func TestTrustedReadNetworksConfigReplacesDefaults(t *testing.T) {
 	if authorized.Code != http.StatusOK {
 		t.Fatalf("a token must still read from outside a narrowed allowlist: status=%d body=%s", authorized.Code, authorized.Body.String())
 	}
+}
+
+// TestWorkerProviderErrorsReachWorkerAsDistinctStatuses drives the real
+// Handler() over both Worker provider-access routes -- credential issuance
+// and the JSON proxy -- for the two sentinels internal/app/service.go added
+// (ErrWorkerProviderConfiguredAsChannelOnly, ErrWorkerProviderNotConfigured).
+// Both handlers used to collapse every such failure into the same flat
+// "credential request rejected"/"provider proxy request rejected" 400, which
+// told an operator who had configured everything through /providers channels
+// that their configuration was wrong. This pins that a Worker now actually
+// receives a distinct status and body for each case -- not just that Service
+// classifies the error correctly, which
+// TestWorkerProviderCredentialErrorsDistinguishChannelOnlyFromNotConfigured
+// (internal/app/provider_channel_operations_test.go) already covers one
+// layer down.
+//
+// Both response messages below are built in the handler from the operation
+// name (the Worker's own path parameter) and a fixed prefix, never from
+// err.Error() -- see the comments at the errors.Is branches in
+// workerCredential/workerProviderProxy. That is what this test is actually
+// proving: rewording either sentinel's errors.New string cannot change these
+// responses, and removing an errors.Is branch does, because the wiring is
+// classification (which branch fires), not string-matching (what the
+// sentinel happens to say).
+func TestWorkerProviderErrorsReachWorkerAsDistinctStatuses(t *testing.T) {
+	ctx := context.Background()
+
+	// newWorkerHandler builds an independent Hub (own DB, own admin token) with
+	// Worker provider credential delivery opted in and one Worker enrolled and
+	// declaring the video_analysis provider operation. Each subtest gets its
+	// own instance so "a channel exists for video_analysis" in one case can't
+	// leak into the other case's "nothing configured anywhere" premise.
+	newWorkerHandler := func(t *testing.T) (http.Handler, *app.Service, string) {
+		t.Helper()
+		repo, err := sqlite.Open(filepath.Join(t.TempDir(), "worker-provider-errors.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { repo.Close() })
+		if err := repo.Migrate(ctx); err != nil {
+			t.Fatal(err)
+		}
+		cfg := config.Config{DataDir: t.TempDir(), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}}
+		cfg.HubSecurity.AllowWorkerProviderCredentials = true
+		service, err := app.NewService(repo, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		handler := NewServer("", service).Handler()
+
+		pair := httptest.NewRecorder()
+		pairRequest := httptest.NewRequest(http.MethodPost, "/api/v1/hub/worker-pairings", nil)
+		pairRequest.Header.Set("Authorization", "Bearer "+service.AdminToken())
+		handler.ServeHTTP(pair, pairRequest)
+		if pair.Code != http.StatusCreated {
+			t.Fatalf("pair status=%d body=%s", pair.Code, pair.Body.String())
+		}
+		var pairing struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(pair.Body).Decode(&pairing); err != nil {
+			t.Fatal(err)
+		}
+		enroll := httptest.NewRecorder()
+		handler.ServeHTTP(enroll, httptest.NewRequest(http.MethodPost, "/api/v1/worker/enroll", strings.NewReader(`{"pairing_token":"`+pairing.Token+`","name":"provider-error-probe","platform":"linux-amd64","capabilities":{"proxy":true,"provider_operations":["video_analysis"]}}`)))
+		if enroll.Code != http.StatusCreated {
+			t.Fatalf("enroll status=%d body=%s", enroll.Code, enroll.Body.String())
+		}
+		var enrolled struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(enroll.Body).Decode(&enrolled); err != nil {
+			t.Fatal(err)
+		}
+		return handler, service, enrolled.Token
+	}
+
+	assertRoutes := func(t *testing.T, handler http.Handler, workerToken string, wantStatus int, wantSubstring string, rejectFlatBody string) {
+		t.Helper()
+		credential := httptest.NewRecorder()
+		credentialReq := httptest.NewRequest(http.MethodPost, "/api/v1/worker/jobs/job-1/credentials/video_analysis", strings.NewReader(`{}`))
+		credentialReq.Header.Set("Authorization", "Bearer "+workerToken)
+		handler.ServeHTTP(credential, credentialReq)
+		if credential.Code != wantStatus {
+			t.Fatalf("credential status=%d body=%s; want %d", credential.Code, credential.Body.String(), wantStatus)
+		}
+		if !strings.Contains(credential.Body.String(), wantSubstring) {
+			t.Fatalf("credential body=%q; want substring %q", credential.Body.String(), wantSubstring)
+		}
+		if strings.Contains(credential.Body.String(), rejectFlatBody) {
+			t.Fatalf("credential body still the flat pre-fix refusal: %s", credential.Body.String())
+		}
+
+		proxy := httptest.NewRecorder()
+		proxyReq := httptest.NewRequest(http.MethodPost, "/api/v1/worker/jobs/job-1/provider/video_analysis", strings.NewReader(`{}`))
+		proxyReq.Header.Set("Authorization", "Bearer "+workerToken)
+		proxyReq.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(proxy, proxyReq)
+		if proxy.Code != wantStatus {
+			t.Fatalf("proxy status=%d body=%s; want %d", proxy.Code, proxy.Body.String(), wantStatus)
+		}
+		if !strings.Contains(proxy.Body.String(), wantSubstring) {
+			t.Fatalf("proxy body=%q; want substring %q", proxy.Body.String(), wantSubstring)
+		}
+	}
+
+	t.Run("channel configured, no legacy config -> 403 not 400", func(t *testing.T) {
+		handler, service, workerToken := newWorkerHandler(t)
+		channelBody := `{"capability":"video_analysis","label":"Gemini Flash","provider_name":"gemini","protocol":"gemini_generate_content","endpoint":"https://example.invalid","model":"gemini-flash","enabled":true}`
+		create := httptest.NewRecorder()
+		createReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/provider-channels", strings.NewReader(channelBody))
+		createReq.Header.Set("Authorization", "Bearer "+service.AdminToken())
+		handler.ServeHTTP(create, createReq)
+		if create.Code != http.StatusCreated {
+			t.Fatalf("channel create status=%d body=%s", create.Code, create.Body.String())
+		}
+		assertRoutes(t, handler, workerToken, http.StatusForbidden, "configured as a provider channel", "rejected\n")
+	})
+
+	t.Run("nothing configured anywhere -> 503 not 400", func(t *testing.T) {
+		handler, _, workerToken := newWorkerHandler(t)
+		assertRoutes(t, handler, workerToken, http.StatusServiceUnavailable, "no provider is configured", "rejected\n")
+	})
 }
 
 func TestHandlerSuppressesMissingFaviconNoise(t *testing.T) {

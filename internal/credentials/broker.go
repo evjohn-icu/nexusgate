@@ -4,11 +4,12 @@
 package credentials
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/ev/timingdex/internal/config"
+	"github.com/evjohn-icu/timingdex/internal/config"
 )
 
 type Operation string
@@ -30,6 +31,19 @@ type Credential struct {
 	AuthScheme     string            `json:"auth_scheme,omitempty"`
 	ExtraHeaders   map[string]string `json:"extra_headers,omitempty"`
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
+}
+
+// MarshalJSON replaces the APIKey with [redacted] so that accidental
+// serialisation — through a log line, an error message, or an API response —
+// never exposes a provider credential. Callers that need the real key must
+// read the field directly; MarshalJSON is a safety net, not an access path.
+func (c Credential) MarshalJSON() ([]byte, error) {
+	type Alias Credential
+	safe := Alias(c)
+	if safe.APIKey != "" {
+		safe.APIKey = "[redacted]"
+	}
+	return json.Marshal(safe)
 }
 
 type Lease struct {

@@ -7,14 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/ev/timingdex/internal/credentials"
-	"github.com/ev/timingdex/internal/domain"
-	"github.com/ev/timingdex/internal/remote"
+	"github.com/evjohn-icu/timingdex/internal/credentials"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/remote"
 )
 
 // ProviderChannelMemberUpdate is the write-only shape used by the admin API.
@@ -37,6 +38,37 @@ type ProviderChannelUpdate struct {
 	Enabled      *bool                          `json:"enabled,omitempty"`
 	RouteOrder   *int                           `json:"route_order,omitempty"`
 	Members      *[]ProviderChannelMemberUpdate `json:"members,omitempty"`
+}
+
+// ErrProviderChannelValidation is wrapped by a provider-channel write failure
+// that is about what the operator submitted — today, two members sharing a
+// label — as opposed to a failure in a layer downstream of validation
+// (SaveProviderChannel also calls UpsertProviderChannel and the secret
+// store). The API layer uses errors.Is against this sentinel to decide
+// whether an error's text is safe to put in an HTTP response body: only text
+// wrapping this sentinel was written to be shown to an operator. This
+// follows the same shape as ErrPlanNotApproved/ErrPlanNotExportable in
+// export.go rather than inventing a new one.
+var ErrProviderChannelValidation = errors.New("provider channel validation failed")
+
+// validateDistinctProviderChannelMemberLabels rejects a member list where two
+// members share a label, case-insensitively on the trimmed value. Labels are
+// unique per channel (UNIQUE(channel_id, label), migration 0013), so a
+// duplicate would otherwise reach SQLite as a bare constraint error naming no
+// label. Both SaveProviderChannel (create) and UpdateProviderChannel (patch)
+// call this before writing anything — a rejected write must not create or
+// overwrite a secret either — so the two paths cannot drift out of sync on
+// what "duplicate" means.
+func validateDistinctProviderChannelMemberLabels(members []domain.ProviderChannelMember) error {
+	seenLabels := make(map[string]struct{}, len(members))
+	for _, member := range members {
+		labelKey := strings.ToLower(strings.TrimSpace(member.Label))
+		if _, dup := seenLabels[labelKey]; dup {
+			return fmt.Errorf("%w: provider channel member label %q is duplicated; labels are unique per channel", ErrProviderChannelValidation, strings.TrimSpace(member.Label))
+		}
+		seenLabels[labelKey] = struct{}{}
+	}
+	return nil
 }
 
 type ProviderChannelTestResult struct {
@@ -86,16 +118,34 @@ func (s *Service) UpdateProviderChannel(ctx context.Context, id string, patch Pr
 			byID[member.ID] = member
 			byLabel[strings.ToLower(member.Label)] = member
 		}
-		// keys is positional, aligned with members below: a channel allows
-		// several members sharing the same label (Weight/MaxInflight exist
-		// so one provider can be configured with multiple keys), so a
-		// label-keyed map here would let one input silently clobber or
-		// misassign another member's key.
+		// keys is positional, aligned with members below. Labels are unique
+		// per channel (UNIQUE(channel_id, label), migration 0013), so the
+		// slice cannot be keyed by label: the input list is positional, and
+		// an id-less input is matched to an existing member by label. The
+		// delete(byLabel, ...) calls consume that member so each existing
+		// member is matched at most once — a label-keyed map would let one
+		// input silently rebind to a member another input already claimed.
 		keys := make([]string, 0, len(*patch.Members))
 		for _, input := range *patch.Members {
 			member := byID[input.ID]
-			if member.ID == "" {
-				member = byLabel[strings.ToLower(strings.TrimSpace(input.Label))]
+			if member.ID != "" {
+				// The member bound by id is consumed: a later input with the
+				// same label and no id must not be able to rebind to it, or a
+				// second same-label key would clobber this member's key
+				// instead of becoming a new member.
+				delete(byLabel, strings.ToLower(member.Label))
+			} else {
+				labelKey := strings.ToLower(strings.TrimSpace(input.Label))
+				member = byLabel[labelKey]
+				if member.ID != "" {
+					// Consume each matched existing member at most once. Two
+					// same-label inputs with no ids both used to resolve to
+					// the same existing member, so the second silently
+					// overwrote the first: one member row vanished and its
+					// key was gone. The second input now falls through to
+					// new-member creation with its own secret instead.
+					delete(byLabel, labelKey)
+				}
 			}
 			if member.ID == "" {
 				member.ID = input.ID
@@ -120,10 +170,68 @@ func (s *Service) UpdateProviderChannel(ctx context.Context, id string, patch Pr
 			members = append(members, member)
 			keys = append(keys, strings.TrimSpace(input.APIKey))
 		}
+		// A patch whose resulting list repeats a label must be rejected
+		// before the save, or the database would surface a bare constraint
+		// error that names no label, and a reject must not touch the secret
+		// store: this runs before SaveProviderChannel writes anything.
+		// validateDistinctProviderChannelMemberLabels is the same check
+		// SaveProviderChannel runs on create, so the two paths cannot drift.
+		if err := validateDistinctProviderChannelMemberLabels(members); err != nil {
+			return domain.ProviderChannel{}, err
+		}
+		// Capture the pre-patch SecretRefs before the list is replaced: a
+		// member absent from the patch is dropped, and its ref must not
+		// linger as an orphaned encrypted file. Deleting a secret is not
+		// reversible, so the deletion happens only after the save succeeds
+		// (a failed save must leave every ref resolvable) and only for refs
+		// no surviving member still references.
+		oldSecretRefs := make(map[string]struct{}, len(channel.Members))
+		for _, member := range channel.Members {
+			if ref := strings.TrimSpace(member.SecretRef); ref != "" {
+				oldSecretRefs[ref] = struct{}{}
+			}
+		}
 		channel.Members = members
-		return s.SaveProviderChannel(ctx, channel, keys)
+		saved, err := s.SaveProviderChannel(ctx, channel, keys)
+		if err != nil {
+			return domain.ProviderChannel{}, err
+		}
+		s.deleteOrphanedMemberSecrets(saved.ID, oldSecretRefs, saved.Members)
+		return saved, nil
 	}
 	return s.SaveProviderChannel(ctx, channel, nil)
+}
+
+// deleteOrphanedMemberSecrets removes secret-store entries whose SecretRef no
+// longer appears on any member of a just-saved channel. The check runs against
+// the saved list rather than the patch input because refs exist only on saved
+// members: ProviderChannelMemberUpdate carries an APIKey, never a SecretRef, so
+// the patch cannot say which key a retained member still points at. Comparing
+// against it would prune the refs of members it simply did not mention. The
+// set is keyed by ref rather than by member so that a ref two members somehow
+// shared would survive — the schema forbids that (UNIQUE(secret_ref), migration
+// 0013) and SaveProviderChannel mints one ref per member, so it is defence
+// against a shape that cannot currently occur, not a case being handled. It
+// runs strictly after a successful save: on a
+// failed save the channel still references every ref and the keys must remain.
+// A failed delete is logged and ignored because the channel is already saved
+// correctly at that point; letting it fail the update would turn a hygiene step
+// into data loss.
+func (s *Service) deleteOrphanedMemberSecrets(channelID string, oldRefs map[string]struct{}, members []domain.ProviderChannelMember) {
+	stillReferenced := make(map[string]struct{}, len(members))
+	for _, member := range members {
+		if ref := strings.TrimSpace(member.SecretRef); ref != "" {
+			stillReferenced[ref] = struct{}{}
+		}
+	}
+	for ref := range oldRefs {
+		if _, kept := stillReferenced[ref]; kept {
+			continue
+		}
+		if err := s.secrets.Delete(ref); err != nil {
+			slog.Warn("provider channel: failed to delete orphaned member secret", "channel_id", channelID, "error", err)
+		}
+	}
 }
 
 func (s *Service) SetProviderChannelEnabled(ctx context.Context, id string, enabled bool) (domain.ProviderChannel, error) {
@@ -259,10 +367,26 @@ func (s *Service) ProxyWorkerProviderJSON(ctx context.Context, worker remote.Wor
 	if header == "" {
 		header = "Authorization"
 	}
+	// An empty scheme means ordinary bearer, which is what
+	// common.Endpoint.NewRequest already assumes for the in-process request
+	// path. This proxy used to disagree: an empty scheme matched neither
+	// branch below and the key went out unprefixed, so every provider whose
+	// config omits auth_scheme — the documented house style for plain bearer,
+	// used by the StepFun, Qwen, QwenVideo, VolcVideo, LocalVLM, TagCurator,
+	// Embedding and Repurpose defaults — authenticated in-process and 401'd
+	// through a Worker. Providers that genuinely want the bare key say so
+	// explicitly with "raw" (Gemini does), so defaulting here takes nothing
+	// away from them.
+	scheme := strings.TrimSpace(lease.Credential.AuthScheme)
+	if scheme == "" {
+		scheme = "Bearer"
+	}
 	value := lease.Credential.APIKey
-	if strings.EqualFold(strings.TrimSpace(lease.Credential.AuthScheme), "bearer") {
+	if strings.EqualFold(scheme, "bearer") {
+		// Normalised rather than passed through so a config saying "bearer"
+		// still sends the canonical capitalisation.
 		value = "Bearer " + value
-	} else if scheme := strings.TrimSpace(lease.Credential.AuthScheme); scheme != "" && !strings.EqualFold(scheme, "raw") {
+	} else if !strings.EqualFold(scheme, "raw") {
 		value = scheme + " " + value
 	}
 	request.Header.Set(header, value)
@@ -299,7 +423,7 @@ func (s *Service) issueProviderCredentialForProxy(ctx context.Context, worker re
 	}
 	lease, err := credentials.NewBroker(s.cfg.Providers, nil).Issue(jobID, worker.ID, operation, 5*time.Minute)
 	if err != nil {
-		return credentials.Lease{}, errors.New("provider proxy is not configured")
+		return credentials.Lease{}, s.classifyWorkerProviderBrokerErr(ctx, operation, err)
 	}
 	expiresAt, err := time.Parse(time.RFC3339, lease.ExpiresAt)
 	if err != nil {
@@ -309,6 +433,47 @@ func (s *Service) issueProviderCredentialForProxy(ctx context.Context, worker re
 		return credentials.Lease{}, err
 	}
 	return lease, nil
+}
+
+// classifyWorkerProviderBrokerErr turns a credentials.Broker resolution
+// failure into one of two sentinels an operator can act on, instead of the
+// single flat refusal both Worker provider-access paths used to collapse
+// every failure into (see ErrWorkerProviderConfiguredAsChannelOnly's doc
+// comment for why the broker is legacy-config-only on purpose, and why that
+// makes this distinction worth making). It only asks whether a provider
+// channel row exists for the operation's capability -- never anything about
+// the channel's members, secrets or health -- so this stays a yes/no read
+// through the same ListProviderChannels the /providers admin page already
+// uses, not a second route into channel internals.
+//
+// brokerErr is folded into the %w-wrapped ErrWorkerProviderNotConfigured
+// case rather than discarded: credentials.Broker's own error text is always
+// just a provider name and operation (see its resolve/Issue implementations),
+// never a key, endpoint or anything from secretstore, so carrying it forward
+// loses no safety and keeps the detail the flat string used to throw away.
+func (s *Service) classifyWorkerProviderBrokerErr(ctx context.Context, operation credentials.Operation, brokerErr error) error {
+	if s.workerProviderChannelConfigured(ctx, operation) {
+		return fmt.Errorf("%w: %s", ErrWorkerProviderConfiguredAsChannelOnly, operation)
+	}
+	return fmt.Errorf("%w: %s", ErrWorkerProviderNotConfigured, brokerErr)
+}
+
+// workerProviderChannelConfigured reports whether any (enabled or not)
+// provider channel row exists for the operation's capability. A disabled or
+// still-being-set-up channel still proves the operator used the channels UI
+// for this capability rather than providers.* config, which is exactly the
+// fact classifyWorkerProviderBrokerErr needs -- it is not asking whether the
+// channel would currently serve a request, only where the operator put their
+// configuration. A repository error here is treated as "no channel found"
+// rather than propagated: this call exists only to sharpen an already-failed
+// broker resolution's error message, and must never turn a message-quality
+// improvement into a new way for that resolution to fail.
+func (s *Service) workerProviderChannelConfigured(ctx context.Context, operation credentials.Operation) bool {
+	channels, err := s.repo.ListProviderChannels(ctx, string(operation))
+	if err != nil {
+		return false
+	}
+	return len(channels) > 0
 }
 
 func providerEndpoint(base, path string) (string, error) {

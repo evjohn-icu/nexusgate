@@ -3,7 +3,7 @@ package providers
 import (
 	"testing"
 
-	"github.com/ev/timingdex/internal/config"
+	"github.com/evjohn-icu/timingdex/internal/config"
 )
 
 func TestVolcenginePlanRolesAreSeparated(t *testing.T) {

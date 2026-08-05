@@ -128,7 +128,7 @@ func ExtractAnalysisWindow(ctx context.Context, src, dst string, window Analysis
 			"-c", "copy", "-movflags", "+faststart",
 			out,
 		}
-		_, err := ffmpegOutput(ctx, args...)
+		_, err := ffmpegOutput(ctx, nil, args...)
 		return err
 	})
 }

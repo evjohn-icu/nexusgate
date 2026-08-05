@@ -1,6 +1,6 @@
 [Unit]
-Description=Timingdex v0.14 Hub
-Documentation=man:timingdex  https://github.com/ev/timingdex
+Description=Timingdex Hub
+Documentation=man:timingdex  https://github.com/evjohn-icu/timingdex
 Wants=network-online.target
 After=network-online.target
 
@@ -25,6 +25,9 @@ ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
 ReadWritePaths=/var/lib/timingdex
+# ReadOnlyPaths must match the directories passed to `timingdex root add <path>`
+# and the TLS certificate location.  Change these when you move your media or
+# certificates, or the service will fail to start.
 ReadOnlyPaths=/srv/timingdex/media /etc/timingdex/tls
 
 [Install]

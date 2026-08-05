@@ -3,18 +3,18 @@ package providers
 import (
 	"fmt"
 
-	"github.com/ev/timingdex/internal/config"
-	"github.com/ev/timingdex/internal/providers/common"
-	"github.com/ev/timingdex/internal/providers/embedding"
-	"github.com/ev/timingdex/internal/providers/externalalign"
-	"github.com/ev/timingdex/internal/providers/gemini"
-	"github.com/ev/timingdex/internal/providers/openaivideo"
-	"github.com/ev/timingdex/internal/providers/qwen"
-	"github.com/ev/timingdex/internal/providers/repurpose"
-	"github.com/ev/timingdex/internal/providers/stepfun"
-	"github.com/ev/timingdex/internal/providers/tagcurator"
-	videoproviders "github.com/ev/timingdex/internal/providers/video"
-	"github.com/ev/timingdex/internal/providers/volcasr"
+	"github.com/evjohn-icu/timingdex/internal/config"
+	"github.com/evjohn-icu/timingdex/internal/providers/common"
+	"github.com/evjohn-icu/timingdex/internal/providers/embedding"
+	"github.com/evjohn-icu/timingdex/internal/providers/externalalign"
+	"github.com/evjohn-icu/timingdex/internal/providers/gemini"
+	"github.com/evjohn-icu/timingdex/internal/providers/openaivideo"
+	"github.com/evjohn-icu/timingdex/internal/providers/qwen"
+	"github.com/evjohn-icu/timingdex/internal/providers/repurpose"
+	"github.com/evjohn-icu/timingdex/internal/providers/stepfun"
+	"github.com/evjohn-icu/timingdex/internal/providers/tagcurator"
+	videoproviders "github.com/evjohn-icu/timingdex/internal/providers/video"
+	"github.com/evjohn-icu/timingdex/internal/providers/volcasr"
 )
 
 func endpoint(c config.ProviderConfig) common.Endpoint {

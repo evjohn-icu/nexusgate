@@ -13,15 +13,16 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
-	"github.com/ev/timingdex/internal/api"
-	"github.com/ev/timingdex/internal/app"
-	"github.com/ev/timingdex/internal/config"
-	"github.com/ev/timingdex/internal/hubtls"
-	"github.com/ev/timingdex/internal/media"
-	"github.com/ev/timingdex/internal/remote"
-	sqliterepo "github.com/ev/timingdex/internal/repository/sqlite"
-	"github.com/ev/timingdex/internal/worker"
+	"github.com/evjohn-icu/timingdex/internal/api"
+	"github.com/evjohn-icu/timingdex/internal/app"
+	"github.com/evjohn-icu/timingdex/internal/config"
+	"github.com/evjohn-icu/timingdex/internal/hubtls"
+	"github.com/evjohn-icu/timingdex/internal/media"
+	"github.com/evjohn-icu/timingdex/internal/remote"
+	sqliterepo "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/timingdex/internal/worker"
 )
 
 func main() {
@@ -72,7 +73,30 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		return api.NewTLSServer(*addr, service, certificate, key).Run(ctx)
+		// The supervisor gets its own cancel rather than only the signal
+		// context: a listen failure returns from Run without the signal ever
+		// firing, and `serve` must not then block forever joining a loop that
+		// nothing will ever stop.
+		supervisorCtx, stopSupervisor := context.WithCancel(ctx)
+		defer stopSupervisor()
+		supervisorDone := make(chan struct{})
+		go func() {
+			defer close(supervisorDone)
+			if err := service.RunLibrarySupervisor(supervisorCtx); err != nil {
+				slog.Error("library supervisor stopped", "error", err)
+			}
+		}()
+		if status := service.LibrarySupervisorStatus(); status.Enabled {
+			fmt.Printf("Library supervisor: rescanning every root every %s\n", (time.Duration(status.IntervalSeconds) * time.Second).String())
+		}
+		serveErr := api.NewTLSServer(*addr, service, certificate, key).Run(ctx)
+		// Joined, not abandoned: the supervisor may be mid-pass, and the point
+		// of running the pipeline inline in it is that this wait is what makes
+		// "the process exited" mean "no job and no Provider call is still
+		// running".
+		stopSupervisor()
+		<-supervisorDone
+		return serveErr
 
 	case "root":
 		if len(os.Args) < 3 {
@@ -214,7 +238,7 @@ func runWorkerCommand() error {
 			return errors.New("Worker enrollment requires an https Hub URL")
 		}
 		report, _ := media.DetectHardware(context.Background(), media.HardwareConfig{Mode: "auto", AllowFallback: true})
-		capabilities := remote.WorkerCapabilities{Proxy: report.FFmpegFound, Thumbnail: report.FFmpegFound, AudioExtract: report.FFmpegFound, MaxParallelProxyJobs: 1, MaxProxyHeight: 720, SpeedClass: "standard"}
+		capabilities := remote.WorkerCapabilities{Proxy: report.FFmpegFound, Thumbnail: report.FFmpegFound, AudioExtract: report.FFmpegFound, MaxParallelProxyJobs: 1, MaxProxyHeight: 720, SpeedClass: "standard", Hardware: report.SelectedBackends()}
 		if runtime.GOARCH == "arm64" {
 			capabilities.SpeedClass = "slow"
 		}
@@ -269,9 +293,16 @@ func runWorkerCommand() error {
 		client := worker.NewClient(config.HubURL, config.CertificateFingerprint)
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
-		_, plan := media.DetectHardware(ctx, media.HardwareConfig{Mode: "auto", AllowFallback: true})
+		// Detected once, here, at process start — not per heartbeat. A device
+		// becoming available (e.g. a NAS template edit adding /dev/dri) needs a
+		// container recreate, which restarts this process anyway, so a
+		// recurring re-probe would only spend a throwaway GPU encode every
+		// heartbeat interval for information that cannot change out from under
+		// a running process.
+		hardwareReport, plan := media.DetectHardware(ctx, media.HardwareConfig{Mode: "auto", AllowFallback: true})
+		capabilities := worker.MergeDetectedCapabilities(config.Registration.Capabilities, hardwareReport)
 		deriver := worker.NewFFmpegDeriver(plan)
-		runtime := worker.NewRuntime(client, config, deriver)
+		runtime := worker.NewRuntime(client, config, deriver, capabilities)
 		if !*tray {
 			return runtime.Run(ctx, worker.RunOptions{})
 		}
@@ -287,6 +318,12 @@ func runWorkerCommand() error {
 			return err
 		}
 		fmt.Printf("hub: %s\nplatform: %s\nworker name: %s\n", config.HubURL, config.Registration.Platform, config.Registration.Name)
+		// The Worker, not the Hub, is the process that actually owns the GPU
+		// and runs the encode, so this is the diagnosis an operator debugging
+		// a broken accelerator on a Worker box needs to see — not just the
+		// enrollment metadata above.
+		report, _ := media.DetectHardware(context.Background(), media.HardwareConfig{Mode: "auto", AllowFallback: true})
+		media.FormatHardwareReport(os.Stdout, report)
 		return nil
 	default:
 		return errors.New("usage: timingdex worker enroll|run|doctor")

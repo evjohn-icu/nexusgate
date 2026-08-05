@@ -1,6 +1,9 @@
 package common
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -30,13 +33,50 @@ func TestReadErrorTruncatesUpstreamBody(t *testing.T) {
 	}
 }
 
-// The message format is relied upon by existing provider tests and by the
-// substring classification that remains in isRetryableJobError.
+// The message format is relied upon by existing provider tests, and it is what
+// reaches jobs.last_error_message and the /progress page. Nothing classifies on
+// it any more — retry decisions read the status through errors.As and the
+// domain.ErrPermanentFailure marker — so this test pins what an operator reads,
+// not what the code branches on.
 func TestReadErrorPreservesMessageFormat(t *testing.T) {
 	resp := &http.Response{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader("  invalid api key  "))}
 
 	err := ReadError(resp)
 	if got, want := err.Error(), "provider returned HTTP 401: invalid api key"; got != want {
 		t.Fatalf("error text = %q, want %q", got, want)
+	}
+}
+
+// Callers outside this package classify a failure by probing a wrapped error
+// for a status-bearing interface, because providerpool deliberately depends on
+// no transport package. StatusCode is a field, so the method is the only thing
+// that probe can find; deleting it still compiles and silently sends every
+// provider failure back to substring matching on the message.
+// APIKey must be excluded from JSON serialisation to avoid leaking a provider
+// key through logs, debug output or configuration export. The field is populated
+// at runtime from secretstore, never from a JSON config block.
+func TestEndpointAPIKeyNotExposedInJSON(t *testing.T) {
+	ep := Endpoint{
+		BaseURL: "https://api.example.com",
+		APIKey:  "sk-secret-key-that-must-not-leak",
+	}
+	data, err := json.Marshal(ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "sk-secret") || strings.Contains(string(data), "api_key") {
+		t.Fatalf("APIKey must not appear in JSON output, got: %s", data)
+	}
+}
+
+func TestStatusErrorExposesStatusThroughAnInterface(t *testing.T) {
+	wrapped := fmt.Errorf("analyze: %w", &StatusError{StatusCode: http.StatusPaymentRequired, Body: "insufficient balance"})
+
+	var probe interface{ HTTPStatusCode() int }
+	if !errors.As(wrapped, &probe) {
+		t.Fatal("a wrapped *StatusError is invisible to a status probe")
+	}
+	if got := probe.HTTPStatusCode(); got != http.StatusPaymentRequired {
+		t.Fatalf("HTTPStatusCode() = %d, want 402", got)
 	}
 }

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 const (
@@ -62,7 +62,23 @@ func VocabularyPrompt() string {
 	return b.String()
 }
 
+// ValidateAndNormalize is a pure function of the model's answer, so anything
+// it rejects it would reject identically on every later attempt — and each of
+// those attempts is a paid provider call for a reply already known to be
+// unusable. The rejection therefore carries domain.ErrPermanentFailure out of
+// this package, marked in this wrapper rather than at each return inside, so a
+// check added to normalizeAnalysis is permanent as soon as it is written. This
+// used to be a phrase ("summary is required") in a list in internal/app; see
+// domain.ErrPermanentFailure for why the list could not stay right.
 func ValidateAndNormalize(a domain.StructuredAnalysis) (domain.StructuredAnalysis, error) {
+	a, err := normalizeAnalysis(a)
+	if err != nil {
+		return a, domain.Permanent(err)
+	}
+	return a, nil
+}
+
+func normalizeAnalysis(a domain.StructuredAnalysis) (domain.StructuredAnalysis, error) {
 	a.AssetType = normEnum(a.AssetType, allowedAssetType, "other")
 	a.CameraMotion = normEnum(a.CameraMotion, allowedMotion, "unknown")
 	a.ShotSize = normEnum(a.ShotSize, allowedShot, "unknown")

@@ -219,6 +219,25 @@ func (p *Pool) SetEnabled(name string, enabled bool) bool {
 	return changed
 }
 
+// EnabledState reports whether the pool would currently select a member, and
+// whether it knows the name at all. It exists so a status view can show an
+// operator a member the pool retired at runtime: no configuration row records
+// that, so without this the UI keeps calling a dead key "enabled".
+func (p *Pool) EnabledState(name string) (enabled bool, known bool) {
+	if p == nil {
+		return false, false
+	}
+	name = strings.TrimSpace(name)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range p.members {
+		if p.members[i].member.Name == name {
+			return p.members[i].member.Enabled, true
+		}
+	}
+	return false, false
+}
+
 // Select acquires one member for capability and increments its inflight count.
 // The caller must complete the returned lease with Done or Release.
 func (p *Pool) Select(capability Capability) (*Lease, error) {
@@ -324,12 +343,27 @@ func (p *Pool) complete(lease *Lease, err error) {
 		health.inflight--
 	}
 
-	class := ClassifyFailure(err)
-	if class == Retryable {
+	switch ClassifyFailure(err) {
+	case Retryable:
 		health.retryableFails++
 		delay := p.cooldownFor(health.retryableFails)
 		health.cooldownUntil = p.options.Now().Add(delay)
 		health.halfOpen = false
+		return
+	case MemberSpent:
+		// A cooldown is a bet that the same key works later; a spent key never
+		// does, so it is retired instead — the same state SetEnabled produces,
+		// including keeping health untouched. The retirement covers every
+		// capability the member serves because it is the credential that died,
+		// not one route through it.
+		//
+		// It lives in memory only. A revoked key and an hour-long IP block look
+		// identical from here, and this project lets humans, not guesses, make
+		// durable decisions: editing the channel or restarting the Hub rebuilds
+		// the pool and gives the member one more call to prove itself. Until
+		// then the route reports itself exhausted rather than quietly failing
+		// jobs.
+		member.member.Enabled = false
 		return
 	}
 

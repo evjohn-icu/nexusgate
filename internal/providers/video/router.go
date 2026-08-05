@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	videoanalysis "github.com/ev/timingdex/internal/domain/video_analysis"
+	videoanalysis "github.com/evjohn-icu/timingdex/internal/domain/video_analysis"
 )
 
 type Router struct {

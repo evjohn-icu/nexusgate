@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ev/timingdex/internal/curator"
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/curator"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 // RunTagEmbeddingClusters uses a real embedding provider only to discover

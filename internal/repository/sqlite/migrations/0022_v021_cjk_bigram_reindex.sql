@@ -1,0 +1,35 @@
+-- The CJK segmenter (internal/textindex.Chunks) had a recall bug: an ASCII
+-- word scan absorbed an adjacent CJK run instead of yielding to the bigram
+-- branch, so text like "2024年春节的素材" was indexed as one unsplittable
+-- token instead of overlapping bigrams. The fix lives in Go, not SQL, but
+-- every asset_search/asset_shot_search row written before the fix was
+-- tokenized with the broken segmenter and stays wrong until re-tokenized --
+-- the fts_index_state 'ready' flag from migrations/0012_v0141_cjk_bigram_fts.sql
+-- only ever meant "the bigram shadow tables exist", not "the segmenter that
+-- filled them was correct", so ensureCJKBigramFTS (repository.go) has no
+-- other reason to touch these rows again.
+--
+-- Flipping the same 'cjk_bigram_v1' key back to 'pending' is deliberate, not
+-- a new key: ensureCJKBigramFTS branches only on "no row" (skip) / "ready"
+-- (skip) / anything else (rebuild), so 'pending' is read as "index not
+-- known-good" regardless of which migration put it there, and reusing the
+-- key means a library that is *also* mid-upgrade from before 0012 (state
+-- still 'pending' from that migration, rebuild never having completed) is
+-- unaffected -- it was already going to rebuild on next start, and this
+-- ON CONFLICT is a no-op for it.
+--
+-- No DELETE FROM asset_search/asset_shot_search here, unlike 0012: read
+-- rebuildCJKBigramFTS (repository.go) and it already deletes both FTS tables
+-- and their rowid maps itself, inside the same transaction that reinserts
+-- every row, before marking the state 'ready' again. Migrate() runs this
+-- file and then calls ensureCJKBigramFTS in the same Migrate() call, before
+-- the Hub ever serves a request (cmd/timingdex/main.go opens the repo,
+-- migrates, then constructs the API server), so there is no window where a
+-- query could observe the index empty. A pre-emptive DELETE here would only
+-- matter if the rebuild could be skipped or crash before running -- it
+-- cannot skip (this UPDATE guarantees state != 'ready') and if it crashes
+-- mid-rebuild the transaction rolls back to the untouched pre-migration rows,
+-- state stays 'pending', and the next Migrate() retries the whole rebuild.
+INSERT INTO fts_index_state(name, value, updated_at)
+VALUES('cjk_bigram_v1', 'pending', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+ON CONFLICT(name) DO UPDATE SET value='pending', updated_at=excluded.updated_at;

@@ -2,13 +2,13 @@ package sqlite
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/ev/timingdex/internal/domain"
-	"github.com/ev/timingdex/internal/remote"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/remote"
 )
 
 func TestCommitWorkerArtifactRequiresActiveLeaseAndIsIdempotent(t *testing.T) {
@@ -57,7 +57,7 @@ func TestCommitWorkerArtifactRequiresActiveLeaseAndIsIdempotent(t *testing.T) {
 	}
 
 	unauthorized := domain.DerivedArtifact{ID: "artifact-unauthorized", AssetID: job.AssetID, Type: "thumbnail", ProfileHash: "thumb-v1", LocalPath: "/derived/unauthorized.jpg", SizeBytes: 5}
-	if _, _, err := repo.CommitWorkerArtifact(ctx, job.JobID, "another-worker", unauthorized, false); err == nil || !strings.Contains(err.Error(), "worker does not own active job") {
+	if _, _, err := repo.CommitWorkerArtifact(ctx, job.JobID, "another-worker", unauthorized, false); err == nil || !errors.Is(err, domain.ErrJobLeaseLost) {
 		t.Fatalf("unauthorized commit err=%v", err)
 	}
 

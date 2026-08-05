@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ev/timingdex/internal/app"
-	"github.com/ev/timingdex/internal/config"
-	"github.com/ev/timingdex/internal/domain"
-	"github.com/ev/timingdex/internal/remote"
-	"github.com/ev/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/timingdex/internal/app"
+	"github.com/evjohn-icu/timingdex/internal/config"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/remote"
+	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 )
 
 func TestWorkerCredentialDeliveryAllowsLeasedTrustedWorkerWhenExplicitlyEnabled(t *testing.T) {

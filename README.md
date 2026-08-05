@@ -110,9 +110,19 @@ the container path (`/media/library`), not the host path. A published port puts
 Docker's NAT in front of the read guard described under
 [security boundaries](#security-boundaries), so read
 [the deployment notes](docs/v0.14-deployment.md#docker-compose) before widening
-that binding. Note also that a Linux container sees no `/dev/dri`, so Intel QSV
-and VAAPI are unavailable inside it; NVENC needs `--gpus all`, and everything
-else falls back to software x264.
+that binding.
+
+The plain image above has no GPU userspace installed, so hardware
+acceleration inside it falls back to software x264 regardless of the host.
+`docker build --target gpu` produces a second image with the Intel/AMD VAAPI
+userspace layered on top (NVIDIA needs nothing baked in — it comes entirely
+from the host via the NVIDIA Container Toolkit); pair it with the
+commented-out device-passthrough stanzas in `docker-compose.yml` to actually
+hand the container `/dev/dri` or an NVIDIA device. See
+[GPU Docker images and Unraid deployment](docs/v0.19-gpu-docker-unraid.md)
+for the image tags, the Compose wiring, the Unraid Community Applications
+templates under `deploy/unraid/`, and the `NVIDIA_DRIVER_CAPABILITIES`
+gotcha that makes NVENC fail silently without it.
 
 ## Quick start
 
@@ -150,7 +160,7 @@ page memory only — never in browser storage.
 
 | Page | Purpose |
 | --- | --- |
-| `/` | The library. Each row is **thumbnail → material context → shot-level timeline**, so you can see what exists at each point in a source before planning anything. Filter by capture date, region, camera or shoot session. |
+| `/` | The library. Each row is **thumbnail → material context → shot-level timeline**, so you can see what exists at each point in a source before planning anything. Filter by capture date, region, camera or shoot session, or by asset type, shot size, camera motion, audio type, quality, usable-as and a duration range. |
 | `/progress` | Run the queue; watch counts, per-job attempts and failures. Failure text is administrator-only. |
 | `/settings` | Disk-load limits (below). |
 | `/repurpose` | Turn an editorial brief into a reviewable plan; choose, lock or exclude candidates per section, then approve a revision. |
@@ -238,6 +248,18 @@ NAS receives no derived files, sidecars or metadata writes, and a completed cach
 entry keeps working if the share disconnects. Budget local disk for the files being
 processed; the cache is disposable while Timingdex is stopped.
 
+The `/library-roots` wizard turns a pasted `smb://`/`nfs://`/UNC address into
+paste-ready mount commands rather than guessing a password or mounting
+anything itself — `internal/mount` deliberately never acquires root for you.
+For the containerised Hub, mounting the share is a host-side step, not a
+container one; [NAS mounting](docs/v0.20-nas-mounting.md) is the decision
+record for why: it ranks every option from "mount on the host, bind a parent
+directory into the container" down to the ones that were evaluated and
+rejected (mounting inside the container, a userspace SMB client), and states
+the real cost of the Docker-native NFS and SMB volume paths — NFS carries no
+password at all, SMB's does end up in cleartext in Docker's own volume
+metadata.
+
 ### Video understanding providers
 
 ```text
@@ -313,6 +335,16 @@ aliases of one relay, so Agent Plan traffic cannot draw down Coding Plan quota.
 
 Set `model` to something enabled for your subscription in the Volcengine console;
 the example names are not a fixed allow-list.
+
+Both plan endpoints authenticate with `Authorization: Bearer <key>`, which is what
+these blocks now default to. Releases before this one shipped `"auth_header":
+"X-Api-Key"` / `"auth_scheme": "raw"`, and an Agent Plan account rejects that with
+a 401 — indistinguishable from a bad key. If your `config.json` was copied from an
+earlier `config.example.json`, delete those two fields from the four
+`volc_*_plan*` blocks (or set them to `Authorization` / `Bearer`); an existing
+config file overrides the corrected defaults. Note that `volc_asr` is unaffected:
+Seed ASR 2.0 is a different service on a different host and genuinely uses
+`X-Api-Key`.
 
 Seed ASR 2.0 is not OpenAI-shaped: it uses the documented native WebSocket binary
 protocol, so it exists only as `volcengine_asr` and is never sent to an audio
@@ -414,6 +446,19 @@ candidates but no explicit choice, so a gap stays visible instead of being
 approved by accident. When the only valid match for a required section is a shot
 already used elsewhere, it is kept and marked `reused: true` — a visible editorial
 trade-off rather than a silently missing ending.
+
+An approved plan exports as a CMX3600 EDL or an FCPXML 1.9 document:
+
+```bash
+curl -H "Authorization: Bearer $(cat "$TIMINGDEX_DATA_DIR/admin-token")" \
+  http://127.0.0.1:8787/api/v1/repurpose/plans/<plan-id>/export.edl
+```
+
+Both routes are administrator-only and reject the agent token. An FCPXML embeds
+the absolute path of every original — the one thing `access_original_media_paths`
+denies — and an EDL is the artifact an editor cuts with, so both sit on the human
+side of the approval boundary. Order and selection are exactly what was approved;
+nothing is re-ranked at export time.
 
 ## Distributed: Hub and Workers
 
@@ -525,6 +570,22 @@ ffmpeg -hide_banner -encoders | grep nvenc
 
 ### Provider calls from a Worker
 
+Both modes below read **`providers.*` config only** (`config.json`/env) — never a
+`/providers` channel, even an enabled one with a healthy member. This is
+deliberate, not an oversight: a channel carries channel-scoped keys, member
+pools and health state that are meant to stay Hub-side, and a Worker's
+provider access already has its own, narrower trust boundary (opt-in
+direct-credential delivery, or the Hub-side JSON proxy). If you followed the
+advice above to prefer `/providers` over the config file, a Worker asking for
+that same capability still fails, but the two ways it can fail now answer
+differently: 403 (`app.ErrWorkerProviderConfiguredAsChannelOnly`) if the
+capability is configured only as a channel, which this path does not read;
+503 (`app.ErrWorkerProviderNotConfigured`) if nothing is configured for it by
+either method. Both routes answered a flat 400 for either case before, which
+read like your `/providers` setup was wrong when it was not. Give the Worker
+its own `providers.*` entry for any operation it needs to reach directly or
+through the proxy.
+
 **Proxy mode** (default) relays small JSON provider requests through the Hub and
 keeps the key Hub-side. It rejects video, audio, images, multipart uploads and
 bodies over 2 MiB, so it cannot become a media relay.
@@ -615,8 +676,35 @@ GOOS=windows GOARCH=amd64 go vet ./...   # the tray is Win32 code CI cannot run
 `CHANGELOG.md` records what changed and, more usefully, which boundary each change
 moved. Each release also has a version-scoped document under `docs/`:
 
+- [v0.21 — unattended inspection, quota-exhausted waiting, and timeline export](docs/v0.21-unattended-and-export.md)
+- [v0.21 — model provider deployment](docs/v0.21-provider-deployment.md)
+- [v0.21 — retrieval and search](docs/v0.21-retrieval-and-search.md)
+- [v0.20 — NAS mounting: the ladder and why each rung sits where it does](docs/v0.20-nas-mounting.md)
+- [v0.19 — GPU Docker images and Unraid deployment](docs/v0.19-gpu-docker-unraid.md)
 - [v0.18 — disk load limits, off-peak scheduling, Worker onboarding](docs/v0.18-throttle-and-worker-onboarding-goal.md)
 - [v0.17 — regression repair and retrieval performance](docs/v0.17-regression-and-retrieval-goal.md)
 - [v0.16 — operations and security](docs/v0.16-operations.md)
 - [v0.15 — operations guide](docs/v0.15-operations.md)
 - [v0.14 — NAS Hub and Worker deployment](docs/v0.14-deployment.md)
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the dependency rule, the local test
+gate and the boundaries a change must not cross. Report vulnerabilities
+privately — [SECURITY.md](SECURITY.md).
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE). Third-party
+licences for the components linked into the binary are listed in
+[THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES).
+
+```text
+Copyright 2026 ev
+```
+
+Apache-2.0 was chosen over MIT for its explicit patent grant, which matters for a
+tool that may be used commercially. The two direct dependencies keep their own
+licences: `modernc.org/sqlite` (BSD-3-Clause) and `nhooyr.io/websocket` (ISC).
+`ffmpeg`, `ffprobe` and `exiftool` are external programs Timingdex invokes, not
+bundled code — their licences are their own.

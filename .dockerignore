@@ -1,0 +1,78 @@
+# ============================================================================
+# .dockerignore — files and directories excluded from the Docker build context.
+#
+# The Dockerfile uses `COPY . .` to bring the repo into the build stage.  This
+# file keeps the context small (faster builds, fewer cache invalidations) by
+# excluding everything the compile step does not need.
+# ============================================================================
+
+# --- Version control (irrelevant inside a build) ---
+.git/
+.gitattributes
+.gitignore
+
+# --- Documentation & specification (not compiled) ---
+docs/
+openspec/
+skills/
+CLAUDE.md
+CHANGELOG.md
+CONTRIBUTING.md
+LICENSE
+README.md
+SECURITY.md
+THIRD-PARTY-LICENSES
+
+# --- Deployment templates (not used at build time) ---
+deploy/
+docker-compose.yml
+
+# --- CI / GitHub workflows ---
+.github/
+
+# --- Shell scripts (not needed at build time) ---
+scripts/
+
+# --- Source archives (accidental by-products, never needed) ---
+*.tar.gz
+*.tar.xz
+*.zip
+
+# --- Config templates & local config (must never be baked in) ---
+config.example.json
+config.json
+.env
+.env.*
+worker.json
+
+# --- Data directories & credentials ---
+.timingdex*/
+admin-token
+agent-token
+provider-secrets/
+store.key
+
+# --- Database files ---
+*.db
+*.db-wal
+*.db-shm
+
+# --- Go test artefacts ---
+*.test
+coverage.out
+*.cover
+
+# --- Local test fixtures ---
+/testdata-local/
+
+# --- OS metadata ---
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# --- Logs ---
+*.log
+
+# --- Docker itself ---
+.dockerignore
+Dockerfile

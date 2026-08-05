@@ -279,22 +279,65 @@ fi
 # than the build's API, a device without permission, and a missing firmware
 # blob all list fine and fail on the first frame. Encoding one frame is what
 # separates them, and it is the same check the Hub makes when it picks a plan.
+#
+# LIBVA_DRIVER_NAME is part of the probe rather than advice printed afterwards.
+# libva maps the kernel driver to a userspace one, and on Debian- and
+# Ubuntu-derived releases i915 still resolves to i965, which supports nothing
+# from Gen12 onward. A current Intel iGPU — what a NAS has — therefore fails
+# every encode until the driver is named, with no error that says so. The Hub
+# probes the same list in the same order, so this agrees with what it selects.
+#
+# The override runs in a subshell so that an empty driver means "inherit",
+# not "set LIBVA_DRIVER_NAME to nothing" — libva reads the variable's presence,
+# so an empty value is a request for a driver named "" and fails.
+probe_once() {
+	backend="$1"
+	encoder="$2"
+	driver="$3"
+	(
+		if [ -n "$driver" ]; then
+			LIBVA_DRIVER_NAME="$driver"
+			export LIBVA_DRIVER_NAME
+		fi
+		case "$backend" in
+		vaapi)
+			ffmpeg -hide_banner -loglevel error -y \
+				-vaapi_device /dev/dri/renderD128 \
+				-f lavfi -i "color=c=black:s=256x144:r=25:d=0.2" -frames:v 1 \
+				-vf format=nv12,hwupload -c:v "$encoder" -f null -
+			;;
+		*)
+			ffmpeg -hide_banner -loglevel error -y \
+				-f lavfi -i "color=c=black:s=256x144:r=25:d=0.2" -frames:v 1 \
+				-c:v "$encoder" -f null -
+			;;
+		esac
+	) >/dev/null 2>&1
+}
+
+# Sets PROBE_DRIVER to the driver that worked, empty when libva's own choice
+# was already right.
 probe() {
 	backend="$1"
 	encoder="$2"
+	PROBE_DRIVER=""
 	have ffmpeg || return 1
+	# "default" stands for libva's own choice; an empty word cannot survive the
+	# unquoted expansion this loop relies on.
 	case "$backend" in
-	vaapi)
-		ffmpeg -hide_banner -loglevel error -y -vaapi_device /dev/dri/renderD128 \
-			-f lavfi -i "color=c=black:s=256x144:r=25:d=0.2" -frames:v 1 \
-			-vf format=nv12,hwupload -c:v "$encoder" -f null - >/dev/null 2>&1
-		;;
-	*)
-		ffmpeg -hide_banner -loglevel error -y \
-			-f lavfi -i "color=c=black:s=256x144:r=25:d=0.2" -frames:v 1 \
-			-c:v "$encoder" -f null - >/dev/null 2>&1
-		;;
+	vaapi | qsv) drivers="default iHD i965" ;;
+	*) drivers="default" ;;
 	esac
+	for driver in $drivers; do
+		if [ "$driver" = "default" ]; then
+			driver=""
+		fi
+		if probe_once "$backend" "$encoder" "$driver"; then
+			PROBE_DRIVER="$driver"
+			return 0
+		fi
+	done
+	return 1
 }
 
 verify() {
@@ -315,7 +358,11 @@ verify() {
 				continue
 			fi
 			if probe "$backend" "$encoder"; then
-				say "  ok       $encoder encodes here"
+				if [ -n "$PROBE_DRIVER" ]; then
+					say "  ok       $encoder encodes here (needs LIBVA_DRIVER_NAME=$PROBE_DRIVER)"
+				else
+					say "  ok       $encoder encodes here"
+				fi
 			else
 				say "  no       $encoder is built in but does not run here"
 			fi

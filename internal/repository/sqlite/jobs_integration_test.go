@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 func TestRetryJobReschedulesLeasedWorkWithBackoff(t *testing.T) {
@@ -32,7 +32,7 @@ func TestRetryJobReschedulesLeasedWorkWithBackoff(t *testing.T) {
 		t.Fatalf("lease job=%+v err=%v", job, err)
 	}
 	before := time.Now()
-	if err := repo.RetryJob(ctx, job.ID, "temporary provider outage", 2*time.Second); err != nil {
+	if err := repo.RetryJob(ctx, job.ID, "worker", "temporary provider outage", 2*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	jobs, err := repo.ListJobs(ctx, 10)
@@ -75,7 +75,7 @@ func TestFailJobTerminallyStopsFurtherLeasing(t *testing.T) {
 	if job.AttemptCount >= job.MaxAttempts {
 		t.Fatalf("attempts must remain so the test is meaningful: %+v", job)
 	}
-	if err := repo.FailJobTerminally(ctx, job.ID, "video provider channel \"x\" is disabled"); err != nil {
+	if err := repo.FailJobTerminally(ctx, job.ID, "worker", "video provider channel \"x\" is disabled"); err != nil {
 		t.Fatal(err)
 	}
 	if next, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{}); err != nil || next != nil {
@@ -171,12 +171,152 @@ func TestRequeueFailedJobsRevivesTerminalAndExhaustedWork(t *testing.T) {
 	}
 }
 
+// A provider-wide outage is not the job's failure, so parking a job for it must
+// leave the queue exactly as it found it apart from the wait: same attempt
+// budget, same leasable row, no terminal flag.
+func TestDeferJobParksWorkWithoutSpendingAnAttempt(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "jobs-defer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := formatTime(time.Now())
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES('asset-defer','defer-fp',1,'discovered',?,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.EnqueueJob(ctx, "asset-defer", domain.JobAnalyze, "defer-input", 10); err != nil {
+		t.Fatal(err)
+	}
+
+	// Four cycles is one more than max_attempts: a deferral that quietly spent
+	// an attempt would strand the job on the fourth, which is the whole reason
+	// this method exists rather than a longer RetryJob delay.
+	for cycle := range 4 {
+		job, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+		if err != nil || job == nil {
+			t.Fatalf("cycle %d: a deferred job must come back: job=%+v err=%v", cycle, job, err)
+		}
+		if job.AttemptCount != 1 {
+			t.Fatalf("cycle %d: every run must start from an untouched budget: %+v", cycle, job)
+		}
+		resumeAt := time.Now().Add(5 * time.Hour)
+		if err := repo.DeferJob(ctx, job.ID, "worker", resumeAt, domain.JobDeferProviderRouteExhausted, "every provider key on this route is failing"); err != nil {
+			t.Fatal(err)
+		}
+
+		jobs, err := repo.ListJobs(ctx, 10)
+		if err != nil || len(jobs) != 1 {
+			t.Fatalf("cycle %d: jobs=%+v err=%v", cycle, jobs, err)
+		}
+		parked := jobs[0]
+		if parked.AttemptCount != 0 {
+			t.Fatalf("cycle %d: the attempt the lease spent must be handed back: %+v", cycle, parked)
+		}
+		if parked.State != domain.JobPending || parked.Terminal {
+			t.Fatalf("cycle %d: a parked job is queued, not failed: %+v", cycle, parked)
+		}
+		if parked.DeferredReason != domain.JobDeferProviderRouteExhausted {
+			t.Fatalf("cycle %d: a job waiting hours must be distinguishable from a stuck queue: %+v", cycle, parked)
+		}
+		if !parked.RunAfter.After(time.Now().Add(4 * time.Hour)) {
+			t.Fatalf("cycle %d: run_after=%s did not carry the wait", cycle, parked.RunAfter)
+		}
+		if next, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{}); err != nil || next != nil {
+			t.Fatalf("cycle %d: a parked job must not be handed out early: job=%+v err=%v", cycle, next, err)
+		}
+
+		// The wait elapses. Nothing else is touched, so this asserts the row is
+		// leasable purely on run_after -- including the attempt_count and
+		// lease_expires_at terms of the lease predicate.
+		if _, err := repo.db.ExecContext(ctx, `UPDATE jobs SET run_after=? WHERE id=?`, formatTime(time.Now().Add(-time.Second)), job.ID); err != nil {
+			t.Fatal(err)
+		}
+		due, err := repo.ListJobs(ctx, 10)
+		if err != nil || len(due) != 1 {
+			t.Fatalf("cycle %d: jobs=%+v err=%v", cycle, due, err)
+		}
+		if due[0].DeferredReason != "" {
+			t.Fatalf("cycle %d: a job that is due again is no longer waiting: %+v", cycle, due[0])
+		}
+	}
+}
+
+// The case the decrement is actually for. On the third lease attempt_count
+// equals max_attempts, and RetryJob -- whose WHERE requires attempt_count <
+// max_attempts -- can no longer reschedule anything. Deferring has to restore
+// the attempt, not merely postpone, or the job would sit unleasable forever.
+func TestDeferJobOnTheLastAttemptStillLeavesTheJobLeasable(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "jobs-defer-last.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := formatTime(time.Now())
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES('asset-last','last-fp',1,'discovered',?,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.EnqueueJob(ctx, "asset-last", domain.JobAnalyze, "last-input", 10); err != nil {
+		t.Fatal(err)
+	}
+
+	var job *domain.Job
+	for attempt := 1; attempt <= 3; attempt++ {
+		job, err = repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+		if err != nil || job == nil {
+			t.Fatalf("attempt %d: job=%+v err=%v", attempt, job, err)
+		}
+		if job.AttemptCount != attempt {
+			t.Fatalf("attempt %d: leased job reports %d attempts", attempt, job.AttemptCount)
+		}
+		if attempt < 3 {
+			if err := repo.RetryJob(ctx, job.ID, "worker", "transient", 0); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if job.AttemptCount != job.MaxAttempts {
+		t.Fatalf("the third lease should have spent the budget: %+v", job)
+	}
+
+	// RetryJob is the method that cannot help here, and saying so out loud is
+	// the point: it matches no row, so the job would be left running.
+	if err := repo.RetryJob(ctx, job.ID, "worker", "transient", 0); err != nil {
+		t.Fatal(err)
+	}
+	stuck, err := repo.ListJobs(ctx, 10)
+	if err != nil || len(stuck) != 1 {
+		t.Fatalf("jobs=%+v err=%v", stuck, err)
+	}
+	if stuck[0].State != domain.JobRunning {
+		t.Fatalf("RetryJob is expected to be a no-op at max_attempts; if it now reschedules, DeferJob's decrement may be reconsidered: %+v", stuck[0])
+	}
+
+	if err := repo.DeferJob(ctx, job.ID, "worker", time.Now().Add(-time.Second), domain.JobDeferProviderRouteExhausted, "every provider key on this route is failing"); err != nil {
+		t.Fatal(err)
+	}
+	next, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+	if err != nil || next == nil {
+		t.Fatalf("a job deferred on its last attempt must still run again: job=%+v err=%v", next, err)
+	}
+	if next.AttemptCount != 3 {
+		t.Fatalf("the restored attempt must be the one the outage consumed, not a fresh budget: %+v", next)
+	}
+}
+
 // leasePredicateSQL is the WHERE/ORDER BY of LeaseNextJob, kept here so the plan
 // assertions below test the query that actually runs. An earlier version of this
 // test hardcoded its own copy, which silently went stale the moment the size
 // ceiling was added to the real one -- it kept passing while asserting a plan
 // for a query nothing executed.
-const leasePredicateSQL = `SELECT id FROM jobs INDEXED BY idx_jobs_lease_order WHERE state IN ('pending','failed') AND terminal=0 AND attempt_count<max_attempts AND run_after<=? AND (lease_expires_at IS NULL OR lease_expires_at<=?) AND (?=0 OR NOT EXISTS (SELECT 1 FROM assets a WHERE a.id=jobs.asset_id AND a.file_size>?)) ORDER BY priority DESC,created_at LIMIT 1`
+const leasePredicateSQL = `SELECT id FROM jobs INDEXED BY idx_jobs_lease_order WHERE state IN ('pending','failed','running') AND terminal=0 AND assigned_worker_id IS NULL AND attempt_count<max_attempts AND run_after<=? AND (lease_expires_at IS NULL OR lease_expires_at<=?) AND (?=0 OR NOT EXISTS (SELECT 1 FROM assets a WHERE a.id=jobs.asset_id AND a.file_size>?)) ORDER BY priority DESC,created_at LIMIT 1`
 
 // The lease predicate is the hottest query in the pipeline and its ORDER BY
 // cannot be served by any state-leading index, so LeaseNextJob names the
@@ -311,7 +451,7 @@ func TestCompleteJobLeavesFailedJobLeasable(t *testing.T) {
 	if err != nil || job == nil {
 		t.Fatalf("lease job=%+v err=%v", job, err)
 	}
-	if err := repo.CompleteJob(ctx, job.ID, domain.JobFailed, "boom"); err != nil {
+	if err := repo.CompleteJob(ctx, job.ID, "worker", domain.JobFailed, "boom"); err != nil {
 		t.Fatal(err)
 	}
 	next, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
@@ -320,5 +460,72 @@ func TestCompleteJobLeavesFailedJobLeasable(t *testing.T) {
 	}
 	if next == nil {
 		t.Fatal("expected CompleteJob to leave the job leasable; if this now fails the lease predicate changed and FailJobTerminally may be redundant")
+	}
+}
+
+// A deferred job is 'pending', so RequeueFailedJobs cannot reach it and an
+// operator who has topped up their account would otherwise wait out the full
+// five hours. Resuming must make it leasable immediately and must leave work
+// postponed for any other reason alone.
+func TestResumeDeferredJobsReleasesOnlyQuotaWaitsAndLeasesImmediately(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "jobs-resume.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := formatTime(time.Now())
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES('asset-resume','resume-fp',1,'discovered',?,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.EnqueueJob(ctx, "asset-resume", domain.JobAnalyze, "resume-deferred", 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.EnqueueJob(ctx, "asset-resume", domain.JobProbe, "resume-backoff", 5); err != nil {
+		t.Fatal(err)
+	}
+
+	deferred, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+	if err != nil || deferred == nil {
+		t.Fatalf("lease deferred job: %+v %v", deferred, err)
+	}
+	if err := repo.DeferJob(ctx, deferred.ID, "worker", time.Now().Add(5*time.Hour), domain.JobDeferProviderRouteExhausted, "every key failing"); err != nil {
+		t.Fatal(err)
+	}
+	backoff, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+	if err != nil || backoff == nil {
+		t.Fatalf("lease backoff job: %+v %v", backoff, err)
+	}
+	if err := repo.RetryJob(ctx, backoff.ID, "worker", "transient", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if job, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{}); err != nil || job != nil {
+		t.Fatalf("nothing should be due yet, got %+v %v", job, err)
+	}
+
+	resumed, err := repo.ResumeDeferredJobs(ctx, domain.JobDeferProviderRouteExhausted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed != 1 {
+		t.Fatalf("resumed %d jobs, want exactly the quota wait", resumed)
+	}
+
+	got, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+	if err != nil || got == nil {
+		t.Fatalf("resumed job did not become leasable: %+v %v", got, err)
+	}
+	if got.ID != deferred.ID {
+		t.Fatalf("leased %s, want the resumed quota wait %s", got.ID, deferred.ID)
+	}
+	// The ordinary backoff must still be waiting out its hour.
+	if job, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{}); err != nil || job != nil {
+		t.Fatalf("resume disturbed an unrelated backoff: %+v %v", job, err)
+	}
+	if resumed, err := repo.ResumeDeferredJobs(ctx, domain.JobDeferProviderRouteExhausted); err != nil || resumed != 0 {
+		t.Fatalf("second resume moved %d jobs, want 0 (reason code must be cleared)", resumed)
 	}
 }

@@ -9,9 +9,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ev/timingdex/internal/curator"
-	"github.com/ev/timingdex/internal/domain"
-	"github.com/ev/timingdex/internal/providers/common"
+	"github.com/evjohn-icu/timingdex/internal/curator"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/providers/common"
 )
 
 // Provider asks a small OpenAI-compatible model to group unresolved tags.

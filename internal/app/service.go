@@ -14,32 +14,88 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ev/timingdex/internal/config"
-	"github.com/ev/timingdex/internal/credentials"
-	"github.com/ev/timingdex/internal/curator"
-	"github.com/ev/timingdex/internal/domain"
-	"github.com/ev/timingdex/internal/hubauth"
-	"github.com/ev/timingdex/internal/idgen"
-	"github.com/ev/timingdex/internal/ingest"
-	"github.com/ev/timingdex/internal/media"
-	"github.com/ev/timingdex/internal/providers"
-	"github.com/ev/timingdex/internal/remote"
-	"github.com/ev/timingdex/internal/repurpose"
-	"github.com/ev/timingdex/internal/secretstore"
-	"github.com/ev/timingdex/internal/staging"
+	"github.com/evjohn-icu/timingdex/internal/config"
+	"github.com/evjohn-icu/timingdex/internal/credentials"
+	"github.com/evjohn-icu/timingdex/internal/curator"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/hubauth"
+	"github.com/evjohn-icu/timingdex/internal/idgen"
+	"github.com/evjohn-icu/timingdex/internal/ingest"
+	"github.com/evjohn-icu/timingdex/internal/media"
+	"github.com/evjohn-icu/timingdex/internal/mount"
+	"github.com/evjohn-icu/timingdex/internal/providers"
+	"github.com/evjohn-icu/timingdex/internal/remote"
+	"github.com/evjohn-icu/timingdex/internal/repurpose"
+	"github.com/evjohn-icu/timingdex/internal/secretstore"
+	"github.com/evjohn-icu/timingdex/internal/staging"
 )
 
 var ErrInvalidRepurposeRevision = errors.New("invalid repurpose revision")
+
+// The human-approval boundary's sentinels are app-facing names for the domain
+// sentinels the repository wraps at the point it enforces them; see
+// internal/domain/errors.go for what each condition means and why the
+// identities live there rather than here. These are aliases, not separate
+// errors.New values, so errors.Is(err, app.ErrPlanImmutable) and
+// errors.Is(err, domain.ErrPlanImmutable) are the same question asked twice
+// and cannot come back with different answers -- the trap 27ac022 closed the
+// last time one condition carried two names in two layers.
+var (
+	ErrPlanImmutable         = domain.ErrPlanImmutable
+	ErrPlanRevisionNotFound  = domain.ErrPlanRevisionNotFound
+	ErrPlanRevisionNotDraft  = domain.ErrPlanRevisionNotDraft
+	ErrPlanRevisionNotLatest = domain.ErrPlanRevisionNotLatest
+)
+
 var ErrInvalidWorkerArtifact = errors.New("invalid worker artifact")
+
+// ErrWorkerArtifactLease is UploadWorkerArtifact's API-facing rename of
+// domain.ErrJobLeaseLost: writeWorkerArtifactResult (internal/api/server.go)
+// matches this with errors.Is to answer 409 specifically for an artifact
+// upload, rather than exposing the repository's generic lease sentinel at
+// the handler. It used to be produced by matching the repository error's
+// text for "worker does not own active job" -- the same prose the repository
+// happened to use for the condition, so the two stayed in sync by
+// coincidence, not by anything the compiler checked. The repository now
+// wraps domain.ErrJobLeaseLost instead, so this wraps that with errors.Is;
+// see its doc comment for why one sentinel covers both the Hub-local and
+// Worker-facing halves of the same condition.
 var ErrWorkerArtifactLease = errors.New("worker does not own active job")
 var ErrWorkerProviderCredentialDeliveryDisabled = errors.New("worker provider credential delivery is disabled")
+
+// ErrWorkerProviderNotConfigured is returned when a Worker asks for an
+// operation that has no provider available to it by any means this Hub
+// knows: no providers.* block, and (per
+// ErrWorkerProviderConfiguredAsChannelOnly's doc comment) no provider
+// channel either. This is the "there is genuinely nothing here" case; an
+// operator response is to configure the provider, by either method.
+var ErrWorkerProviderNotConfigured = errors.New("worker provider is not configured")
+
+// ErrWorkerProviderConfiguredAsChannelOnly is returned when
+// credentials.Broker fails to resolve a provider for a Worker operation but a
+// provider channel exists for that capability. Worker credential and proxy
+// issuance (IssueWorkerCredential, issueProviderCredentialForProxy) build
+// their broker from s.cfg.Providers only, deliberately: CLAUDE.md's Worker
+// trust boundary keeps a Worker's provider access to the opt-in
+// direct-credential path or the Hub-side JSON proxy, never to
+// internal/providerchannels's channel-scoped keys, member pools and health
+// state -- pushing those to a remote node is exactly what the direct-credential
+// path being default-deny is protecting against. Before this sentinel
+// existed, that refusal looked identical to "you have not configured this
+// provider at all" even though the operator had configured it correctly
+// through the channels UI; classifyWorkerProviderBrokerErr distinguishes the
+// two by checking whether a channel row exists for the operation, not by
+// re-deriving anything from the channel other than its presence.
+var ErrWorkerProviderConfiguredAsChannelOnly = errors.New("worker provider access reads only providers.* config; this capability is configured as a provider channel instead")
 
 type Repository interface {
 	PipelineRepository
 	CreateLibraryRoot(ctx context.Context, path string) (domain.LibraryRoot, error)
 	ListLibraryRoots(ctx context.Context) ([]domain.LibraryRoot, error)
 	GetLibraryRoot(ctx context.Context, id string) (domain.LibraryRoot, error)
+	IsLibraryRoot(ctx context.Context, path string) (bool, error)
 	ingest.ScanRepository
+	AssetsWithoutProbeJob(ctx context.Context, rootID string, limit int) ([]string, error)
 	ListAssets(ctx context.Context, limit, offset int) ([]domain.Asset, error)
 	ListAssetCards(ctx context.Context, limit, offset int) ([]domain.AssetCard, error)
 	ListAssetCardsFiltered(ctx context.Context, filter domain.AssetCardFilter) ([]domain.AssetCard, error)
@@ -66,8 +122,15 @@ type Repository interface {
 	ListAssetShots(context.Context, string) ([]domain.AssetShot, error)
 	ShotExists(context.Context, string) (bool, error)
 	SearchShots(context.Context, string, int) ([]domain.ShotSearchResult, error)
+	SearchShotsFiltered(context.Context, string, int, domain.FacetFilter) ([]domain.ShotSearchResult, error)
+	// SearchFiltered is deliberately not on PipelineRepository: that narrow
+	// interface (Search lives there, for RebuildSearch's neighbourhood) has
+	// several fakes that would all have to grow a method none of them need.
+	SearchFiltered(context.Context, string, int, domain.FacetFilter) ([]string, error)
 	HybridSearchShots(context.Context, string, int) ([]domain.ShotSearchResult, error)
+	HybridSearchShotsFiltered(context.Context, string, int, domain.FacetFilter) ([]domain.ShotSearchResult, error)
 	SimilarShots(context.Context, string, int) ([]domain.ShotSearchResult, error)
+	SimilarShotsFiltered(context.Context, string, int, domain.FacetFilter) ([]domain.ShotSearchResult, error)
 	DiscoverRareShots(context.Context, int) ([]domain.RareShot, error)
 	SaveRepurposePlan(context.Context, domain.RepurposePlan) (domain.RepurposePlan, error)
 	GetRepurposePlan(context.Context, string) (*domain.RepurposePlan, error)
@@ -107,8 +170,34 @@ type Service struct {
 	agentToken string
 	secrets    *secretstore.Store
 
+	// channelRuntime is the same bridge NewService hands the pipeline and
+	// curator/embedder/planner wrappers, kept here too so
+	// ProviderChannelRuntimeStatus can read its executor cache. It is not
+	// duplicated -- both are the one instance constructed below.
+	channelRuntime *providerChannelRuntime
+
 	pipelineMu      sync.Mutex
 	pipelineRunning bool
+
+	supervisor *LibrarySupervisor
+
+	// hostOverride replaces mount.LocalHost() in InspectRootPath when set. It
+	// exists only so tests can exercise the mount.Host.Container branch (the
+	// compose-volume suggestion below) without this test binary actually
+	// running inside a container — mount.LocalHost() detects that from
+	// /.dockerenv, which a test cannot fake by construction. Left unexported
+	// and nil in every real Service: nothing outside this package's own tests
+	// can reach it, so production InspectRootPath always reports the real
+	// host.
+	hostOverride *mount.Host
+}
+
+// mountHost is the mount.Host InspectRootPath generates advice for.
+func (s *Service) mountHost() mount.Host {
+	if s.hostOverride != nil {
+		return *s.hostOverride
+	}
+	return mount.LocalHost()
 }
 
 func NewService(repo Repository, cfg config.Config) (*Service, error) {
@@ -163,12 +252,19 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 		return nil, fmt.Errorf("initialize Hub provider secret store: %w", err)
 	}
 	channelRuntime := newProviderChannelRuntime(repo, cfg, secrets, asr, fallback, videoProvider, tagCurator, embedder, planner)
-	return &Service{
+	service := &Service{
 		repo: repo, cfg: cfg, scanner: ingest.NewScanner(repo),
-		pipeline: NewPipeline(repo, cfg.CacheDir, channelRuntime.asr(), channelRuntime.asrFallback(), channelRuntime.video(), alignment, plan, sourceStager),
+		pipeline: NewPipeline(repo, cfg.CacheDir, channelRuntime.asr(), channelRuntime.asrFallback(), channelRuntime.video(), alignment, plan, sourceStager, time.Duration(cfg.Pipeline.ProviderRouteDeferralMinutes)*time.Minute),
 		curator:  channelRuntime.curator(), embedder: channelRuntime.embedder(), planner: channelRuntime.planner(),
 		hardware: hardware, adminToken: adminToken, agentToken: agentToken, secrets: secrets,
-	}, nil
+		channelRuntime: channelRuntime,
+	}
+	// Constructed for every command, started by none of them: only `serve`
+	// calls RunLibrarySupervisor, and a disabled supervisor's Run is a no-op.
+	// Constructing it unconditionally keeps the status endpoint answerable
+	// ("configured but not running") instead of nil.
+	service.supervisor = newLibrarySupervisor(service, cfg.LibrarySupervisor)
+	return service, nil
 }
 
 // ListProviderChannels returns operational channel metadata but never exposes
@@ -188,15 +284,33 @@ func (s *Service) ListProviderChannels(ctx context.Context, capability string) (
 	return channels, nil
 }
 
+// ProviderChannelRuntimeStatus is the admin-only, secret-free view of live
+// provider-channel routing state: which member the pool has actually retired
+// since the Hub started (a key answering 401/402/403 -- see
+// providerpool.MemberSpent), as opposed to what the provider_channels table
+// configures. ListProviderChannels above answers "what is configured";
+// this answers "what is the Hub actually doing about it right now", which
+// used to be invisible -- a retired key silently narrowed the route, and once
+// the last one retired, jobs just stopped landing with nothing to explain
+// why. See providerChannelRuntime.capabilityStatuses for what
+// HasRuntimeData=false means and why it is reported rather than papered over.
+func (s *Service) ProviderChannelRuntimeStatus(_ context.Context) []ProviderChannelCapabilityStatus {
+	return s.channelRuntime.capabilityStatuses()
+}
+
 // SaveProviderChannel stores API keys only in the Hub secret store.
 // memberKeys is positional, not keyed by label: memberKeys[i] corresponds to
-// channel.Members[i]. A channel intentionally allows multiple members with
-// the same label (Weight/MaxInflight exist precisely to let one provider be
-// configured with several keys), so indexing by label would let one key
-// silently overwrite or misassign to another member's secret. An empty or
-// missing entry preserves the member's existing secret; the slice may be
-// shorter than Members, in which case the missing tail is treated as empty.
+// channel.Members[i]. Labels are unique per channel (UNIQUE(channel_id,
+// label), migration 0013; validateDistinctProviderChannelMemberLabels
+// rejects a duplicate below before anything is written), so memberKeys is
+// positional because Members itself is positional — not because two members
+// could share a label. An empty or missing entry preserves the member's
+// existing secret; the slice may be shorter than Members, in which case the
+// missing tail is treated as empty.
 func (s *Service) SaveProviderChannel(ctx context.Context, channel domain.ProviderChannel, memberKeys []string) (domain.ProviderChannel, error) {
+	if err := validateDistinctProviderChannelMemberLabels(channel.Members); err != nil {
+		return domain.ProviderChannel{}, err
+	}
 	if channel.ID == "" {
 		channel.ID = idgen.New()
 	}
@@ -282,7 +396,27 @@ func (s *Service) TrustedReadNetworks() ([]netip.Prefix, error) {
 	return s.cfg.HubSecurity.TrustedReadPrefixes()
 }
 
+// ErrShareNotMounted is returned when the operator gave a network share where a
+// path was expected. It is a distinct error because the caller can do something
+// useful with it — print the mount commands — that it cannot do with a generic
+// stat failure.
+type ErrShareNotMounted struct {
+	Share mount.Share
+}
+
+func (e ErrShareNotMounted) Error() string {
+	return fmt.Sprintf("%s is a network share and is not mounted here", e.Share)
+}
+
 func (s *Service) AddLibraryRoot(ctx context.Context, path string) (domain.LibraryRoot, error) {
+	// The share check comes first because filepath.Abs turns //nas/Video into a
+	// path relative to the working directory, at which point the input the
+	// operator actually typed is no longer recoverable.
+	if share, ok := mount.ParseShare(path); ok {
+		if _, err := os.Stat(path); err != nil {
+			return domain.LibraryRoot{}, ErrShareNotMounted{Share: share}
+		}
+	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return domain.LibraryRoot{}, fmt.Errorf("resolve root path: %w", err)
@@ -297,8 +431,243 @@ func (s *Service) AddLibraryRoot(ctx context.Context, path string) (domain.Libra
 	return s.repo.CreateLibraryRoot(ctx, absolute)
 }
 
+// RootWarnings reports what is true about a root's storage that the operator
+// cannot see from the path alone and that will otherwise show up as unexplained
+// slowness or as a library that scans to nothing.
+func (s *Service) RootWarnings(path string, registered bool) []string {
+	table := mount.ReadMountTable()
+	if table == "" {
+		return nil
+	}
+	var warnings []string
+	if registered && mount.LooksUnmounted(path, table) {
+		warnings = append(warnings, fmt.Sprintf("%s is empty and is not itself a mount point. If the share should be mounted there, mount it before scanning: a scan of an unmounted directory marks every asset in it as missing.", path))
+	}
+	filesystem, known := mount.FilesystemFor(path, table)
+	if !known || !filesystem.Network {
+		return warnings
+	}
+	warnings = append(warnings, fmt.Sprintf("%s is on a %s mount (%s).", path, filesystem.Label, filesystem.Type))
+	if s.cfg.SourceStaging.Mode != "copy" {
+		warnings = append(warnings, `Set "source_staging": {"mode": "copy"} in config.json. Every derive stage re-reads the source, and doing that over the network is what makes a NAS library take days rather than hours.`)
+	}
+	if !filesystem.ReadOnly {
+		warnings = append(warnings, "The mount is writable. Nothing here writes to source footage, but mounting the share read-only makes that true of every other process too.")
+	}
+	return warnings
+}
+
 func (s *Service) ListLibraryRoots(ctx context.Context) ([]domain.LibraryRoot, error) {
 	return s.repo.ListLibraryRoots(ctx)
+}
+
+// RootInspection reports what the Hub can tell about a candidate library root
+// path before it becomes one — including the full mount commands when the
+// operator gave a network share instead of a path — without ever reading
+// anything beyond that single path: no directory listing, no globbing, and
+// nothing said about any path other than the one asked about.
+type RootInspection struct {
+	Path string `json:"path"`
+
+	// ContainerPath is set only when this Hub runs in a container and Path
+	// lies under the directory bound in as footage: it is where that same
+	// directory appears in here, and therefore the only one of the two paths
+	// this process can stat or record as a library root. Everything below —
+	// Exists, IsDir, FilesystemType, LooksUnmounted — describes this path
+	// when it is set, because a verdict about the host-side path would be a
+	// verdict about a namespace this process cannot see. Empty on a
+	// bare-metal Hub, and empty when the translation cannot be stated as
+	// fact rather than guessed.
+	ContainerPath string `json:"container_path,omitempty"`
+
+	// IsShare and Share are set when Path parses as a network share rather
+	// than a local path. Share.User is the only credential fragment
+	// mount.Share ever carries — see ParseShare's userinfo handling — so a
+	// password is never accepted, parsed or echoed here.
+	IsShare bool          `json:"is_share"`
+	Share   *ShareSummary `json:"share,omitempty"`
+
+	// DefaultMountpoint and Guidance are populated only for a share: the
+	// commands the operator pastes to mount it, generated for this Hub's own
+	// operating system.
+	DefaultMountpoint string         `json:"default_mountpoint,omitempty"`
+	Guidance          *MountGuidance `json:"guidance,omitempty"`
+
+	// ComposeVolume is populated only for a share whose Hub is itself running
+	// containerised (mount.Host.Container) — see InspectRootPath. On a
+	// bare-metal host the mount commands above are simply the right answer
+	// and a compose stanza would be noise; a containerised Hub genuinely
+	// cannot mount the share for itself (mount.Guidance's
+	// container-cannot-mount note), which is the case this suggestion exists
+	// for.
+	ComposeVolume *ComposeVolumeSuggestion `json:"compose_volume,omitempty"`
+
+	// Exists and IsDir describe Path itself, from a single os.Stat.
+	Exists bool `json:"exists"`
+	IsDir  bool `json:"is_dir"`
+
+	// FilesystemType, Network and NetworkLabel describe the mount Path falls
+	// under, when the Hub's mount table is readable.
+	FilesystemType string `json:"filesystem_type,omitempty"`
+	Network        bool   `json:"network"`
+	NetworkLabel   string `json:"network_label,omitempty"`
+	LooksUnmounted bool   `json:"looks_unmounted"`
+
+	// Warnings is the same advice Doctor prints for an existing root, offered
+	// here before the root is even created.
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// ShareSummary is the share half of a RootInspection.
+type ShareSummary struct {
+	Protocol string `json:"protocol"`
+	Host     string `json:"host"`
+	Name     string `json:"name"`
+	User     string `json:"user,omitempty"`
+}
+
+// MountGuidance mirrors mount.Guide in a shape that survives a JSON round
+// trip without exposing the mount package's types on the wire.
+type MountGuidance struct {
+	Summary string           `json:"summary"`
+	Steps   []MountGuideStep `json:"steps"`
+	Notes   []MountGuideNote `json:"notes"`
+}
+
+// MountGuideStep carries mount.Step's Key alongside the English Title so the
+// browser wizard (internal/api/library_roots_page.go) can look up a Chinese
+// translation by Key and fall back to Title — which stays the English
+// text — when the key is unrecognised. The CLI (timingdex doctor) never sees
+// this type; it renders mount.Guide directly and is unaffected by Key.
+type MountGuideStep struct {
+	Key      string   `json:"key"`
+	Title    string   `json:"title"`
+	Commands []string `json:"commands"`
+}
+
+// MountGuideNote is the same Key/English-fallback pairing as MountGuideStep,
+// for mount.Note.
+type MountGuideNote struct {
+	Key  string `json:"key"`
+	Text string `json:"text"`
+}
+
+// ComposeVolumeSuggestion mirrors mount.VolumeDefinition in a shape that
+// survives a JSON round trip without exposing the mount package's types on
+// the wire — the same rationale as MountGuidance above.
+type ComposeVolumeSuggestion struct {
+	Name string `json:"name"`
+	// YAML is the docker-compose named-volume entry, ready to splice under a
+	// volumes: block. See mount.VolumeDefinition.YAML.
+	YAML string `json:"yaml"`
+	// ServiceYAML mounts that volume into the hub and worker services, and
+	// MountPath is where it lands inside them — which makes MountPath the
+	// path to record as a library root, not the NAS address the operator
+	// typed. Without both, the volume entry above is inert and the operator
+	// has to derive the root path themselves.
+	ServiceYAML string `json:"service_yaml,omitempty"`
+	MountPath   string `json:"mount_path,omitempty"`
+	// Warning and WarningKey are empty together (the NFS form) or set
+	// together (the SMB form, which cannot avoid an inline cleartext
+	// password — see mount.ComposeVolume's doc). WarningKey carries the same
+	// Key/English-fallback translation contract as MountGuideStep.Key.
+	Warning    string `json:"warning,omitempty"`
+	WarningKey string `json:"warning_key,omitempty"`
+}
+
+// InspectRootPath answers "what would adding this as a library root involve"
+// without touching the repository or creating anything. mountpoint overrides
+// mount.DefaultMountpoint for the share case — the wizard calls this again
+// with an edited mountpoint to regenerate the commands, since the exact
+// command text (credentials path, uid/gid, the WSL nsenter prefix) is
+// generated here rather than duplicated in JavaScript. Passing "" for
+// mountpoint uses the default.
+func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string) RootInspection {
+	trimmed := strings.TrimSpace(path)
+	result := RootInspection{Path: trimmed}
+	registered := false
+	if s.repo != nil {
+		registered, _ = s.repo.IsLibraryRoot(ctx, trimmed)
+	}
+	if trimmed == "" {
+		return result
+	}
+	host := s.mountHost()
+	if share, ok := mount.ParseShare(trimmed); ok {
+		result.IsShare = true
+		// Echo the parsed share rather than what was typed. Share.String()
+		// reconstructs the location from host and share name only, so a
+		// password pasted as smb://user:password@host/share cannot survive
+		// into this response — and this response is rendered straight into
+		// the browser page that asked for it. ParseShare already drops the
+		// password from Share.User; leaving the raw input in Path would have
+		// put it back in the reply anyway.
+		result.Path = share.String()
+		result.Share = &ShareSummary{
+			Protocol: string(share.Protocol),
+			Host:     share.Host,
+			Name:     share.Name,
+			User:     share.User,
+		}
+		result.DefaultMountpoint = mount.DefaultMountpoint(share, host)
+		target := strings.TrimSpace(mountpoint)
+		if target == "" {
+			target = result.DefaultMountpoint
+		}
+		guide := mount.Guidance(share, target, host)
+		steps := make([]MountGuideStep, 0, len(guide.Steps))
+		for _, step := range guide.Steps {
+			steps = append(steps, MountGuideStep{Key: step.Key, Title: step.Title, Commands: step.Commands})
+		}
+		notes := make([]MountGuideNote, 0, len(guide.Notes))
+		for _, note := range guide.Notes {
+			notes = append(notes, MountGuideNote{Key: note.Key, Text: note.Text})
+		}
+		result.Guidance = &MountGuidance{Summary: guide.Summary, Steps: steps, Notes: notes}
+		if host.Container {
+			// See ComposeVolume's field doc: this is the one case where a
+			// docker-compose volume stanza is the actual next step rather
+			// than noise alongside the host mount commands above.
+			if volume, ok := mount.ComposeVolume(share, mount.VolumeName(share)); ok {
+				result.ComposeVolume = &ComposeVolumeSuggestion{
+					Name:        volume.Name,
+					YAML:        volume.YAML,
+					ServiceYAML: volume.ServiceYAML,
+					MountPath:   volume.MountPath,
+					Warning:     volume.Warning,
+					WarningKey:  volume.WarningKey,
+				}
+			}
+		}
+	}
+	// Everything below stats the filesystem. On a containerised Hub the path
+	// the operator is verifying is one they were told to mount on the *host*,
+	// which this process cannot stat — so translate it to where the same
+	// directory appears in here first. Without this, correctly following the
+	// guidance ends in "does not exist" at the verification step, because the
+	// answer would be about a path that only ever existed in another
+	// namespace. The untranslated path is kept in Path so the operator still
+	// sees the one they typed; ContainerPath is reported alongside so the page
+	// can name both rather than silently swapping one for the other.
+	inspected := trimmed
+	if translated, ok := mount.ContainerPath(trimmed, host); ok {
+		inspected = translated
+		result.ContainerPath = translated
+	}
+	if info, err := os.Stat(inspected); err == nil {
+		result.Exists = true
+		result.IsDir = info.IsDir()
+	}
+	if table := mount.ReadMountTable(); table != "" {
+		if filesystem, known := mount.FilesystemFor(inspected, table); known {
+			result.FilesystemType = filesystem.Type
+			result.Network = filesystem.Network
+			result.NetworkLabel = filesystem.Label
+		}
+		result.LooksUnmounted = mount.LooksUnmounted(inspected, table)
+	}
+	result.Warnings = s.RootWarnings(trimmed, registered)
+	return result
 }
 
 func (s *Service) CreateWorkerPairing(ctx context.Context, ttl time.Duration) (remote.PairingToken, error) {
@@ -372,7 +741,7 @@ func (s *Service) IssueWorkerCredential(ctx context.Context, worker remote.Worke
 	}
 	lease, err := credentials.NewBroker(s.cfg.Providers, nil).Issue(jobID, worker.ID, operation, 5*time.Minute)
 	if err != nil {
-		return credentials.Lease{}, err
+		return credentials.Lease{}, s.classifyWorkerProviderBrokerErr(ctx, operation, err)
 	}
 	expiresAt, err := time.Parse(time.RFC3339, lease.ExpiresAt)
 	if err != nil {
@@ -411,8 +780,8 @@ func (s *Service) UploadWorkerArtifact(ctx context.Context, jobID, workerID, art
 	}
 	assetID, existing, err := s.repo.PrepareWorkerArtifact(ctx, jobID, workerID, artifactType, profileHash)
 	if err != nil {
-		if strings.Contains(err.Error(), "worker does not own active job") {
-			return domain.DerivedArtifact{}, false, fmt.Errorf("%w: %v", ErrWorkerArtifactLease, err)
+		if errors.Is(err, domain.ErrJobLeaseLost) {
+			return domain.DerivedArtifact{}, false, fmt.Errorf("%w: %w", ErrWorkerArtifactLease, err)
 		}
 		return domain.DerivedArtifact{}, false, err
 	}
@@ -422,8 +791,8 @@ func (s *Service) UploadWorkerArtifact(ctx context.Context, jobID, workerID, art
 			preserveExisting = true
 			stored, reused, commitErr := s.repo.CommitWorkerArtifact(ctx, jobID, workerID, *existing, true)
 			if commitErr != nil {
-				if strings.Contains(commitErr.Error(), "worker does not own active job") {
-					return domain.DerivedArtifact{}, false, fmt.Errorf("%w: %v", ErrWorkerArtifactLease, commitErr)
+				if errors.Is(commitErr, domain.ErrJobLeaseLost) {
+					return domain.DerivedArtifact{}, false, fmt.Errorf("%w: %w", ErrWorkerArtifactLease, commitErr)
 				}
 				return domain.DerivedArtifact{}, false, commitErr
 			}
@@ -481,8 +850,8 @@ func (s *Service) UploadWorkerArtifact(ctx context.Context, jobID, workerID, art
 		if !preserveExisting && !reused {
 			_ = os.Remove(targetPath)
 		}
-		if strings.Contains(err.Error(), "worker does not own active job") {
-			return domain.DerivedArtifact{}, false, fmt.Errorf("%w: %v", ErrWorkerArtifactLease, err)
+		if errors.Is(err, domain.ErrJobLeaseLost) {
+			return domain.DerivedArtifact{}, false, fmt.Errorf("%w: %w", ErrWorkerArtifactLease, err)
 		}
 		return domain.DerivedArtifact{}, false, err
 	}
@@ -538,13 +907,28 @@ func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.Sc
 	if err != nil {
 		return result, err
 	}
-	assets, listErr := s.repo.ListAssets(ctx, 100000, 0)
-	if listErr != nil {
-		return result, listErr
+	// Enqueue only the assets this scan actually changed. Re-enqueuing the
+	// whole library on every 15-minute pass is 2N queries that all land on an
+	// INSERT OR IGNORE no-op; the changed set is the only work a scan creates.
+	for _, assetID := range result.ChangedAssetIDs {
+		if err := s.pipeline.EnqueueAsset(ctx, assetID); err != nil {
+			// A single enqueue failure must not abort the pass: the catch-up
+			// query below only rescues a missing probe job if the pass
+			// completes, so the same asset gets another chance next scan.
+			slog.Warn("scan: enqueue changed asset failed", "asset_id", assetID, "error", err)
+		}
 	}
-	for _, asset := range assets {
-		if asset.State != domain.AssetMissing {
-			_ = s.pipeline.EnqueueAsset(ctx, asset.ID)
+	// Catch up on assets that never got a probe job at all — nothing in the
+	// changed set will ever re-derive them, so without this they would starve
+	// forever. The limit keeps one pathological root from making a scan
+	// unbounded; assets past the cap are picked up by a later pass.
+	catchUp, err := s.repo.AssetsWithoutProbeJob(ctx, rootID, 1000)
+	if err != nil {
+		return result, err
+	}
+	for _, assetID := range catchUp {
+		if err := s.pipeline.EnqueueAsset(ctx, assetID); err != nil {
+			slog.Warn("scan: enqueue missing-probe asset failed", "asset_id", assetID, "error", err)
 		}
 	}
 	return result, nil
@@ -564,12 +948,26 @@ func (s *Service) Doctor(ctx context.Context, writer io.Writer) error {
 		fmt.Fprintf(writer, "%s: %s\n", binary, path)
 	}
 	report := s.HardwareReport()
-	fmt.Fprintf(writer, "hardware acceleration: requested=%s selected=%s fallback=%t\n", report.RequestedMode, report.SelectedMode, report.Fallback)
-	for _, cap := range report.Capabilities {
-		fmt.Fprintf(writer, "  %s: decode=%t encode=%t runtime=%t selected=%t\n", cap.Backend, cap.DecodeAvailable, cap.EncodeAvailable, cap.RuntimeAvailable, cap.Selected)
+	media.FormatHardwareReport(writer, report)
+
+	roots, err := s.repo.ListLibraryRoots(ctx)
+	if err != nil {
+		return err
 	}
-	if report.Warning != "" {
-		fmt.Fprintf(writer, "  warning: %s\n", report.Warning)
+	fmt.Fprintf(writer, "library roots: %d\n", len(roots))
+	table := mount.ReadMountTable()
+	for _, root := range roots {
+		storage := "unknown"
+		if filesystem, known := mount.FilesystemFor(root.Path, table); known {
+			storage = filesystem.Type
+			if filesystem.Network {
+				storage = filesystem.Label + " (" + filesystem.Type + ")"
+			}
+		}
+		fmt.Fprintf(writer, "  %s: %s\n", root.Path, storage)
+		for _, warning := range s.RootWarnings(root.Path, true) {
+			fmt.Fprintf(writer, "    %s\n", warning)
+		}
 	}
 	return nil
 }
@@ -577,8 +975,18 @@ func (s *Service) Doctor(ctx context.Context, writer io.Writer) error {
 func (s *Service) HardwareReport() media.HardwareReport { return s.hardware }
 
 func (s *Service) RunPipeline(ctx context.Context) error {
-	if err := s.pipeline.RunUntilIdle(ctx); err != nil {
+	executed, err := s.pipeline.RunUntilIdle(ctx)
+	if err != nil {
 		return err
+	}
+	// Sessions are derived from assets, and an idle pass changed no asset, so
+	// there is nothing for a rebuild to pick up. Rebuilding anyway would
+	// re-derive every session per root on every supervisor tick — four times an
+	// hour on an idle library — for zero effect. Zero executed jobs is a safe
+	// signal here: RunUntilIdle counts a job the moment it leaves the queue,
+	// so a pass that deferred work on a dead route still reports non-zero.
+	if executed == 0 {
+		return nil
 	}
 	roots, err := s.repo.ListLibraryRoots(ctx)
 	if err != nil {
@@ -598,25 +1006,65 @@ func (s *Service) RunPipeline(ctx context.Context) error {
 // request context. CLI callers that need synchronous behaviour should use
 // RunPipeline instead.
 func (s *Service) StartPipeline() bool {
-	s.pipelineMu.Lock()
-	if s.pipelineRunning {
-		s.pipelineMu.Unlock()
+	if !s.beginPipelinePass() {
 		return false
 	}
-	s.pipelineRunning = true
-	s.pipelineMu.Unlock()
-
 	go func() {
-		defer func() {
-			s.pipelineMu.Lock()
-			s.pipelineRunning = false
-			s.pipelineMu.Unlock()
-		}()
+		defer s.endPipelinePass()
 		if err := s.RunPipeline(context.Background()); err != nil {
 			slog.Error("pipeline run failed", "error", err)
 		}
 	}()
 	return true
+}
+
+// TryRunPipeline runs a pass on the caller's own goroutine, under the same
+// single-run guard as StartPipeline, and reports whether it ran at all.
+//
+// It exists for a caller that must be able to stop the pass and to know when it
+// has stopped. The unattended supervisor's context is the server's, and a pass
+// detached onto context.Background() the way StartPipeline detaches it would go
+// on spending Provider calls after shutdown had begun, with nothing left to
+// join it.
+func (s *Service) TryRunPipeline(ctx context.Context) (bool, error) {
+	if !s.beginPipelinePass() {
+		return false, nil
+	}
+	defer s.endPipelinePass()
+	return true, s.RunPipeline(ctx)
+}
+
+// beginPipelinePass claims the right to be the one pipeline pass in flight.
+// Every way of starting a pass goes through it, so an operator pressing "run"
+// and the supervisor waking up cannot end up driving the same disk at once —
+// which would defeat the throttle rather than obey it.
+func (s *Service) beginPipelinePass() bool {
+	s.pipelineMu.Lock()
+	defer s.pipelineMu.Unlock()
+	if s.pipelineRunning {
+		return false
+	}
+	s.pipelineRunning = true
+	return true
+}
+
+func (s *Service) endPipelinePass() {
+	s.pipelineMu.Lock()
+	defer s.pipelineMu.Unlock()
+	s.pipelineRunning = false
+}
+
+// RunLibrarySupervisor blocks until ctx is cancelled, rescanning the library and
+// draining the queue on a timer. It returns immediately when the supervisor is
+// disabled, which is the default. When it returns, no work it started is still
+// in flight — see LibrarySupervisor.Run.
+func (s *Service) RunLibrarySupervisor(ctx context.Context) error {
+	return s.supervisor.Run(ctx)
+}
+
+// LibrarySupervisorStatus is the observability surface for the unattended loop.
+func (s *Service) LibrarySupervisorStatus() LibrarySupervisorStatus {
+	return s.supervisor.Status()
 }
 
 // PipelineRunning reports whether a background pipeline goroutine is currently
@@ -631,6 +1079,10 @@ func (s *Service) ListJobs(ctx context.Context, limit int) ([]domain.Job, error)
 	return s.pipeline.repo.ListJobs(ctx, limit)
 }
 
+func (s *Service) JobSummary(ctx context.Context) (domain.JobSummary, error) {
+	return s.pipeline.repo.JobSummary(ctx)
+}
+
 // RequeueFailedJobs gives every failed job a fresh attempt budget. Both ways a
 // job stops being retried are one-way, and re-scanning the library does not
 // undo either, so configuring a provider that was previously missing otherwise
@@ -638,8 +1090,23 @@ func (s *Service) ListJobs(ctx context.Context, limit int) ([]domain.Job, error)
 func (s *Service) RequeueFailedJobs(ctx context.Context) (int, error) {
 	return s.pipeline.repo.RequeueFailedJobs(ctx)
 }
+
+// ResumeDeferredJobs releases work parked because every provider key on its
+// route was failing. It is the operator's answer to a wait that has already
+// ended — a topped-up account, or an outage that cleared — which the Hub
+// cannot detect on its own without spending a call to find out.
+func (s *Service) ResumeDeferredJobs(ctx context.Context) (int, error) {
+	return s.pipeline.repo.ResumeDeferredJobs(ctx, domain.JobDeferProviderRouteExhausted)
+}
 func (s *Service) Search(ctx context.Context, q string, limit int) ([]string, error) {
 	return s.pipeline.repo.Search(ctx, q, limit)
+}
+
+// SearchFiltered narrows Search by domain.FacetFilter. Callers must validate
+// facet values against normalize's exported *Values lists before calling
+// this — see the FacetFilter doc comment (internal/domain/asset_browse.go).
+func (s *Service) SearchFiltered(ctx context.Context, q string, limit int, facets domain.FacetFilter) ([]string, error) {
+	return s.repo.SearchFiltered(ctx, q, limit, facets)
 }
 
 func (s *Service) ListAssetShots(ctx context.Context, assetID string) ([]domain.AssetShot, error) {
@@ -650,12 +1117,29 @@ func (s *Service) SearchShots(ctx context.Context, q string, limit int) ([]domai
 	return s.repo.SearchShots(ctx, q, limit)
 }
 
+// SearchShotsFiltered narrows SearchShots by domain.FacetFilter. Callers must
+// validate facet values against normalize's exported *Values lists before
+// calling this — see the FacetFilter doc comment (internal/domain/asset_browse.go).
+func (s *Service) SearchShotsFiltered(ctx context.Context, q string, limit int, facets domain.FacetFilter) ([]domain.ShotSearchResult, error) {
+	return s.repo.SearchShotsFiltered(ctx, q, limit, facets)
+}
+
 func (s *Service) HybridSearchShots(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error) {
 	return s.repo.HybridSearchShots(ctx, q, limit)
 }
 
+// HybridSearchShotsFiltered narrows HybridSearchShots by domain.FacetFilter.
+func (s *Service) HybridSearchShotsFiltered(ctx context.Context, q string, limit int, facets domain.FacetFilter) ([]domain.ShotSearchResult, error) {
+	return s.repo.HybridSearchShotsFiltered(ctx, q, limit, facets)
+}
+
 func (s *Service) SimilarShots(ctx context.Context, shotID string, limit int) ([]domain.ShotSearchResult, error) {
 	return s.repo.SimilarShots(ctx, shotID, limit)
+}
+
+// SimilarShotsFiltered narrows SimilarShots by domain.FacetFilter.
+func (s *Service) SimilarShotsFiltered(ctx context.Context, shotID string, limit int, facets domain.FacetFilter) ([]domain.ShotSearchResult, error) {
+	return s.repo.SimilarShotsFiltered(ctx, shotID, limit, facets)
 }
 
 func (s *Service) DiscoverRareShots(ctx context.Context, limit int) ([]domain.RareShot, error) {
@@ -713,19 +1197,38 @@ func (s *Service) GetRepurposePlan(ctx context.Context, id string) (*domain.Repu
 	return s.repo.GetRepurposePlan(ctx, id)
 }
 
+// ReviseRepurposePlan validates a proposed set of sections against the plan's
+// current one and records the result as a new draft revision.
+//
+// The two guards below look like copies of SaveRepurposePlanRevision's own
+// checks (internal/repository/sqlite/repository.go) and deliberately are not
+// the authority: that one runs at write time and decides, and its error
+// already carries the sentinel, so nothing here re-derives it afterwards.
+// What these earn is the order the refusals come out in.
+//
+//   - plan == nil has to be here regardless: every line below dereferences
+//     plan.Sections, so this call cannot proceed without a plan at all.
+//   - plan.Status == "approved" puts the boundary refusal ahead of the
+//     request-shape validation that follows. Without it, revising an approved
+//     plan reports whatever the payload trips first -- an empty section list,
+//     say -- as ErrInvalidRepurposeRevision's 400 instead of the ErrPlanImmutable
+//     409 the operator actually needs: "your request was malformed" instead of
+//     "this plan cannot be revised at all, reshaping the payload will not help".
+//     It also skips a ShotExists query per candidate on a plan that is going
+//     to be refused anyway.
 func (s *Service) ReviseRepurposePlan(ctx context.Context, planID string, sections []domain.PlanSection, editorNote string) (domain.RepurposePlanRevision, error) {
 	plan, err := s.repo.GetRepurposePlan(ctx, planID)
 	if err != nil {
 		return domain.RepurposePlanRevision{}, err
 	}
 	if plan == nil {
-		return domain.RepurposePlanRevision{}, fmt.Errorf("repurpose plan not found: %s", planID)
+		return domain.RepurposePlanRevision{}, fmt.Errorf("%w: no plan matches id %s", ErrPlanNotFound, planID)
 	}
 	if plan.Status == "approved" {
-		return domain.RepurposePlanRevision{}, fmt.Errorf("approved repurpose plan is immutable: %s", planID)
+		return domain.RepurposePlanRevision{}, fmt.Errorf("%w: plan %s is approved and accepts no further revisions", ErrPlanImmutable, planID)
 	}
 	if len(sections) == 0 {
-		return domain.RepurposePlanRevision{}, fmt.Errorf("at least one plan section is required")
+		return domain.RepurposePlanRevision{}, fmt.Errorf("%w: a revision needs at least one section", ErrInvalidRepurposeRevision)
 	}
 	previousSections := make(map[string]domain.PlanSection, len(plan.Sections))
 	for _, section := range plan.Sections {
@@ -792,30 +1295,67 @@ func (s *Service) ReviseRepurposePlan(ctx context.Context, planID string, sectio
 	}
 	plan.Sections = sections
 	plan.MissingNeeds = missing
-	return s.repo.SaveRepurposePlanRevision(ctx, *plan, editorNote)
+	// SaveRepurposePlanRevision re-checks both preconditions above inside its
+	// own write, and wraps the same sentinels this function does, so a plan
+	// that was deleted or approved in the gap since GetRepurposePlan arrives
+	// already classified. Nothing here re-derives it from a second read.
+	saved, err := s.repo.SaveRepurposePlanRevision(ctx, *plan, editorNote)
+	if err != nil {
+		return domain.RepurposePlanRevision{}, err
+	}
+	return saved, nil
 }
 
 func (s *Service) ListRepurposePlanRevisions(ctx context.Context, planID string) ([]domain.RepurposePlanRevision, error) {
 	return s.repo.ListRepurposePlanRevisions(ctx, planID)
 }
 
+// ApproveRepurposePlanRevision applies the one precondition the repository
+// cannot: that every required section with candidates has had a shot picked.
+// "Draft", "latest" and "exists" are enforced by
+// ApproveRepurposePlanRevision (internal/repository/sqlite/repository.go)
+// inside the transaction that writes the approval, and its errors arrive
+// already carrying the matching sentinel, so they are not re-derived here --
+// a check made outside that transaction can be raced and would only be a
+// second, weaker copy of a rule that is meant to have one.
+//
+// The revision list this fetches is for the section check, which is why the
+// matched == nil guard stays: matched.Plan has to exist before its sections
+// can be read. Reading the snapshot outside the transaction is safe in a way
+// the state checks are not -- approval only moves a revision's state, never
+// its sections, so no concurrent writer can change the answer this check
+// computes.
+//
+// One ordering follows from letting the repository decide and is intended:
+// asking to approve a superseded revision that also has an unselected
+// required section now reports the selection defect rather than "not the
+// latest". Both are true of that revision and both are refusals the caller
+// can act on; the alternative was keeping a second, race-prone copy of
+// "which revision is latest" purely to choose between two 4xx messages.
 func (s *Service) ApproveRepurposePlanRevision(ctx context.Context, planID string, revision int) (domain.RepurposePlanRevision, error) {
 	revisions, err := s.repo.ListRepurposePlanRevisions(ctx, planID)
 	if err != nil {
 		return domain.RepurposePlanRevision{}, err
 	}
-	for _, candidate := range revisions {
-		if candidate.Revision != revision {
-			continue
+	var matched *domain.RepurposePlanRevision
+	for i := range revisions {
+		if revisions[i].Revision == revision {
+			matched = &revisions[i]
 		}
-		for _, section := range candidate.Plan.Sections {
-			if section.Required && len(section.Candidates) > 0 && section.SelectedShotID == "" {
-				return domain.RepurposePlanRevision{}, fmt.Errorf("%w: required section needs an explicit selection before approval: %s", ErrInvalidRepurposeRevision, section.Role)
-			}
-		}
-		break
 	}
-	return s.repo.ApproveRepurposePlanRevision(ctx, planID, revision)
+	if matched == nil {
+		return domain.RepurposePlanRevision{}, fmt.Errorf("%w: plan %s has no revision %d", ErrPlanRevisionNotFound, planID, revision)
+	}
+	for _, section := range matched.Plan.Sections {
+		if section.Required && len(section.Candidates) > 0 && section.SelectedShotID == "" {
+			return domain.RepurposePlanRevision{}, fmt.Errorf("%w: required section needs an explicit selection before approval: %s", ErrInvalidRepurposeRevision, section.Role)
+		}
+	}
+	approved, err := s.repo.ApproveRepurposePlanRevision(ctx, planID, revision)
+	if err != nil {
+		return domain.RepurposePlanRevision{}, err
+	}
+	return approved, nil
 }
 
 func (s *Service) ListAssetCards(ctx context.Context, limit, offset int) ([]domain.AssetCard, error) {

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 func TestListAssetCardsFilteredByCaptureFacets(t *testing.T) {
@@ -103,13 +103,16 @@ func TestListAssetCardsFilteredBatchesArtifactURLs(t *testing.T) {
 		if _, err := repo.db.ExecContext(ctx, `INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,exists_now,is_primary,last_seen_at) VALUES(?,?,'artifact-root',?,?,1,1,1,?)`, "loc-"+fx.id, fx.id, fx.id+".mov", "/library/"+fx.id+".mov", now); err != nil {
 			t.Fatal(err)
 		}
+		// Raw SQL, not repo.SaveArtifact: these fixtures have no job behind them,
+		// and SaveArtifact now requires one to own -- see the ownership
+		// predicate added in jobs_lease_ownership_test.go.
 		if fx.hasThumb {
-			if err := repo.SaveArtifact(ctx, domain.DerivedArtifact{ID: "thumb-" + fx.id, AssetID: fx.id, Type: "thumbnail", ProfileHash: "sw", LocalPath: "/cache/" + fx.id + "-thumb.jpg", SizeBytes: 10}); err != nil {
+			if _, err := repo.db.ExecContext(ctx, `INSERT INTO derived_artifacts(id,asset_id,artifact_type,profile_hash,local_path,size_bytes,created_at) VALUES(?,?,?,?,?,?,?)`, "thumb-"+fx.id, fx.id, "thumbnail", "sw", "/cache/"+fx.id+"-thumb.jpg", 10, now); err != nil {
 				t.Fatal(err)
 			}
 		}
 		if fx.hasProxy {
-			if err := repo.SaveArtifact(ctx, domain.DerivedArtifact{ID: "proxy-" + fx.id, AssetID: fx.id, Type: "proxy", ProfileHash: "sw", LocalPath: "/cache/" + fx.id + "-proxy.mp4", SizeBytes: 20}); err != nil {
+			if _, err := repo.db.ExecContext(ctx, `INSERT INTO derived_artifacts(id,asset_id,artifact_type,profile_hash,local_path,size_bytes,created_at) VALUES(?,?,?,?,?,?,?)`, "proxy-"+fx.id, fx.id, "proxy", "sw", "/cache/"+fx.id+"-proxy.mp4", 20, now); err != nil {
 				t.Fatal(err)
 			}
 		}

@@ -5,7 +5,7 @@
 package video_analysis
 
 import (
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 type Input struct {

@@ -3,7 +3,7 @@ package repurpose
 import (
 	"testing"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 func TestComposePlanPlacesShotCandidatesIntoBriefSections(t *testing.T) {

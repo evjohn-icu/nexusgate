@@ -159,7 +159,7 @@ func (r *PreviewRenderer) VideoFilter(plan PreviewRenderPlan, base string) (stri
 }
 
 func escapeFilterValue(value string) string {
-	return strings.NewReplacer("\\", "\\\\", "'", "\\'", ":", "\\:", ",", "\\,").Replace(filepath.Clean(value))
+	return strings.NewReplacer("\\", "\\\\", "'", "\\'", ":", "\\:", ",", "\\,").Replace(filepath.ToSlash(filepath.Clean(value)))
 }
 
 func (r *PreviewRenderer) RenderThumbnail(ctx context.Context, src, dst string, hardware HardwarePlan, sourcePlan PreviewRenderPlan) error {

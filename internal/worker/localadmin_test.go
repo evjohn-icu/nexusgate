@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ev/timingdex/internal/remote"
+	"github.com/evjohn-icu/timingdex/internal/remote"
 )
 
 func writeWorkerConfig(t *testing.T, config Config) string {

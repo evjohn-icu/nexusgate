@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 func TestShootSessionPersistenceIsIdempotentAndFiltersWithoutCoordinates(t *testing.T) {

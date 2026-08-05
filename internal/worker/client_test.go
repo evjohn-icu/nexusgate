@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ev/timingdex/internal/credentials"
-	"github.com/ev/timingdex/internal/remote"
+	"github.com/evjohn-icu/timingdex/internal/credentials"
+	"github.com/evjohn-icu/timingdex/internal/remote"
 )
 
 func TestClientEnrollsThenSendsHeartbeat(t *testing.T) {

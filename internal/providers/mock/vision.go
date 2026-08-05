@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 func Analyze(path string, m domain.MediaMetadata, hasSpeech bool) domain.StructuredAnalysis {

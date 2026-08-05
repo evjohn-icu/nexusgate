@@ -10,13 +10,13 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ev/timingdex/internal/config"
-	"github.com/ev/timingdex/internal/domain"
-	videoanalysis "github.com/ev/timingdex/internal/domain/video_analysis"
-	"github.com/ev/timingdex/internal/providerchannels"
-	"github.com/ev/timingdex/internal/providers"
-	"github.com/ev/timingdex/internal/providers/common"
-	videoproviders "github.com/ev/timingdex/internal/providers/video"
+	"github.com/evjohn-icu/timingdex/internal/config"
+	"github.com/evjohn-icu/timingdex/internal/domain"
+	videoanalysis "github.com/evjohn-icu/timingdex/internal/domain/video_analysis"
+	"github.com/evjohn-icu/timingdex/internal/providerchannels"
+	"github.com/evjohn-icu/timingdex/internal/providers"
+	"github.com/evjohn-icu/timingdex/internal/providers/common"
+	videoproviders "github.com/evjohn-icu/timingdex/internal/providers/video"
 )
 
 // providerChannelRepository is intentionally narrower than Repository. The
@@ -34,7 +34,21 @@ type providerSecretResolver interface {
 // ErrProviderChannelNotConfigured tells Service callers that neither a
 // persisted channel nor a legacy provider exists. It is deliberately distinct
 // from transport/protocol failures so deterministic fallbacks remain intact.
-var ErrProviderChannelNotConfigured = errors.New("provider channel capability is not configured")
+//
+// It is marked permanent rather than given a second name: this condition
+// already has one, and domain.ErrPermanentFailure is a property it carries,
+// not an identity that replaces it. errors.Is against either resolves, so
+// service.go's existing handling is untouched while the pipeline stops
+// spending a retry ladder on a capability nobody has configured.
+var ErrProviderChannelNotConfigured = domain.Permanent(errors.New("provider channel capability is not configured"))
+
+// errProviderChannelSecretMissing reports a channel whose secret reference
+// resolves to nothing in secretstore. The route exists and names a key that
+// does not, which no amount of waiting fixes — an operator has to re-enter it
+// at /providers. Named once here rather than rebuilt at each of the eight
+// call sites so the eight cannot drift into eight slightly different
+// sentences, which is how the substring list acquired dead entries.
+var errProviderChannelSecretMissing = domain.Permanent(errors.New("provider channel secret is not configured"))
 
 // providerChannelRuntime is the Hub-side bridge from persisted channel
 // metadata to the existing provider implementations. It deliberately stores
@@ -146,7 +160,7 @@ func (p *channelASR) Transcribe(ctx context.Context, req common.TranscribeReques
 			return resolveErr
 		}
 		if !ok {
-			return fmt.Errorf("provider channel secret is not configured")
+			return errProviderChannelSecretMissing
 		}
 		provider, buildErr := p.runtime.asrProvider(invocation, key)
 		if buildErr != nil {
@@ -249,14 +263,14 @@ func (p *channelVideo) PrepareVideo(ctx context.Context, req videoproviders.Prep
 	var selected providerchannels.Invocation
 	err = executor.Execute(ctx, providerchannels.CapabilityVideoAnalysis, func(callCtx context.Context, invocation providerchannels.Invocation) error {
 		if invocation.ProviderName != "gemini" {
-			return fmt.Errorf("video provider %q does not support remote file preparation", invocation.ProviderName)
+			return domain.Permanent(fmt.Errorf("video provider %q does not support remote file preparation", invocation.ProviderName))
 		}
 		key, ok, resolveErr := p.runtime.resolve(invocation.SecretRef)
 		if resolveErr != nil {
 			return resolveErr
 		}
 		if !ok {
-			return fmt.Errorf("provider channel secret is not configured")
+			return errProviderChannelSecretMissing
 		}
 		provider, buildErr := p.runtime.videoProvider(invocation, key)
 		if buildErr != nil {
@@ -264,7 +278,7 @@ func (p *channelVideo) PrepareVideo(ctx context.Context, req videoproviders.Prep
 		}
 		preparer, ok := provider.(videoproviders.VideoPreparer)
 		if !ok {
-			return fmt.Errorf("video provider %q does not support remote file preparation", invocation.ProviderName)
+			return domain.Permanent(fmt.Errorf("video provider %q does not support remote file preparation", invocation.ProviderName))
 		}
 		prepared, err = preparer.PrepareVideo(callCtx, req)
 		if err != nil {
@@ -295,7 +309,7 @@ func (p *channelVideo) Analyze(ctx context.Context, input videoanalysis.Input) (
 			return videoanalysis.Result{}, "", resolveErr
 		}
 		if !secretOK {
-			return videoanalysis.Result{}, "", fmt.Errorf("provider channel secret is not configured")
+			return videoanalysis.Result{}, "", errProviderChannelSecretMissing
 		}
 		provider, buildErr := p.runtime.videoProvider(binding.invocation, key)
 		if buildErr != nil {
@@ -328,7 +342,7 @@ func (p *channelVideo) Analyze(ctx context.Context, input videoanalysis.Input) (
 			return resolveErr
 		}
 		if !ok {
-			return fmt.Errorf("provider channel secret is not configured")
+			return errProviderChannelSecretMissing
 		}
 		provider, buildErr := p.runtime.videoProvider(invocation, key)
 		if buildErr != nil {
@@ -397,7 +411,7 @@ func (p *channelTagCurator) Curate(ctx context.Context, unresolved []domain.Unre
 			return resolveErr
 		}
 		if !ok {
-			return fmt.Errorf("provider channel secret is not configured")
+			return errProviderChannelSecretMissing
 		}
 		provider, buildErr := p.runtime.tagCuratorProvider(invocation, key)
 		if buildErr != nil {
@@ -431,7 +445,7 @@ func (p *channelTagCurator) SummarizeLibrary(ctx context.Context, input domain.L
 			return resolveErr
 		}
 		if !ok {
-			return fmt.Errorf("provider channel secret is not configured")
+			return errProviderChannelSecretMissing
 		}
 		provider, buildErr := p.runtime.tagCuratorProvider(invocation, key)
 		if buildErr != nil {
@@ -477,7 +491,7 @@ func (p *channelEmbedder) Embed(ctx context.Context, inputs []string) ([][]float
 			return resolveErr
 		}
 		if !ok {
-			return fmt.Errorf("provider channel secret is not configured")
+			return errProviderChannelSecretMissing
 		}
 		provider, buildErr := p.runtime.embedderProvider(invocation, key)
 		if buildErr != nil {
@@ -522,7 +536,7 @@ func (p *channelPlanner) Plan(ctx context.Context, brief domain.RepurposeBrief) 
 			return resolveErr
 		}
 		if !ok {
-			return fmt.Errorf("provider channel secret is not configured")
+			return errProviderChannelSecretMissing
 		}
 		provider, buildErr := p.runtime.plannerProvider(invocation, key)
 		if buildErr != nil {
@@ -620,6 +634,76 @@ func (r *providerChannelRuntime) executor(ctx context.Context, capability provid
 	return executor, true, nil
 }
 
+// runtimeCapabilities enumerates every capability providerChannelRuntime can
+// actually route through an Executor -- the same set supportedChannelProvider
+// recognizes. CapabilityAlignment is deliberately absent: Service wires
+// alignment straight to the legacy providers.Alignment provider (there is no
+// channelRuntime.alignment() method, and supportedChannelProvider has no case
+// for it), so a channel row saved with capability "alignment" could never be
+// built into an Executor here, and capabilityStatuses must not claim
+// otherwise by listing it.
+var runtimeCapabilities = []providerchannels.Capability{
+	providerchannels.CapabilityASR,
+	providerchannels.CapabilityVideoAnalysis,
+	providerchannels.CapabilityTagCurator,
+	providerchannels.CapabilityEmbedding,
+	providerchannels.CapabilityRepurpose,
+}
+
+// ProviderChannelCapabilityStatus is the secret-free runtime view of one
+// capability's provider route. HasRuntimeData is false when no Executor has
+// ever been built for this capability -- nothing has routed through it since
+// the Hub started or since its channels were last edited (executor's
+// fingerprint cache, above, is what "built" means here) -- and Snapshot is
+// nil in that case. A caller must check HasRuntimeData before reading
+// Snapshot: there is a real difference between "every key is healthy" and
+// "nothing has been asked of this route yet", and collapsing the second into
+// the first is exactly the gap that let a fully retired channel keep
+// reporting green while every job on it quietly parked.
+type ProviderChannelCapabilityStatus struct {
+	Capability     providerchannels.Capability      `json:"capability"`
+	HasRuntimeData bool                             `json:"has_runtime_data"`
+	HasRoute       bool                             `json:"has_route"`
+	Snapshot       *providerchannels.StatusSnapshot `json:"snapshot,omitempty"`
+}
+
+// capabilityStatuses reports the runtime state of every capability
+// providerChannelRuntime can route, reading the executor cache exactly as it
+// stands. It deliberately never calls executor(): that call builds and caches
+// an Executor on demand, and building one here -- inside what is supposed to
+// be a read -- would let a status request fabricate the very "has this route
+// been used" signal HasRuntimeData exists to report honestly. A fresh
+// Executor's Snapshot has zero attempts and zero retirements on every member,
+// which Snapshot's own Available logic reads as healthy; querying status
+// immediately after a Hub restart must come back saying "no data yet" for
+// every capability, not "all green" because nothing has failed only because
+// nothing has been tried.
+func (r *providerChannelRuntime) capabilityStatuses() []ProviderChannelCapabilityStatus {
+	statuses := make([]ProviderChannelCapabilityStatus, 0, len(runtimeCapabilities))
+	if r == nil {
+		for _, capability := range runtimeCapabilities {
+			statuses = append(statuses, ProviderChannelCapabilityStatus{Capability: capability})
+		}
+		return statuses
+	}
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+	for _, capability := range runtimeCapabilities {
+		cached, ok := r.executors[capability]
+		if !ok {
+			statuses = append(statuses, ProviderChannelCapabilityStatus{Capability: capability})
+			continue
+		}
+		status := ProviderChannelCapabilityStatus{Capability: capability, HasRuntimeData: true, HasRoute: cached.hasRoute}
+		if cached.hasRoute && cached.executor != nil {
+			snapshot := cached.executor.Snapshot(capability)
+			status.Snapshot = &snapshot
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses
+}
+
 type providerChannelFingerprintChannel struct {
 	ID           string                             `json:"id"`
 	Capability   string                             `json:"capability"`
@@ -684,7 +768,25 @@ func (r *providerChannelRuntime) identity(ctx context.Context, capability provid
 	return fallback.Name(), fallback.Model()
 }
 
+// The five builders below turn a channel invocation into a provider
+// implementation, and they are the point at which a route stops being
+// configuration and becomes something callable. Nothing in them touches the
+// network: every failure they can produce is an unknown provider name, an
+// unknown protocol, or a provider an operator switched off, all of which will
+// be exactly as wrong on the next attempt. Each is therefore a thin marking
+// wrapper over the real body, so that the edit these functions actually
+// attract — adding a `case` for a new provider — inherits the verdict rather
+// than needing someone to remember it somewhere else. See
+// domain.ErrPermanentFailure.
 func (r *providerChannelRuntime) asrProvider(invocation providerchannels.Invocation, key string) (providers.ASR, error) {
+	provider, err := r.buildASRProvider(invocation, key)
+	if err != nil {
+		return nil, domain.Permanent(err)
+	}
+	return provider, nil
+}
+
+func (r *providerChannelRuntime) buildASRProvider(invocation providerchannels.Invocation, key string) (providers.ASR, error) {
 	providersConfig := r.cfg.Providers
 	clearProviderSecrets(&providersConfig)
 	name := strings.TrimSpace(invocation.ProviderName)
@@ -717,6 +819,14 @@ func (r *providerChannelRuntime) asrProvider(invocation providerchannels.Invocat
 }
 
 func (r *providerChannelRuntime) videoProvider(invocation providerchannels.Invocation, key string) (videoproviders.VideoUnderstandingProvider, error) {
+	provider, err := r.buildVideoProvider(invocation, key)
+	if err != nil {
+		return nil, domain.Permanent(err)
+	}
+	return provider, nil
+}
+
+func (r *providerChannelRuntime) buildVideoProvider(invocation providerchannels.Invocation, key string) (videoproviders.VideoUnderstandingProvider, error) {
 	providersConfig := r.cfg.Providers
 	clearProviderSecrets(&providersConfig)
 	name := strings.TrimSpace(invocation.ProviderName)
@@ -743,6 +853,14 @@ func (r *providerChannelRuntime) videoProvider(invocation providerchannels.Invoc
 }
 
 func (r *providerChannelRuntime) tagCuratorProvider(invocation providerchannels.Invocation, key string) (providers.TagCurator, error) {
+	provider, err := r.buildTagCuratorProvider(invocation, key)
+	if err != nil {
+		return nil, domain.Permanent(err)
+	}
+	return provider, nil
+}
+
+func (r *providerChannelRuntime) buildTagCuratorProvider(invocation providerchannels.Invocation, key string) (providers.TagCurator, error) {
 	providersConfig := r.cfg.Providers
 	clearProviderSecrets(&providersConfig)
 	name := strings.TrimSpace(invocation.ProviderName)
@@ -772,6 +890,14 @@ func (r *providerChannelRuntime) tagCuratorProvider(invocation providerchannels.
 }
 
 func (r *providerChannelRuntime) embedderProvider(invocation providerchannels.Invocation, key string) (providers.Embedder, error) {
+	provider, err := r.buildEmbedderProvider(invocation, key)
+	if err != nil {
+		return nil, domain.Permanent(err)
+	}
+	return provider, nil
+}
+
+func (r *providerChannelRuntime) buildEmbedderProvider(invocation providerchannels.Invocation, key string) (providers.Embedder, error) {
 	providersConfig := r.cfg.Providers
 	clearProviderSecrets(&providersConfig)
 	name := strings.TrimSpace(invocation.ProviderName)
@@ -801,6 +927,14 @@ func (r *providerChannelRuntime) embedderProvider(invocation providerchannels.In
 }
 
 func (r *providerChannelRuntime) plannerProvider(invocation providerchannels.Invocation, key string) (providers.RepurposePlanner, error) {
+	provider, err := r.buildPlannerProvider(invocation, key)
+	if err != nil {
+		return nil, domain.Permanent(err)
+	}
+	return provider, nil
+}
+
+func (r *providerChannelRuntime) buildPlannerProvider(invocation providerchannels.Invocation, key string) (providers.RepurposePlanner, error) {
 	providersConfig := r.cfg.Providers
 	clearProviderSecrets(&providersConfig)
 	name := strings.TrimSpace(invocation.ProviderName)
@@ -878,11 +1012,55 @@ func supportedChannelProvider(capability providerchannels.Capability, name strin
 	}
 }
 
+// redactedError carries a redacted message plus (optionally) a redacted copy
+// of a *common.StatusError found in the original chain. The provider key must
+// not survive anywhere in the returned chain, including inside a wrapped
+// *common.StatusError whose Body is the upstream response -- a relay may echo
+// the request back, and that text reaches jobs.last_error_message. So the
+// status is rebuilt from redacted parts rather than the original being
+// wrapped: errors.As still finds a status to classify, but there is no
+// unredacted value left for a caller to print.
+type redactedError struct {
+	message string              // already redacted; the only thing Error() returns
+	status  *common.StatusError // nil unless the chain carried one; its Body is already redacted
+}
+
+func (e *redactedError) Error() string { return e.message }
+
+// Unwrap returns nil when the chain carried no status, which errors.As
+// handles as the end of the chain.
+func (e *redactedError) Unwrap() error {
+	if e.status == nil {
+		return nil
+	}
+	return e.status
+}
+
 func redactError(err error, secret string) error {
 	if err == nil {
 		return nil
 	}
-	return errors.New(redactString(err.Error(), secret))
+	redacted := &redactedError{message: redactString(err.Error(), secret)}
+	var status *common.StatusError
+	if errors.As(err, &status) {
+		redacted.status = &common.StatusError{
+			StatusCode: status.StatusCode,
+			Body:       redactString(status.Body, secret),
+		}
+	}
+	// Rebuilding the chain is what makes redaction total, and it is also what
+	// drops everything the original chain carried. The status is carried over
+	// above because isRetryableJobError classifies on it; the permanence
+	// marker is carried over here for the same reason. Nothing marked reaches
+	// this function today — the config-shaped failures are returned to the
+	// executor unredacted, since they never held a key — but a redacted error
+	// silently losing its verdict would be a retry ladder against a paid
+	// provider, and that is too quiet a failure for a boundary to depend on
+	// nobody ever wiring the two together.
+	if errors.Is(err, domain.ErrPermanentFailure) {
+		return domain.Permanent(redacted)
+	}
+	return redacted
 }
 
 func redactString(value, secret string) string {

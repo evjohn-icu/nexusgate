@@ -4,7 +4,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 // WindowResult is one model response together with the slice of the asset it
@@ -162,6 +162,9 @@ func dedupeShots(shots []Shot) []Shot {
 				kept[i].Objects = appendUnique(kept[i].Objects, shot.Objects...)
 				kept[i].Actions = appendUnique(kept[i].Actions, shot.Actions...)
 				kept[i].Mood = appendUnique(kept[i].Mood, shot.Mood...)
+				if shot.Confidence > kept[i].Confidence {
+					kept[i].Confidence = shot.Confidence
+				}
 				duplicate = true
 				break
 			}

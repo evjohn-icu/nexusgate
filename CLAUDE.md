@@ -7,8 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Re:Footage / `timingdex` — a local-first video footage intelligence layer written in Go
 (stdlib + `modernc.org/sqlite` + `nhooyr.io/websocket` only; no web framework, no ORM, no
 frontend build). One binary serves two roles: a **Hub** (database, HTTP/HTTPS API, browser
-UI, secrets, local pipeline) and a **Worker** (paired remote node that only performs FFmpeg
-derive work). Product/UI copy is Chinese; code, comments and docs are English.
+UI, secrets, local pipeline) and a **Worker** (paired remote node that performs FFmpeg derive
+work, and — only when `worker enroll --provider-operation` declares it — calls a Provider for
+`video_analysis`/`asr`, either through the Hub JSON proxy or, behind an explicitly enabled
+setting, with a lease-bound credential). Product/UI copy is Chinese and so are the
+version-scoped documents under `docs/`; code, comments, `README.md` and `CHANGELOG.md` are
+English.
 
 ## Commands
 
@@ -21,6 +25,13 @@ go vet ./...
 go test ./internal/app -run TestPipelineStagesAnalysis -v
 go test ./internal/repository/sqlite -run TestJobs -v
 ```
+
+**A green `internal/app` test proves nothing about what can be persisted.** Those tests run
+against in-memory fakes (`fakeChannelRepo`, `fakeUpsertOnlyRepo`) that enforce no schema
+constraint, and four tests have now been found asserting states real SQLite rejects — one had
+two channel members sharing a `SecretRef` that `UNIQUE(secret_ref)` forbids, and was green for
+months. If a claim depends on what the database actually does, the test belongs in
+`internal/repository/sqlite`, which uses real `sqlite.Open` + `Migrate`.
 
 `internal/media/process_integration_test.go` skips itself unless `ffmpeg`/`ffprobe` are on
 PATH. Everything else runs offline: provider adapters are covered by `httptest` fixtures, so
@@ -78,12 +89,34 @@ probe → derive → speech_gate → transcribe → [align] → analyze → inde
 
 Two rules live in `internal/app/pipeline.go` and are easy to break:
 
-- `isRetryableJobError` decides retry vs. permanent failure. Provider HTTP failures are
-  classified by type — `errors.As` on `*common.StatusError`, where 4xx (except 408/429) is
-  permanent — but every other failure mode still falls back to **substring matching on the
-  error text** ("not configured", "validation_error", "metadata missing", …). If you add a
-  new permanent failure mode that isn't an HTTP status, add its phrase there or it will burn
-  provider quota through the 1s→2s→4s (max 30s) backoff.
+- `isRetryableJobError` decides retry vs. permanent failure, and **nothing about that
+  decision reads message text**. Provider HTTP failures are classified by status: `errors.As`
+  on `*common.StatusError`, where 4xx is permanent **except** 408/429, which clear on their
+  own, and 401/402/403, which describe the key rather than the request —
+  `providerpool.ClassifyFailure` returns `MemberSpent` for those, the pool retires that
+  member, and the next one is tried. Everything else is permanent only if it says so:
+  `domain.Permanent(err)` marks it, `errors.Is(err, domain.ErrPermanentFailure)` reads it,
+  and **the default is retry**, so an unforeseen failure gets attempts rather than a verdict.
+  `Permanent` does not touch the message — that text reaches `jobs.last_error_message` and
+  the `/progress` page — and it keeps the wrapped chain reachable, so `errors.As` still finds
+  a `*common.StatusError` through it.
+
+  The bar for marking is structural, not a preference: **the next attempt would present
+  identical inputs to a deterministic decision.** Model output that failed validation
+  qualifies; a timeout does not. Where a family of failures shares that argument, the mark
+  belongs on a wrapper around the whole family — `analysisShotsProblem`, `normalizeAnalysis`,
+  `assetShotsProblem`, the provider builders — so that a new check added inside one inherits
+  the verdict without anyone remembering. That placement is the point: it was the *missing*
+  case in a hand-maintained list that let two of `validateAnalysisShots`'s four refusals be
+  retried, each retry another paid call for the same answer.
+- **Errors carry meaning as sentinels, not as prose.** Classification is `errors.Is` against
+  a sentinel — `internal/domain/errors.go` for anything two layers share, the owning package
+  otherwise (`nleexport.ErrInvalidTimeline`, `providerchannels.ErrRouteExhausted`). One
+  condition gets one identity: `internal/app` re-exports `domain`'s as aliases rather than
+  declaring its own, so the two cannot disagree. Outside the phrase list above, no production
+  code decides behaviour by reading `err.Error()`; do not reintroduce it. When wrapping, keep
+  the cause in the chain — `fmt.Errorf` accepts more than one `%w`, and flattening one to
+  `%v` has silently broken classification here before.
 - `common.ReadError` truncates the upstream body it embeds in the error. That text reaches
   `jobs.last_error_message` in SQLite and the `/progress` page, so an unbounded copy of a
   relay's echoed request would persist a Provider key. Keep the bound if you touch it.
@@ -131,13 +164,20 @@ metadata in `internal/providerchannels` + a `httptest` fixture test.
 
 These invariants are the point of several packages — preserve them when editing:
 
-- **Provider keys** live only in `secretstore` (encrypted, Hub-only, `provider-secrets/`
-  0700, files 0600). Never in SQLite, API responses, browser storage, Worker config, logs,
-  error strings or `String()`/`MarshalJSON` output. The data-encryption key is its own
+- **Provider keys** live in `secretstore` (encrypted, Hub-only, `provider-secrets/`
+  0700, files 0600) when configured through provider channels. **Legacy `providers.*`
+  blocks in `config.json` hold keys in plaintext** on disk and should be migrated to
+  provider channels. Keys must never appear in SQLite, API responses, browser storage,
+  Worker config, logs, error strings or `String()`/`MarshalJSON` output.
+  The data-encryption key is its own
   `provider-secrets/store.key` file, deliberately *not* derived from the admin token —
   deriving it made token rotation brick every CLI command. `Open` still takes the admin
   token solely to migrate a pre-`store.key` store on first run (backing the original up to
   `.pre-key-migration`); don't reintroduce it as key material.
+  `Store.Rekey()` rotates the data-encryption key in-place: new key, re-encrypt all
+  secrets with fresh nonces, atomically persist both files, backup old key to
+  `store.key.pre-rekey`. It holds the write lock for its entire duration and rolls
+  back the ciphertext on key-write failure.
 - **Hub admin token** (`hubauth`) is generated at first start, compared with
   `crypto/subtle`, and enforced by `s.requireHubAdmin(...)` on every mutating/administrative
   route. New write endpoints default to wrapped, not open.
@@ -145,7 +185,14 @@ These invariants are the point of several packages — preserve them when editin
   fingerprint pinning. A Worker gets a *lease-bound, memory-only* provider credential only
   when `hub_security.allow_worker_provider_credentials` is explicitly enabled (default
   deny); otherwise it uses the Hub JSON proxy, which rejects media/multipart and bodies over
-  2 MiB. Audit records (`LeaseAudit`) must stay key-free.
+  2 MiB. Audit records (`LeaseAudit`) must stay key-free. **Both paths read `providers.*`
+  config only and deliberately never resolve a provider channel** — pushing channel-scoped
+  keys, member pools and health state out to a remote node is the opposite of why the
+  credential path is default-deny. A Hub configured entirely through `/providers` therefore
+  cannot serve a Worker, and says so: `ErrWorkerProviderConfiguredAsChannelOnly` (403) is a
+  distinct answer from `ErrWorkerProviderNotConfigured` (503), because telling an operator
+  their provider is "not configured" when they configured it in the browser blames them for
+  something they did not do.
 - **Capture coordinates** are exposed as a region label; source precision is admin-only
   (`GET /api/v1/admin/assets/{id}/capture-location`).
 - Original media is read-only. Nothing is ever written next to source files; NAS mode
@@ -160,11 +207,23 @@ edit an applied one.
 ### Browser UI
 
 Pages are Go string constants of inline HTML/CSS/JS — no templates, no assets, no build step.
-`internal/api/server.go` holds the base constants (`legacyLibraryIndexHTML`,
-`progressHTML`, `repurposeHTML`, …) and the `*_v015.go` files build newer pages by
-**exact-match `strings.Replace` over those constants** (see `library_page_v015.go`). Editing
-the legacy HTML silently breaks those overlays — the replacement just no-ops. When changing a
-v0.15+ page, check whether the string it patches still exists.
+`internal/api/server.go` holds the base constants (`legacyLibraryIndexHTML`, `progressHTML`,
+`repurposeHTML`, …).
+
+**Check which shape a page is before editing it; guessing has been wrong repeatedly.** Only
+`library_page_v015.go` overlays a base constant (`enhanceLibraryPage(legacyLibraryIndexHTML)`),
+patching it by **exact-match `strings.Replace`**; a stale anchor is a *silent no-op* — the page
+builds, serves, and the feature is simply gone, with no compile or runtime error. Editing the
+legacy HTML is what breaks it. `providers_page_v015.go` and `setup_page_v015.go` are
+self-contained constants with no `strings.Replace` at all. `branding.go` applies its own
+replacements to every page.
+
+Two guards exist because greps and review cannot see these failures:
+`TestLibraryPagePatchesApplyInOrderAndBite` asserts every library-page anchor still matches,
+`TestBrandedPageAnchorsBite` does the same for branding, and `page_scripts_test.go` runs
+`node --check` over the `<script>` block of every page route (skipped when node is absent).
+That last one exists because one misplaced character left `/worker-setup`'s script dead from
+v0.18 until v0.21 while the page kept serving.
 
 ## Conventions
 

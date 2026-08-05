@@ -119,7 +119,7 @@ func TestPoolAllowsOnlyOneHalfOpenProbeAndDoublesCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	initial.Done(errors.New("status 503"))
+	initial.Done(errors.New("temporarily unavailable"))
 
 	clock.Advance(5 * time.Second)
 	probe, err := pool.Select("vision")
@@ -132,7 +132,7 @@ func TestPoolAllowsOnlyOneHalfOpenProbeAndDoublesCooldown(t *testing.T) {
 	if _, err := pool.Select("vision"); !errors.Is(err, ErrNoAvailable) {
 		t.Fatalf("second concurrent half-open probe error = %v, want ErrNoAvailable", err)
 	}
-	probe.Done(errors.New("status 500"))
+	probe.Done(errors.New("temporarily unavailable"))
 
 	clock.Advance(9 * time.Second)
 	if _, err := pool.Select("vision"); !errors.Is(err, ErrNoAvailable) {
@@ -144,7 +144,7 @@ func TestPoolAllowsOnlyOneHalfOpenProbeAndDoublesCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	probe.Done(errors.New("status 500"))
+	probe.Done(errors.New("temporarily unavailable"))
 	clock.Advance(11 * time.Second)
 	if _, err := pool.Select("vision"); !errors.Is(err, ErrNoAvailable) {
 		t.Fatalf("provider reopened before bounded maximum cooldown: %v", err)
@@ -174,7 +174,10 @@ func TestPoolNonRetryableFailureDoesNotCooldownMember(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lease.Done(statusError{code: 401})
+	// 400: a fact about the request. The member is fine and must stay hot —
+	// unlike 401/402/403, which are facts about the key (see the spent-member
+	// tests).
+	lease.Done(statusError{code: 400})
 
 	lease, err = pool.Select("vision")
 	if err != nil {
@@ -198,7 +201,7 @@ func TestPoolHealthIsIndependentAcrossCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	vision.Done(errors.New("status 503"))
+	vision.Done(errors.New("temporarily unavailable"))
 
 	text, err := pool.Select("text")
 	if err != nil {
@@ -217,12 +220,19 @@ func TestClassifyFailure(t *testing.T) {
 		{name: "timeout", err: context.DeadlineExceeded, want: Retryable},
 		{name: "network", err: &net.DNSError{Err: "temporary DNS failure", IsTemporary: true}, want: Retryable},
 		{name: "server", err: statusError{code: 503}, want: Retryable},
-		{name: "unauthorized", err: statusError{code: 401}, want: NonRetryable},
-		{name: "forbidden", err: statusError{code: 403}, want: NonRetryable},
+		{name: "unauthorized", err: statusError{code: 401}, want: MemberSpent},
+		{name: "payment required", err: statusError{code: 402}, want: MemberSpent},
+		{name: "forbidden", err: statusError{code: 403}, want: MemberSpent},
 		{name: "bad request", err: statusError{code: 400}, want: NonRetryable},
+		{name: "not found", err: statusError{code: 404}, want: NonRetryable},
 		{name: "unprocessable", err: statusError{code: 422}, want: NonRetryable},
 		{name: "configuration", err: errors.New("provider is not configured"), want: NonRetryable},
 		{name: "schema", err: errors.New("response schema validation failed"), want: NonRetryable},
+		// Without a status there is only wording, and wording is not enough to
+		// retire a key: these stay NonRetryable rather than joining the 401/403
+		// cases above.
+		{name: "unauthorized wording only", err: errors.New("aligner reports unauthorized"), want: NonRetryable},
+		{name: "forbidden wording only", err: errors.New("forbidden by local policy"), want: NonRetryable},
 	}
 
 	for _, tt := range tests {

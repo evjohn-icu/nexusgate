@@ -216,6 +216,80 @@ func copyPrivateFile(source, destination string) error {
 	return writePrivateFile(destination, raw)
 }
 
+// Rekey generates a new data-encryption key, re-encrypts every stored secret
+// with it, atomically persists the new ciphertext and key file, and backs up
+// the previous key to store.key.pre-rekey. On failure the original files and
+// in-memory state are restored.
+//
+// Rekey is exclusive: it holds the write lock for its entire duration, so no
+// other call can observe an inconsistent state. A store opened in process-local
+// mode (dataDir empty) has no persistent key to rotate and returns an error.
+func (s *Store) Rekey() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.path == "" {
+		return fmt.Errorf("secret store has no persistent key to rotate")
+	}
+
+	if err := s.reloadLocked(); err != nil {
+		return err
+	}
+
+	keyPath := s.keyPath()
+	preRekeyPath := keyPath + ".pre-rekey"
+
+	// Phase 1: back up the current key before we overwrite anything. Read it
+	// once so the backup is a snapshot of what we are about to replace.
+	oldKey, err := os.ReadFile(keyPath)
+	if err != nil {
+		return fmt.Errorf("read current key for rekey: %w", err)
+	}
+	// Best-effort: if this fails the rekey can still proceed.
+	_ = writePrivateFile(preRekeyPath, oldKey)
+
+	// Generate new key material.
+	newKeyBytes := make([]byte, keyBytes)
+	if _, err := io.ReadFull(rand.Reader, newKeyBytes); err != nil {
+		return fmt.Errorf("generate rekey key: %w", err)
+	}
+	newGCM, err := newGCM(newKeyBytes)
+	if err != nil {
+		return err
+	}
+
+	// Phase 2: persist ciphertext with the new key. We temporarily swap the
+	// AEAD so persistLocked encrypts with the new key.
+	oldGCM := s.gcm
+	s.gcm = newGCM
+	if err := s.persistLocked(); err != nil {
+		s.gcm = oldGCM
+		return fmt.Errorf("rekey: write new ciphertext: %w", err)
+	}
+
+	// Phase 3: write the new key file. If this fails we must roll back the
+	// ciphertext to the old key because persistLocked already committed it.
+	if err := writePrivateFile(keyPath, []byte(base64.StdEncoding.EncodeToString(newKeyBytes))); err != nil {
+		// Rollback: re-encrypt with the old key.
+		s.gcm = oldGCM
+		if rbErr := s.persistLocked(); rbErr != nil {
+			return fmt.Errorf("rekey: write new key: %w; rollback also failed: %v", err, rbErr)
+		}
+		return fmt.Errorf("rekey: write new key: %w", err)
+	}
+
+	// Phase 4: the new gcm is now the canonical one. persistLocked already
+	// committed the new ciphertext and writePrivateFile committed the new key.
+	s.gcm = newGCM
+	return nil
+}
+
+// keyPath returns the path to the data-encryption key file derived from the
+// ciphertext path set at Open time.
+func (s *Store) keyPath() string {
+	return filepath.Join(filepath.Dir(s.path), keyFilename)
+}
+
 // Get resolves a reference. It is retained for the service-facing API used by
 // app.Service; new callers may use Resolve for the same behavior.
 func (s *Store) Get(ref string) (string, bool, error) {

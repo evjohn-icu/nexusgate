@@ -3,7 +3,7 @@ package curator
 import (
 	"testing"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 func TestNormalize(t *testing.T) {
@@ -15,6 +15,21 @@ func TestNormalize(t *testing.T) {
 	for input, want := range cases {
 		if got := Normalize(input); got != want {
 			t.Fatalf("Normalize(%q)=%q want %q", input, got, want)
+		}
+	}
+}
+
+func TestSemanticKeyPreservesNonPluralS(t *testing.T) {
+	cases := map[string]string{
+		"class":   "class",
+		"lens":    "lens",
+		"lights":  "light",
+		"tables":  "table",
+		"windows": "window",
+	}
+	for input, want := range cases {
+		if got := semanticKey(input); got != want {
+			t.Fatalf("semanticKey(%q)=%q want %q", input, got, want)
 		}
 	}
 }

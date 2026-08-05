@@ -3,7 +3,7 @@ package video_analysis
 import (
 	"testing"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 // The model is shown one window at a time and answers in window-relative time.
@@ -134,6 +134,27 @@ func TestMergeWindowResultsPassesASingleWindowThrough(t *testing.T) {
 	}
 	if len(merged.Shots) != 1 || merged.Shots[0].StartMS != 1_000 || merged.Shots[0].EndMS != 5_000 {
 		t.Fatalf("single-window shots changed: %+v", merged.Shots)
+	}
+}
+
+// When two adjacent windows report the same observation with different
+// confidence values, the merge must keep the higher one — the same way
+// mergeObjects does. The wider time range is already kept; confidence was
+// the one field that was silently dropped.
+func TestMergeWindowResultsPreservesHighestConfidenceOnDedupe(t *testing.T) {
+	merged := MergeWindowResults([]WindowResult{
+		{StartMS: 0, EndMS: 300_000, Result: Result{Shots: []Shot{
+			{StartMS: 290_000, EndMS: 300_000, Confidence: 0.6, Description: "drone shot"},
+		}}},
+		{StartMS: 295_000, EndMS: 600_000, Result: Result{Shots: []Shot{
+			{StartMS: 0, EndMS: 12_000, Confidence: 0.9, Description: "drone shot"},
+		}}},
+	})
+	if len(merged.Shots) != 1 {
+		t.Fatalf("expected 1 deduplicated shot, got %d", len(merged.Shots))
+	}
+	if merged.Shots[0].Confidence != 0.9 {
+		t.Fatalf("confidence should be max of the two (0.9), got %v", merged.Shots[0].Confidence)
 	}
 }
 

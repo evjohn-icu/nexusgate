@@ -45,6 +45,18 @@ type ScanResult struct {
 	Linked     int      `json:"linked"`
 	Missing    int      `json:"missing"`
 	Errors     []string `json:"errors"`
+	// ChangedAssetIDs carries the assets a scan actually changed so the caller
+	// can enqueue only those. Hidden from JSON: ScanResult is the response body
+	// of POST /library-roots/{id}/scan and must keep its documented shape.
+	ChangedAssetIDs []string `json:"-"`
+}
+
+// ScannedFile reports what one scanned file did to the catalog, so the scanner
+// can tell a no-op revisit from a change the pipeline needs to re-derive.
+type ScannedFile struct {
+	AssetID string
+	Created bool // a new asset row was inserted
+	Changed bool // this scan changed something the pipeline keys on
 }
 
 type CanonicalTag struct {

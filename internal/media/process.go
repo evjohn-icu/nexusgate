@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ev/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
 func NormalizeMetadata(probe FFProbeResult, exif map[string]any) domain.MediaMetadata {
@@ -417,7 +417,14 @@ func atomicFFmpegOutput(dst string, produce func(outputPath string) error) error
 }
 
 func runWithFallback(ctx context.Context, label string, args []string, plan HardwarePlan, software func() []string) error {
-	out, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
+	// The accelerated attempt runs with the plan's environment, which is how a
+	// probed libva driver reaches the encode; the software fallback below is
+	// deliberately left on the plain environment.
+	hardwareCommand := exec.CommandContext(ctx, "ffmpeg", args...)
+	if len(plan.Env) > 0 {
+		hardwareCommand.Env = append(os.Environ(), plan.Env...)
+	}
+	out, err := hardwareCommand.CombinedOutput()
 	if err == nil {
 		return nil
 	}

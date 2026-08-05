@@ -1,8 +1,8 @@
 package providers
 
 import (
-	"github.com/ev/timingdex/internal/providers/common"
-	videoproviders "github.com/ev/timingdex/internal/providers/video"
+	"github.com/evjohn-icu/timingdex/internal/providers/common"
+	videoproviders "github.com/evjohn-icu/timingdex/internal/providers/video"
 )
 
 type TranscribeRequest = common.TranscribeRequest
