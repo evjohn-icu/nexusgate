@@ -110,6 +110,7 @@ type Repository interface {
 	GetShootSession(ctx context.Context, id string) (*domain.ShootSession, error)
 	GetAssetDetail(ctx context.Context, assetID string) (*domain.AssetDetail, error)
 	GetArtifact(ctx context.Context, assetID, typ string) (*domain.DerivedArtifact, error)
+	GetPrimaryLocation(ctx context.Context, assetID string) (domain.AssetLocation, error)
 	ListCanonicalTags(context.Context) ([]domain.CanonicalTag, error)
 	ListUnresolvedTags(context.Context, int) ([]domain.UnresolvedTag, error)
 	CreateTagCurationRun(context.Context, []domain.TagProposal, int, string) (domain.TagCurationResult, error)
@@ -1399,6 +1400,21 @@ func (s *Service) GetAssetDetail(ctx context.Context, id string) (*domain.AssetD
 }
 func (s *Service) GetArtifact(ctx context.Context, id, typ string) (*domain.DerivedArtifact, error) {
 	return s.repo.GetArtifact(ctx, id, typ)
+}
+
+// OriginalMediaPath returns the absolute on-disk path of an asset's primary
+// source file, or "" when the asset has no accessible primary location. Used
+// by the WebDAV space linker to stream original footage without ever exposing
+// the path to the client.
+func (s *Service) OriginalMediaPath(ctx context.Context, assetID string) string {
+	loc, err := s.repo.GetPrimaryLocation(ctx, assetID)
+	if err != nil {
+		return ""
+	}
+	if loc.AbsolutePath == "" {
+		return ""
+	}
+	return loc.AbsolutePath
 }
 
 func (s *Service) ListCanonicalTags(ctx context.Context) ([]domain.CanonicalTag, error) {

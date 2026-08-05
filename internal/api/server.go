@@ -24,6 +24,7 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/nleexport"
 	"github.com/evjohn-icu/timingdex/internal/normalize"
 	"github.com/evjohn-icu/timingdex/internal/remote"
+	"github.com/evjohn-icu/timingdex/internal/webdavspace"
 )
 
 type Server struct {
@@ -32,6 +33,14 @@ type Server struct {
 	tlsCert             string
 	tlsKey              string
 	trustedReadNetworks []netip.Prefix
+	webdav              *webdavspace.Manager
+}
+
+// SetWebDAVSpaceManager attaches the on-demand WebDAV space manager. When set,
+// the server serves /spaces/<id>/... (Basic-Auth'd, read-only) for delivering
+// footage to editing agents. Safe to leave nil in tests and minimal setups.
+func (s *Server) SetWebDAVSpaceManager(m *webdavspace.Manager) {
+	s.webdav = m
 }
 
 func NewServer(address string, service *app.Service) *Server {
@@ -93,6 +102,9 @@ func (s *Server) Run(ctx context.Context) error {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	if s.webdav != nil {
+		mux.Handle("/spaces/", s.webdav.Handler())
+	}
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
