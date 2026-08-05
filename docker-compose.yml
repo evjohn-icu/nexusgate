@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: timingdex:v0.23.0
+    image: timingdex:v0.23.1
     command: ["serve"]
     environment:
       TIMINGDEX_DATA_DIR: /var/lib/timingdex
@@ -110,7 +110,7 @@ services:
     #           capabilities: [gpu]
 
   worker:
-    image: timingdex:v0.23.0
+    image: timingdex:v0.23.1
     # Not started by `docker compose up`: worker.json only exists after
     # `worker enroll` has run against a live Hub, and without it the container
     # exits immediately and restarts forever. Enroll first, then

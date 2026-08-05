@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.23.1 — 2026-08-05（review 修复批）
+
+8 子代理全库审查后的修复（P1/P2/P3 全收），集中于 v0.23 新增的剪辑 agent 接入层。
+
+- **数据竞争修复**：webdavspace 共享 `webdav.Handler` 并发写 Prefix/FileSystem
+  改为按 space 缓存 handler（并发请求不再可能跨空间泄露/404）。
+- **WebDAV 错误路径**：重复账号 409、空字段/坏 JSON 400、未知 space 404、无效
+  kind 400、DELETE、ListSpaces；Service 层 sentinel 错误 + handler 映射。
+- **THIRD-PARTY-LICENSES**：重写覆盖 go.mod 全部 19 依赖（删 nhooyr/x-exp，
+  补 mcp-go/x-crypto/x-net/x-text/jsonschema/cast/uritemplate/coder-websocket
+  许可证）——二进制分发合规恢复。
+- **MCP 边界**：`inspectLibrary` 带 agent token（远程 403 修复）；错误消息截断
+  256B；文档标注 `request_source_media` 是唯一 admin token 工具。
+- **页面 XSS 面**：进度页/tags 页 `esc()` 补全 5 字符转义 + `log()` 转义。
+- **测试补全**：只读全入口（RemoveAll/Rename/O_TRUNC/O_APPEND）、Revoke、路径
+  穿越、并发 race、MCP 5xx/4xx/空结果、账号排序。
+- **P3 批量**：dirFile.Readdir 空列表、接口去重、integrity_test 独立文件、
+  未知空间 401 统一、LOG_FORMAT 非法值回退 warn。
+
+Docker 镜像 tag：`timingdex:v0.23.1`。
+
 ## v0.23.0 — 2026-08-05（剪辑 agent 接入：MCP + 按需 WebDAV 交付）
 
 剪辑 agent 接入的两层能力：`cmd/timingdex-mcp`（MCP 语义检索，Codex 等客户端
