@@ -1,6 +1,132 @@
 package ingest
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/evjohn-icu/timingdex/internal/domain"
+)
+
+// stubScanRepo is an in-memory stub implementing ScanRepository.
+type stubScanRepo struct {
+	// per-file callback: if set, invoked for each UpsertScannedFile call.
+	upsertFn func(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error)
+	// MarkUnseenLocationsMissing return values.
+	markMissing int
+	markErr     error
+	// record of calls for assertions.
+	upsertCalls  []string // relative paths seen
+	markCallSeen []string
+	markCallRoot string
+}
+
+func (s *stubScanRepo) UpsertScannedFile(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error) {
+	s.upsertCalls = append(s.upsertCalls, relativePath)
+	if s.upsertFn != nil {
+		return s.upsertFn(ctx, root, relativePath, absolutePath, info, fingerprint)
+	}
+	// default: discovered, not changed
+	return domain.ScannedFile{AssetID: "asset-" + relativePath, Created: true, Changed: false}, nil
+}
+
+func (s *stubScanRepo) MarkUnseenLocationsMissing(ctx context.Context, rootID string, seenRelativePaths []string) (int, error) {
+	s.markCallRoot = rootID
+	s.markCallSeen = append([]string(nil), seenRelativePaths...)
+	return s.markMissing, s.markErr
+}
+
+// helpers
+
+// writeFile creates a file with minimal video-looking content (enough for
+// QuickFingerprint to compute a fingerprint).
+func writeFile(t *testing.T, dir, name string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Write enough bytes so QuickFingerprint can read sample offsets (4 MiB
+	// sample size, so a 5-byte file exercises EOF-truncated reads).
+	if err := os.WriteFile(p, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// writeDir creates an empty directory.
+func writeDir(t *testing.T, parent, name string) string {
+	t.Helper()
+	p := filepath.Join(parent, name)
+	if err := os.MkdirAll(p, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// --------------- supportedVideo table-driven tests ---------------
+
+func TestSupportedVideo(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		// recognised extensions (lowercase)
+		{"clip.mov", true},
+		{"clip.mp4", true},
+		{"clip.m4v", true},
+		{"clip.mxf", true},
+		{"clip.braw", true},
+		{"clip.r3d", true},
+		{"clip.ari", true},
+		{"clip.crm", true},
+		{"clip.dng", true},
+		{"clip.nev", true},
+		{"clip.insv", true},
+		// recognised extensions (uppercase / mixed)
+		{"CLIP.MOV", true},
+		{"CLIP.MP4", true},
+		{"Clip.Braw", true},
+		{"Clip.R3D", true},
+		// recognised extensions with leading dot in filename
+		{".hidden.mov", true},
+		{".hidden.mp4", true},
+		// unknown / unsupported extensions
+		{"image.jpg", false},
+		{"image.png", false},
+		{"notes.txt", false},
+		{"sidecar.srt", false},
+		{"sidecar.xmp", false},
+		{"audio.wav", false},
+		{"audio.mp3", false},
+		// empty string
+		{"", false},
+		// no extension
+		{"noext", false},
+		{"Makefile", false},
+		// leading dot only
+		{".", false},
+		{"/", false},
+		// path with dots in dir names but no video ext
+		{"DCIM/100MEDIA/IMG_0001.jpg", false},
+		// path with video ext in subdir
+		{"DCIM/100MEDIA/CLIP0001.mp4", true},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.path, func(t *testing.T) {
+			got := supportedVideo(tc.path)
+			if got != tc.want {
+				t.Errorf("supportedVideo(%q) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestSupportedVideoRecognizesMainstreamCameraMedia(t *testing.T) {
 	for _, path := range []string{
@@ -25,5 +151,646 @@ func TestSupportedVideoRejectsSidecarsAndStillImages(t *testing.T) {
 		if supportedVideo(path) {
 			t.Errorf("supportedVideo(%q) = true, want false", path)
 		}
+	}
+}
+
+// --------------- Scan success path tests ---------------
+
+func TestScanSingleVideoFile(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "clip.mov")
+
+	repo := &stubScanRepo{}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Discovered != 1 {
+		t.Errorf("Discovered = %d, want 1", result.Discovered)
+	}
+	if result.Linked != 0 {
+		t.Errorf("Linked = %d, want 0", result.Linked)
+	}
+	if len(repo.upsertCalls) != 1 || repo.upsertCalls[0] != "clip.mov" {
+		t.Errorf("upsertCalls = %v, want [clip.mov]", repo.upsertCalls)
+	}
+	if repo.markCallRoot != "r1" {
+		t.Errorf("markCallRoot = %q, want r1", repo.markCallRoot)
+	}
+	if len(repo.markCallSeen) != 1 || repo.markCallSeen[0] != "clip.mov" {
+		t.Errorf("markCallSeen = %v, want [clip.mov]", repo.markCallSeen)
+	}
+}
+
+func TestScanNestedDirectories(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeDir(t, root, "DCIM")
+	writeDir(t, root, "DCIM/100MEDIA")
+	writeFile(t, root, "DCIM/100MEDIA/clip001.mp4")
+	writeFile(t, root, "DCIM/100MEDIA/clip002.mxf")
+	writeFile(t, root, "clip003.mov") // at root level
+
+	repo := &stubScanRepo{}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Discovered != 3 {
+		t.Errorf("Discovered = %d, want 3", result.Discovered)
+	}
+	if len(repo.upsertCalls) != 3 {
+		t.Fatalf("upsertCalls len = %d, want 3: %v", len(repo.upsertCalls), repo.upsertCalls)
+	}
+	// All relative paths should use slash separator.
+	for _, p := range repo.upsertCalls {
+		if strings.Contains(p, "\\") {
+			t.Errorf("upsert path contains backslash: %q", p)
+		}
+	}
+}
+
+func TestScanEmptyDirectory(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+
+	repo := &stubScanRepo{}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Discovered != 0 {
+		t.Errorf("Discovered = %d, want 0", result.Discovered)
+	}
+	if len(repo.upsertCalls) != 0 {
+		t.Errorf("upsertCalls = %v, want empty", repo.upsertCalls)
+	}
+	// MarkUnseenLocationsMissing should still be called with empty seen list.
+	if repo.markCallRoot != "r1" {
+		t.Errorf("markCallRoot = %q, want r1", repo.markCallRoot)
+	}
+}
+
+func TestScanFiltersNonVideoFiles(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "clip.mp4")
+	writeFile(t, root, "notes.txt")
+	writeFile(t, root, "poster.jpg")
+	writeFile(t, root, "audio.wav")
+	writeFile(t, root, "sidecar.srt")
+	writeFile(t, root, "sidecar.xmp")
+	writeFile(t, root, "Makefile")
+	writeFile(t, root, "README.md")
+	writeFile(t, root, "clip2.mov")
+
+	repo := &stubScanRepo{}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Discovered != 2 {
+		t.Errorf("Discovered = %d, want 2 (only .mp4 and .mov)", result.Discovered)
+	}
+	if len(repo.upsertCalls) != 2 {
+		t.Errorf("upsertCalls len = %d, want 2: %v", len(repo.upsertCalls), repo.upsertCalls)
+	}
+	for _, p := range repo.upsertCalls {
+		if filepath.Ext(p) == ".txt" || filepath.Ext(p) == ".jpg" {
+			t.Errorf("non-video file %q was processed", p)
+		}
+	}
+}
+
+func TestScanAllSupportedExtensions(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	exts := []string{".mov", ".mp4", ".m4v", ".mxf", ".braw", ".r3d", ".ari", ".crm", ".dng", ".nev", ".insv"}
+	for _, ext := range exts {
+		writeFile(t, root, "clip"+ext)
+	}
+
+	repo := &stubScanRepo{}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Discovered != len(exts) {
+		t.Errorf("Discovered = %d, want %d", result.Discovered, len(exts))
+	}
+}
+
+func TestScanChangedAssetIDs(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "A.mp4")
+	writeFile(t, root, "B.mov")
+	writeFile(t, root, "C.mxf")
+
+	call := 0
+	repo := &stubScanRepo{
+		upsertFn: func(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error) {
+			call++
+			// A: created, not changed. B: linked (already existed), changed. C: created, changed.
+			switch filepath.Base(relativePath) {
+			case "A.mp4":
+				return domain.ScannedFile{AssetID: "asset-A", Created: true, Changed: false}, nil
+			case "B.mov":
+				return domain.ScannedFile{AssetID: "asset-B", Created: false, Changed: true}, nil
+			case "C.mxf":
+				return domain.ScannedFile{AssetID: "asset-C", Created: true, Changed: true}, nil
+			}
+			return domain.ScannedFile{}, nil
+		},
+	}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Discovered != 2 { // A and C created
+		t.Errorf("Discovered = %d, want 2", result.Discovered)
+	}
+	if result.Linked != 1 { // B linked
+		t.Errorf("Linked = %d, want 1", result.Linked)
+	}
+	// ChangedAssetIDs should contain B and C, not A.
+	changed := result.ChangedAssetIDs
+	if len(changed) != 2 {
+		t.Fatalf("ChangedAssetIDs len = %d, want 2: %v", len(changed), changed)
+	}
+	want := map[string]bool{"asset-B": true, "asset-C": true}
+	for _, id := range changed {
+		if !want[id] {
+			t.Errorf("unexpected ChangedAssetID %q", id)
+		}
+	}
+}
+
+func TestScanChangedAssetIDsDeduplication(t *testing.T) {
+	// Verify deduplication: same asset appears twice (via different paths),
+	// ChangedAssetIDs only records it once.
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "A.mp4")
+	writeFile(t, root, "B.mp4")
+
+	repo := &stubScanRepo{
+		upsertFn: func(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error) {
+			// Both files resolve to the same asset.
+			return domain.ScannedFile{AssetID: "asset-shared", Created: false, Changed: true}, nil
+		},
+	}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.ChangedAssetIDs) != 1 {
+		t.Errorf("ChangedAssetIDs = %v, want [asset-shared] (deduplicated)", result.ChangedAssetIDs)
+	}
+}
+
+func TestScanMissingCount(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "clip.mp4")
+
+	repo := &stubScanRepo{markMissing: 5}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Missing != 5 {
+		t.Errorf("Missing = %d, want 5", result.Missing)
+	}
+}
+
+func TestScanErrorsCollected(t *testing.T) {
+	// UpsertScannedFile returns an error for one file; walk continues and
+	// collects it.
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "good.mp4")
+	writeFile(t, root, "bad.mov")
+
+	repo := &stubScanRepo{
+		upsertFn: func(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error) {
+			if filepath.Base(relativePath) == "bad.mov" {
+				return domain.ScannedFile{}, errors.New("db timeout")
+			}
+			return domain.ScannedFile{AssetID: "asset-good", Created: true}, nil
+		},
+	}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Discovered != 1 {
+		t.Errorf("Discovered = %d, want 1 (good.mp4 only)", result.Discovered)
+	}
+	found := false
+	for _, e := range result.Errors {
+		if strings.Contains(e, "db timeout") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Errors does not contain 'db timeout': %v", result.Errors)
+	}
+}
+
+// --------------- Scan error propagation tests ---------------
+
+func TestScanRepoUpsertErrorDoesNotStopWalk(t *testing.T) {
+	// Errors from UpsertScannedFile are collected, not propagated as return error.
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "A.mp4")
+	writeFile(t, root, "B.mov")
+
+	repo := &stubScanRepo{
+		upsertFn: func(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error) {
+			return domain.ScannedFile{}, errors.New("persist error")
+		},
+		markMissing: 0,
+	}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("upsert errors should not stop the walk: %v", err)
+	}
+	if len(result.Errors) != 2 {
+		t.Errorf("Errors len = %d, want 2", len(result.Errors))
+	}
+	// MarkUnseenLocationsMissing should still run.
+	if repo.markCallRoot == "" {
+		t.Error("MarkUnseenLocationsMissing was not called")
+	}
+}
+
+func TestScanMarkMissingErrorPropagated(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "clip.mp4")
+
+	markErr := errors.New("mark missing failed")
+	repo := &stubScanRepo{markErr: markErr}
+	s := NewScanner(repo)
+
+	_, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err == nil {
+		t.Fatal("expected error from MarkUnseenLocationsMissing, got nil")
+	}
+	if !errors.Is(err, markErr) {
+		t.Errorf("err = %v, want %v", err, markErr)
+	}
+}
+
+func TestScanContextCancellation(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "A.mp4")
+	writeFile(t, root, "B.mov")
+	writeFile(t, root, "C.mxf")
+
+	repo := &stubScanRepo{
+		upsertFn: func(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error) {
+			// Cancel after first file is processed.
+			return domain.ScannedFile{AssetID: "asset", Created: true}, nil
+		},
+	}
+	s := NewScanner(repo)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Instead of complex timing, pre-cancel the context so the walk callback
+	// checks ctx.Err() on the very first file entry.
+	cancel()
+
+	_, err := s.Scan(ctx, domain.LibraryRoot{ID: "r1", Path: root})
+	if err == nil {
+		t.Fatal("expected context cancellation error")
+	}
+}
+
+func TestScanRootDoesNotExist(t *testing.T) {
+	// filepath.WalkDir passes the stat error as walkErr to the callback,
+	// which collects it into result.Errors and returns nil, so WalkDir
+	// itself returns nil. The error is surfaced through result.Errors.
+	repo := &stubScanRepo{}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: "/nonexistent/path/for/test"})
+	if err != nil {
+		t.Fatalf("WalkDir returns nil even for nonexistent root: %v", err)
+	}
+	if len(result.Errors) == 0 {
+		t.Fatal("expected walkErr in result.Errors, got none")
+	}
+}
+
+// --------------- Regression: relative path normalization ---------------
+
+func TestScanRelativePathUsesSlash(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "sub/dir/clip.mp4")
+
+	repo := &stubScanRepo{}
+	s := NewScanner(repo)
+
+	_, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(repo.upsertCalls) != 1 {
+		t.Fatalf("upsertCalls len = %d", len(repo.upsertCalls))
+	}
+	if repo.upsertCalls[0] != "sub/dir/clip.mp4" {
+		t.Errorf("relative path = %q, want sub/dir/clip.mp4", repo.upsertCalls[0])
+	}
+}
+
+// --------------- ChangedAssetIDs empty when no changes ---------------
+
+func TestScanNoChangedAssets(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "A.mp4")
+
+	repo := &stubScanRepo{
+		upsertFn: func(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error) {
+			return domain.ScannedFile{AssetID: "asset-A", Created: true, Changed: false}, nil
+		},
+	}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.ChangedAssetIDs) != 0 {
+		t.Errorf("ChangedAssetIDs = %v, want empty", result.ChangedAssetIDs)
+	}
+}
+
+// --------------- Edge: file with dots in name ---------------
+
+func TestScanFileWithMultipleDots(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "A001_08151512_C001.braw")
+	writeFile(t, root, "project.v1.final.mp4")
+	writeFile(t, root, "archive.tar.gz") // not video
+
+	repo := &stubScanRepo{}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Discovered != 2 {
+		t.Errorf("Discovered = %d, want 2", result.Discovered)
+	}
+	if len(repo.upsertCalls) != 2 {
+		t.Errorf("upsertCalls = %v, want 2 entries", repo.upsertCalls)
+	}
+}
+
+// --------------- Edge: non-media files when repo returns changed ---------------
+
+func TestScanNonMediaNotProcessed(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "notes.txt")
+	writeFile(t, root, "image.jpg")
+
+	repo := &stubScanRepo{}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Discovered != 0 {
+		t.Errorf("Discovered = %d, want 0 (no media files)", result.Discovered)
+	}
+	if len(repo.upsertCalls) != 0 {
+		t.Errorf("non-media files should not be upserted: %v", repo.upsertCalls)
+	}
+}
+
+// TestScanSubdirectoryIsSkipped verifies that subdirectories themselves are
+// not passed to the walk callback for Upsert — only files inside them.
+// filepath.WalkDir only calls the callback for directories, but we return nil
+// (no error) for them.
+func TestScanSubdirectoryIsSkippedWithoutError(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeDir(t, root, "subdir")
+	writeFile(t, root, "subdir/clip.mp4")
+	writeFile(t, root, "rootclip.mov")
+
+	repo := &stubScanRepo{}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Discovered != 2 {
+		t.Errorf("Discovered = %d, want 2", result.Discovered)
+	}
+}
+
+// --------------- Deep nesting ---------------
+
+func TestScanDeeplyNestedDirectories(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "a/b/c/d/e/clip.mp4")
+	writeFile(t, root, "a/b/c/clip2.mov")
+
+	repo := &stubScanRepo{}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Discovered != 2 {
+		t.Errorf("Discovered = %d, want 2", result.Discovered)
+	}
+}
+
+// --------------- Saw zero Upsert calls when root has only dirs ---------------
+
+func TestScanOnlyDirectoriesNoFiles(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeDir(t, root, "empty")
+	writeDir(t, root, "also_empty/nested")
+
+	repo := &stubScanRepo{}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Discovered != 0 {
+		t.Errorf("Discovered = %d, want 0", result.Discovered)
+	}
+	if len(result.Errors) != 0 {
+		t.Errorf("Errors = %v, want empty", result.Errors)
+	}
+}
+
+// --------------- QuickFingerprint error propagation (file too small, etc.) ---------------
+// QuickFingerprint works fine with small files (it handles EOF-truncated reads),
+// but a genuinely unreadable file is tested below.
+
+func TestScanUnreadableFileSkipsWithError(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	badFile := filepath.Join(root, "bad.mov")
+	// Create a file with no read permission so QuickFingerprint fails.
+	if err := os.WriteFile(badFile, []byte("secret"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	// Restore permission so TempDir cleanup can remove it.
+	t.Cleanup(func() { os.Chmod(badFile, 0o644) })
+
+	repo := &stubScanRepo{}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// bad.mov passes supportedVideo and !IsDir, but QuickFingerprint fails
+	// with a permission error during os.Open.
+	if len(result.Errors) == 0 {
+		t.Error("expected fingerprint error for unreadable file, got none")
+	}
+}
+
+// --------------- ChangedAssetIDs with mixed changed/unchanged ---------------
+
+func TestScanMixedChangedAndUnchangedAssets(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "unchanged.mp4")
+	writeFile(t, root, "changed.mov")
+	writeFile(t, root, "also_changed.mxf")
+
+	repo := &stubScanRepo{
+		upsertFn: func(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error) {
+			base := filepath.Base(relativePath)
+			switch base {
+			case "unchanged.mp4":
+				return domain.ScannedFile{AssetID: "asset-unchanged", Created: false, Changed: false}, nil
+			case "changed.mov":
+				return domain.ScannedFile{AssetID: "asset-changed", Created: false, Changed: true}, nil
+			case "also_changed.mxf":
+				return domain.ScannedFile{AssetID: "asset-also", Created: true, Changed: true}, nil
+			}
+			return domain.ScannedFile{}, nil
+		},
+	}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Discovered != 1 { // only also_changed is created
+		t.Errorf("Discovered = %d, want 1", result.Discovered)
+	}
+	if result.Linked != 2 { // unchanged + changed already existed
+		t.Errorf("Linked = %d, want 2", result.Linked)
+	}
+	if len(result.ChangedAssetIDs) != 2 {
+		t.Errorf("ChangedAssetIDs len = %d, want 2: %v", len(result.ChangedAssetIDs), result.ChangedAssetIDs)
+	}
+}
+
+// --------------- MarkUnseenLocationsMissing receives correct seen list ---------------
+
+func TestScanMarkMissingSeenList(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "A.mp4")
+	writeFile(t, root, "sub/B.mov")
+	writeFile(t, root, "notes.txt") // not seen
+
+	repo := &stubScanRepo{}
+	s := NewScanner(repo)
+
+	_, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(repo.markCallSeen) != 2 {
+		t.Fatalf("markCallSeen len = %d, want 2: %v", len(repo.markCallSeen), repo.markCallSeen)
+	}
+	// Order should be walk order (fs.WalkDir is lexical).
+	seen := repo.markCallSeen
+	has := func(s string) bool {
+		for _, p := range seen {
+			if p == s {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("A.mp4") {
+		t.Error("seen list missing A.mp4")
+	}
+	if !has("sub/B.mov") {
+		t.Error("seen list missing sub/B.mov")
+	}
+	if has("notes.txt") {
+		t.Error("seen list should not contain non-video notes.txt")
+	}
+}
+
+// --------------- Context cancelled mid-walk before any file ---------------
+
+func TestScanContextPreCancelled(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "clip.mp4")
+
+	repo := &stubScanRepo{}
+	s := NewScanner(repo)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := s.Scan(ctx, domain.LibraryRoot{ID: "r1", Path: root})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+}
+
+// --------------- Error from repo.UpsertScannedFile does not corrupt result ---------------
+
+func TestScanUpsertErrorStillReportsMarkMissing(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "clip.mp4")
+
+	repo := &stubScanRepo{
+		upsertFn: func(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error) {
+			return domain.ScannedFile{}, fmt.Errorf("insert failed")
+		},
+		markMissing: 3,
+	}
+	s := NewScanner(repo)
+
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Missing != 3 {
+		t.Errorf("Missing = %d, want 3", result.Missing)
+	}
+	if len(result.Errors) != 1 {
+		t.Errorf("Errors len = %d, want 1", len(result.Errors))
 	}
 }

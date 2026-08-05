@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — 2026-08-05 优化轮（S1：依赖卫生 + 测试覆盖 + CI 门禁）
+
+- **依赖升级**：`modernc.org/sqlite v1.37.1 → v1.56.0`（落后 19 个 minor，纯 Go
+  sqlite 的稳定性/性能修复）；`nhooyr.io/websocket` → `github.com/coder/websocket`
+  （原库已归档停更，API 完全兼容，仅 import path 迁移，0 残留）；go 指令
+  1.23 → 1.25（按 sqlite v1.56 要求）。
+- **测试覆盖**：`internal/ingest`（无人值守扫描核心）覆盖率 3.5% → **82.4%**
+  （25 个新测试：嵌套递归、扩展名过滤、变更/删除上报、错误传播、ctx 取消）；
+  `cmd/timingdex` 0% → **14%+**（usage/parseWorkerMounts/repeatedFlag/hubTLSFiles
+  纯函数补测）；`internal/providers/common` → 60%+（URL 拼接、client 超时、
+  认证 header 组合、ReadError 未截断路径）。
+- **CI 门禁**：`go test -race` 从 `./internal/...` 扩为全量 `./...`；新增覆盖率
+  门槛 step（全量语句覆盖率 ≥ 65%，低于即红，输出低覆盖包 top5）。
+
 ## v0.21.0 — 2026-08-04（首个 GitHub release）
 
 合并 `hardware-and-mounts` 全量（v0.20 NAS 挂载 + v0.21 无人值守巡检/时间线导出，此前均未发布）与 2026-08-04 全库审查批（OpenSpec 落地、API 硬化、model_runs 边界、21 个 change，见下方对应小节）。Docker 镜像 tag：`timingdex:v0.21.0`。

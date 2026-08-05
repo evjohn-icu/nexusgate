@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ReadError's text ends up in jobs.last_error_message and on the /progress
@@ -78,5 +80,85 @@ func TestStatusErrorExposesStatusThroughAnInterface(t *testing.T) {
 	}
 	if got := probe.HTTPStatusCode(); got != http.StatusPaymentRequired {
 		t.Fatalf("HTTPStatusCode() = %d, want 402", got)
+	}
+}
+
+func TestEndpointURLJoinsBaseAndPath(t *testing.T) {
+	ep := Endpoint{BaseURL: "https://nas:8787/"}
+	for _, tc := range []struct{ path, want string }{
+		{"api/v1/scan", "https://nas:8787/api/v1/scan"},
+		{"/api/v1/scan", "https://nas:8787/api/v1/scan"},
+		{"", "https://nas:8787/"},
+	} {
+		if got := ep.URL(tc.path); got != tc.want {
+			t.Fatalf("URL(%q) = %q, want %q", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestEndpointClientTimeout(t *testing.T) {
+	if got := (Endpoint{}).Client().Timeout; got != 120*time.Second {
+		t.Fatalf("default client timeout = %v, want 120s", got)
+	}
+	if got := (Endpoint{TimeoutSeconds: 5}).Client().Timeout; got != 5*time.Second {
+		t.Fatalf("custom client timeout = %v, want 5s", got)
+	}
+}
+
+func TestEndpointNewRequestAuthAndHeaders(t *testing.T) {
+	ctx := context.Background()
+	t.Run("default bearer auth", func(t *testing.T) {
+		req, err := (Endpoint{BaseURL: "https://h", APIKey: "k"}).NewRequest(ctx, "POST", "p", map[string]string{"a": "b"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := req.Header.Get("Authorization"); got != "Bearer k" {
+			t.Fatalf("Authorization = %q, want %q", got, "Bearer k")
+		}
+		if got := req.Header.Get("Content-Type"); got != "application/json" {
+			t.Fatalf("Content-Type = %q, want application/json", got)
+		}
+		if req.Body == nil {
+			t.Fatal("POST with body must set req.Body")
+		}
+	})
+	t.Run("raw scheme sends key verbatim", func(t *testing.T) {
+		req, err := (Endpoint{BaseURL: "https://h", APIKey: "k", AuthScheme: "raw"}).NewRequest(ctx, "GET", "p", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := req.Header.Get("Authorization"); got != "k" {
+			t.Fatalf("Authorization = %q, want %q", got, "k")
+		}
+		if req.Body != nil {
+			t.Fatal("GET with nil body must not set req.Body")
+		}
+	})
+	t.Run("custom header and extra headers", func(t *testing.T) {
+		req, err := (Endpoint{BaseURL: "https://h", APIKey: "k", AuthHeader: "X-Key", ExtraHeaders: map[string]string{"X-Foo": "bar"}}).NewRequest(ctx, "GET", "p", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := req.Header.Get("X-Key"); got != "Bearer k" {
+			t.Fatalf("X-Key = %q, want %q", got, "Bearer k")
+		}
+		if got := req.Header.Get("X-Foo"); got != "bar" {
+			t.Fatalf("X-Foo = %q, want bar", got)
+		}
+	})
+}
+
+func TestReadErrorSmallBodyUntruncated(t *testing.T) {
+	resp := &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader("boom"))}
+	err := ReadError(resp)
+	se, ok := err.(*StatusError)
+	if !ok {
+		t.Fatalf("ReadError() = %T, want *StatusError", err)
+	}
+	if se.StatusCode != http.StatusBadGateway || se.Body != "boom" {
+		t.Fatalf("StatusError = %d/%q, want 502/boom", se.StatusCode, se.Body)
+	}
+	if strings.Contains(se.Error(), "boom") == false {
+		t.Fatalf("Error() = %q, want it to carry the body", se.Error())
 	}
 }

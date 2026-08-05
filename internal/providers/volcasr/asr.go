@@ -17,9 +17,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	"github.com/evjohn-icu/timingdex/internal/providers/common"
-	"nhooyr.io/websocket"
 )
 
 const (

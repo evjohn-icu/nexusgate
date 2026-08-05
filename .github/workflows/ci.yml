@@ -60,5 +60,21 @@ jobs:
       - name: test
         run: go test ./...
 
+      - name: coverage gate
+        run: |
+          go test -coverprofile=coverage.out ./... > /tmp/cov-stdout.txt 2>&1
+          go tool cover -func=coverage.out
+          COVERAGE=$(go tool cover -func=coverage.out | awk '/^total:/{print $NF}' | tr -d '()%')
+          echo "Total statement coverage: ${COVERAGE}%"
+          echo "Low-coverage packages (top 5):"
+          grep 'coverage:' /tmp/cov-stdout.txt | \
+            grep -oP 'github\.com/\S+.*?coverage:\s+\d+\.\d+%' | \
+            awk '{pkg=$1; for(i=1;i<=NF;i++){if($i~/^[0-9.]+%$/){pct=$i+0; printf "%5.1f%%  %s\n", pct, pkg}}}' | \
+            sort -t'%' -k1 -n | head -5
+          THRESHOLD=65
+          awk -v c="$COVERAGE" -v t="$THRESHOLD" \
+            'BEGIN{if(c+0<t){print "FAIL: coverage",c"% is below required",t"%"; exit 1}else{print "PASS: coverage",c"% >=",t"%"}}'
+          rm -f coverage.out /tmp/cov-stdout.txt
+
       - name: test -race
-        run: go test -race ./internal/...
+        run: go test -race ./...
