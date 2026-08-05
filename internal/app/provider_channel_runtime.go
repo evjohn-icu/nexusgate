@@ -873,11 +873,15 @@ func (r *providerChannelRuntime) identity(capability providerchannels.Capability
 	go func() {
 		defer resolveCancel()
 		n, m := r.resolveIdentity(resolveCtx, capability)
+		// NOTE: resultCh is buffered (cap 1), so this send never blocks and the
+		// default branch below is unreachable once the caller has moved on — the
+		// result is simply discarded and the next caller re-runs the slow path.
+		// Keep the buffer so the common (non-timeout) case never blocks the
+		// goroutine; do not "optimize" this into a cache write without a real
+		// lock-free single-flight design.
 		select {
 		case resultCh <- pair{n, m}:
 		default:
-			// Caller already gave up (the 2 s select below timed out);
-			// cache the result anyway so the next caller can use it.
 			if n != "" {
 				r.cacheIdentity(capability, fallbackName, n, m)
 			}

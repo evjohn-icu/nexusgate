@@ -438,6 +438,23 @@ func jsonAwareRedact(raw string) string {
 	if err := json.Unmarshal([]byte(raw), &v); err != nil {
 		return ""
 	}
+	// A top-level JSON string scalar (e.g. "{\"token\":\"k\"}") may itself
+	// be an escaped JSON document or contain embedded fragments; walk it too
+	// instead of returning it unchanged.
+	if s, ok := v.(string); ok {
+		if redacted := jsonAwareRedact(s); redacted != "" {
+			out, err := json.Marshal(redacted)
+			if err != nil {
+				return ""
+			}
+			return string(out)
+		}
+		out, err := json.Marshal(redactEmbeddedJSONInString(s))
+		if err != nil {
+			return ""
+		}
+		return string(out)
+	}
 	walkAndRedact(v)
 	out, err := json.Marshal(v)
 	if err != nil {

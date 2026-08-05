@@ -495,6 +495,21 @@ func TestRedactSecretsUUIDStartingWithLetterPreserved(t *testing.T) {
 	}
 }
 
+// Top-level JSON string scalar that is itself an escaped JSON document must
+// be walked (P3 from the fourth review round): the outer JSON is a bare
+// string value, so without the string branch walkAndRedact would return it
+// unchanged and the embedded short token would leak.
+func TestRedactSecretsTopLevelJSONStringScalar(t *testing.T) {
+	input := `"{\"token\":\"k\"}"`
+	got := redactSecrets(input)
+	if !strings.Contains(got, "[redacted]") {
+		t.Fatalf("embedded token in top-level JSON string scalar not redacted: input=%q got=%q", input, got)
+	}
+	if strings.Contains(got, "\"k\"") {
+		t.Fatalf("short token value still present: got=%q", got)
+	}
+}
+
 // P1: credentialKeyValuePattern must match known keys case-insensitively.
 func TestRedactSecretsCredentialKeyValueCaseInsensitive(t *testing.T) {
 	tests := []struct {

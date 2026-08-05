@@ -950,10 +950,12 @@ func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.Sc
 	//
 	// scanFailures is per-root (map[rootID]map[assetID]count).  Each scan
 	// copies the existing counts into a scan-local map and only merges back
-	// at the end, so two concurrent scans of the same root cannot delete each
-	// other's failure counters.  The merge keeps the maximum count for each
-	// asset that appears in this scan's counted set and prunes assets that do
-	// not; assets counted by a concurrent scan are untouched.
+	// at the end.  Within a single root, concurrent scans are rare (normal
+	// operation is a periodic single-threaded timer), and the merge keeps
+	// the maximum count per asset while pruning assets absent from this
+	// scan's counted set.  If two scans of the same root do overlap, the
+	// later merge may prune an asset the earlier scan counted but did not
+	// itself see — acceptable for a warning-counter, not a functional path.
 	rootFailures := func() map[string]int {
 		s.scanFailuresMu.Lock()
 		defer s.scanFailuresMu.Unlock()
