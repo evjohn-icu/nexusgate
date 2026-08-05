@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased — Unattended Library and Timeline Export
+## v0.21.0 — 2026-08-04（首个 GitHub release）
+
+合并 `hardware-and-mounts` 全量（v0.20 NAS 挂载 + v0.21 无人值守巡检/时间线导出，此前均未发布）与 2026-08-04 全库审查批（OpenSpec 落地、API 硬化、model_runs 边界、21 个 change，见下方对应小节）。Docker 镜像 tag：`timingdex:v0.21.0`。
+
+### v0.21 — Unattended Library and Timeline Export
 
 See `docs/v0.21-unattended-and-export.md`,
 `docs/v0.21-provider-deployment.md` and
@@ -294,7 +298,7 @@ See `docs/v0.21-unattended-and-export.md`,
   recognising the case through `domain.ErrJobLeaseLost` rather than by matching
   error text.
 
-## Unreleased — NAS Mounting
+### v0.20 — NAS Mounting
 
 - Documented the NAS-mounting decision ladder in
   `docs/v0.20-nas-mounting.md`: given the Hub runs in a container as a fixed
@@ -560,7 +564,7 @@ See `docs/v0.21-unattended-and-export.md`,
   covers binary redistribution and not only source, so shipping none of them
   was the kind of omission a public repository gets noticed for.
 
-## Unreleased — 2026-08-04 全库审查与 OpenSpec 落地
+### 2026-08-04 全库审查与 OpenSpec 落地（随 v0.21.0 发版）
 
 - CI 红灯修复：素材根检查对普通空目录不再误报「未挂载的挂载点」——该警告只对已注册的 library root 发出，全量 `go test ./...` 恢复全绿。
 - `model_runs` 边界测试：补充了模型输出写入失败、截断和重入场景的覆盖，
