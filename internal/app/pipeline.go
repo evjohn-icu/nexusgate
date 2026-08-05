@@ -108,6 +108,13 @@ func (p *Pipeline) EnqueueAsset(ctx context.Context, assetID string) error {
 	return p.repo.EnqueueJob(ctx, assetID, domain.JobProbe, h, 100)
 }
 
+// maxConsecutiveLeaseErrors bounds how many times RunUntilIdle retries a
+// failing lease query before returning the error.  The original behaviour
+// (return immediately) was the right default for a database that should be
+// local and healthy; this cap restores that semantic while tolerating
+// transient blips.
+const maxConsecutiveLeaseErrors = 3
+
 func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 	worker := "local-" + idgen.New()
 	executed := 0
@@ -131,6 +138,9 @@ func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 			consecutiveLeaseErrors++
 			if consecutiveLeaseErrors%5 == 1 || consecutiveLeaseErrors == 1 {
 				slog.Warn("pipeline lease query failing; will retry", "consecutive_errors", consecutiveLeaseErrors, "error", err)
+			}
+			if consecutiveLeaseErrors >= maxConsecutiveLeaseErrors {
+				return executed, fmt.Errorf("pipeline lease query failed %d consecutive times, last error: %w", consecutiveLeaseErrors, err)
 			}
 			if sleepErr := sleepContext(ctx, 500*time.Millisecond); sleepErr != nil {
 				return executed, sleepErr

@@ -187,7 +187,7 @@ func TestRedactSecretsStripsBearerAndOpenAIKeysFromErrorMessages(t *testing.T) {
 		{
 			name:  "api_key in query-like text",
 			input: `{"error":"api_key=sk-abcdefghijklmnopqrstuvwxyz123456 is malformed"}`,
-			want:  `{"error":"api_key: [redacted] is malformed"}`, // regex captures api_key=, replaces value
+			want:  `{"error":"api_key: [redacted] is malformed"}`,
 		},
 		{
 			name:  "no secrets in text",
@@ -210,21 +210,208 @@ func TestRedactSecretsStripsBearerAndOpenAIKeysFromErrorMessages(t *testing.T) {
 	}
 }
 
+func TestRedactSecretsJSONKeyValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  `"api_key":"arbitrary-secret"`,
+			input: `{"error":{"api_key":"arbitrary-secret-12345"}}`,
+			want:  `{"error":{"api_key":"[redacted]"}}`,
+		},
+		{
+			name:  `"authorization":"Bearer token"`,
+			input: `{"authorization":"Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0"}`,
+			want:  `{"authorization":"[redacted]"}`,
+		},
+		{
+			name:  `"token":"short-secret"`,
+			input: `{"token":"abc123"}`,
+			want:  `{"token":"[redacted]"}`,
+		},
+		{
+			name:  `"secret":"my-password-here"`,
+			input: `{"secret":"my-password-here"}`,
+			want:  `{"secret":"[redacted]"}`,
+		},
+		{
+			name:  `"password":"p@ssw0rd!"`,
+			input: `{"password":"p@ssw0rd!"}`,
+			want:  `{"password":"[redacted]"}`,
+		},
+		{
+			name:  `"apikey":"my-arbitrary-key"`,
+			input: `{"apikey":"my-arbitrary-key"}`,
+			want:  `{"apikey":"[redacted]"}`,
+		},
+		{
+			name:  "unquoted JSON value after colon",
+			input: `{"api_key":arbitrary-secret}`,
+			want:  `{"api_key":[redacted]}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := redactSecrets(tc.input)
+			if got != tc.want {
+				t.Fatalf("redactSecrets(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRedactSecretsNestedEscapedJSON(t *testing.T) {
+	// P1: Escaped nested JSON — the outer {"body":"{\"token\":\"k\"}"}
+	// parses as valid JSON, the inner string should be recursively parsed
+	// and its "token" key redacted.  Prior to jsonAwareRedact, the regex
+	// saw the escaped quotes and skipped the inner value entirely.
+	input := `{"status":401,"body":"{\"api_key\":\"leaked-via-nesting\"}"}`
+	got := redactSecrets(input)
+	if strings.Contains(got, "leaked-via-nesting") {
+		t.Fatalf("nested escaped JSON leaked secret: %s", got)
+	}
+	// The outer JSON should still be valid after redaction.
+	if !json.Valid([]byte(got)) {
+		t.Fatalf("redacted output is not valid JSON: %s", got)
+	}
+	// The body field should contain a redacted token.
+	if !strings.Contains(got, "[redacted]") {
+		t.Fatalf("nested JSON was not redacted: %s", got)
+	}
+}
+
+func TestRedactSecretsNestedEscapedJSONShortToken(t *testing.T) {
+	// P1: The specific bypass scenario — {"body":"{\"token\":\"k\"}"}
+	// where "k" is too short for longTokenPattern.  The JSON-aware
+	// redaction must catch "token":"k" inside the nested string.
+	input := `{"body":"{\"token\":\"k\"}"}`
+	got := redactSecrets(input)
+	if strings.Contains(got, `"k"`) && strings.Contains(got, `"token"`) {
+		t.Fatalf("short token in nested JSON not redacted: %s", got)
+	}
+	if !json.Valid([]byte(got)) {
+		t.Fatalf("redacted output is not valid JSON: %s", got)
+	}
+	if !strings.Contains(got, "[redacted]") {
+		t.Fatalf("nested JSON was not redacted: %s", got)
+	}
+}
+
+func TestRedactSecretsJSONArrayOfObjects(t *testing.T) {
+	// JSON arrays of objects should also be recursively redacted.
+	input := `[{"api_key":"secret1"},{"api_key":"secret2"}]`
+	got := redactSecrets(input)
+	if strings.Contains(got, "secret1") || strings.Contains(got, "secret2") {
+		t.Fatalf("JSON array leaked secrets: %s", got)
+	}
+	if !json.Valid([]byte(got)) {
+		t.Fatalf("redacted array is not valid JSON: %s", got)
+	}
+}
+
+func TestRedactSecretsJSONWithEmbeddedSegment(t *testing.T) {
+	// Free-form text containing a JSON object segment should have the
+	// segment redacted via jsonLikeSegment scanning.
+	input := `upstream error: {"code":401,"api_key":"exposed-in-text"} extra context`
+	got := redactSecrets(input)
+	if strings.Contains(got, "exposed-in-text") {
+		t.Fatalf("embedded JSON segment leaked secret: %s", got)
+	}
+	if !strings.Contains(got, "[redacted]") {
+		t.Fatalf("embedded JSON segment was not redacted: %s", got)
+	}
+}
+
+func TestRedactSecretsLongTokenFallback(t *testing.T) {
+	// P2: longTokenPattern is now ≥20 chars starting with a letter.
+	// 16-char hex strings, UUIDs, and timestamps are no longer redacted.
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "random 16-char hex token (too short, preserved)",
+			input: "error: abcdef1234567890 is not valid",
+			want:  "error: abcdef1234567890 is not valid",
+		},
+		{
+			name:  "UUID with dashes (starts with digit, preserved)",
+			input: "trace: 550e8400-e29b-41d4-a716-446655440000 request-id",
+			want:  "trace: 550e8400-e29b-41d4-a716-446655440000 request-id",
+		},
+		{
+			name:  "timestamp 16 digits (starts with digit, preserved)",
+			input: "event at 20240101120000 failed",
+			want:  "event at 20240101120000 failed",
+		},
+		{
+			name:  "base64-like token 20+ chars starting with letter",
+			input: "connect: abcdefghijklmnopqrst is bad",
+			want:  "connect: [redacted] is bad",
+		},
+		{
+			name:  "short token preserved (under 20)",
+			input: "error: err-123 is ok",
+			want:  "error: err-123 is ok",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := redactSecrets(tc.input)
+			if got != tc.want {
+				t.Fatalf("redactSecrets(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProgressRedactsSecrets(t *testing.T) {
+	var progress map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/worker/jobs/job-1/progress" {
+			if err := json.NewDecoder(r.Body).Decode(&progress); err != nil {
+				t.Fatal(err)
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	err := client.Progress(context.Background(), "worker-token", "job-1",
+		"analyze", 0.5, "provider error",
+		`upstream returned: {"api_key":"sk-leaked-through-progress"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msg, _ := progress["message"].(string)
+	if strings.Contains(msg, "sk-leaked-through-progress") {
+		t.Fatalf("Progress.message leaked secret: %q", msg)
+	}
+	if !strings.Contains(msg, "[redacted]") {
+		t.Fatalf("Progress.message was not redacted: %q", msg)
+	}
+}
+
 func TestUploadArtifactCancelsOnContextDone(t *testing.T) {
 	artifactPath := filepath.Join(t.TempDir(), "large.bin")
-	// Write a large file so io.Copy does not finish instantly.
 	if err := os.WriteFile(artifactPath, make([]byte, 10<<20), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The server never reads the body; the pipe will block.
 		w.WriteHeader(http.StatusCreated)
 	}))
 	defer server.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately so the goroutine sees ctx.Done()
+	cancel()
 
 	client := NewClient(server.URL, "")
 	err := client.UploadArtifact(ctx, "worker-token", "job-1", ArtifactUpload{

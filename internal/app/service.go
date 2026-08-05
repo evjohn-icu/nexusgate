@@ -191,11 +191,12 @@ type Service struct {
 	supervisor *LibrarySupervisor
 
 	// scanFailuresMu guards scanFailures, which tracks consecutive enqueue
-	// failures per asset across ScanLibraryRoot passes so a single perpetually
+	// failures per asset per root across ScanLibraryRoot passes so a single perpetually
 	// failing asset does not fill the log with identical warnings on every
-	// 15-minute scan.
+	// 15-minute scan.  The outer map is keyed by root ID so that concurrent
+	// scans of different roots cannot delete each other's failure counters.
 	scanFailuresMu sync.Mutex
-	scanFailures   map[string]int
+	scanFailures   map[string]map[string]int
 
 	// hostOverride replaces mount.LocalHost() in InspectRootPath when set. It
 	// exists only so tests can exercise the mount.Host.Container branch (the
@@ -274,7 +275,7 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 		curator:  channelRuntime.curator(), embedder: channelRuntime.embedder(), planner: channelRuntime.planner(),
 		hardware: hardware, adminToken: adminToken, agentToken: agentToken, secrets: secrets,
 		channelRuntime: channelRuntime,
-		scanFailures:   make(map[string]int),
+		scanFailures:   make(map[string]map[string]int),
 	}
 	// Constructed for every command, started by none of them: only `serve`
 	// calls RunLibrarySupervisor, and a disabled supervisor's Run is a no-op.
@@ -388,10 +389,15 @@ func (s *Service) AdminToken() string { return s.adminToken }
 func (s *Service) AgentToken() string { return s.agentToken }
 
 // DataDir is the Hub's state directory. The API layer needs it to serve
-// operator-supplied Worker binaries from a known subdirectory; it is not a
-// general-purpose filesystem escape hatch, and nothing derives a path from
-// request input relative to it.
+// operator-supplied Worker binaries and derived artifacts from a known
+// subdirectory; it is not a general-purpose filesystem escape hatch, and
+// nothing derives a path from request input relative to it.
 func (s *Service) DataDir() string { return s.cfg.DataDir }
+
+// CacheDir is the directory for derived artifacts (thumbnails, proxies).
+// It defaults to DataDir/cache but may be configured independently; the
+// API layer must check both roots when serving artifacts.
+func (s *Service) CacheDir() string { return s.cfg.CacheDir }
 
 // PipelineThrottle reads the current disk-load limits.
 func (s *Service) PipelineThrottle(ctx context.Context) (domain.PipelineThrottle, error) {
@@ -935,14 +941,35 @@ func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.Sc
 	// Enqueue only the assets this scan actually changed. Re-enqueuing the
 	// whole library on every 15-minute pass is 2N queries that all land on an
 	// INSERT OR IGNORE no-op; the changed set is the only work a scan creates.
+	//
+	// counted tracks every asset this scan pass already processed so that an
+	// asset appearing in both the changed set and the catch-up query cannot
+	// double-increment its scan-failure counter.  After the pass,
+	// scanFailures entries for this root that are absent from counted are
+	// pruned so the map cannot grow without bound.
+	//
+	// scanFailures is per-root (map[rootID]map[assetID]count) so that
+	// concurrent scans of different roots cannot delete each other's
+	// failure records.
+	rootFailures := func() map[string]int {
+		s.scanFailuresMu.Lock()
+		defer s.scanFailuresMu.Unlock()
+		if s.scanFailures[rootID] == nil {
+			s.scanFailures[rootID] = make(map[string]int)
+		}
+		return s.scanFailures[rootID]
+	}()
+
+	counted := make(map[string]bool, len(result.ChangedAssetIDs)+1000)
 	for _, assetID := range result.ChangedAssetIDs {
+		counted[assetID] = true
 		if err := s.pipeline.EnqueueAsset(ctx, assetID); err != nil {
 			// A single enqueue failure must not abort the pass: the catch-up
 			// query below only rescues a missing probe job if the pass
 			// completes, so the same asset gets another chance next scan.
 			s.scanFailuresMu.Lock()
-			s.scanFailures[assetID]++
-			count := s.scanFailures[assetID]
+			rootFailures[assetID]++
+			count := rootFailures[assetID]
 			s.scanFailuresMu.Unlock()
 			if count > 0 && count%5 == 0 {
 				slog.Error("scan: enqueue changed asset failed 5 consecutive passes", "asset_id", assetID, "consecutive_failures", count, "error", err)
@@ -951,7 +978,7 @@ func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.Sc
 			}
 		} else {
 			s.scanFailuresMu.Lock()
-			delete(s.scanFailures, assetID)
+			delete(rootFailures, assetID)
 			s.scanFailuresMu.Unlock()
 		}
 	}
@@ -959,15 +986,21 @@ func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.Sc
 	// changed set will ever re-derive them, so without this they would starve
 	// forever. The limit keeps one pathological root from making a scan
 	// unbounded; assets past the cap are picked up by a later pass.
+	// Duplicates against the changed set are skipped so an asset appearing
+	// in both lists cannot double-increment its failure counter.
 	catchUp, err := s.repo.AssetsWithoutProbeJob(ctx, rootID, 1000)
 	if err != nil {
 		return result, err
 	}
 	for _, assetID := range catchUp {
+		if counted[assetID] {
+			continue
+		}
+		counted[assetID] = true
 		if err := s.pipeline.EnqueueAsset(ctx, assetID); err != nil {
 			s.scanFailuresMu.Lock()
-			s.scanFailures[assetID]++
-			count := s.scanFailures[assetID]
+			rootFailures[assetID]++
+			count := rootFailures[assetID]
 			s.scanFailuresMu.Unlock()
 			if count > 0 && count%5 == 0 {
 				slog.Error("scan: enqueue missing-probe asset failed 5 consecutive passes", "asset_id", assetID, "consecutive_failures", count, "error", err)
@@ -976,10 +1009,22 @@ func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.Sc
 			}
 		} else {
 			s.scanFailuresMu.Lock()
-			delete(s.scanFailures, assetID)
+			delete(rootFailures, assetID)
 			s.scanFailuresMu.Unlock()
 		}
 	}
+	// Prune this root's scanFailures entries for assets that no longer appear
+	// in this scan's changed or catch-up sets — without this the per-root map
+	// grows without bound as assets are added and later removed from the library.
+	// Only the current root's sub-map is touched so a concurrent scan of a
+	// different root is unaffected.
+	s.scanFailuresMu.Lock()
+	for id := range rootFailures {
+		if !counted[id] {
+			delete(rootFailures, id)
+		}
+	}
+	s.scanFailuresMu.Unlock()
 	return result, nil
 }
 

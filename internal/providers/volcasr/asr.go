@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os/exec"
 	"strings"
 	"time"
@@ -45,6 +46,42 @@ func (a *ASR) Model() string {
 		return defaultModel
 	}
 	return a.ModelName
+}
+
+// GoString prevents %#v from exposing the API key. The URL is sanitised
+// to strip any embedded credentials (userinfo, sensitive query params).
+func (a ASR) GoString() string {
+	safeURL := a.URL
+	if safeURL != "" {
+		if u, err := url.Parse(safeURL); err == nil {
+			u.User = nil
+			q := u.Query()
+			stripped := false
+			for _, param := range []string{"api_key", "key", "token", "secret", "password"} {
+				if q.Has(param) {
+					q.Del(param)
+					stripped = true
+				}
+			}
+			if stripped {
+				u.RawQuery = q.Encode()
+			}
+			safeURL = u.String()
+		}
+	}
+	return fmt.Sprintf("volcasr.ASR{URL:%q APIKey:[redacted] ResourceID:%q RequestModel:%q ModelName:%q UID:%q TimeoutSeconds:%d}",
+		safeURL, a.ResourceID, a.RequestModel, a.ModelName, a.UID, a.TimeoutSeconds)
+}
+
+// Format implements fmt.Formatter so that %v, %+v, and %s never expose the
+// API key. Delegates to GoString for a safe representation.
+func (a ASR) Format(f fmt.State, verb rune) {
+	switch verb {
+	case 'v', 's':
+		f.Write([]byte(a.GoString()))
+	default:
+		fmt.Fprintf(f, "%%!%c(volcasr.ASR)", verb)
+	}
 }
 
 func (a *ASR) Transcribe(ctx context.Context, req common.TranscribeRequest) (domain.Transcript, error) {

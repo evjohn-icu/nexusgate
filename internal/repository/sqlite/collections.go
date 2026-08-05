@@ -64,6 +64,9 @@ VALUES(?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,filter_json=excluded.filter_json,updated_at=excluded.updated_at`,
 		collection.ID, collection.Name, collection.Description, string(encoded), formatTime(collection.CreatedAt), formatTime(collection.UpdatedAt))
 	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") && strings.Contains(err.Error(), "asset_collections.name") {
+			return domain.AssetCollection{}, fmt.Errorf("%w: %s", domain.ErrCollectionExists, collection.Name)
+		}
 		return domain.AssetCollection{}, err
 	}
 	return collection, nil

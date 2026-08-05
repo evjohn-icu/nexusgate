@@ -418,21 +418,21 @@ func (r *Repository) SetDeriveWorkerAssignment(ctx context.Context, jobID, worke
 	defer tx.Rollback()
 	var state string
 	if err := tx.QueryRowContext(ctx, `SELECT state FROM jobs WHERE id=? AND job_type=?`, jobID, string(domain.JobDerive)).Scan(&state); errors.Is(err, sql.ErrNoRows) {
-		return errors.New("derive job not found")
+		return fmt.Errorf("%w: derive job not found", domain.ErrInvalidAssignment)
 	} else if err != nil {
 		return err
 	}
 	if state == string(domain.JobRunning) {
-		return errors.New("cannot change worker assignment while job is running")
+		return fmt.Errorf("%w: cannot change worker assignment while job is running", domain.ErrJobNotAssignable)
 	}
 	if mode != remote.WorkerAssignmentAny {
 		var status remote.WorkerStatus
 		if err := tx.QueryRowContext(ctx, `SELECT status FROM workers WHERE id=?`, workerID).Scan(&status); errors.Is(err, sql.ErrNoRows) {
-			return errors.New("worker not found")
+			return fmt.Errorf("%w: worker not found", domain.ErrInvalidAssignment)
 		} else if err != nil {
 			return err
 		} else if status == remote.WorkerRevoked {
-			return errors.New("cannot assign job to revoked worker")
+			return fmt.Errorf("%w: cannot assign job to revoked worker", domain.ErrInvalidAssignment)
 		}
 	}
 	var preferred, assigned any

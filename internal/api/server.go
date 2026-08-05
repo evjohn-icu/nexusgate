@@ -604,12 +604,25 @@ func (s *Server) workerHeartbeat(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Capabilities remote.WorkerCapabilities `json:"capabilities"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&request); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 		} else {
 			http.Error(w, "invalid worker heartbeat", http.StatusBadRequest)
+		}
+		return
+	}
+	// Reject trailing bytes after the first JSON value. r.Body is a
+	// MaxBytesReader, so drainBody hits the same size limit and returns
+	// MaxBytesError when the trailing content alone exceeds it.
+	if err := drainBody(r.Body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "request body has trailing content", http.StatusBadRequest)
 		}
 		return
 	}
@@ -657,7 +670,8 @@ func (s *Server) workerCompleteJob(w http.ResponseWriter, r *http.Request) {
 		State   domain.JobState `json:"state"`
 		Message string          `json:"message"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&request); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
@@ -666,7 +680,28 @@ func (s *Server) workerCompleteJob(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// Reject trailing bytes after the first JSON value (same reasoning as
+	// workerHeartbeat).
+	if err := drainBody(r.Body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "request body has trailing content", http.StatusBadRequest)
+		}
+		return
+	}
+	// Validate state before calling the service so an invalid state is a
+	// 400, not a 500 from writeError.
+	if request.State != domain.JobSucceeded && request.State != domain.JobFailed {
+		http.Error(w, "worker job state must be succeeded or failed", http.StatusBadRequest)
+		return
+	}
 	if err := s.service.CompleteWorkerJob(r.Context(), r.PathValue("id"), worker.ID, request.State, request.Message); err != nil {
+		if errors.Is(err, domain.ErrJobLeaseLost) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		writeError(w, err)
 		return
 	}
@@ -684,8 +719,25 @@ func (s *Server) workerProgress(w http.ResponseWriter, r *http.Request) {
 		Event    string  `json:"event"`
 		Message  string  `json:"message"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&request); err != nil {
-		http.Error(w, "invalid worker job progress", http.StatusBadRequest)
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "invalid worker job progress", http.StatusBadRequest)
+		}
+		return
+	}
+	// Reject trailing bytes after the first JSON value (same reasoning as
+	// workerHeartbeat).
+	if err := drainBody(r.Body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "request body has trailing content", http.StatusBadRequest)
+		}
 		return
 	}
 	if err := s.service.RecordWorkerJobProgress(r.Context(), r.PathValue("id"), worker.ID, strings.TrimSpace(request.Stage), request.Progress, strings.TrimSpace(request.Event), strings.TrimSpace(request.Message)); err != nil {
@@ -967,8 +1019,12 @@ func (s *Server) agentCapabilities(w http.ResponseWriter, r *http.Request) {
 			"manage_tags",
 			"manage_collections",
 			"manage_webdav_accounts",
+			"manage_webdav_spaces",
 			"manage_roots",
 			"manage_workers",
+			"manage_provider_channels",
+			"manage_pipeline_throttle",
+			"manage_library_summary",
 		},
 	})
 }
@@ -1142,9 +1198,51 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
+// pathInsideRoot returns true when localPath, after symlink resolution,
+// is inside the directory root. Both paths are resolved with
+// filepath.EvalSymlinks before computing the relative path, so symlink
+// escapes and .. traversal are both caught.
+func pathInsideRoot(localPath, root string) bool {
+	resolvedLocal, err := filepath.EvalSymlinks(localPath)
+	if err != nil {
+		return false
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolvedLocal)
+	if err != nil {
+		return false
+	}
+	return !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)
+}
+
 func writeError(w http.ResponseWriter, err error) {
 	slog.Error("request failed", "error", err)
 	http.Error(w, "internal server error", http.StatusInternalServerError)
+}
+
+// drainBody reads and discards any remaining bytes from r. It returns an
+// error when the body contains data beyond what the caller already consumed —
+// a JSON Decoder on a MaxBytesReader wrapper reads only the first value, so
+// trailing bytes after a valid JSON object would otherwise be silently
+// accepted.
+//
+// MaxBytesError is propagated unchanged so callers can distinguish "body
+// exceeded the size limit" (413) from "valid JSON followed by trailing
+// garbage" (400). Callers must wrap r with http.MaxBytesReader before
+// decoding so the bounds apply to drainBody as well.
+func drainBody(r io.Reader) error {
+	n, err := io.Copy(io.Discard, r)
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		return err
+	}
+	if n > 0 {
+		return fmt.Errorf("unexpected %d trailing bytes after request body", n)
+	}
+	return err
 }
 
 func requestLogger(next http.Handler) http.Handler {
@@ -1214,7 +1312,25 @@ func (s *Server) setWorkerJobAssignment(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid worker assignment", http.StatusBadRequest)
 		return
 	}
+	// Validate mode and worker_id before calling the service so an invalid
+	// value is a 400, not a 500 from writeError.
+	if input.Mode != remote.WorkerAssignmentAny && input.Mode != remote.WorkerAssignmentPreferred && input.Mode != remote.WorkerAssignmentRequired {
+		http.Error(w, "unsupported worker assignment mode", http.StatusBadRequest)
+		return
+	}
+	if input.Mode != remote.WorkerAssignmentAny && strings.TrimSpace(input.WorkerID) == "" {
+		http.Error(w, "worker ID is required for a worker assignment", http.StatusBadRequest)
+		return
+	}
 	if err := s.service.SetDeriveWorkerAssignment(r.Context(), r.PathValue("id"), strings.TrimSpace(input.WorkerID), input.Mode); err != nil {
+		if errors.Is(err, domain.ErrJobNotAssignable) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		if errors.Is(err, domain.ErrInvalidAssignment) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		writeError(w, err)
 		return
 	}
@@ -1606,8 +1722,27 @@ func (s *Server) saveCollection(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid collection", http.StatusBadRequest)
 		return
 	}
+	// Validate required fields before calling the service so an invalid
+	// value is a 400/422, not a 500 from writeError.
+	collection.Name = strings.TrimSpace(collection.Name)
+	if collection.Name == "" {
+		http.Error(w, "collection name is required", http.StatusBadRequest)
+		return
+	}
+	if len(collection.Name) > 200 {
+		http.Error(w, "collection name is too long", http.StatusUnprocessableEntity)
+		return
+	}
+	if len(collection.Description) > 2000 {
+		http.Error(w, "collection description is too long", http.StatusUnprocessableEntity)
+		return
+	}
 	saved, err := s.service.SaveAssetCollection(r.Context(), collection)
 	if err != nil {
+		if errors.Is(err, domain.ErrCollectionExists) || strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			http.Error(w, "collection name already exists", http.StatusConflict)
+			return
+		}
 		writeError(w, err)
 		return
 	}
@@ -1725,9 +1860,27 @@ func (s *Server) serveArtifact(w http.ResponseWriter, r *http.Request, typ strin
 		http.NotFound(w, r)
 		return
 	}
-	// Defensive: refuse to serve any file outside the Hub data directory.
-	if !strings.HasPrefix(a.LocalPath, s.service.DataDir()) {
-		slog.Warn("artifact path is outside data directory", "path", a.LocalPath, "datadir", s.service.DataDir())
+	// Verify the artifact lives inside the Hub data directory or its
+	// cache directory. Derived artifacts (thumbnails, proxies) live under
+	// CacheDir which defaults to DataDir/cache but may be configured to
+	// an independent location. Check both roots.
+	//
+	// Use filepath.Rel after resolving symlinks so that .. traversal and
+	// symlink escapes are both caught, and an empty root fails open (no
+	// path can be relative to nothing).
+	roots := []string{s.service.DataDir(), s.service.CacheDir()}
+	var allowed bool
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		if ok := pathInsideRoot(a.LocalPath, root); ok {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		slog.Warn("artifact path is outside allowed roots", "path", a.LocalPath, "datadir", s.service.DataDir(), "cachedir", s.service.CacheDir())
 		http.NotFound(w, r)
 		return
 	}

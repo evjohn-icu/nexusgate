@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
@@ -185,5 +186,72 @@ func TestTranscribeTreatsNormalClosureAsEmptyTranscript(t *testing.T) {
 	}
 	if transcript.Language != "zh" {
 		t.Fatalf("language = %q, want zh", transcript.Language)
+	}
+}
+
+func TestASRFormatDoesNotLeakAPIKey(t *testing.T) {
+	asr := ASR{
+		URL:            "wss://openspeech.bytedance.com/api/v3/plan/sauc/bigmodel_nostream",
+		APIKey:         "sk-volc-secret-do-not-leak",
+		ResourceID:     "volc.seedasr.sauc.duration",
+		RequestModel:   "bigmodel",
+		ModelName:      "doubao-seed-asr-2.0",
+		UID:            "timingdex",
+		TimeoutSeconds: 30,
+	}
+
+	secret := "sk-volc-secret-do-not-leak"
+	for _, tc := range []struct {
+		name string
+		out  string
+	}{
+		{name: "%v", out: fmt.Sprintf("%v", asr)},
+		{name: "%+v", out: fmt.Sprintf("%+v", asr)},
+		{name: "%s", out: fmt.Sprintf("%s", asr)},
+		{name: "%#v", out: fmt.Sprintf("%#v", asr)},
+	} {
+		if strings.Contains(tc.out, secret) {
+			t.Errorf("%s leaked API key: %s", tc.name, tc.out)
+		}
+		if !strings.Contains(tc.out, "[redacted]") {
+			t.Errorf("%s did not redact APIKey: %s", tc.name, tc.out)
+		}
+	}
+}
+
+// P1: ASR GoString must sanitise URL-embedded credentials (userinfo,
+// sensitive query params).
+func TestASRFormatSanitizesURL(t *testing.T) {
+	asr := ASR{
+		URL:            "wss://user:pass@openspeech.bytedance.com/api/v3?api_key=sk-leaked&mode=test",
+		APIKey:         "sk-volc-secret",
+		ResourceID:     "volc.seedasr.sauc.duration",
+		RequestModel:   "bigmodel",
+		ModelName:      "doubao-seed-asr-2.0",
+		UID:            "timingdex",
+		TimeoutSeconds: 30,
+	}
+
+	for _, tc := range []struct {
+		name string
+		out  string
+	}{
+		{name: "%v", out: fmt.Sprintf("%v", asr)},
+		{name: "%+v", out: fmt.Sprintf("%+v", asr)},
+		{name: "%s", out: fmt.Sprintf("%s", asr)},
+		{name: "%#v", out: fmt.Sprintf("%#v", asr)},
+	} {
+		if strings.Contains(tc.out, "user:pass") {
+			t.Errorf("%s leaked URL userinfo: %s", tc.name, tc.out)
+		}
+		if strings.Contains(tc.out, "sk-leaked") {
+			t.Errorf("%s leaked URL api_key: %s", tc.name, tc.out)
+		}
+		if !strings.Contains(tc.out, "mode=test") {
+			t.Errorf("%s lost non-sensitive query param: %s", tc.name, tc.out)
+		}
+		if !strings.Contains(tc.out, "openspeech.bytedance.com") {
+			t.Errorf("%s lost hostname: %s", tc.name, tc.out)
+		}
 	}
 }

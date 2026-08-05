@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -176,6 +177,36 @@ func TestCollectionCardsFilterByProcessingStatusWithoutPrivateBrowseFields(t *te
 	}
 	if summary.Total != 4 || summary.ByStatus[domain.ProcessingStatusReady] != 1 || summary.ByStatus[domain.ProcessingStatusQueued] != 1 || summary.ByStatus[domain.ProcessingStatusFailed] != 1 || summary.ByStatus[domain.ProcessingStatusMissing] != 1 {
 		t.Fatalf("summary=%+v, want all four operational statuses", summary)
+	}
+}
+
+// TestSaveCollectionDuplicateNameReturnsSentinel verifies that creating a
+// collection whose name collides with an existing one returns
+// domain.ErrCollectionExists so the API can map it to 409 Conflict instead of
+// a generic 500.
+func TestSaveCollectionDuplicateNameReturnsSentinel(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "collection-dup.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = repo.SaveAssetCollection(ctx, domain.AssetCollection{
+		Name: "重复名称",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = repo.SaveAssetCollection(ctx, domain.AssetCollection{
+		Name: "重复名称",
+	})
+	if !errors.Is(err, domain.ErrCollectionExists) {
+		t.Fatalf("duplicate name must return ErrCollectionExists, got: %v", err)
 	}
 }
 

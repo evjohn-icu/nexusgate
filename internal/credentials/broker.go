@@ -6,6 +6,7 @@ package credentials
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -33,15 +34,89 @@ type Credential struct {
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
 }
 
-// MarshalJSON replaces the APIKey with [redacted] so that accidental
-// serialisation — through a log line, an error message, or an API response —
-// never exposes a provider credential. Callers that need the real key must
-// read the field directly; MarshalJSON is a safety net, not an access path.
+// authHeaderNames lists HTTP header names that may carry credentials.
+// Matching is case-insensitive prefix comparison against the canonical
+// form (e.g. "authorization" matches "Authorization", "authorization").
+var authHeaderNames = []string{
+	"authorization",
+	"x-api-key",
+	"api-key",
+	"proxy-authorization",
+}
+
+// isAuthHeader reports whether name (case-insensitive) is an
+// authentication-related HTTP header whose value should be redacted.
+func isAuthHeader(name string) bool {
+	lower := strings.ToLower(name)
+	for _, candidate := range authHeaderNames {
+		if strings.EqualFold(lower, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+// sanitizeURL returns a copy of raw with userinfo and sensitive query
+// parameters (api_key, key, token, secret, password) removed. If raw
+// is not a valid URL it is returned unchanged. This prevents
+// credentials embedded in URLs from leaking through serialisation.
+func sanitizeURL(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	// Clear userinfo (e.g. https://user:pass@host).
+	u.User = nil
+	// Remove sensitive query parameters.
+	q := u.Query()
+	stripped := false
+	for _, param := range []string{"api_key", "key", "token", "secret", "password"} {
+		if q.Has(param) {
+			q.Del(param)
+			stripped = true
+		}
+	}
+	if stripped {
+		u.RawQuery = q.Encode()
+	}
+	return u.String()
+}
+
+// MarshalJSON replaces the APIKey with [redacted], redacts ExtraHeaders
+// values, and strips credentials from BaseURL so that accidental
+// serialisation — through a log line, an error message, or an API
+// response — never exposes a provider credential.
+//
+// URL sanitisation (P1): BaseURL is parsed and userinfo + sensitive
+// query params (api_key, key, token, secret, password) are removed
+// before serialisation. This covers URLs like
+// https://key:secret@host/path?api_key=leak.
 func (c Credential) MarshalJSON() ([]byte, error) {
 	type Alias Credential
 	safe := Alias(c)
 	if safe.APIKey != "" {
 		safe.APIKey = "[redacted]"
+	}
+	// Strip embedded credentials from BaseURL.
+	safe.BaseURL = sanitizeURL(safe.BaseURL)
+	if len(safe.ExtraHeaders) > 0 {
+		redacted := make(map[string]string, len(safe.ExtraHeaders))
+		for k, v := range safe.ExtraHeaders {
+			if v == "" {
+				redacted[k] = ""
+			} else if isAuthHeader(k) {
+				redacted[k] = "[redacted]"
+			} else {
+				// Conservatively redact all ExtraHeaders values;
+				// configuration may carry credentials under arbitrary
+				// header names.
+				redacted[k] = "[redacted]"
+			}
+		}
+		safe.ExtraHeaders = redacted
 	}
 	return json.Marshal(safe)
 }
@@ -75,6 +150,10 @@ type Lease struct {
 }
 
 // LeaseAudit is safe to persist in Hub audit tables and event logs.
+// json:"-" prevents JSON serialisation of APIKey and BaseURL.
+// GoString and Format provide the same protection for %#v/%+v/%v/%s
+// so that a hand-crafted LeaseAudit{APIKey:"secret"} never leaks
+// through fmt formatting.
 type LeaseAudit struct {
 	JobID     string    `json:"job_id"`
 	WorkerID  string    `json:"worker_id"`
@@ -82,9 +161,29 @@ type LeaseAudit struct {
 	Operation Operation `json:"operation"`
 	ExpiresAt time.Time `json:"expires_at"`
 	// These explicit blanks make it impossible to accidentally treat an audit
-	// record as a usable provider configuration.
-	APIKey  string `json:"api_key,omitempty"`
-	BaseURL string `json:"base_url,omitempty"`
+	// record as a usable provider configuration. json:"-" prevents even
+	// hand-crafted structs from leaking a key through serialisation.
+	APIKey  string `json:"-"`
+	BaseURL string `json:"-"`
+}
+
+// GoString prevents %#v from exposing APIKey and BaseURL. It builds a
+// safe representation manually so that json:"-" fields are never
+// included.
+func (a LeaseAudit) GoString() string {
+	return fmt.Sprintf("credentials.LeaseAudit{JobID:%q WorkerID:%q Provider:%q Operation:%q ExpiresAt:%s APIKey:[redacted] BaseURL:[redacted]}",
+		a.JobID, a.WorkerID, a.Provider, a.Operation, a.ExpiresAt.Format(time.RFC3339))
+}
+
+// Format implements fmt.Formatter so that %v, %+v, and %s never expose
+// APIKey or BaseURL. Delegates to GoString for a safe representation.
+func (a LeaseAudit) Format(f fmt.State, verb rune) {
+	switch verb {
+	case 'v', 's':
+		f.Write([]byte(a.GoString()))
+	default:
+		fmt.Fprintf(f, "%%!%c(credentials.LeaseAudit)", verb)
+	}
 }
 
 func (l Lease) Audit() LeaseAudit {

@@ -206,3 +206,22 @@ type permanentError struct{ error }
 // never a replacement for what it wraps.
 func (*permanentError) Is(target error) bool { return target == ErrPermanentFailure }
 func (e *permanentError) Unwrap() error      { return e.error }
+
+// ErrJobNotAssignable reports that a job cannot be assigned because it is
+// currently running. SetDeriveWorkerAssignment wraps this when a caller tries
+// to change the assignment of a job that is already being processed; the API
+// maps it to 409 Conflict.
+var ErrJobNotAssignable = errors.New("job is running and cannot be reassigned")
+
+// ErrInvalidAssignment reports that a worker assignment cannot be fulfilled
+// because the job, worker, or combination is invalid — the job doesn't exist,
+// the worker doesn't exist, or the worker has been revoked. The API maps it
+// to 400 Bad Request.
+var ErrInvalidAssignment = errors.New("invalid worker assignment")
+
+// ErrCollectionExists reports that an asset collection cannot be saved
+// because its name is already taken. The asset_collections.name column has a
+// UNIQUE constraint; the repository layer wraps the SQLite constraint
+// violation with this sentinel so the API can map it to 409 Conflict rather
+// than a generic 500.
+var ErrCollectionExists = errors.New("collection name already exists")

@@ -127,7 +127,7 @@ func (c *Client) Complete(ctx context.Context, token, jobID string, state domain
 // allowed to overwrite the current workflow state.
 func (c *Client) Progress(ctx context.Context, token, jobID, stage string, progress float64, event, message string) error {
 	return c.postJSON(ctx, "/api/v1/worker/jobs/"+jobID+"/progress", token, map[string]any{
-		"stage": stage, "progress": progress, "event": event, "message": message,
+		"stage": stage, "progress": progress, "event": event, "message": redactSecrets(message),
 	}, nil, http.StatusNoContent)
 }
 
@@ -306,21 +306,140 @@ func (c *Client) postJSON(ctx context.Context, path, token string, input, output
 }
 
 var (
-	bearerPattern     = regexp.MustCompile(`(?i)Bearer\s+[^\s\x00-\x1f]+`)
+	bearerPattern     = regexp.MustCompile(`(?i)Bearer\s+[^\s\x00-\x1f"]+`)
 	openAIKeyPattern  = regexp.MustCompile(`sk-[A-Za-z0-9_-]{32,}`)
 	apiKeyHeaderValue = regexp.MustCompile(`(?i)(X-Api-Key|api[_\-]?key|apikey|auth["']?\s*[:=])\s*[:=]\s*[^\s,;]+`)
+	// jsonKeyPattern is a regex fallback for unstructured text that
+	// contains JSON-like key:value fragments. The primary redaction
+	// path is jsonAwareRedact (recursive JSON walk).
+	jsonKeyPattern = regexp.MustCompile(`"(?i)(api[_\-]?key|apikey|authorization|token|secret|password)"\s*:\s*("[^"]*"|[^\s,;}\]"]+)`)
+	// jsonLikeSegment finds contiguous JSON object literals embedded
+	// in free-form text so they can be parsed and recursively redacted.
+	jsonLikeSegment = regexp.MustCompile(`(\{(?:[^{}]|\{[^{}]*\})*\})`)
+	// longTokenPattern is a safety net for non-JSON text. It only
+	// matches standalone runs (delimited by whitespace or string
+	// boundaries) starting with a letter, ≥20 chars, base64-like
+	// alphabet. Whitespace delimiting prevents matching substrings
+	// of UUIDs (e.g. 550e8400-e29b-41d4-a716-446655440000).
+	longTokenPattern = regexp.MustCompile(`(^|\s)[A-Za-z][A-Za-z0-9_\-+=/]{19,}(\s|$)`)
+	// longTokenReplace is the replacement for longTokenPattern that
+	// preserves the surrounding whitespace.
+	longTokenReplace = "${1}[redacted]${2}"
 )
 
-// redactSecrets replaces common secret patterns (Bearer tokens, OpenAI-style
-// keys, API key header values) with [redacted] so that error text sent to the
-// Hub never contains provider credentials. It follows the same bounded-length
-// philosophy as common.ReadError: the text may still contain the structure of
-// the error, but no usable key material.
+// sensitiveJSONKeys lists JSON object keys whose values are redacted
+// during recursive walking (case-insensitive comparison).
+var sensitiveJSONKeys = map[string]bool{
+	"api_key":       true,
+	"apikey":        true,
+	"authorization": true,
+	"token":         true,
+	"secret":        true,
+	"password":      true,
+	"key":           true,
+	"api_key_id":    true,
+	"access_token":  true,
+}
+
+// redactSecrets replaces common secret patterns with [redacted] so that
+// error text sent to the Hub never contains provider credentials.
+//
+// Strategy (two-phase):
+//  1. JSON-aware recursive redaction: try json.Unmarshal on the whole
+//     string; if valid JSON, recursively walk maps redacting sensitive
+//     keys and re-marshal. Also scan for JSON-like segments embedded in
+//     free-form text and redact those individually.
+//  2. Regex fallback for non-JSON text: Bearer tokens, OpenAI keys,
+//     API-key header values, JSON-key patterns, and long base64-like
+//     tokens.
 func redactSecrets(s string) string {
+	if s == "" {
+		return s
+	}
+
+	// Phase 1: JSON-aware recursive redaction. Try top-level JSON parse
+	// first; if that fails, scan for embedded JSON segments.
+	jsonHandled := false
+	if redacted := jsonAwareRedact(s); redacted != "" {
+		s = redacted
+		jsonHandled = true
+	} else {
+		s = jsonLikeSegment.ReplaceAllStringFunc(s, func(seg string) string {
+			if redacted := jsonAwareRedact(seg); redacted != "" {
+				return redacted
+			}
+			return seg
+		})
+	}
+
+	// Phase 2: regex fallback. Always apply Bearer, OpenAI key, and
+	// API-key header patterns; they work on any text. The jsonKeyPattern
+	// is skipped when the top-level string was already handled by
+	// JSON-aware redaction, to avoid double-processing
+	// (e.g. turning "api_key":"[redacted]" into "api_key":[redacted]).
 	s = bearerPattern.ReplaceAllString(s, "Bearer [redacted]")
 	s = openAIKeyPattern.ReplaceAllString(s, "[redacted]")
+	if !jsonHandled {
+		s = jsonKeyPattern.ReplaceAllString(s, `"$1":[redacted]`)
+	}
 	s = apiKeyHeaderValue.ReplaceAllString(s, "$1: [redacted]")
+	s = longTokenPattern.ReplaceAllString(s, longTokenReplace)
 	return s
+}
+
+// jsonAwareRedact attempts to parse raw as JSON. If successful, it
+// recursively walks the value redacting sensitive keys and re-parsing
+// nested JSON strings. Returns the re-marshalled JSON string, or "" if
+// raw is not valid JSON.
+func jsonAwareRedact(raw string) string {
+	var v any
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return ""
+	}
+	walkAndRedact(v)
+	out, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
+// walkAndRedact recursively walks a JSON value. For maps, it redacts
+// values under sensitive keys. For slices, it recurses into each element.
+// For string values, it attempts to parse the string as nested JSON and
+// recursively redacts that too — this catches the escaped-nested-JSON
+// bypass (e.g. {"body":"{\"token\":\"k\"}"}).
+func walkAndRedact(v any) {
+	switch val := v.(type) {
+	case map[string]any:
+		for k, sub := range val {
+			if sensitiveJSONKeys[strings.ToLower(k)] {
+				val[k] = "[redacted]"
+			} else if s, ok := sub.(string); ok {
+				// If the string value is itself valid JSON, recursively
+				// redact it and store the result as a string. This
+				// handles the escaped-nested-JSON bypass: the outer JSON
+				// parses, the string field is extracted, and we re-parse
+				// it here.  Keeping it as a string preserves the original
+				// schema (e.g. {"body":"..."} stays a string field).
+				if redacted := jsonAwareRedact(s); redacted != "" {
+					val[k] = redacted
+				}
+			} else {
+				walkAndRedact(sub)
+			}
+		}
+	case []any:
+		for i, item := range val {
+			if s, ok := item.(string); ok {
+				if redacted := jsonAwareRedact(s); redacted != "" {
+					val[i] = redacted
+				}
+			} else {
+				walkAndRedact(item)
+			}
+		}
+	}
 }
 
 func normalizeFingerprint(value string) string {

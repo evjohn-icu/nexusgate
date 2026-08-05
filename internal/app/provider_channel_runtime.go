@@ -69,6 +69,29 @@ type providerChannelRuntime struct {
 
 	cacheMu   sync.Mutex
 	executors map[providerchannels.Capability]cachedProviderExecutor
+
+	// identityCache stores (name, model) pairs resolved together so that
+	// Name() and Model() always report a consistent identity even when the
+	// resolution times out. Each entry is keyed by capability + fallback
+	// provider name so that primary and fallback instances of the same
+	// capability (e.g. ASR) never share an entry, and carries the executor
+	// route fingerprint at the time of resolution so that a channel edit
+	// invalidates the cache before the TTL elapses.
+	identityCacheMu sync.Mutex
+	identityCache   map[string]cachedIdentity
+}
+
+// identityCacheTTL bounds how long a cached identity is reused before the
+// next Name() / Model() call re-resolves. 30 s is long enough that UI
+// refreshes and status endpoints reuse one resolution, and short enough
+// that a channel edit takes effect without a Hub restart.
+const identityCacheTTL = 30 * time.Second
+
+type cachedIdentity struct {
+	name        string
+	model       string
+	fingerprint string // executor route fingerprint at resolution time; mismatch → re-resolve
+	expiresAt   time.Time
 }
 
 type cachedProviderExecutor struct {
@@ -89,6 +112,7 @@ func newProviderChannelRuntime(repo providerChannelRepository, cfg config.Config
 		legacyEmbedder:    legacyEmbedder,
 		legacyPlanner:     legacyPlanner,
 		executors:         make(map[providerchannels.Capability]cachedProviderExecutor),
+		identityCache:     make(map[string]cachedIdentity),
 	}
 }
 
@@ -126,9 +150,7 @@ func (p *channelASR) Name() string {
 	if fallback == nil {
 		fallback = p.runtime.legacyASR
 	}
-	ctx, cancel := identityTimeoutContext()
-	defer cancel()
-	name, _ := p.runtime.identity(ctx, providerchannels.CapabilityASR, fallback)
+	name, _ := p.runtime.identity(providerchannels.CapabilityASR, fallback)
 	return name
 }
 
@@ -137,9 +159,7 @@ func (p *channelASR) Model() string {
 	if fallback == nil {
 		fallback = p.runtime.legacyASR
 	}
-	ctx, cancel := identityTimeoutContext()
-	defer cancel()
-	_, model := p.runtime.identity(ctx, providerchannels.CapabilityASR, fallback)
+	_, model := p.runtime.identity(providerchannels.CapabilityASR, fallback)
 	return model
 }
 
@@ -198,16 +218,12 @@ type providerChannelPreparedVideo struct {
 }
 
 func (p *channelVideo) Name() string {
-	ctx, cancel := identityTimeoutContext()
-	defer cancel()
-	name, _ := p.runtime.identity(ctx, providerchannels.CapabilityVideoAnalysis, p.runtime.legacyVideo)
+	name, _ := p.runtime.identity(providerchannels.CapabilityVideoAnalysis, p.runtime.legacyVideo)
 	return name
 }
 
 func (p *channelVideo) Model() string {
-	ctx, cancel := identityTimeoutContext()
-	defer cancel()
-	_, model := p.runtime.identity(ctx, providerchannels.CapabilityVideoAnalysis, p.runtime.legacyVideo)
+	_, model := p.runtime.identity(providerchannels.CapabilityVideoAnalysis, p.runtime.legacyVideo)
 	return model
 }
 
@@ -223,7 +239,7 @@ func (p *channelVideo) Capabilities() []videoproviders.Capability {
 // existing Pipeline. OpenAI-compatible routes use an inline data URL and do
 // not need this preparation step.
 func (p *channelVideo) RequiresVideoPreparation() bool {
-	ctx, cancel := identityTimeoutContext()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	executor, hasRoute, err := p.runtime.executor(ctx, providerchannels.CapabilityVideoAnalysis)
 	if err == nil && hasRoute {
@@ -395,16 +411,12 @@ func (p *channelVideo) takePrepared(remoteURI string) (providerChannelPreparedVi
 type channelTagCurator struct{ runtime *providerChannelRuntime }
 
 func (p *channelTagCurator) Name() string {
-	ctx, cancel := identityTimeoutContext()
-	defer cancel()
-	name, _ := p.runtime.identity(ctx, providerchannels.CapabilityTagCurator, p.runtime.legacyCurator)
+	name, _ := p.runtime.identity(providerchannels.CapabilityTagCurator, p.runtime.legacyCurator)
 	return name
 }
 
 func (p *channelTagCurator) Model() string {
-	ctx, cancel := identityTimeoutContext()
-	defer cancel()
-	_, model := p.runtime.identity(ctx, providerchannels.CapabilityTagCurator, p.runtime.legacyCurator)
+	_, model := p.runtime.identity(providerchannels.CapabilityTagCurator, p.runtime.legacyCurator)
 	return model
 }
 
@@ -479,16 +491,12 @@ func (p *channelTagCurator) SummarizeLibrary(ctx context.Context, input domain.L
 type channelEmbedder struct{ runtime *providerChannelRuntime }
 
 func (p *channelEmbedder) Name() string {
-	ctx, cancel := identityTimeoutContext()
-	defer cancel()
-	name, _ := p.runtime.identity(ctx, providerchannels.CapabilityEmbedding, p.runtime.legacyEmbedder)
+	name, _ := p.runtime.identity(providerchannels.CapabilityEmbedding, p.runtime.legacyEmbedder)
 	return name
 }
 
 func (p *channelEmbedder) Model() string {
-	ctx, cancel := identityTimeoutContext()
-	defer cancel()
-	_, model := p.runtime.identity(ctx, providerchannels.CapabilityEmbedding, p.runtime.legacyEmbedder)
+	_, model := p.runtime.identity(providerchannels.CapabilityEmbedding, p.runtime.legacyEmbedder)
 	return model
 }
 
@@ -528,16 +536,12 @@ func (p *channelEmbedder) Embed(ctx context.Context, inputs []string) ([][]float
 type channelPlanner struct{ runtime *providerChannelRuntime }
 
 func (p *channelPlanner) Name() string {
-	ctx, cancel := identityTimeoutContext()
-	defer cancel()
-	name, _ := p.runtime.identity(ctx, providerchannels.CapabilityRepurpose, p.runtime.legacyPlanner)
+	name, _ := p.runtime.identity(providerchannels.CapabilityRepurpose, p.runtime.legacyPlanner)
 	return name
 }
 
 func (p *channelPlanner) Model() string {
-	ctx, cancel := identityTimeoutContext()
-	defer cancel()
-	_, model := p.runtime.identity(ctx, providerchannels.CapabilityRepurpose, p.runtime.legacyPlanner)
+	_, model := p.runtime.identity(providerchannels.CapabilityRepurpose, p.runtime.legacyPlanner)
 	return model
 }
 
@@ -771,32 +775,168 @@ func (r *providerChannelRuntime) resolve(ref string) (string, bool, error) {
 	return value, ok, nil
 }
 
-// identityTimeoutContext returns a context with a 2s deadline for identity-
-// resolution calls (Name / Model). When the executor cannot resolve within
-// this window the identity method falls back to the legacy provider name and
-// model, so a stalled DB query never blocks a UI render or status endpoint.
-func identityTimeoutContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), 2*time.Second)
-}
-
-func (r *providerChannelRuntime) identity(ctx context.Context, capability providerchannels.Capability, fallback interface {
+// identity resolves the (name, model) pair for a capability, caching the
+// result so that Name() and Model() always report a consistent identity even
+// when the underlying executor resolution times out.
+//
+// The entire resolution (SQLite query, secret-store checks, executor build)
+// is wrapped inside a goroutine + 2 s select so that a stalled DB or blocked
+// mutex never holds a UI render or status endpoint indefinitely.  When the
+// deadline elapses before the goroutine completes, identity returns the
+// fallback provider's Name/Model pair, or a stable non-empty sentinel
+// ("provider_channel" / "provider_channel") when no fallback exists — never
+// an empty string that would destabilise hash chains.
+//
+// The cache key includes the fallback provider name so that primary and
+// fallback instances of the same capability (e.g. ASR) are never served
+// from the same entry.  Each cached entry also carries the executor route
+// fingerprint at resolution time; a mismatch on the next lookup invalidates
+// the entry before the TTL elapses, so provider-channel edits take effect
+// without a Hub restart.
+//
+// Resource governance: resolveIdentity receives a context with a 10 s
+// deadline so that its goroutine cannot accumulate indefinitely behind a
+// stalled database or blocked mutex.  The 2 s UI deadline is enforced by
+// the outer select; when it fires the goroutine still completes (and caches
+// its result for the next caller), but it will not outlive 10 s.
+func (r *providerChannelRuntime) identity(capability providerchannels.Capability, fallback interface {
 	Name() string
 	Model() string
 }) (string, string) {
-	if executor, hasRoute, err := r.executor(ctx, capability); err == nil && hasRoute {
-		routes := executor.Route(capability)
-		if len(routes) > 0 {
-			name := routes[0].ProviderName
-			model := routes[0].Model
-			if name != "" {
-				return name, model
+	fallbackName := ""
+	if fallback != nil {
+		fallbackName = fallback.Name()
+	}
+	cacheKey := string(capability) + "\x00" + fallbackName
+
+	// Fast path: consistent cached pair whose executor fingerprint still
+	// matches the live executor cache.
+	r.identityCacheMu.Lock()
+	if cached, ok := r.identityCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
+		// Validate that the executor route has not changed since the
+		// identity was resolved.  If no executor has ever been built
+		// for this capability the cache entry is still valid — the
+		// next executor build will get a new fingerprint and the cache
+		// check on the following call will catch it.
+		r.cacheMu.Lock()
+		execCached, execOk := r.executors[capability]
+		r.cacheMu.Unlock()
+		if !execOk || execCached.fingerprint == cached.fingerprint {
+			r.identityCacheMu.Unlock()
+			return cached.name, cached.model
+		}
+		// Fingerprint mismatch: channel config changed since last
+		// resolution.  Fall through to re-resolve.
+	}
+	r.identityCacheMu.Unlock()
+
+	// Slow path: resolve with overall timeout.
+	type pair struct {
+		name  string
+		model string
+	}
+	resultCh := make(chan pair, 1)
+
+	// The goroutine's own context has a 10 s deadline so that even when the
+	// 2 s UI timeout fires first the background work cannot persist
+	// indefinitely.  executor() passes ctx to ListProviderChannels so the
+	// SQLite query respects cancellation; the secret-store check and mutex
+	// acquire are bounded by the same deadline indirectly (query failure
+	// unwinds the call).
+	resolveCtx, resolveCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer resolveCancel()
+
+	go func() {
+		n, m := r.resolveIdentity(resolveCtx, capability)
+		select {
+		case resultCh <- pair{n, m}:
+		case <-resolveCtx.Done():
+			// Caller already gave up; cache the result anyway so the
+			// next caller (which may be a retry from the same UI
+			// refresh) can use it.
+			if n != "" {
+				r.cacheIdentity(capability, fallbackName, n, m)
 			}
 		}
+	}()
+
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	select {
+	case <-timeoutCtx.Done():
+		return r.cacheFallbackIdentity(capability, fallbackName, fallback)
+	case res := <-resultCh:
+		if res.name != "" {
+			r.cacheIdentity(capability, fallbackName, res.name, res.model)
+			return res.name, res.model
+		}
+		return r.cacheFallbackIdentity(capability, fallbackName, fallback)
 	}
-	if fallback == nil {
-		return "", ""
+}
+
+// resolveIdentity performs the actual channel-executor resolution.  It
+// accepts a context so that the caller (identity) can bound its lifetime and
+// prevent goroutine accumulation behind a stalled database or blocked mutex.
+func (r *providerChannelRuntime) resolveIdentity(ctx context.Context, capability providerchannels.Capability) (string, string) {
+	executor, hasRoute, err := r.executor(ctx, capability)
+	if err == nil && hasRoute {
+		routes := executor.Route(capability)
+		if len(routes) > 0 && routes[0].ProviderName != "" {
+			return routes[0].ProviderName, routes[0].Model
+		}
 	}
-	return fallback.Name(), fallback.Model()
+	return "", ""
+}
+
+// cacheIdentity stores a resolved (name, model) pair in the identity cache
+// together with the executor route fingerprint at resolution time.
+func (r *providerChannelRuntime) cacheIdentity(capability providerchannels.Capability, fallbackName, name, model string) {
+	cacheKey := string(capability) + "\x00" + fallbackName
+	fingerprint := ""
+	// Read the executor cache fingerprint without blocking on a new build —
+	// executor() was just called by resolveIdentity, so a nil entry here
+	// means resolution failed or the route has no channels, and the
+	// fingerprint stays empty to match the executor cache's absent entry.
+	r.cacheMu.Lock()
+	if cached, ok := r.executors[capability]; ok {
+		fingerprint = cached.fingerprint
+	}
+	r.cacheMu.Unlock()
+
+	r.identityCacheMu.Lock()
+	r.identityCache[cacheKey] = cachedIdentity{
+		name: name, model: model, fingerprint: fingerprint,
+		expiresAt: time.Now().Add(identityCacheTTL),
+	}
+	r.identityCacheMu.Unlock()
+}
+
+// cacheFallbackIdentity returns the fallback provider's identity or, when no
+// fallback exists, a stable non-empty sentinel so that hash chains and model
+// caches never see an empty string.  The result is cached with the standard
+// TTL so that subsequent Name() / Model() calls within the window are
+// consistent.
+//
+// When the fallback provider exists, both Name() and Model() are read and
+// validated as a pair: if either is empty the pair is replaced with the
+// "provider_channel" sentinel so that no caller ever receives a mixed
+// identity (e.g. one empty, one from legacy config) that would destabilise
+// downstream caches.
+func (r *providerChannelRuntime) cacheFallbackIdentity(capability providerchannels.Capability, fallbackName string, fallback interface {
+	Name() string
+	Model() string
+}) (string, string) {
+	var name, model string
+	if fallback != nil {
+		name = fallback.Name()
+		model = fallback.Model()
+	}
+	if name == "" || model == "" {
+		name, model = "provider_channel", "provider_channel"
+	}
+	r.cacheIdentity(capability, fallbackName, name, model)
+	return name, model
 }
 
 // The five builders below turn a channel invocation into a provider

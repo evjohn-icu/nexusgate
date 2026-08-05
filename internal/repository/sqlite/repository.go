@@ -545,9 +545,15 @@ func (r *Repository) ListAssets(ctx context.Context, limit, offset int) ([]domai
 		}
 		asset.FirstSeenAt, _ = time.Parse(time.RFC3339Nano, firstSeen)
 		asset.LastSeenAt, _ = time.Parse(time.RFC3339Nano, lastSeen)
+		// Parse missing_since with the same strategy as GetAssetDetail:
+		// treat unparseable values as absent (nil) rather than zero time,
+		// so the two APIs are semantically consistent even on dirty data.
 		if missing.Valid {
-			parsed, _ := time.Parse(time.RFC3339Nano, missing.String)
-			asset.MissingSince = &parsed
+			if t, err := time.Parse(time.RFC3339Nano, missing.String); err != nil {
+				slog.Debug("failed to parse missing_since in ListAssets", "asset_id", asset.ID, "value", missing.String, "error", err)
+			} else {
+				asset.MissingSince = &t
+			}
 		}
 		assets = append(assets, asset)
 	}
@@ -680,37 +686,51 @@ func (r *Repository) ListProviderChannels(ctx context.Context, capability string
 		return channels, nil
 	}
 
-	// Batch-fetch all members to avoid N+1.
-	channelIDs := make([]string, len(channels))
+	// Batch-fetch all members in chunks to avoid N+1 while staying under
+	// SQLite's default max variable limit (999). 500 is a safe per-chunk size
+	// that keeps the query plan stable and the argument count well below the
+	// driver threshold.
+	const chunkSize = 500
 	byID := make(map[string]*domain.ProviderChannel, len(channels))
 	for i := range channels {
-		channelIDs[i] = channels[i].ID
 		byID[channels[i].ID] = &channels[i]
 	}
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(channelIDs)), ",")
-	args = make([]any, len(channelIDs))
-	for i, id := range channelIDs {
-		args[i] = id
+	channelIDs := make([]string, 0, len(channels))
+	for i := range channels {
+		channelIDs = append(channelIDs, channels[i].ID)
 	}
-	var memberRows *sql.Rows
-	memberRows, err = r.db.QueryContext(ctx, `SELECT id,channel_id,label,secret_ref,enabled,weight,max_inflight FROM provider_channel_members WHERE channel_id IN (`+placeholders+`) ORDER BY channel_id,label`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer memberRows.Close()
-	for memberRows.Next() {
-		var member domain.ProviderChannelMember
-		var memberEnabled int
-		if err := memberRows.Scan(&member.ID, &member.ChannelID, &member.Label, &member.SecretRef, &memberEnabled, &member.Weight, &member.MaxInflight); err != nil {
+	for start := 0; start < len(channelIDs); start += chunkSize {
+		end := start + chunkSize
+		if end > len(channelIDs) {
+			end = len(channelIDs)
+		}
+		chunk := channelIDs[start:end]
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
+		chunkArgs := make([]any, len(chunk))
+		for i, id := range chunk {
+			chunkArgs[i] = id
+		}
+		memberRows, err := r.db.QueryContext(ctx, `SELECT id,channel_id,label,secret_ref,enabled,weight,max_inflight FROM provider_channel_members WHERE channel_id IN (`+placeholders+`) ORDER BY channel_id,label`, chunkArgs...)
+		if err != nil {
 			return nil, err
 		}
-		member.Enabled = memberEnabled != 0
-		if ch, ok := byID[member.ChannelID]; ok {
-			ch.Members = append(ch.Members, member)
+		for memberRows.Next() {
+			var member domain.ProviderChannelMember
+			var memberEnabled int
+			if err := memberRows.Scan(&member.ID, &member.ChannelID, &member.Label, &member.SecretRef, &memberEnabled, &member.Weight, &member.MaxInflight); err != nil {
+				memberRows.Close()
+				return nil, err
+			}
+			member.Enabled = memberEnabled != 0
+			if ch, ok := byID[member.ChannelID]; ok {
+				ch.Members = append(ch.Members, member)
+			}
 		}
-	}
-	if err := memberRows.Err(); err != nil {
-		return nil, err
+		if err := memberRows.Err(); err != nil {
+			memberRows.Close()
+			return nil, err
+		}
+		memberRows.Close()
 	}
 	return channels, nil
 }
