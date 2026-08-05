@@ -230,3 +230,127 @@ func TestSetupLoggingInvalidFormatFallsBackToText(t *testing.T) {
 		t.Fatalf("invalid format fell back to JSONHandler instead of TextHandler")
 	}
 }
+
+func TestTruncateEnv(t *testing.T) {
+	tests := []struct {
+		name   string
+		envVal string
+		maxLen int
+		want   string
+	}{
+		{name: "empty", envVal: "", maxLen: 20, want: ""},
+		{name: "short enough", envVal: "debug", maxLen: 20, want: "debug"},
+		{name: "exactly max", envVal: "12345678901234567890", maxLen: 20, want: "12345678901234567890"},
+		{name: "too long truncated", envVal: "1234567890123456789012345", maxLen: 20, want: "12345678901234567890..."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("TEST_TRUNCATE", tt.envVal)
+			got := truncateEnv("TEST_TRUNCATE", tt.maxLen)
+			if got != tt.want {
+				t.Fatalf("truncateEnv() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// setArgs replaces os.Args for the duration of a test. Tests that call setArgs
+// must not run in parallel.
+func setArgs(t *testing.T, args []string) {
+	t.Helper()
+	orig := os.Args
+	os.Args = args
+	t.Cleanup(func() { os.Args = orig })
+}
+
+func TestRunSubcommandDispatch(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+		// env sets additional environment variables for this sub-test.
+		env map[string]string
+	}{
+		{name: "no args", args: []string{"timingdex"}, wantErr: "invalid command"},
+		{name: "unknown subcommand", args: []string{"timingdex", "bogus"}, wantErr: "invalid command"},
+		{name: "worker without subcommand", args: []string{"timingdex", "worker"}, wantErr: "usage: timingdex worker enroll|run|doctor"},
+		{name: "worker unknown subcommand", args: []string{"timingdex", "worker", "bogus"}, wantErr: "usage: timingdex worker enroll|run|doctor"},
+		{name: "root without subcommand", args: []string{"timingdex", "root"}, wantErr: "usage: timingdex root add|list|scan"},
+		{name: "root unknown subcommand", args: []string{"timingdex", "root", "bogus"}, wantErr: "usage: timingdex root add|list|scan"},
+		{name: "pipeline without subcommand", args: []string{"timingdex", "pipeline"}, wantErr: "usage: timingdex pipeline run|retry-failed"},
+		{name: "pipeline unknown subcommand", args: []string{"timingdex", "pipeline", "bogus"}, wantErr: "usage: timingdex pipeline run|retry-failed"},
+		{name: "secrets without subcommand", args: []string{"timingdex", "secrets"}, wantErr: "usage: timingdex secrets rekey"},
+		{name: "secrets unknown subcommand", args: []string{"timingdex", "secrets", "bogus"}, wantErr: "usage: timingdex secrets rekey"},
+		{name: "serve invalid flag", args: []string{"timingdex", "serve", "-bogus"}, wantErr: "flag provided but not defined"},
+		{name: "worker enroll invalid flag", args: []string{"timingdex", "worker", "enroll", "-bogus"}, wantErr: "flag provided but not defined"},
+		{name: "worker run invalid flag", args: []string{"timingdex", "worker", "run", "-bogus"}, wantErr: "flag provided but not defined"},
+		{name: "worker doctor invalid flag", args: []string{"timingdex", "worker", "doctor", "-bogus"}, wantErr: "flag provided but not defined"},
+		{name: "doctor", args: []string{"timingdex", "doctor"}},
+		{name: "root list empty", args: []string{"timingdex", "root", "list"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			t.Setenv("TIMINGDEX_DATA_DIR", dataDir)
+			t.Setenv("TIMINGDEX_TLS_MODE", "off")    // avoid auto-generating self-signed certs
+			t.Setenv("TIMINGDEX_LOG_LEVEL", "error") // suppress info output
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+			setArgs(t, tt.args)
+			err := run()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("run() error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("run() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunServeDispatchTLSFilesMissing(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("TIMINGDEX_DATA_DIR", dataDir)
+	t.Setenv("TIMINGDEX_TLS_MODE", "files")
+	t.Setenv("TIMINGDEX_TLS_CERT_FILE", filepath.Join(dataDir, "cert.pem"))
+	t.Setenv("TIMINGDEX_TLS_KEY_FILE", filepath.Join(dataDir, "key.pem"))
+	t.Setenv("TIMINGDEX_LOG_LEVEL", "error")
+	setArgs(t, []string{"timingdex", "serve"})
+	err := run()
+	if err == nil {
+		t.Fatal("expected error from missing TLS files")
+	}
+	t.Logf("serve with missing TLS files returned: %v", err)
+}
+
+func TestRunRootAdd(t *testing.T) {
+	dataDir := t.TempDir()
+	rootPath := filepath.Join(dataDir, "footage")
+	if err := os.MkdirAll(rootPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TIMINGDEX_DATA_DIR", dataDir)
+	t.Setenv("TIMINGDEX_TLS_MODE", "off")
+	t.Setenv("TIMINGDEX_LOG_LEVEL", "error")
+	setArgs(t, []string{"timingdex", "root", "add", rootPath})
+	err := run()
+	if err != nil {
+		t.Fatalf("root add: %v", err)
+	}
+	// Verify the root was persisted.
+	setArgs(t, []string{"timingdex", "root", "list"})
+	// Reconstruct because run() reuses os.Args; we need a fresh setup.
+	// run() opens the DB again, which is fine.
+	// But run() calls config.Load() which reads TIMINGDEX_DATA_DIR.
+	// That's still set from t.Setenv above.
+	origArgs := os.Args
+	os.Args = []string{"timingdex", "root", "list"}
+	defer func() { os.Args = origArgs }()
+	if err := run(); err != nil {
+		t.Fatalf("root list after add: %v", err)
+	}
+}

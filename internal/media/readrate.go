@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // -readrate arrived in FFmpeg 5.1 (2022). Plenty of long-lived installs — Ubuntu
@@ -27,7 +28,9 @@ var (
 
 func readRateAvailable() bool {
 	readRateOnce.Do(func() {
-		readRateSupported = probeReadRate(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		readRateSupported = probeReadRate(ctx)
 		if !readRateSupported {
 			slog.Warn("installed ffmpeg does not support -readrate; the read-rate limit will be ignored (FFmpeg 5.1 or newer is required)")
 		}

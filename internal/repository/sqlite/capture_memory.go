@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -211,7 +212,7 @@ func (r *Repository) ListShootSessionAssets(ctx context.Context, sessionID strin
 			return nil, err
 		}
 		asset.IsPrimary = primary != 0
-		asset.CreatedAt = parseStoredTimeString(createdAt)
+		asset.CreatedAt = parseStoredTimeString(createdAt, "asset_shoot_sessions.created_at")
 		assets = append(assets, asset)
 	}
 	return assets, rows.Err()
@@ -276,7 +277,7 @@ func parseNullableTime(value sql.NullString) *time.Time {
 	if !value.Valid || strings.TrimSpace(value.String) == "" {
 		return nil
 	}
-	parsed := parseStoredTimeString(value.String)
+	parsed := parseStoredTimeString(value.String, "capture_metadata.captured_at")
 	return &parsed
 }
 
@@ -284,10 +285,13 @@ func parseStoredTime(value sql.NullString) time.Time {
 	if !value.Valid {
 		return time.Time{}
 	}
-	return parseStoredTimeString(value.String)
+	return parseStoredTimeString(value.String, "capture_metadata.reference_time")
 }
 
-func parseStoredTimeString(value string) time.Time {
-	parsed, _ := time.Parse(time.RFC3339Nano, value)
+func parseStoredTimeString(value string, source string) time.Time {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil && strings.TrimSpace(value) != "" {
+		slog.Debug("failed to parse stored time", "value", value, "source", source, "error", err)
+	}
 	return parsed
 }

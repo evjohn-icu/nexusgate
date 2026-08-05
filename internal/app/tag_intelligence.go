@@ -92,6 +92,9 @@ func (s *Service) RunTagEmbeddingClusters(ctx context.Context, limit int, thresh
 }
 
 func buildClusters(items []domain.UnresolvedTag, vectors [][]float64, threshold float64) []domain.TagCluster {
+	if len(items) == 0 {
+		return nil
+	}
 	parent := make([]int, len(items))
 	for i := range parent {
 		parent[i] = i

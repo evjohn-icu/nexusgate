@@ -190,6 +190,13 @@ type Service struct {
 
 	supervisor *LibrarySupervisor
 
+	// scanFailuresMu guards scanFailures, which tracks consecutive enqueue
+	// failures per asset across ScanLibraryRoot passes so a single perpetually
+	// failing asset does not fill the log with identical warnings on every
+	// 15-minute scan.
+	scanFailuresMu sync.Mutex
+	scanFailures   map[string]int
+
 	// hostOverride replaces mount.LocalHost() in InspectRootPath when set. It
 	// exists only so tests can exercise the mount.Host.Container branch (the
 	// compose-volume suggestion below) without this test binary actually
@@ -267,6 +274,7 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 		curator:  channelRuntime.curator(), embedder: channelRuntime.embedder(), planner: channelRuntime.planner(),
 		hardware: hardware, adminToken: adminToken, agentToken: agentToken, secrets: secrets,
 		channelRuntime: channelRuntime,
+		scanFailures:   make(map[string]int),
 	}
 	// Constructed for every command, started by none of them: only `serve`
 	// calls RunLibrarySupervisor, and a disabled supervisor's Run is a no-op.
@@ -684,7 +692,15 @@ func (s *Service) CreateWorkerPairing(ctx context.Context, ttl time.Duration) (r
 }
 
 func (s *Service) EnrollWorker(ctx context.Context, pairingToken string, registration remote.WorkerRegistration) (remote.Worker, string, error) {
-	return s.repo.EnrollWorker(ctx, pairingToken, registration)
+	worker, token, err := s.repo.EnrollWorker(ctx, pairingToken, registration)
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "pairing token") {
+			return remote.Worker{}, "", fmt.Errorf("%w: %v", ErrPairingTokenInvalid, err)
+		}
+		return remote.Worker{}, "", fmt.Errorf("worker enrollment: %w", err)
+	}
+	return worker, token, nil
 }
 
 func (s *Service) AuthenticateWorker(ctx context.Context, token string) (remote.Worker, error) {
@@ -924,7 +940,19 @@ func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.Sc
 			// A single enqueue failure must not abort the pass: the catch-up
 			// query below only rescues a missing probe job if the pass
 			// completes, so the same asset gets another chance next scan.
-			slog.Warn("scan: enqueue changed asset failed", "asset_id", assetID, "error", err)
+			s.scanFailuresMu.Lock()
+			s.scanFailures[assetID]++
+			count := s.scanFailures[assetID]
+			s.scanFailuresMu.Unlock()
+			if count > 0 && count%5 == 0 {
+				slog.Error("scan: enqueue changed asset failed 5 consecutive passes", "asset_id", assetID, "consecutive_failures", count, "error", err)
+			} else {
+				slog.Warn("scan: enqueue changed asset failed", "asset_id", assetID, "error", err)
+			}
+		} else {
+			s.scanFailuresMu.Lock()
+			delete(s.scanFailures, assetID)
+			s.scanFailuresMu.Unlock()
 		}
 	}
 	// Catch up on assets that never got a probe job at all — nothing in the
@@ -937,7 +965,19 @@ func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.Sc
 	}
 	for _, assetID := range catchUp {
 		if err := s.pipeline.EnqueueAsset(ctx, assetID); err != nil {
-			slog.Warn("scan: enqueue missing-probe asset failed", "asset_id", assetID, "error", err)
+			s.scanFailuresMu.Lock()
+			s.scanFailures[assetID]++
+			count := s.scanFailures[assetID]
+			s.scanFailuresMu.Unlock()
+			if count > 0 && count%5 == 0 {
+				slog.Error("scan: enqueue missing-probe asset failed 5 consecutive passes", "asset_id", assetID, "consecutive_failures", count, "error", err)
+			} else {
+				slog.Warn("scan: enqueue missing-probe asset failed", "asset_id", assetID, "error", err)
+			}
+		} else {
+			s.scanFailuresMu.Lock()
+			delete(s.scanFailures, assetID)
+			s.scanFailuresMu.Unlock()
 		}
 	}
 	return result, nil
@@ -1466,6 +1506,10 @@ var ErrWebDAVSpaceNotFound = errors.New("unknown WebDAV space")
 // Mapped to 400 by the API layer.
 var ErrWebDAVLinkKindInvalid = errors.New("unknown link kind (want original or proxy)")
 
+// ErrPairingTokenInvalid reports an unrecognised or already-redeemed pairing
+// token on worker enrollment. Mapped to 401 by the API layer.
+var ErrPairingTokenInvalid = errors.New("pairing token is invalid or already redeemed")
+
 func (s *Service) CreateWebDAVAccount(ctx context.Context, username, password string) error {
 	if s.webdavAccounts == nil {
 		return errors.New("WebDAV delivery is not enabled")
@@ -1543,6 +1587,16 @@ func (s *Service) ListWebDAVAccounts(ctx context.Context) ([]string, error) {
 		return nil, errors.New("WebDAV account store is not repository-backed")
 	}
 	return repoStore.Repo.ListWebDAVAccounts(ctx)
+}
+
+// RevokeWebDAVSpace removes a delivery space and all its linked assets.
+// Subsequent reads of the space 404.
+func (s *Service) RevokeWebDAVSpace(_ context.Context, id string) error {
+	if s.webdav == nil {
+		return errors.New("WebDAV delivery is not enabled")
+	}
+	s.webdav.Revoke(id)
+	return nil
 }
 
 // DeleteWebDAVAccount removes a delivery account.

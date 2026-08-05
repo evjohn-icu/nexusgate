@@ -2,6 +2,7 @@ package credentials
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -52,6 +53,54 @@ func TestCredentialMarshalJSONEmptyKey(t *testing.T) {
 	}
 	if apiKey != "" {
 		t.Fatalf("empty api_key should remain empty, got %v", apiKey)
+	}
+}
+
+func TestCredentialFormatDoesNotLeakAPIKey(t *testing.T) {
+	c := Credential{
+		BaseURL: "https://api.example.com",
+		APIKey:  "sk-super-secret-do-not-leak",
+		Model:   "model-v1",
+	}
+
+	for _, tc := range []struct {
+		name string
+		out  string
+	}{
+		{name: "%v", out: fmt.Sprintf("%v", c)},
+		{name: "%+v", out: fmt.Sprintf("%+v", c)},
+		{name: "%s", out: fmt.Sprintf("%s", c)},
+		{name: "%#v", out: fmt.Sprintf("%#v", c)},
+	} {
+		if strings.Contains(tc.out, "sk-super-secret-do-not-leak") {
+			t.Errorf("%s leaked API key: %s", tc.name, tc.out)
+		}
+		if !strings.Contains(tc.out, "[redacted]") {
+			t.Errorf("%s did not redact API key: %s", tc.name, tc.out)
+		}
+	}
+}
+
+func TestLeaseFormatDoesNotLeakCredentialAPIKey(t *testing.T) {
+	l := Lease{
+		JobID:     "job-1",
+		WorkerID:  "worker-1",
+		Provider:  "gemini",
+		Operation: OperationVideoAnalysis,
+		ExpiresAt: "2026-08-01T00:00:00Z",
+		Credential: Credential{
+			BaseURL: "https://vision.example.com",
+			APIKey:  "sk-leaked-via-lease",
+			Model:   "gemini-pro-vision",
+		},
+	}
+
+	out := fmt.Sprintf("%+v", l)
+	if strings.Contains(out, "sk-leaked-via-lease") {
+		t.Fatalf("%%+v on Lease leaked API key: %s", out)
+	}
+	if !strings.Contains(out, "[redacted]") {
+		t.Fatalf("%%+v on Lease did not redact credential.api_key: %s", out)
 	}
 }
 

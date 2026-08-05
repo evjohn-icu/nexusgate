@@ -260,3 +260,61 @@ func TestWebDAVListSpaces(t *testing.T) {
 		t.Fatalf("space %s not found in list: %v", created.SpaceID, after)
 	}
 }
+
+func TestWebDAVDeleteSpace(t *testing.T) {
+	service, handler, _ := newWebDAVFixture(t)
+
+	// Create an account so the WebDAV handler can authenticate us.
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, hubAdminRequest(service, http.MethodPost, "/api/v1/admin/webdav/accounts", bytes.NewBufferString(`{"username":"editor","password":"s3cret"}`)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create account = %d, want 201; body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Create a space.
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, hubAdminRequest(service, http.MethodPost, "/api/v1/admin/webdav/spaces", nil))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create space = %d, want 201", rec.Code)
+	}
+	var created struct {
+		SpaceID string `json:"space_id"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete returns 204.
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, hubAdminRequest(service, http.MethodDelete, "/api/v1/admin/webdav/spaces/"+created.SpaceID, nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete space = %d, want 204; body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Subsequent list does not contain deleted space.
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, hubAdminRequest(service, http.MethodGet, "/api/v1/admin/webdav/spaces", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list after delete = %d, want 200", rec.Code)
+	}
+	var spaces []string
+	if err := json.NewDecoder(rec.Body).Decode(&spaces); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range spaces {
+		if id == created.SpaceID {
+			t.Fatalf("deleted space %s still appears in list: %v", created.SpaceID, spaces)
+		}
+	}
+
+	// Accessing the deleted space's paths returns 401 (the WebDAV handler
+	// returns 401 for both bad credentials and missing spaces to prevent
+	// probing which spaces exist).
+	rec = httptest.NewRecorder()
+	davReq := httptest.NewRequest(http.MethodGet, "/spaces/"+created.SpaceID+"/anything", nil)
+	davReq.SetBasicAuth("editor", "s3cret")
+	handler.ServeHTTP(rec, davReq)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("access deleted space = %d, want 401", rec.Code)
+	}
+}

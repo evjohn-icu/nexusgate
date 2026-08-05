@@ -123,17 +123,6 @@ func previewStatus(plan PreviewRenderPlan) string {
 	}
 }
 
-func firstExifString(exif map[string]any, keys ...string) string {
-	for _, key := range keys {
-		if value, ok := exif[key]; ok {
-			if text := strings.TrimSpace(fmt.Sprint(value)); text != "" && text != "<nil>" {
-				return text
-			}
-		}
-	}
-	return ""
-}
-
 type metadataField struct {
 	key   string
 	value string
@@ -377,7 +366,7 @@ func ExtractAudio(ctx context.Context, src, dst string, readRate float64) error 
 		args = append(args, "-i", src, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "64k", out)
 		cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 		if raw, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("audio: %w: %s", err, raw)
+			return fmt.Errorf("audio: %w: %s", err, truncateStderr(raw))
 		}
 		return nil
 	})
@@ -433,9 +422,9 @@ func runWithFallback(ctx context.Context, label string, args []string, plan Hard
 		if fallbackErr == nil {
 			return nil
 		}
-		return fmt.Errorf("%s hardware %s failed: %s; software fallback failed: %w: %s", label, plan.Mode, out, fallbackErr, fallbackOut)
+		return fmt.Errorf("%s hardware %s failed: %s; software fallback failed: %w: %s", label, plan.Mode, truncateStderr(out), fallbackErr, truncateStderr(fallbackOut))
 	}
-	return fmt.Errorf("%s (%s): %w: %s", label, plan.Mode, err, out)
+	return fmt.Errorf("%s (%s): %w: %s", label, plan.Mode, err, truncateStderr(out))
 }
 
 const mostlySilentThreshold = 0.80
@@ -512,6 +501,19 @@ func classifySpeechFromSilenceLog(log string, durationMS int64) (domain.SpeechCl
 	speechProbability := max(0.05, 1-silentRatio)
 	raw, _ := json.Marshal(map[string]any{"silence_regions": len(intervals), "silent_duration_ms": int64(silentSeconds * 1000), "silent_ratio": silentRatio})
 	return domain.SpeechClassification{Classification: classification, SpeechProbability: speechProbability, Reason: reason, RawJSON: string(raw)}, nil
+}
+
+const maxStderrBytes = 4096
+
+// truncateStderr keeps CombinedOutput stderr from ballooning error strings.
+// Several ffmpeg failure modes (hardware encoder init, corrupt container)
+// produce multi-MB logs; embedding the full output in an error both bloats
+// the database and risks leaking paths. Only the tail is retained.
+func truncateStderr(raw []byte) string {
+	if len(raw) <= maxStderrBytes {
+		return string(raw)
+	}
+	return fmt.Sprintf("[truncated %d bytes] ...%s", len(raw)-maxStderrBytes, string(raw[len(raw)-maxStderrBytes:]))
 }
 
 func min(left, right float64) float64 {

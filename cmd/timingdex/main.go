@@ -53,7 +53,7 @@ func setupLogging() {
 	case "", "info":
 		level = slog.LevelInfo
 	default:
-		slog.Warn("ignoring invalid TIMINGDEX_LOG_LEVEL; using info", "level", os.Getenv("TIMINGDEX_LOG_LEVEL"))
+		slog.Warn("ignoring invalid TIMINGDEX_LOG_LEVEL; using info", "level", truncateEnv("TIMINGDEX_LOG_LEVEL", 20))
 	}
 	var handler slog.Handler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("TIMINGDEX_LOG_FORMAT"))) {
@@ -61,7 +61,7 @@ func setupLogging() {
 	case "json":
 		handler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})
 	default:
-		slog.Warn("ignoring invalid TIMINGDEX_LOG_FORMAT; using text", "format", os.Getenv("TIMINGDEX_LOG_FORMAT"))
+		slog.Warn("ignoring invalid TIMINGDEX_LOG_FORMAT; using text", "format", truncateEnv("TIMINGDEX_LOG_FORMAT", 20))
 	}
 	slog.SetDefault(slog.New(handler))
 }
@@ -499,6 +499,14 @@ func defaultWorkerConfigPath() string {
 	}
 	return filepath.Join(home, ".timingdex", "worker.json")
 }
+func truncateEnv(name string, maxLen int) string {
+	v := os.Getenv(name)
+	if len(v) <= maxLen {
+		return v
+	}
+	return v[:maxLen] + "..."
+}
+
 func hostname() string {
 	value, err := os.Hostname()
 	if err != nil || value == "" {

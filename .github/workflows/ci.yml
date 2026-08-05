@@ -13,6 +13,7 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -57,9 +58,6 @@ jobs:
       - name: check doc references
         run: bash scripts/check-doc-refs.sh
 
-      - name: test
-        run: go test ./...
-
       - name: coverage gate
         run: |
           go test -coverprofile=coverage.out ./... > /tmp/cov-stdout.txt 2>&1
@@ -77,4 +75,4 @@ jobs:
           rm -f coverage.out /tmp/cov-stdout.txt
 
       - name: test -race
-        run: go test -race ./...
+        run: go test -race -count=1 ./...

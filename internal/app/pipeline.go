@@ -111,7 +111,11 @@ func (p *Pipeline) EnqueueAsset(ctx context.Context, assetID string) error {
 func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 	worker := "local-" + idgen.New()
 	executed := 0
+	consecutiveLeaseErrors := 0
 	for {
+		if err := ctx.Err(); err != nil {
+			return executed, err
+		}
 		// Re-read the throttle each iteration rather than once per run. A run
 		// can last hours, which is longer than the off-peak window it is
 		// supposed to respect, and the operator must be able to tighten the
@@ -124,8 +128,16 @@ func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 		now := time.Now()
 		job, err := p.repo.LeaseNextJob(ctx, worker, 2*time.Minute, domain.LeaseFilter{MaxAssetBytes: throttle.MaxAssetBytesAt(now)})
 		if err != nil {
-			return executed, err
+			consecutiveLeaseErrors++
+			if consecutiveLeaseErrors%5 == 1 || consecutiveLeaseErrors == 1 {
+				slog.Warn("pipeline lease query failing; will retry", "consecutive_errors", consecutiveLeaseErrors, "error", err)
+			}
+			if sleepErr := sleepContext(ctx, 500*time.Millisecond); sleepErr != nil {
+				return executed, sleepErr
+			}
+			continue
 		}
+		consecutiveLeaseErrors = 0
 		if job == nil {
 			return executed, nil
 		}

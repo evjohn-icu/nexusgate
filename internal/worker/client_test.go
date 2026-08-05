@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/evjohn-icu/timingdex/internal/credentials"
@@ -159,5 +160,82 @@ func TestClientReportsProgressAndCanUseJSONOnlyProviderProxy(t *testing.T) {
 	}
 	if !json.Valid(result.Body) || string(result.Body) != `{"summary":"Hub keeps the provider key"}` {
 		t.Fatalf("proxy result=%s", result.Body)
+	}
+}
+
+func TestRedactSecretsStripsBearerAndOpenAIKeysFromErrorMessages(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "Bearer token in error",
+			input: "provider returned HTTP 401: invalid Bearer sk-abc123def456ghi789jkl012mno345pqr678stu901vwx234",
+			want:  "provider returned HTTP 401: invalid Bearer [redacted]",
+		},
+		{
+			name:  "OpenAI key in error",
+			input: "connect: API key sk-proj-abcdefghijklmnopqrstuvwxyz1234567890 is invalid",
+			want:  "connect: API key [redacted] is invalid",
+		},
+		{
+			name:  "X-Api-Key header value",
+			input: "request failed: X-Api-Key: sk-secret-value-here-12345678",
+			want:  "request failed: X-Api-Key: [redacted]",
+		},
+		{
+			name:  "api_key in query-like text",
+			input: `{"error":"api_key=sk-abcdefghijklmnopqrstuvwxyz123456 is malformed"}`,
+			want:  `{"error":"api_key: [redacted] is malformed"}`, // regex captures api_key=, replaces value
+		},
+		{
+			name:  "no secrets in text",
+			input: "ffmpeg exited with code 1: file not found",
+			want:  "ffmpeg exited with code 1: file not found",
+		},
+		{
+			name:  "empty string",
+			input: "",
+			want:  "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := redactSecrets(tc.input)
+			if got != tc.want {
+				t.Fatalf("redactSecrets(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUploadArtifactCancelsOnContextDone(t *testing.T) {
+	artifactPath := filepath.Join(t.TempDir(), "large.bin")
+	// Write a large file so io.Copy does not finish instantly.
+	if err := os.WriteFile(artifactPath, make([]byte, 10<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The server never reads the body; the pipe will block.
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately so the goroutine sees ctx.Done()
+
+	client := NewClient(server.URL, "")
+	err := client.UploadArtifact(ctx, "worker-token", "job-1", ArtifactUpload{
+		Type:        "proxy",
+		ProfileHash: "proxy-v1",
+		Path:        artifactPath,
+	})
+	if err == nil {
+		t.Fatal("expected context cancellation to propagate to UploadArtifact")
+	}
+	if !strings.Contains(err.Error(), "cancel") && !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("error should reflect cancellation, got: %v", err)
 	}
 }

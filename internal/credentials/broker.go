@@ -46,6 +46,25 @@ func (c Credential) MarshalJSON() ([]byte, error) {
 	return json.Marshal(safe)
 }
 
+// GoString prevents %#v from exposing the API key by delegating to the safe
+// JSON representation.
+func (c Credential) GoString() string {
+	safe, _ := c.MarshalJSON()
+	return string(safe)
+}
+
+// Format implements fmt.Formatter so that %v, %+v, and %s never expose the
+// API key — even when Credential is a field of Lease printed with %+v.
+func (c Credential) Format(f fmt.State, verb rune) {
+	switch verb {
+	case 'v', 's':
+		safe, _ := c.MarshalJSON()
+		f.Write(safe)
+	default:
+		fmt.Fprintf(f, "%%!%c(credentials.Credential)", verb)
+	}
+}
+
 type Lease struct {
 	JobID      string     `json:"job_id"`
 	WorkerID   string     `json:"worker_id"`

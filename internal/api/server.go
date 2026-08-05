@@ -120,6 +120,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/admin/webdav/accounts/{username}", s.requireHubAdmin(s.deleteWebDAVAccount))
 	mux.HandleFunc("POST /api/v1/admin/webdav/spaces", s.requireHubAdmin(s.createWebDAVSpace))
 	mux.HandleFunc("GET /api/v1/admin/webdav/spaces", s.requireHubAdmin(s.listWebDAVSpaces))
+	mux.HandleFunc("DELETE /api/v1/admin/webdav/spaces/{id}", s.requireHubAdmin(s.deleteWebDAVSpace))
 	mux.HandleFunc("POST /api/v1/admin/webdav/spaces/{id}/links", s.requireHubAdmin(s.linkWebDAVAsset))
 	mux.HandleFunc("GET /api/v1/hub/workers", s.requireHubAdmin(s.listWorkers))
 	mux.HandleFunc("GET /api/v1/admin/provider-channels", s.requireHubAdmin(s.listProviderChannels))
@@ -341,6 +342,14 @@ func (s *Server) listWebDAVSpaces(w http.ResponseWriter, r *http.Request) {
 		spaces = []string{}
 	}
 	writeJSON(w, http.StatusOK, spaces)
+}
+
+func (s *Server) deleteWebDAVSpace(w http.ResponseWriter, r *http.Request) {
+	if err := s.service.RevokeWebDAVSpace(r.Context(), r.PathValue("id")); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) linkWebDAVAsset(w http.ResponseWriter, r *http.Request) {
@@ -577,7 +586,11 @@ func (s *Server) enrollWorker(w http.ResponseWriter, r *http.Request) {
 	}
 	worker, token, err := s.service.EnrollWorker(r.Context(), request.PairingToken, request.WorkerRegistration)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		if errors.Is(err, app.ErrPairingTokenInvalid) {
+			http.Error(w, "worker enrollment rejected", http.StatusUnauthorized)
+		} else {
+			writeError(w, err)
+		}
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"worker": worker, "token": token})
@@ -644,12 +657,17 @@ func (s *Server) workerCompleteJob(w http.ResponseWriter, r *http.Request) {
 		State   domain.JobState `json:"state"`
 		Message string          `json:"message"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "invalid worker job completion", http.StatusBadRequest)
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&request); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "invalid worker job completion", http.StatusBadRequest)
+		}
 		return
 	}
 	if err := s.service.CompleteWorkerJob(r.Context(), r.PathValue("id"), worker.ID, request.State, request.Message); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -946,6 +964,11 @@ func (s *Server) agentCapabilities(w http.ResponseWriter, r *http.Request) {
 			"read_provider_keys",
 			"access_original_media_paths",
 			"export_timeline",
+			"manage_tags",
+			"manage_collections",
+			"manage_webdav_accounts",
+			"manage_roots",
+			"manage_workers",
 		},
 	})
 }
@@ -1192,7 +1215,7 @@ func (s *Server) setWorkerJobAssignment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := s.service.SetDeriveWorkerAssignment(r.Context(), r.PathValue("id"), strings.TrimSpace(input.WorkerID), input.Mode); err != nil {
-		http.Error(w, "worker assignment rejected: "+err.Error(), http.StatusBadRequest)
+		writeError(w, err)
 		return
 	}
 	status, err := s.service.GetWorkerJobStatus(r.Context(), r.PathValue("id"))
@@ -1585,7 +1608,7 @@ func (s *Server) saveCollection(w http.ResponseWriter, r *http.Request) {
 	}
 	saved, err := s.service.SaveAssetCollection(r.Context(), collection)
 	if err != nil {
-		http.Error(w, "collection rejected: "+err.Error(), http.StatusBadRequest)
+		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, saved)
@@ -1699,6 +1722,12 @@ func (s *Server) serveArtifact(w http.ResponseWriter, r *http.Request, typ strin
 		return
 	}
 	if _, err := os.Stat(a.LocalPath); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	// Defensive: refuse to serve any file outside the Hub data directory.
+	if !strings.HasPrefix(a.LocalPath, s.service.DataDir()) {
+		slog.Warn("artifact path is outside data directory", "path", a.LocalPath, "datadir", s.service.DataDir())
 		http.NotFound(w, r)
 		return
 	}

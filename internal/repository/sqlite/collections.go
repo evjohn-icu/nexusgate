@@ -45,7 +45,7 @@ func (r *Repository) SaveAssetCollection(ctx context.Context, collection domain.
 		err := r.db.QueryRowContext(ctx, `SELECT created_at FROM asset_collections WHERE id=?`, collection.ID).Scan(&existingCreated)
 		switch {
 		case err == nil:
-			collection.CreatedAt = parseStoredTimeString(existingCreated)
+			collection.CreatedAt = parseStoredTimeString(existingCreated, "asset_collections.created_at")
 		case errors.Is(err, sql.ErrNoRows):
 			collection.CreatedAt = now
 		default:
@@ -182,7 +182,7 @@ func scanAssetCollection(scanner collectionScanner) (domain.AssetCollection, err
 	if err := json.Unmarshal([]byte(rawFilter), &collection.Filter); err != nil {
 		return domain.AssetCollection{}, fmt.Errorf("decode collection filter: %w", err)
 	}
-	collection.CreatedAt = parseStoredTimeString(createdAt)
-	collection.UpdatedAt = parseStoredTimeString(updatedAt)
+	collection.CreatedAt = parseStoredTimeString(createdAt, "asset_collections.created_at")
+	collection.UpdatedAt = parseStoredTimeString(updatedAt, "asset_collections.updated_at")
 	return collection, nil
 }

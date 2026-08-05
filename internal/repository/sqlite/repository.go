@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -670,27 +671,48 @@ func (r *Repository) ListProviderChannels(ctx context.Context, capability string
 		channel.Enabled = enabled != 0
 		channel.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 		channel.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
-		memberRows, err := r.db.QueryContext(ctx, `SELECT id,channel_id,label,secret_ref,enabled,weight,max_inflight FROM provider_channel_members WHERE channel_id=? ORDER BY label`, channel.ID)
-		if err != nil {
-			return nil, err
-		}
-		for memberRows.Next() {
-			var member domain.ProviderChannelMember
-			var memberEnabled int
-			if err := memberRows.Scan(&member.ID, &member.ChannelID, &member.Label, &member.SecretRef, &memberEnabled, &member.Weight, &member.MaxInflight); err != nil {
-				memberRows.Close()
-				return nil, err
-			}
-			member.Enabled = memberEnabled != 0
-			channelsMember := member
-			channel.Members = append(channel.Members, channelsMember)
-		}
-		if err := memberRows.Close(); err != nil {
-			return nil, err
-		}
 		channels = append(channels, channel)
 	}
-	return channels, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(channels) == 0 {
+		return channels, nil
+	}
+
+	// Batch-fetch all members to avoid N+1.
+	channelIDs := make([]string, len(channels))
+	byID := make(map[string]*domain.ProviderChannel, len(channels))
+	for i := range channels {
+		channelIDs[i] = channels[i].ID
+		byID[channels[i].ID] = &channels[i]
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(channelIDs)), ",")
+	args = make([]any, len(channelIDs))
+	for i, id := range channelIDs {
+		args[i] = id
+	}
+	var memberRows *sql.Rows
+	memberRows, err = r.db.QueryContext(ctx, `SELECT id,channel_id,label,secret_ref,enabled,weight,max_inflight FROM provider_channel_members WHERE channel_id IN (`+placeholders+`) ORDER BY channel_id,label`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer memberRows.Close()
+	for memberRows.Next() {
+		var member domain.ProviderChannelMember
+		var memberEnabled int
+		if err := memberRows.Scan(&member.ID, &member.ChannelID, &member.Label, &member.SecretRef, &memberEnabled, &member.Weight, &member.MaxInflight); err != nil {
+			return nil, err
+		}
+		member.Enabled = memberEnabled != 0
+		if ch, ok := byID[member.ChannelID]; ok {
+			ch.Members = append(ch.Members, member)
+		}
+	}
+	if err := memberRows.Err(); err != nil {
+		return nil, err
+	}
+	return channels, nil
 }
 
 // RebuildAutomaticShootSessions materializes deterministic, conservative
@@ -1229,8 +1251,12 @@ func (r *Repository) RebuildSearch(ctx context.Context, assetID string) error {
 		return err
 	}
 	var summary, transcript, tags, subjects, moods, extra, reason string
-	_ = r.db.QueryRowContext(ctx, `SELECT summary,scene_tags_json,subjects_json,mood_tags_json,extra_tags_json,editorial_reason FROM asset_analysis WHERE asset_id=?`, assetID).Scan(&summary, &tags, &subjects, &moods, &extra, &reason)
-	_ = r.db.QueryRowContext(ctx, `SELECT full_text FROM transcripts WHERE asset_id=? AND status='succeeded' ORDER BY created_at DESC LIMIT 1`, assetID).Scan(&transcript)
+	if err := r.db.QueryRowContext(ctx, `SELECT summary,scene_tags_json,subjects_json,mood_tags_json,extra_tags_json,editorial_reason FROM asset_analysis WHERE asset_id=?`, assetID).Scan(&summary, &tags, &subjects, &moods, &extra, &reason); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err := r.db.QueryRowContext(ctx, `SELECT full_text FROM transcripts WHERE asset_id=? AND status='succeeded' ORDER BY created_at DESC LIMIT 1`, assetID).Scan(&transcript); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2278,11 +2304,26 @@ func (r *Repository) GetAssetDetail(ctx context.Context, assetID string) (*domai
 	if err != nil {
 		return nil, err
 	}
-	d.Asset.FirstSeenAt, _ = time.Parse(time.RFC3339Nano, first)
-	d.Asset.LastSeenAt, _ = time.Parse(time.RFC3339Nano, last)
+	if t, err := time.Parse(time.RFC3339Nano, first); err != nil {
+		if first != "" {
+			slog.Debug("failed to parse first_seen_at in GetAssetDetail", "asset_id", assetID, "value", first, "error", err)
+		}
+	} else {
+		d.Asset.FirstSeenAt = t
+	}
+	if t, err := time.Parse(time.RFC3339Nano, last); err != nil {
+		if last != "" {
+			slog.Debug("failed to parse last_seen_at in GetAssetDetail", "asset_id", assetID, "value", last, "error", err)
+		}
+	} else {
+		d.Asset.LastSeenAt = t
+	}
 	if missing.Valid {
-		t, _ := time.Parse(time.RFC3339Nano, missing.String)
-		d.Asset.MissingSince = &t
+		if t, err := time.Parse(time.RFC3339Nano, missing.String); err != nil {
+			slog.Debug("failed to parse missing_since in GetAssetDetail", "asset_id", assetID, "value", missing.String, "error", err)
+		} else {
+			d.Asset.MissingSince = &t
+		}
 	}
 	if loc, err := r.GetPrimaryLocation(ctx, assetID); err == nil {
 		d.Location = &loc

@@ -18,6 +18,7 @@ import (
 	"net/textproto"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -118,7 +119,7 @@ func (c *Client) Lease(ctx context.Context, token string) (*remote.WorkerJob, er
 }
 
 func (c *Client) Complete(ctx context.Context, token, jobID string, state domain.JobState, message string) error {
-	return c.postJSON(ctx, "/api/v1/worker/jobs/"+jobID+"/complete", token, map[string]any{"state": state, "message": message}, nil, http.StatusNoContent)
+	return c.postJSON(ctx, "/api/v1/worker/jobs/"+jobID+"/complete", token, map[string]any{"state": state, "message": redactSecrets(message)}, nil, http.StatusNoContent)
 }
 
 // Progress records a bounded, lease-owned stage update. It is safe to call
@@ -198,6 +199,15 @@ func (c *Client) UploadArtifact(ctx context.Context, token, jobID string, artifa
 	writeDone := make(chan error, 1)
 	go func() {
 		var writeErr error
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			select {
+			case <-ctx.Done():
+				_ = writer.CloseWithError(ctx.Err())
+			case <-done:
+			}
+		}()
 		defer func() {
 			if writeErr != nil {
 				_ = writer.CloseWithError(writeErr)
@@ -290,9 +300,27 @@ func (c *Client) postJSON(ctx context.Context, path, token string, input, output
 		return fmt.Errorf("Hub %s: %s", response.Status, strings.TrimSpace(string(message)))
 	}
 	if output != nil {
-		return json.NewDecoder(response.Body).Decode(output)
+		return json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(output)
 	}
 	return nil
+}
+
+var (
+	bearerPattern     = regexp.MustCompile(`(?i)Bearer\s+[^\s\x00-\x1f]+`)
+	openAIKeyPattern  = regexp.MustCompile(`sk-[A-Za-z0-9_-]{32,}`)
+	apiKeyHeaderValue = regexp.MustCompile(`(?i)(X-Api-Key|api[_\-]?key|apikey|auth["']?\s*[:=])\s*[:=]\s*[^\s,;]+`)
+)
+
+// redactSecrets replaces common secret patterns (Bearer tokens, OpenAI-style
+// keys, API key header values) with [redacted] so that error text sent to the
+// Hub never contains provider credentials. It follows the same bounded-length
+// philosophy as common.ReadError: the text may still contain the structure of
+// the error, but no usable key material.
+func redactSecrets(s string) string {
+	s = bearerPattern.ReplaceAllString(s, "Bearer [redacted]")
+	s = openAIKeyPattern.ReplaceAllString(s, "[redacted]")
+	s = apiKeyHeaderValue.ReplaceAllString(s, "$1: [redacted]")
+	return s
 }
 
 func normalizeFingerprint(value string) string {

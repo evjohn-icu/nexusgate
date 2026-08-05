@@ -31,7 +31,7 @@ const (
 
 type ASR struct {
 	URL            string
-	APIKey         string
+	APIKey         string `json:"-"`
 	ResourceID     string
 	RequestModel   string
 	ModelName      string

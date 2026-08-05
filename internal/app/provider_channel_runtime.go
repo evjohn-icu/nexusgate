@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/evjohn-icu/timingdex/internal/config"
 	"github.com/evjohn-icu/timingdex/internal/domain"
@@ -125,7 +126,9 @@ func (p *channelASR) Name() string {
 	if fallback == nil {
 		fallback = p.runtime.legacyASR
 	}
-	name, _ := p.runtime.identity(context.Background(), providerchannels.CapabilityASR, fallback)
+	ctx, cancel := identityTimeoutContext()
+	defer cancel()
+	name, _ := p.runtime.identity(ctx, providerchannels.CapabilityASR, fallback)
 	return name
 }
 
@@ -134,7 +137,9 @@ func (p *channelASR) Model() string {
 	if fallback == nil {
 		fallback = p.runtime.legacyASR
 	}
-	_, model := p.runtime.identity(context.Background(), providerchannels.CapabilityASR, fallback)
+	ctx, cancel := identityTimeoutContext()
+	defer cancel()
+	_, model := p.runtime.identity(ctx, providerchannels.CapabilityASR, fallback)
 	return model
 }
 
@@ -193,12 +198,16 @@ type providerChannelPreparedVideo struct {
 }
 
 func (p *channelVideo) Name() string {
-	name, _ := p.runtime.identity(context.Background(), providerchannels.CapabilityVideoAnalysis, p.runtime.legacyVideo)
+	ctx, cancel := identityTimeoutContext()
+	defer cancel()
+	name, _ := p.runtime.identity(ctx, providerchannels.CapabilityVideoAnalysis, p.runtime.legacyVideo)
 	return name
 }
 
 func (p *channelVideo) Model() string {
-	_, model := p.runtime.identity(context.Background(), providerchannels.CapabilityVideoAnalysis, p.runtime.legacyVideo)
+	ctx, cancel := identityTimeoutContext()
+	defer cancel()
+	_, model := p.runtime.identity(ctx, providerchannels.CapabilityVideoAnalysis, p.runtime.legacyVideo)
 	return model
 }
 
@@ -214,7 +223,9 @@ func (p *channelVideo) Capabilities() []videoproviders.Capability {
 // existing Pipeline. OpenAI-compatible routes use an inline data URL and do
 // not need this preparation step.
 func (p *channelVideo) RequiresVideoPreparation() bool {
-	executor, hasRoute, err := p.runtime.executor(context.Background(), providerchannels.CapabilityVideoAnalysis)
+	ctx, cancel := identityTimeoutContext()
+	defer cancel()
+	executor, hasRoute, err := p.runtime.executor(ctx, providerchannels.CapabilityVideoAnalysis)
 	if err == nil && hasRoute {
 		routes := executor.Route(providerchannels.CapabilityVideoAnalysis)
 		return len(routes) > 0 && routes[0].ProviderName == "gemini"
@@ -384,12 +395,16 @@ func (p *channelVideo) takePrepared(remoteURI string) (providerChannelPreparedVi
 type channelTagCurator struct{ runtime *providerChannelRuntime }
 
 func (p *channelTagCurator) Name() string {
-	name, _ := p.runtime.identity(context.Background(), providerchannels.CapabilityTagCurator, p.runtime.legacyCurator)
+	ctx, cancel := identityTimeoutContext()
+	defer cancel()
+	name, _ := p.runtime.identity(ctx, providerchannels.CapabilityTagCurator, p.runtime.legacyCurator)
 	return name
 }
 
 func (p *channelTagCurator) Model() string {
-	_, model := p.runtime.identity(context.Background(), providerchannels.CapabilityTagCurator, p.runtime.legacyCurator)
+	ctx, cancel := identityTimeoutContext()
+	defer cancel()
+	_, model := p.runtime.identity(ctx, providerchannels.CapabilityTagCurator, p.runtime.legacyCurator)
 	return model
 }
 
@@ -464,12 +479,16 @@ func (p *channelTagCurator) SummarizeLibrary(ctx context.Context, input domain.L
 type channelEmbedder struct{ runtime *providerChannelRuntime }
 
 func (p *channelEmbedder) Name() string {
-	name, _ := p.runtime.identity(context.Background(), providerchannels.CapabilityEmbedding, p.runtime.legacyEmbedder)
+	ctx, cancel := identityTimeoutContext()
+	defer cancel()
+	name, _ := p.runtime.identity(ctx, providerchannels.CapabilityEmbedding, p.runtime.legacyEmbedder)
 	return name
 }
 
 func (p *channelEmbedder) Model() string {
-	_, model := p.runtime.identity(context.Background(), providerchannels.CapabilityEmbedding, p.runtime.legacyEmbedder)
+	ctx, cancel := identityTimeoutContext()
+	defer cancel()
+	_, model := p.runtime.identity(ctx, providerchannels.CapabilityEmbedding, p.runtime.legacyEmbedder)
 	return model
 }
 
@@ -509,12 +528,16 @@ func (p *channelEmbedder) Embed(ctx context.Context, inputs []string) ([][]float
 type channelPlanner struct{ runtime *providerChannelRuntime }
 
 func (p *channelPlanner) Name() string {
-	name, _ := p.runtime.identity(context.Background(), providerchannels.CapabilityRepurpose, p.runtime.legacyPlanner)
+	ctx, cancel := identityTimeoutContext()
+	defer cancel()
+	name, _ := p.runtime.identity(ctx, providerchannels.CapabilityRepurpose, p.runtime.legacyPlanner)
 	return name
 }
 
 func (p *channelPlanner) Model() string {
-	_, model := p.runtime.identity(context.Background(), providerchannels.CapabilityRepurpose, p.runtime.legacyPlanner)
+	ctx, cancel := identityTimeoutContext()
+	defer cancel()
+	_, model := p.runtime.identity(ctx, providerchannels.CapabilityRepurpose, p.runtime.legacyPlanner)
 	return model
 }
 
@@ -746,6 +769,14 @@ func (r *providerChannelRuntime) resolve(ref string) (string, bool, error) {
 		return "", false, fmt.Errorf("resolve provider channel secret: %w", err)
 	}
 	return value, ok, nil
+}
+
+// identityTimeoutContext returns a context with a 2s deadline for identity-
+// resolution calls (Name / Model). When the executor cannot resolve within
+// this window the identity method falls back to the legacy provider name and
+// model, so a stalled DB query never blocks a UI render or status endpoint.
+func identityTimeoutContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 2*time.Second)
 }
 
 func (r *providerChannelRuntime) identity(ctx context.Context, capability providerchannels.Capability, fallback interface {
