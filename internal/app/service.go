@@ -112,7 +112,6 @@ type Repository interface {
 	GetShootSession(ctx context.Context, id string) (*domain.ShootSession, error)
 	GetAssetDetail(ctx context.Context, assetID string) (*domain.AssetDetail, error)
 	GetArtifact(ctx context.Context, assetID, typ string) (*domain.DerivedArtifact, error)
-	GetPrimaryLocation(ctx context.Context, assetID string) (domain.AssetLocation, error)
 	ListCanonicalTags(context.Context) ([]domain.CanonicalTag, error)
 	ListUnresolvedTags(context.Context, int) ([]domain.UnresolvedTag, error)
 	CreateTagCurationRun(context.Context, []domain.TagProposal, int, string) (domain.TagCurationResult, error)
@@ -1451,9 +1450,37 @@ func (l WebDAVLinker) ProxyPath(ctx context.Context, assetID string) string {
 // CreateWebDAVAccount hashes the plaintext password with bcrypt (via the
 // manager's account store) and persists it. Plaintext never enters the
 // repository.
+// ErrWebDAVAccountInvalid reports an empty username or password on account
+// creation. Mapped to 400 by the API layer.
+var ErrWebDAVAccountInvalid = errors.New("WebDAV username and password are required")
+
+// ErrWebDAVAccountExists reports a duplicate WebDAV account username. Mapped
+// to 409 by the API layer; password rotation deletes first, then recreates.
+var ErrWebDAVAccountExists = errors.New("WebDAV account already exists")
+
+// ErrWebDAVSpaceNotFound reports an unknown WebDAV space id on a link
+// request. Mapped to 404 by the API layer.
+var ErrWebDAVSpaceNotFound = errors.New("unknown WebDAV space")
+
+// ErrWebDAVLinkKindInvalid reports a link kind other than original|proxy.
+// Mapped to 400 by the API layer.
+var ErrWebDAVLinkKindInvalid = errors.New("unknown link kind (want original or proxy)")
+
 func (s *Service) CreateWebDAVAccount(ctx context.Context, username, password string) error {
 	if s.webdavAccounts == nil {
 		return errors.New("WebDAV delivery is not enabled")
+	}
+	username = strings.TrimSpace(username)
+	if username == "" || password == "" {
+		return ErrWebDAVAccountInvalid
+	}
+	// Reject duplicates up front so the operator gets a clear 409 instead of
+	// an opaque insert failure (or a silent overwrite). Password rotation is
+	// delete-then-recreate.
+	if _, exists, err := s.webdavAccounts.GetAccount(ctx, username); err != nil {
+		return err
+	} else if exists {
+		return ErrWebDAVAccountExists
 	}
 	// The repository-backed store only persists; hashing is done here so the
 	// plaintext never crosses into the repository layer.
@@ -1484,9 +1511,12 @@ func (s *Service) LinkWebDAVAsset(ctx context.Context, spaceID, assetID, kind st
 	if s.webdav == nil {
 		return "", errors.New("WebDAV delivery is not enabled")
 	}
+	if strings.TrimSpace(assetID) == "" {
+		return "", errors.New("asset_id is required")
+	}
 	space := s.webdav.Space(spaceID)
 	if space == nil {
-		return "", errors.New("unknown WebDAV space")
+		return "", ErrWebDAVSpaceNotFound
 	}
 	switch kind {
 	case "original":
@@ -1494,7 +1524,7 @@ func (s *Service) LinkWebDAVAsset(ctx context.Context, spaceID, assetID, kind st
 	case "proxy":
 		return space.LinkProxy(ctx, assetID)
 	default:
-		return "", fmt.Errorf("unknown link kind %q (want original or proxy)", kind)
+		return "", ErrWebDAVLinkKindInvalid
 	}
 }
 

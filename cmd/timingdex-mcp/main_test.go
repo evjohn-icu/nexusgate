@@ -16,48 +16,74 @@ import (
 type fakeHub struct {
 	searchHits []map[string]any
 	planID     string
+
+	// forceStatus, when non-zero, makes every handler return this HTTP status.
+	// Set alongside forceBody to simulate error responses.
+	forceStatus int
+	forceBody   string
 }
 
 func (f *fakeHub) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, _ *http.Request) {
+
+	// errWrapper intercepts all requests when forceStatus is set, simulating
+	// Hub-wide error modes (5xx, 4xx).
+	errWrapper := func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if f.forceStatus > 0 {
+				if f.forceBody != "" {
+					http.Error(w, f.forceBody, f.forceStatus)
+				} else {
+					w.WriteHeader(f.forceStatus)
+				}
+				return
+			}
+			h(w, r)
+		}
+	}
+
+	mux.HandleFunc("GET /api/v1/health", errWrapper(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte(`{"status":"ok"}`))
-	})
-	mux.HandleFunc("GET /api/v1/hardware", func(w http.ResponseWriter, _ *http.Request) {
+	}))
+	mux.HandleFunc("GET /api/v1/hardware", errWrapper(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte(`{"hardware":"software"}`))
-	})
-	mux.HandleFunc("GET /api/v1/search/shots/hybrid", func(w http.ResponseWriter, r *http.Request) {
+	}))
+	mux.HandleFunc("GET /api/v1/search/shots/hybrid", errWrapper(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("q"); got != "" {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(f.searchHits)
 			return
 		}
 		http.Error(w, "missing q", http.StatusBadRequest)
-	})
-	mux.HandleFunc("POST /api/v1/repurpose/plans", func(w http.ResponseWriter, r *http.Request) {
+	}))
+	mux.HandleFunc("POST /api/v1/repurpose/plans", errWrapper(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
 			http.Error(w, "bad agent auth", http.StatusUnauthorized)
 			return
 		}
 		w.WriteHeader(http.StatusCreated)
 		w.Write([]byte(`{"id":"` + f.planID + `"}`))
-	})
-	mux.HandleFunc("POST /api/v1/repurpose/plans/{id}/revisions", func(w http.ResponseWriter, r *http.Request) {
+	}))
+	mux.HandleFunc("GET /api/v1/repurpose/plans/{id}", errWrapper(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"` + r.PathValue("id") + `","status":"draft","sections":[]}`))
+	}))
+	mux.HandleFunc("POST /api/v1/repurpose/plans/{id}/revisions", errWrapper(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
 			http.Error(w, "bad agent auth", http.StatusUnauthorized)
 			return
 		}
 		w.WriteHeader(http.StatusCreated)
 		w.Write([]byte(`{"id":"` + f.planID + `"}`))
-	})
-	mux.HandleFunc("POST /api/v1/admin/webdav/spaces/{id}/links", func(w http.ResponseWriter, r *http.Request) {
+	}))
+	mux.HandleFunc("POST /api/v1/admin/webdav/spaces/{id}/links", errWrapper(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer admin-tok" {
 			http.Error(w, "bad admin auth", http.StatusUnauthorized)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"path":"/assets/asset-1/original.mov"}`))
-	})
+	}))
 	return mux
 }
 
@@ -96,6 +122,45 @@ func TestSearchFootage(t *testing.T) {
 	}
 	if len(hits) != 1 || hits[0]["id"] != "shot-1" {
 		t.Fatalf("hits = %v", hits)
+	}
+}
+
+func TestSearchFootageEmptyResults(t *testing.T) {
+	// Empty searchHits should return an empty slice, not an error.
+	hub := &fakeHub{searchHits: []map[string]any{}}
+	c := newTestClient(t, hub)
+	hits, err := c.searchFootage(context.Background(), "nonexistent", 10)
+	if err != nil {
+		t.Fatalf("empty search should not error: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("empty search returned %d hits, want 0", len(hits))
+	}
+}
+
+func TestHub5xxPropagatesStatus(t *testing.T) {
+	// do() must include the HTTP status code in the error when Hub returns 5xx.
+	hub := &fakeHub{forceStatus: http.StatusInternalServerError, forceBody: "boom"}
+	c := newTestClient(t, hub)
+	_, err := c.searchFootage(context.Background(), "sunset", 10)
+	if err == nil {
+		t.Fatal("expected error for 5xx response")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Fatalf("error should contain status code '500', got: %v", err)
+	}
+}
+
+func TestRequestSourceMedia4xxPropagated(t *testing.T) {
+	// A 4xx from the Hub (e.g. 404 for unknown space) should be propagated as an error.
+	hub := &fakeHub{forceStatus: http.StatusNotFound, forceBody: "space not found"}
+	c := newTestClient(t, hub)
+	_, err := c.requestSourceMedia(context.Background(), "bad-space", "asset-1")
+	if err == nil {
+		t.Fatal("expected error for 4xx response")
+	}
+	if !strings.Contains(err.Error(), "space not found") || !strings.Contains(err.Error(), "404") {
+		t.Fatalf("error should contain body and status '404', got: %v", err)
 	}
 }
 

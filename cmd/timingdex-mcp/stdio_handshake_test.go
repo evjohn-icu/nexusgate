@@ -18,6 +18,9 @@ func TestStdioHandshake(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping binary handshake in -short mode")
 	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("skipping: 'go' not found in PATH — build step requires the Go toolchain")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

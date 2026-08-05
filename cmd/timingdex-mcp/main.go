@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -182,7 +181,7 @@ func main() {
 	registerTools(srv, client)
 
 	if err := server.ServeStdio(srv); err != nil && !errors.Is(err, io.EOF) {
-		slog.Error("MCP server stopped", "error", err)
+		fmt.Fprintf(os.Stderr, "MCP server stopped: %v\n", err)
 		os.Exit(1)
 	}
 }

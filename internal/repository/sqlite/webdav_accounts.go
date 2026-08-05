@@ -4,18 +4,25 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/evjohn-icu/timingdex/internal/webdavspace"
 )
 
-// SaveWebDAVAccount upserts a WebDAV delivery account. passwordHash must
-// already be a bcrypt hash produced by webdavspace (the plaintext never
-// reaches the repository).
+// SaveWebDAVAccount inserts a new WebDAV delivery account. If an account
+// with the same username already exists it returns an error so the caller
+// can surface a 409 Conflict rather than silently overwriting credentials.
+// To rotate a password, DeleteWebDAVAccount first, then SaveWebDAVAccount.
+//
+// passwordHash must already be a bcrypt hash produced by webdavspace
+// (the plaintext never reaches the repository).
 func (r *Repository) SaveWebDAVAccount(ctx context.Context, username, passwordHash string) error {
-	_, err := r.db.ExecContext(ctx, `INSERT INTO webdav_accounts(username,password_hash,created_at) VALUES(?,?,?)
-		ON CONFLICT(username) DO UPDATE SET password_hash=excluded.password_hash`,
+	_, err := r.db.ExecContext(ctx, `INSERT INTO webdav_accounts(username,password_hash,created_at) VALUES(?,?,?)`,
 		username, passwordHash, formatTime(time.Now().UTC()))
+	if err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		return errors.New("account already exists")
+	}
 	return err
 }
 

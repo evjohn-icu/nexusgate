@@ -52,7 +52,7 @@ func TestManagerServesLinkedFileWithAuth(t *testing.T) {
 	}
 }
 
-func TestManagerUnknownSpace404(t *testing.T) {
+func TestManagerUnknownSpaceReturnsUnauthorized(t *testing.T) {
 	accounts := NewMemAccountStore()
 	_ = accounts.CreateAccount("e", "p")
 	l := &testLinker{}
@@ -62,7 +62,7 @@ func TestManagerUnknownSpace404(t *testing.T) {
 	req := httptest.NewRequest("GET", "/spaces/ghost/assets/a/original.mov", nil)
 	req.SetBasicAuth("e", "p")
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("unknown space = %d, want 404", rec.Code)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unknown space = %d, want 401 (do not leak space existence)", rec.Code)
 	}
 }

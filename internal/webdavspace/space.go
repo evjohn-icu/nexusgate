@@ -240,7 +240,7 @@ type dirFile struct{ name string }
 
 func (d *dirFile) Read([]byte) (int, error)           { return 0, fmt.Errorf("cannot read a directory") }
 func (d *dirFile) Seek(int64, int) (int64, error)     { return 0, fmt.Errorf("cannot seek a directory") }
-func (d *dirFile) Readdir(int) ([]os.FileInfo, error) { return nil, fmt.Errorf("no listing") }
+func (d *dirFile) Readdir(int) ([]os.FileInfo, error) { return []os.FileInfo{}, nil }
 func (d *dirFile) Stat() (os.FileInfo, error)         { return &dirInfo{name: d.name}, nil }
 func (d *dirFile) Close() error                       { return nil }
 func (d *dirFile) Write([]byte) (int, error)          { return 0, &permissionError{"write"} }

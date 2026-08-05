@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"golang.org/x/net/webdav"
 )
@@ -187,8 +186,6 @@ func writeFixtureFile(t *testing.T, dir, name, content string) {
 		t.Fatal(err)
 	}
 }
-
-var _ = time.Now // keep time import for future use
 
 func TestWebDAVHandlerServesLinkedFile(t *testing.T) {
 	_, s := setup(t)

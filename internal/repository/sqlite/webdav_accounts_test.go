@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/evjohn-icu/timingdex/internal/webdavspace"
@@ -39,13 +40,28 @@ func TestWebDAVAccountLifecycle(t *testing.T) {
 		t.Fatalf("stored account = %+v", acct)
 	}
 
-	// Upsert updates the hash.
-	if err := repo.SaveWebDAVAccount(ctx, "editor", "$2a$10$zzzzzzzzzzzzzzzzzzzzzz"); err != nil {
+	// Duplicate Save must return an error, not silently overwrite.
+	if err := repo.SaveWebDAVAccount(ctx, "editor", "$2a$10$zzzzzzzzzzzzzzzzzzzzzz"); err == nil {
+		t.Fatal("expected duplicate Save to return an error, got nil")
+	} else if err.Error() != "account already exists" {
+		t.Fatalf("expected 'account already exists', got: %v", err)
+	}
+	// Original hash must be unchanged after rejected duplicate.
+	acct, _, _ = repo.GetWebDAVAccount(ctx, "editor")
+	if acct.PasswordHash != "$2a$10$abcdefghijklmnopqrstuv" {
+		t.Fatalf("hash changed after rejected duplicate Save: %+v", acct)
+	}
+
+	// To rotate a password: delete then re-create.
+	if err := repo.DeleteWebDAVAccount(ctx, "editor"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SaveWebDAVAccount(ctx, "editor", "$2a$10$newnewnewnewnewnewnewnew"); err != nil {
 		t.Fatal(err)
 	}
 	acct, _, _ = repo.GetWebDAVAccount(ctx, "editor")
-	if acct.PasswordHash != "$2a$10$zzzzzzzzzzzzzzzzzzzzzz" {
-		t.Fatalf("upsert did not update hash: %+v", acct)
+	if acct.PasswordHash != "$2a$10$newnewnewnewnewnewnewnew" {
+		t.Fatalf("password rotation did not store new hash: %+v", acct)
 	}
 
 	if err := repo.DeleteWebDAVAccount(ctx, "editor"); err != nil {
@@ -53,6 +69,27 @@ func TestWebDAVAccountLifecycle(t *testing.T) {
 	}
 	if _, ok, _ := repo.GetWebDAVAccount(ctx, "editor"); ok {
 		t.Fatal("account still present after delete")
+	}
+}
+
+func TestListWebDAVAccountsSorting(t *testing.T) {
+	repo := openWebDAVRepo(t, "webdav-sort.db")
+	ctx := context.Background()
+
+	// Insert in non-sorted order.
+	for _, u := range []string{"charlie", "alice", "bob"} {
+		if err := repo.SaveWebDAVAccount(ctx, u, "hash-"+u); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	accounts, err := repo.ListWebDAVAccounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"alice", "bob", "charlie"}
+	if !slices.Equal(accounts, want) {
+		t.Fatalf("ListWebDAVAccounts = %v, want sorted %v", accounts, want)
 	}
 }
 

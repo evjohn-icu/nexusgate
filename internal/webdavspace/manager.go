@@ -89,13 +89,9 @@ func (m *Manager) Handler() http.Handler {
 		if i := strings.Index(rest, "/"); i >= 0 {
 			spaceID = rest[:i]
 		}
-		space := m.Space(spaceID)
-		if space == nil {
-			http.NotFound(w, r)
-			return
-		}
-
-		// Basic auth.
+		// Authenticate before checking space existence so an attacker cannot
+		// probe which spaces exist: both missing space and bad credentials
+		// answer 401.
 		username, password, ok := parseBasicAuth(r.Header.Get("Authorization"))
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Basic realm="timingdex webdav"`)
@@ -103,6 +99,13 @@ func (m *Manager) Handler() http.Handler {
 			return
 		}
 		if err := Authenticate(r.Context(), m.accounts, username, password); err != nil {
+			w.Header().Set("WWW-Authenticate", `Basic realm="timingdex webdav"`)
+			http.Error(w, "invalid credentials", http.StatusUnauthorized)
+			return
+		}
+
+		space := m.Space(spaceID)
+		if space == nil {
 			w.Header().Set("WWW-Authenticate", `Basic realm="timingdex webdav"`)
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return

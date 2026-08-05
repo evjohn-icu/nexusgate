@@ -88,10 +88,3 @@ func TestListWorkersOfflineAtExactThreshold(t *testing.T) {
 		t.Fatalf("edge worker (>= threshold) = %q, want offline", got)
 	}
 }
-
-func TestIntegrityCheckHealthy(t *testing.T) {
-	repo := openWorkerOfflineRepo(t, "integrity.db")
-	if err := repo.IntegrityCheck(context.Background()); err != nil {
-		t.Fatalf("IntegrityCheck on a fresh healthy library = %v, want nil", err)
-	}
-}

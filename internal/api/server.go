@@ -119,6 +119,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/admin/webdav/accounts", s.requireHubAdmin(s.createWebDAVAccount))
 	mux.HandleFunc("DELETE /api/v1/admin/webdav/accounts/{username}", s.requireHubAdmin(s.deleteWebDAVAccount))
 	mux.HandleFunc("POST /api/v1/admin/webdav/spaces", s.requireHubAdmin(s.createWebDAVSpace))
+	mux.HandleFunc("GET /api/v1/admin/webdav/spaces", s.requireHubAdmin(s.listWebDAVSpaces))
 	mux.HandleFunc("POST /api/v1/admin/webdav/spaces/{id}/links", s.requireHubAdmin(s.linkWebDAVAsset))
 	mux.HandleFunc("GET /api/v1/hub/workers", s.requireHubAdmin(s.listWorkers))
 	mux.HandleFunc("GET /api/v1/admin/provider-channels", s.requireHubAdmin(s.listProviderChannels))
@@ -304,7 +305,14 @@ func (s *Server) createWebDAVAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.service.CreateWebDAVAccount(r.Context(), req.Username, req.Password); err != nil {
-		writeError(w, err)
+		switch {
+		case errors.Is(err, app.ErrWebDAVAccountInvalid):
+			http.Error(w, "username and password are required", http.StatusBadRequest)
+		case errors.Is(err, app.ErrWebDAVAccountExists):
+			http.Error(w, "account already exists", http.StatusConflict)
+		default:
+			writeError(w, err)
+		}
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
@@ -327,6 +335,14 @@ func (s *Server) createWebDAVSpace(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{"space_id": spaceID})
 }
 
+func (s *Server) listWebDAVSpaces(w http.ResponseWriter, r *http.Request) {
+	spaces := s.service.ListWebDAVSpaces()
+	if spaces == nil {
+		spaces = []string{}
+	}
+	writeJSON(w, http.StatusOK, spaces)
+}
+
 func (s *Server) linkWebDAVAsset(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		AssetID string `json:"asset_id"`
@@ -338,7 +354,16 @@ func (s *Server) linkWebDAVAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	path, err := s.service.LinkWebDAVAsset(r.Context(), r.PathValue("id"), req.AssetID, req.Kind)
 	if err != nil {
-		writeError(w, err)
+		switch {
+		case errors.Is(err, app.ErrWebDAVSpaceNotFound):
+			http.Error(w, "unknown space", http.StatusNotFound)
+		case errors.Is(err, app.ErrWebDAVLinkKindInvalid):
+			http.Error(w, "kind must be original or proxy", http.StatusBadRequest)
+		case strings.TrimSpace(req.AssetID) == "":
+			http.Error(w, "asset_id is required", http.StatusBadRequest)
+		default:
+			writeError(w, err)
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"path": path})
@@ -1684,6 +1709,8 @@ func (s *Server) serveArtifact(w http.ResponseWriter, r *http.Request, typ strin
 }
 
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {
+	// Belt-and-suspenders: the mux pattern "GET /{$}" already guarantees r.URL.Path == "/",
+	// but matching on the path explicitly guards against misregistration or future pattern changes.
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
