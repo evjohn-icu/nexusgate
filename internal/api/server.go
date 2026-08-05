@@ -571,13 +571,8 @@ func (s *Server) enrollWorker(w http.ResponseWriter, r *http.Request) {
 		PairingToken string `json:"pairing_token"`
 		remote.WorkerRegistration
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&request); err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-		} else {
-			http.Error(w, "invalid worker enrollment", http.StatusBadRequest)
-		}
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
+	if !decodeStrictJSON(w, r, &request) {
 		return
 	}
 	if strings.TrimSpace(request.PairingToken) == "" {
@@ -605,25 +600,7 @@ func (s *Server) workerHeartbeat(w http.ResponseWriter, r *http.Request) {
 		Capabilities remote.WorkerCapabilities `json:"capabilities"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-		} else {
-			http.Error(w, "invalid worker heartbeat", http.StatusBadRequest)
-		}
-		return
-	}
-	// Reject trailing bytes after the first JSON value. r.Body is a
-	// MaxBytesReader, so drainBody hits the same size limit and returns
-	// MaxBytesError when the trailing content alone exceeds it.
-	if err := drainBody(r.Body); err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-		} else {
-			http.Error(w, "request body has trailing content", http.StatusBadRequest)
-		}
+	if !decodeStrictJSON(w, r, &request) {
 		return
 	}
 	if err := s.service.HeartbeatWorker(r.Context(), worker.ID, request.Capabilities); err != nil {
@@ -671,24 +648,7 @@ func (s *Server) workerCompleteJob(w http.ResponseWriter, r *http.Request) {
 		Message string          `json:"message"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-		} else {
-			http.Error(w, "invalid worker job completion", http.StatusBadRequest)
-		}
-		return
-	}
-	// Reject trailing bytes after the first JSON value (same reasoning as
-	// workerHeartbeat).
-	if err := drainBody(r.Body); err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-		} else {
-			http.Error(w, "request body has trailing content", http.StatusBadRequest)
-		}
+	if !decodeStrictJSON(w, r, &request) {
 		return
 	}
 	// Validate state before calling the service so an invalid state is a
@@ -720,24 +680,7 @@ func (s *Server) workerProgress(w http.ResponseWriter, r *http.Request) {
 		Message  string  `json:"message"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-		} else {
-			http.Error(w, "invalid worker job progress", http.StatusBadRequest)
-		}
-		return
-	}
-	// Reject trailing bytes after the first JSON value (same reasoning as
-	// workerHeartbeat).
-	if err := drainBody(r.Body); err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-		} else {
-			http.Error(w, "request body has trailing content", http.StatusBadRequest)
-		}
+	if !decodeStrictJSON(w, r, &request) {
 		return
 	}
 	if err := s.service.RecordWorkerJobProgress(r.Context(), r.PathValue("id"), worker.ID, strings.TrimSpace(request.Stage), request.Progress, strings.TrimSpace(request.Event), strings.TrimSpace(request.Message)); err != nil {
@@ -1223,26 +1166,40 @@ func writeError(w http.ResponseWriter, err error) {
 	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
-// drainBody reads and discards any remaining bytes from r. It returns an
-// error when the body contains data beyond what the caller already consumed —
-// a JSON Decoder on a MaxBytesReader wrapper reads only the first value, so
-// trailing bytes after a valid JSON object would otherwise be silently
-// accepted.
-//
-// MaxBytesError is propagated unchanged so callers can distinguish "body
-// exceeded the size limit" (413) from "valid JSON followed by trailing
-// garbage" (400). Callers must wrap r with http.MaxBytesReader before
-// decoding so the bounds apply to drainBody as well.
-func drainBody(r io.Reader) error {
-	n, err := io.Copy(io.Discard, r)
-	var maxBytesErr *http.MaxBytesError
-	if errors.As(err, &maxBytesErr) {
-		return err
+// decodeStrictJSON decodes exactly one JSON value from r.Body (already
+// wrapped with http.MaxBytesReader by the caller) and rejects any trailing
+// bytes — including bytes already buffered inside json.Decoder that a
+// separate drainBody would miss. A successful second Decode (non-EOF) or a
+// non-EOF decode error both indicate trailing content: *http.MaxBytesError
+// → 413, anything else → 400.
+func decodeStrictJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(v); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+		}
+		return false
 	}
-	if n > 0 {
-		return fmt.Errorf("unexpected %d trailing bytes after request body", n)
+	// Second Decode on the same decoder to catch trailing content, including
+	// bytes json.Decoder buffered from the underlying reader.
+	var dummy struct{}
+	if err := dec.Decode(&dummy); err == nil {
+		// Another JSON value parsed successfully — trailing content.
+		http.Error(w, "request body has trailing content", http.StatusBadRequest)
+		return false
+	} else if !errors.Is(err, io.EOF) {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+		} else {
+			http.Error(w, "request body has trailing content", http.StatusBadRequest)
+		}
+		return false
 	}
-	return err
+	return true
 }
 
 func requestLogger(next http.Handler) http.Handler {
@@ -1739,7 +1696,7 @@ func (s *Server) saveCollection(w http.ResponseWriter, r *http.Request) {
 	}
 	saved, err := s.service.SaveAssetCollection(r.Context(), collection)
 	if err != nil {
-		if errors.Is(err, domain.ErrCollectionExists) || strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		if errors.Is(err, domain.ErrCollectionExists) {
 			http.Error(w, "collection name already exists", http.StatusConflict)
 			return
 		}

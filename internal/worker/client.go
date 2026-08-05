@@ -306,25 +306,28 @@ func (c *Client) postJSON(ctx context.Context, path, token string, input, output
 }
 
 var (
-	bearerPattern     = regexp.MustCompile(`(?i)Bearer\s+[^\s\x00-\x1f"]+`)
-	openAIKeyPattern  = regexp.MustCompile(`sk-[A-Za-z0-9_-]{32,}`)
+	bearerPattern    = regexp.MustCompile(`(?i)Bearer\s+[^\s\x00-\x1f"]+`)
+	openAIKeyPattern = regexp.MustCompile(`sk-[A-Za-z0-9_-]{32,}`)
+	// apiKeyHeaderValue matches HTTP-header-style credential keys
+	// (X-Api-Key, api_key, apikey, auth) with : or = separator.
 	apiKeyHeaderValue = regexp.MustCompile(`(?i)(X-Api-Key|api[_\-]?key|apikey|auth["']?\s*[:=])\s*[:=]\s*[^\s,;]+`)
+	// credentialKeyValuePattern matches known credential key names
+	// followed by = or : and a value in free-form text. This catches
+	// forms like token=abc123, secret: xyz, access_token=... that
+	// are not in JSON quotes.
+	credentialKeyValuePattern = regexp.MustCompile(`(?i)(api[_\-]?key|apikey|token|secret|password|access[_\-]?token|api[_\-]?key[_\-]?id|credential|authorization|key)\s*[:=]\s*([^\s,;]+)`)
 	// jsonKeyPattern is a regex fallback for unstructured text that
 	// contains JSON-like key:value fragments. The primary redaction
 	// path is jsonAwareRedact (recursive JSON walk).
-	jsonKeyPattern = regexp.MustCompile(`"(?i)(api[_\-]?key|apikey|authorization|token|secret|password)"\s*:\s*("[^"]*"|[^\s,;}\]"]+)`)
-	// jsonLikeSegment finds contiguous JSON object literals embedded
-	// in free-form text so they can be parsed and recursively redacted.
-	jsonLikeSegment = regexp.MustCompile(`(\{(?:[^{}]|\{[^{}]*\})*\})`)
-	// longTokenPattern is a safety net for non-JSON text. It only
-	// matches standalone runs (delimited by whitespace or string
-	// boundaries) starting with a letter, ≥20 chars, base64-like
-	// alphabet. Whitespace delimiting prevents matching substrings
-	// of UUIDs (e.g. 550e8400-e29b-41d4-a716-446655440000).
-	longTokenPattern = regexp.MustCompile(`(^|\s)[A-Za-z][A-Za-z0-9_\-+=/]{19,}(\s|$)`)
-	// longTokenReplace is the replacement for longTokenPattern that
-	// preserves the surrounding whitespace.
-	longTokenReplace = "${1}[redacted]${2}"
+	jsonKeyPattern = regexp.MustCompile(`"(?i)(api[_\-]?key|apikey|authorization|token|secret|password|access[_\-]?token|api[_\-]?key[_\-]?id|credential|key)"\s*:\s*("[^"]*"|[^\s,;}\]"]+)`)
+	// uuidPattern matches UUIDs (8-4-4-4-12 hex with dashes). These
+	// must never be redacted by the long-token safety net.
+	uuidPattern = regexp.MustCompile(`^[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}$`)
+	// longTokenPattern is a safety net for non-JSON text. It matches
+	// standalone runs (delimited by whitespace or string boundaries)
+	// starting with a letter, ≥20 chars, base64-like alphabet.
+	// UUIDs are excluded via ReplaceAllStringFunc.
+	longTokenPattern = regexp.MustCompile(`(^|\s)([A-Za-z][A-Za-z0-9_\-+=/]{19,})(\s|$)`)
 )
 
 // sensitiveJSONKeys lists JSON object keys whose values are redacted
@@ -339,6 +342,7 @@ var sensitiveJSONKeys = map[string]bool{
 	"key":           true,
 	"api_key_id":    true,
 	"access_token":  true,
+	"credential":    true,
 }
 
 // redactSecrets replaces common secret patterns with [redacted] so that
@@ -348,42 +352,80 @@ var sensitiveJSONKeys = map[string]bool{
 //  1. JSON-aware recursive redaction: try json.Unmarshal on the whole
 //     string; if valid JSON, recursively walk maps redacting sensitive
 //     keys and re-marshal. Also scan for JSON-like segments embedded in
-//     free-form text and redact those individually.
+//     free-form text (with bracket-balanced scanning for arbitrary
+//     nesting depth) and redact those individually.
 //  2. Regex fallback for non-JSON text: Bearer tokens, OpenAI keys,
-//     API-key header values, JSON-key patterns, and long base64-like
-//     tokens.
+//     credential key=value patterns, JSON-key patterns (skipped when
+//     phase 1 handled the top level), and long base64-like tokens
+//     (UUIDs excluded).
 func redactSecrets(s string) string {
 	if s == "" {
 		return s
 	}
 
 	// Phase 1: JSON-aware recursive redaction. Try top-level JSON parse
-	// first; if that fails, scan for embedded JSON segments.
+	// first; if that fails, scan for embedded JSON segments using
+	// bracket-balanced detection (supports arbitrary nesting depth).
 	jsonHandled := false
 	if redacted := jsonAwareRedact(s); redacted != "" {
 		s = redacted
 		jsonHandled = true
 	} else {
-		s = jsonLikeSegment.ReplaceAllStringFunc(s, func(seg string) string {
-			if redacted := jsonAwareRedact(seg); redacted != "" {
-				return redacted
+		segments := findJSONSegments(s)
+		if len(segments) > 0 {
+			result := s
+			anyRedacted := false
+			// Process from end to start to preserve indices.
+			for i := len(segments) - 1; i >= 0; i-- {
+				seg := segments[i]
+				segment := result[seg[0]:seg[1]]
+				if redacted := jsonAwareRedact(segment); redacted != "" {
+					result = result[:seg[0]] + redacted + result[seg[1]:]
+					anyRedacted = true
+				}
 			}
-			return seg
-		})
+			s = result
+			if anyRedacted {
+				jsonHandled = true
+			}
+		}
 	}
 
-	// Phase 2: regex fallback. Always apply Bearer, OpenAI key, and
-	// API-key header patterns; they work on any text. The jsonKeyPattern
-	// is skipped when the top-level string was already handled by
-	// JSON-aware redaction, to avoid double-processing
-	// (e.g. turning "api_key":"[redacted]" into "api_key":[redacted]).
+	// Phase 2: regex fallback. Always apply Bearer, OpenAI key,
+	// credential key=value, and API-key header patterns.
+	// jsonKeyPattern is skipped when top-level/segments were already
+	// JSON-processed; also skip already-redacted values to prevent
+	// "token":"[redacted]" → "token":[redacted] corruption.
 	s = bearerPattern.ReplaceAllString(s, "Bearer [redacted]")
 	s = openAIKeyPattern.ReplaceAllString(s, "[redacted]")
+	s = credentialKeyValuePattern.ReplaceAllString(s, "$1: [redacted]")
 	if !jsonHandled {
-		s = jsonKeyPattern.ReplaceAllString(s, `"$1":[redacted]`)
+		s = jsonKeyPattern.ReplaceAllStringFunc(s, func(match string) string {
+			if strings.Contains(match, "[redacted]") {
+				return match
+			}
+			// Preserve quoting: if the original value was
+			// quoted, [redacted] is quoted; if unquoted,
+			// [redacted] is unquoted.
+			parts := jsonKeyPattern.FindStringSubmatch(match)
+			if len(parts) >= 3 && strings.HasPrefix(parts[2], "\"") {
+				return `"` + parts[1] + `":"[redacted]"`
+			}
+			return `"` + parts[1] + `":[redacted]`
+		})
 	}
 	s = apiKeyHeaderValue.ReplaceAllString(s, "$1: [redacted]")
-	s = longTokenPattern.ReplaceAllString(s, longTokenReplace)
+	s = longTokenPattern.ReplaceAllStringFunc(s, func(match string) string {
+		parts := longTokenPattern.FindStringSubmatch(match)
+		if len(parts) >= 4 {
+			token := parts[2]
+			if uuidPattern.MatchString(token) {
+				return match
+			}
+			return parts[1] + "[redacted]" + parts[3]
+		}
+		return match
+	})
 	return s
 }
 
@@ -406,9 +448,9 @@ func jsonAwareRedact(raw string) string {
 
 // walkAndRedact recursively walks a JSON value. For maps, it redacts
 // values under sensitive keys. For slices, it recurses into each element.
-// For string values, it attempts to parse the string as nested JSON and
-// recursively redacts that too — this catches the escaped-nested-JSON
-// bypass (e.g. {"body":"{\"token\":\"k\"}"}).
+// For string values, it first attempts to parse the string as nested JSON;
+// if that fails, it scans for embedded JSON fragments (e.g.
+// {"body":"prefix {\"token\":\"k\"} suffix"}) and redacts those.
 func walkAndRedact(v any) {
 	switch val := v.(type) {
 	case map[string]any:
@@ -424,6 +466,10 @@ func walkAndRedact(v any) {
 				// schema (e.g. {"body":"..."} stays a string field).
 				if redacted := jsonAwareRedact(s); redacted != "" {
 					val[k] = redacted
+				} else {
+					// String is not valid JSON overall, but may contain
+					// embedded JSON fragments.
+					val[k] = redactEmbeddedJSONInString(s)
 				}
 			} else {
 				walkAndRedact(sub)
@@ -434,12 +480,98 @@ func walkAndRedact(v any) {
 			if s, ok := item.(string); ok {
 				if redacted := jsonAwareRedact(s); redacted != "" {
 					val[i] = redacted
+				} else {
+					val[i] = redactEmbeddedJSONInString(s)
 				}
 			} else {
 				walkAndRedact(item)
 			}
 		}
 	}
+}
+
+// findJSONSegments finds balanced JSON object literals ({...}) embedded in
+// free-form text. It counts brackets and is aware of Go/JSON string escaping
+// so that braces inside quoted strings do not confuse the counter. Supports
+// arbitrary nesting depth.
+func findJSONSegments(s string) [][2]int {
+	var segments [][2]int
+	inString := false
+	escape := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if escape {
+			escape = false
+			continue
+		}
+		if inString {
+			if ch == '\\' {
+				escape = true
+			} else if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+		if ch == '"' {
+			inString = true
+			continue
+		}
+		if ch == '{' {
+			depth := 1
+			start := i
+			innerString := false
+			innerEscape := false
+			j := i + 1
+			for ; j < len(s) && depth > 0; j++ {
+				c := s[j]
+				if innerEscape {
+					innerEscape = false
+					continue
+				}
+				if innerString {
+					if c == '\\' {
+						innerEscape = true
+					} else if c == '"' {
+						innerString = false
+					}
+					continue
+				}
+				if c == '"' {
+					innerString = true
+					continue
+				}
+				switch c {
+				case '{':
+					depth++
+				case '}':
+					depth--
+				}
+			}
+			if depth == 0 {
+				segments = append(segments, [2]int{start, j})
+			}
+			i = j - 1
+		}
+	}
+	return segments
+}
+
+// redactEmbeddedJSONInString scans a string for embedded JSON object
+// segments and redacts sensitive keys within each found segment.
+func redactEmbeddedJSONInString(s string) string {
+	segments := findJSONSegments(s)
+	if len(segments) == 0 {
+		return s
+	}
+	result := s
+	for i := len(segments) - 1; i >= 0; i-- {
+		seg := segments[i]
+		segment := result[seg[0]:seg[1]]
+		if redacted := jsonAwareRedact(segment); redacted != "" {
+			result = result[:seg[0]] + redacted + result[seg[1]:]
+		}
+	}
+	return result
 }
 
 func normalizeFingerprint(value string) string {

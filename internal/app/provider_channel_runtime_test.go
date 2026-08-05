@@ -43,7 +43,7 @@ func (r *runtimeChannelRepo) ListProviderChannels(_ context.Context, capability 
 
 type runtimeSecrets struct{ values map[string]string }
 
-func (s *runtimeSecrets) Has(ref string) (bool, error) {
+func (s *runtimeSecrets) Has(_ context.Context, ref string) (bool, error) {
 	_, ok := s.values[ref]
 	return ok, nil
 }
@@ -289,6 +289,78 @@ func TestProviderChannelRuntimeNotConfiguredIsDistinctFromProviderFailure(t *tes
 	if !errors.Is(err, ErrProviderChannelNotConfigured) {
 		t.Fatalf("planner err=%v; want ErrProviderChannelNotConfigured", err)
 	}
+}
+
+// TestIdentityCacheLockOrderExercisesConcurrentFastPathAndCacheWrite exercises the
+// lock ordering: identity()'s fast path takes identityCacheMu then cacheMu, and
+// cacheIdentity() must do the same.  The race detector (go test -race) verifies
+// there is no inversion deadlock.
+func TestIdentityCacheLockOrderExercisesConcurrentFastPathAndCacheWrite(t *testing.T) {
+	repo := &runtimeChannelRepo{}
+	secrets := &runtimeSecrets{values: map[string]string{}}
+	runtime := newProviderChannelRuntime(repo, config.Config{}, secrets,
+		&runtimeLegacyASR{name: "legacy-asr", model: "legacy-model"}, nil, nil, nil, nil, nil)
+
+	var wg sync.WaitGroup
+	// Fire many concurrent goroutines that call Name() (which uses identity() fast
+	// path) and Model() (ditto).  Concurrent calls trigger cacheIdentity() writes
+	// while the fast path reads — the lock order must be consistent or the race
+	// detector flags it.
+	for i := 0; i < 20; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); _ = runtime.asr().Name() }()
+		go func() { defer wg.Done(); _ = runtime.asr().Model() }()
+	}
+	wg.Wait()
+}
+
+// TestResolveIdentityRequiresModel verifies that resolveIdentity returns empty
+// when Model is blank even if ProviderName is set, so a partially configured
+// channel triggers the sentinel fallback rather than caching (name, "").
+//
+// This test uses the ASR capability because runtimeLegacyASR already implements
+// the Name/Model interface for that path.
+func TestResolveIdentityRequiresModel(t *testing.T) {
+	repo := &runtimeChannelRepo{}
+	// Channel with a provider name but no model: this must NOT produce a
+	// cached ("stepfun", "") pair.
+	repo.channels = []domain.ProviderChannel{{
+		ID:           "ch-1",
+		Capability:   "asr",
+		ProviderName: "stepfun",
+		Protocol:     "openai_chat",
+		Endpoint:     "http://127.0.0.1:1/v1",
+		Model:        "",
+		Enabled:      true,
+		RouteOrder:   1,
+		Members: []domain.ProviderChannelMember{
+			{ID: "m-1", ChannelID: "ch-1", SecretRef: "k1", Enabled: true, Weight: 1, MaxInflight: 1},
+		},
+	}}
+	secrets := &runtimeSecrets{values: map[string]string{"k1": "secret"}}
+	legacy := &runtimeLegacyASR{name: "fallback-asr", model: "fallback-model"}
+	runtime := newProviderChannelRuntime(repo, config.Config{}, secrets,
+		legacy, nil, nil, nil, nil, nil)
+
+	name, model := runtime.asr().Name(), runtime.asr().Model()
+	if name == "" || model == "" {
+		t.Fatalf("Name/Model returned empty: name=%q model=%q", name, model)
+	}
+	// The fallback should be used since the channel has no model field.
+	// (If the channel's empty model were accepted, we'd get "stepfun" / "".)
+	t.Logf("resolved name=%q model=%q", name, model)
+	if name == "stepfun" && model == "" {
+		t.Errorf("channel with empty model was incorrectly cached as (stepfun, \"\")")
+	}
+	// Verify the cached identity is a complete pair (not a mixed name/empty model).
+	runtime.identityCacheMu.Lock()
+	for key, entry := range runtime.identityCache {
+		t.Logf("cached key=%q name=%q model=%q", key, entry.name, entry.model)
+		if entry.name == "" || entry.model == "" {
+			t.Errorf("cached identity has empty field: key=%q name=%q model=%q", key, entry.name, entry.model)
+		}
+	}
+	runtime.identityCacheMu.Unlock()
 }
 
 var _ providers.ASR = (*runtimeLegacyASR)(nil)

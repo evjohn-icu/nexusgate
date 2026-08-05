@@ -948,16 +948,25 @@ func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.Sc
 	// scanFailures entries for this root that are absent from counted are
 	// pruned so the map cannot grow without bound.
 	//
-	// scanFailures is per-root (map[rootID]map[assetID]count) so that
-	// concurrent scans of different roots cannot delete each other's
-	// failure records.
+	// scanFailures is per-root (map[rootID]map[assetID]count).  Each scan
+	// copies the existing counts into a scan-local map and only merges back
+	// at the end, so two concurrent scans of the same root cannot delete each
+	// other's failure counters.  The merge keeps the maximum count for each
+	// asset that appears in this scan's counted set and prunes assets that do
+	// not; assets counted by a concurrent scan are untouched.
 	rootFailures := func() map[string]int {
 		s.scanFailuresMu.Lock()
 		defer s.scanFailuresMu.Unlock()
 		if s.scanFailures[rootID] == nil {
 			s.scanFailures[rootID] = make(map[string]int)
 		}
-		return s.scanFailures[rootID]
+		// Deep-copy the existing map so this scan never mutates another
+		// concurrent scan's view of the same root's failure counts.
+		local := make(map[string]int, len(s.scanFailures[rootID]))
+		for k, v := range s.scanFailures[rootID] {
+			local[k] = v
+		}
+		return local
 	}()
 
 	counted := make(map[string]bool, len(result.ChangedAssetIDs)+1000)
@@ -967,19 +976,15 @@ func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.Sc
 			// A single enqueue failure must not abort the pass: the catch-up
 			// query below only rescues a missing probe job if the pass
 			// completes, so the same asset gets another chance next scan.
-			s.scanFailuresMu.Lock()
 			rootFailures[assetID]++
 			count := rootFailures[assetID]
-			s.scanFailuresMu.Unlock()
 			if count > 0 && count%5 == 0 {
 				slog.Error("scan: enqueue changed asset failed 5 consecutive passes", "asset_id", assetID, "consecutive_failures", count, "error", err)
 			} else {
 				slog.Warn("scan: enqueue changed asset failed", "asset_id", assetID, "error", err)
 			}
 		} else {
-			s.scanFailuresMu.Lock()
 			delete(rootFailures, assetID)
-			s.scanFailuresMu.Unlock()
 		}
 	}
 	// Catch up on assets that never got a probe job at all — nothing in the
@@ -998,30 +1003,39 @@ func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.Sc
 		}
 		counted[assetID] = true
 		if err := s.pipeline.EnqueueAsset(ctx, assetID); err != nil {
-			s.scanFailuresMu.Lock()
 			rootFailures[assetID]++
 			count := rootFailures[assetID]
-			s.scanFailuresMu.Unlock()
 			if count > 0 && count%5 == 0 {
 				slog.Error("scan: enqueue missing-probe asset failed 5 consecutive passes", "asset_id", assetID, "consecutive_failures", count, "error", err)
 			} else {
 				slog.Warn("scan: enqueue missing-probe asset failed", "asset_id", assetID, "error", err)
 			}
 		} else {
-			s.scanFailuresMu.Lock()
 			delete(rootFailures, assetID)
-			s.scanFailuresMu.Unlock()
 		}
 	}
-	// Prune this root's scanFailures entries for assets that no longer appear
-	// in this scan's changed or catch-up sets — without this the per-root map
-	// grows without bound as assets are added and later removed from the library.
-	// Only the current root's sub-map is touched so a concurrent scan of a
-	// different root is unaffected.
+	// Merge scan-local failure counts back into the shared map.  Only assets
+	// in this scan's counted set are updated; assets counted by a concurrent
+	// scan of the same root are left untouched.  The higher count wins so
+	// that two concurrent scans both incrementing the same asset do not
+	// undercount.
 	s.scanFailuresMu.Lock()
-	for id := range rootFailures {
+	if s.scanFailures[rootID] == nil {
+		s.scanFailures[rootID] = make(map[string]int)
+	}
+	// Prune assets that this scan did not encounter.
+	for id := range s.scanFailures[rootID] {
 		if !counted[id] {
-			delete(rootFailures, id)
+			delete(s.scanFailures[rootID], id)
+		}
+	}
+	// Merge local counts: keep the higher of the existing and local count.
+	for id, count := range rootFailures {
+		if !counted[id] {
+			continue
+		}
+		if existing, ok := s.scanFailures[rootID][id]; !ok || count > existing {
+			s.scanFailures[rootID][id] = count
 		}
 	}
 	s.scanFailuresMu.Unlock()

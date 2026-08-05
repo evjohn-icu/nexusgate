@@ -2,6 +2,7 @@ package secretstore
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -64,7 +65,7 @@ func TestStoreCRUDUsesResolveHasAndDelete(t *testing.T) {
 	if err := store.Put(ref, value); err != nil {
 		t.Fatal(err)
 	}
-	has, err := store.Has(ref)
+	has, err := store.Has(context.Background(), ref)
 	if err != nil || !has {
 		t.Fatalf("Has() = %t, %v; want true, nil", has, err)
 	}
@@ -75,7 +76,7 @@ func TestStoreCRUDUsesResolveHasAndDelete(t *testing.T) {
 	if err := store.Delete(ref); err != nil {
 		t.Fatal(err)
 	}
-	has, err = store.Has(ref)
+	has, err = store.Has(context.Background(), ref)
 	if err != nil || has {
 		t.Fatalf("Has() after Delete = %t, %v; want false, nil", has, err)
 	}
@@ -105,7 +106,7 @@ func TestStoreRejectsUnsafeReferences(t *testing.T) {
 		if err := store.Put(ref, "secret-value"); err == nil {
 			t.Errorf("Put accepted unsafe reference %q", ref)
 		}
-		if _, err := store.Has(ref); err == nil {
+		if _, err := store.Has(context.Background(), ref); err == nil {
 			t.Errorf("Has accepted unsafe reference %q", ref)
 		}
 		if _, _, err := store.Resolve(ref); err == nil {
@@ -240,7 +241,7 @@ func TestStoreConcurrentWritesAndReads(t *testing.T) {
 	wg.Wait()
 	for i := 0; i < workers; i++ {
 		ref := fmt.Sprintf("provider/concurrent-%d", i)
-		has, err := store.Has(ref)
+		has, err := store.Has(context.Background(), ref)
 		if err != nil || !has {
 			t.Fatalf("Has(%q) = %t, %v; want true, nil", ref, has, err)
 		}

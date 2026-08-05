@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -240,5 +241,69 @@ func TestScanLibraryRootChangeInOneRootDoesNotAffectAnother(t *testing.T) {
 	}
 	if len(assetsB) != 0 {
 		t.Fatalf("root B assets were disturbed by a root A scan: %v", assetsB)
+	}
+}
+
+// TestScanLibraryRootConcurrentSameRoot exercises the scan-local failure tracking
+// fix: two concurrent scans of the same root must not corrupt each other's failure
+// counts.  The race detector (-race) verifies there is no data race on the shared
+// scanFailures map.
+func TestScanLibraryRootConcurrentSameRoot(t *testing.T) {
+	ctx := context.Background()
+	service, _, rootDir := newSupervisedLibrary(t, config.LibrarySupervisorConfig{})
+	rootID := scanRootID(t, service)
+
+	// Create several files and do an initial scan to populate the library.
+	for _, name := range []string{"a.mp4", "b.mp4", "c.mp4"} {
+		scanWriteVideoFile(t, filepath.Join(rootDir, name))
+	}
+	if _, err := service.ScanLibraryRoot(ctx, rootID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Touch all files so the next scans see changes.
+	for _, name := range []string{"a.mp4", "b.mp4", "c.mp4"} {
+		path := filepath.Join(rootDir, name)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		moved := info.ModTime().Add(2 * time.Hour)
+		if err := os.Chtimes(path, moved, moved); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Run two concurrent scans of the same root.  With the old code (shared
+	// map reference) this could cause one scan to delete the other's failure
+	// counter entries.  With the fix each scan has its own local copy and
+	// merges back at the end.
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := service.ScanLibraryRoot(ctx, rootID)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("concurrent scan failed: %v", err)
+		}
+	}
+
+	// Verify the scanFailures map is in a sane state (no lingering entries
+	// from a partially-deleted concurrent prune).
+	service.scanFailuresMu.Lock()
+	failures := service.scanFailures[rootID]
+	service.scanFailuresMu.Unlock()
+	for id, count := range failures {
+		if count <= 0 {
+			t.Errorf("scanFailure for %q has count %d, want >0 or absent", id, count)
+		}
 	}
 }

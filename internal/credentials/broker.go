@@ -57,24 +57,32 @@ func isAuthHeader(name string) bool {
 }
 
 // sanitizeURL returns a copy of raw with userinfo and sensitive query
-// parameters (api_key, key, token, secret, password) removed. If raw
-// is not a valid URL it is returned unchanged. This prevents
-// credentials embedded in URLs from leaking through serialisation.
+// parameters (case-insensitive match) removed. If raw is not a valid
+// URL a placeholder is returned. Fragment credentials are also stripped.
+// This prevents credentials embedded in URLs from leaking through
+// serialisation.
 func sanitizeURL(raw string) string {
 	if raw == "" {
 		return raw
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return raw
+		return "[invalid-url]"
 	}
 	// Clear userinfo (e.g. https://user:pass@host).
 	u.User = nil
-	// Remove sensitive query parameters.
+
+	sensitiveParams := map[string]bool{
+		"api_key": true, "apikey": true, "api_key_id": true,
+		"key": true, "token": true, "secret": true, "password": true,
+		"access_token": true, "credential": true, "authorization": true,
+	}
+
+	// Remove sensitive query parameters (case-insensitive).
 	q := u.Query()
 	stripped := false
-	for _, param := range []string{"api_key", "key", "token", "secret", "password"} {
-		if q.Has(param) {
+	for param := range q {
+		if sensitiveParams[strings.ToLower(param)] {
 			q.Del(param)
 			stripped = true
 		}
@@ -82,6 +90,24 @@ func sanitizeURL(raw string) string {
 	if stripped {
 		u.RawQuery = q.Encode()
 	}
+
+	// Strip sensitive parameters from the fragment (e.g. #token=abc&key=def).
+	if u.Fragment != "" {
+		fragValues, err := url.ParseQuery(u.Fragment)
+		if err == nil {
+			fragStripped := false
+			for param := range fragValues {
+				if sensitiveParams[strings.ToLower(param)] {
+					fragValues.Del(param)
+					fragStripped = true
+				}
+			}
+			if fragStripped {
+				u.Fragment = fragValues.Encode()
+			}
+		}
+	}
+
 	return u.String()
 }
 

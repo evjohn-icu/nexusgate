@@ -399,6 +399,126 @@ func TestProgressRedactsSecrets(t *testing.T) {
 	}
 }
 
+// P1: Embedded JSON fragment inside a string field of a top-level JSON
+// object — the string value is not itself valid JSON (it has a prefix),
+// but contains a JSON fragment like {"token":"k"}. walkAndRedact must
+// scan string fields for embedded JSON fragments.
+func TestRedactSecretsEmbeddedFragmentInStringField(t *testing.T) {
+	input := `{"body":"prefix {\"token\":\"k\"} suffix"}`
+	got := redactSecrets(input)
+	if strings.Contains(got, `"k"`) && strings.Contains(got, `"token"`) {
+		t.Fatalf("embedded fragment in string field leaked secret: %s", got)
+	}
+	if !strings.Contains(got, "[redacted]") {
+		t.Fatalf("embedded fragment was not redacted: %s", got)
+	}
+	if !json.Valid([]byte(got)) {
+		t.Fatalf("redacted output is not valid JSON: %s", got)
+	}
+}
+
+// P1: Deeply nested embedded JSON (beyond one level) should be found by
+// bracket-balanced scanning and redacted.
+func TestRedactSecretsDeeplyNestedEmbeddedJSON(t *testing.T) {
+	input := `prefix {"access_token":"k","nested":{"deep":{"x":1}}} suffix`
+	got := redactSecrets(input)
+	if strings.Contains(got, `"k"`) && strings.Contains(got, `"access_token"`) {
+		t.Fatalf("deeply nested embedded JSON leaked access_token: %s", got)
+	}
+	if !strings.Contains(got, "[redacted]") {
+		t.Fatalf("deeply nested embedded JSON was not redacted: %s", got)
+	}
+}
+
+// P1: After jsonAwareRedact processes an embedded segment, the result
+// (e.g. {"token":"[redacted]"}) must not be corrupted by a subsequent
+// jsonKeyPattern pass that strips quotes.
+func TestRedactSecretsDoubleProcessingPreservesStructure(t *testing.T) {
+	// This input's top level is not JSON, so it goes through embedded
+	// segment scanning first, then regex fallbacks.
+	input := `err: {"token":"secret-value"} end`
+	got := redactSecrets(input)
+	// After embedded-segment scan: err: {"token":"[redacted]"} end
+	// jsonKeyPattern must NOT turn it into {"token":[redacted]}.
+	if strings.Contains(got, `:[redacted]}`) && !strings.Contains(got, `:"[redacted]"}`) {
+		t.Fatalf("double-processing stripped quotes from redacted value: %s", got)
+	}
+	if !strings.Contains(got, `"[redacted]"`) {
+		t.Fatalf("embedded segment value was not redacted at all: %s", got)
+	}
+}
+
+// P1: Long tokens adjacent to punctuation (token=value, token:"value")
+// must be caught by credentialKeyValuePattern.
+func TestRedactSecretsTokenAdjacentToPunctuation(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "token=equals form",
+			input: "error: token=abcdefghijklmnopqrst",
+		},
+		{
+			name:  "token:colon form",
+			input: `error: token:"abcdefghijklmnopqrst"`,
+		},
+		{
+			name:  "access_token= form",
+			input: "error: access_token=abcdefghijklmnopqrst",
+		},
+		{
+			name:  "secret= form",
+			input: "error: secret=abcdefghijklmnopqrst",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := redactSecrets(tc.input)
+			if !strings.Contains(got, "[redacted]") {
+				t.Fatalf("token adjacent to punctuation not redacted: input=%q got=%q", tc.input, got)
+			}
+			if strings.Contains(got, "abcdefghijklmnopqrst") {
+				t.Fatalf("token value not removed: got=%q", got)
+			}
+		})
+	}
+}
+
+// P2: UUIDs starting with a letter (e50e8400-...) must not be redacted
+// by the long-token safety net.
+func TestRedactSecretsUUIDStartingWithLetterPreserved(t *testing.T) {
+	input := "trace: e50e8400-e29b-41d4-a716-446655440000 request-id"
+	got := redactSecrets(input)
+	if got != input {
+		t.Fatalf("UUID starting with letter was redacted: input=%q got=%q", input, got)
+	}
+}
+
+// P1: credentialKeyValuePattern must match known keys case-insensitively.
+func TestRedactSecretsCredentialKeyValueCaseInsensitive(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "ApiKey=value", input: "err: ApiKey=my-secret-key-here"},
+		{name: "API_KEY=value", input: "err: API_KEY=sk-abcdefghijklmnopqrst"},
+		{name: "apikey=value", input: "err: apikey=my-secret-key-here"},
+		{name: "api_key_id=value", input: "err: api_key_id=abcdefghijklmnopqrst"},
+		{name: "credential=value", input: "err: credential=abcdefghijklmnopqrst"},
+		{name: "authorization=value", input: "err: authorization=abcdefghijklmnopqrst"},
+		{name: "key=value", input: "err: key=abcdefghijklmnopqrst"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := redactSecrets(tc.input)
+			if !strings.Contains(got, "[redacted]") {
+				t.Fatalf("credential key=value not redacted (case-insensitive): input=%q got=%q", tc.input, got)
+			}
+		})
+	}
+}
+
 func TestUploadArtifactCancelsOnContextDone(t *testing.T) {
 	artifactPath := filepath.Join(t.TempDir(), "large.bin")
 	if err := os.WriteFile(artifactPath, make([]byte, 10<<20), 0o600); err != nil {

@@ -754,6 +754,242 @@ func TestWorkerProgressRejectsTrailingBytes(t *testing.T) {
 	}
 }
 
+// --- P1: small trailing bytes (within Decoder buffer, missed by drainBody) --------------
+
+// workerCompleteJob: a small trailing byte (1 char) that fits inside json.Decoder's
+// internal buffer must still be rejected. drainBody would miss it because Decoder
+// already consumed the byte into its buffer before drainBody reads.
+func TestWorkerCompleteJobRejectsSmallTrailingByte(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "complete-small-tail.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pairing, err := repo.CreateWorkerPairing(ctx, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, workerToken, err := repo.EnrollWorker(ctx, pairing.Token, remote.WorkerRegistration{
+		Name:         "small-tail-worker",
+		Platform:     "linux-amd64",
+		Capabilities: remote.WorkerCapabilities{Proxy: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{
+		DataDir:  t.TempDir(),
+		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+
+	// Valid JSON followed by a single trailing 'x' — well within the decoder
+	// buffer (512 bytes default). The old drainBody approach would miss this.
+	body := `{"state":"succeeded","message":"done"}x`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/worker/jobs/job-1/complete", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+workerToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("small trailing byte: got %d, want 400; body=%s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), "trailing content") {
+		t.Fatalf("small trailing byte: body should mention trailing content; body=%s", resp.Body.String())
+	}
+}
+
+// workerCompleteJob: a second JSON value after a valid one must be rejected,
+// even when both fit well inside the decoder buffer.
+func TestWorkerCompleteJobRejectsSecondJSONValue(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "complete-second-json.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pairing, err := repo.CreateWorkerPairing(ctx, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, workerToken, err := repo.EnrollWorker(ctx, pairing.Token, remote.WorkerRegistration{
+		Name:         "second-json-worker",
+		Platform:     "linux-amd64",
+		Capabilities: remote.WorkerCapabilities{Proxy: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{
+		DataDir:  t.TempDir(),
+		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+
+	// Two valid JSON objects concatenated. The first Decode succeeds,
+	// the second returns nil (not io.EOF), which decodeStrictJSON rejects.
+	body := `{"state":"succeeded","message":"done"}{"extra":"value"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/worker/jobs/job-1/complete", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+workerToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("second JSON value: got %d, want 400; body=%s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), "trailing content") {
+		t.Fatalf("second JSON value: body should mention trailing content; body=%s", resp.Body.String())
+	}
+}
+
+// workerHeartbeat: a small trailing byte (1 char) must be rejected.
+func TestWorkerHeartbeatRejectsSmallTrailingByte(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "heartbeat-small-tail.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pairing, err := repo.CreateWorkerPairing(ctx, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, workerToken, err := repo.EnrollWorker(ctx, pairing.Token, remote.WorkerRegistration{
+		Name:         "hb-small-tail",
+		Platform:     "linux-amd64",
+		Capabilities: remote.WorkerCapabilities{Proxy: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{
+		DataDir:  t.TempDir(),
+		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+
+	body := `{"capabilities":{}}x`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/worker/heartbeat", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+workerToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("small trailing byte heartbeat: got %d, want 400; body=%s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), "trailing content") {
+		t.Fatalf("small trailing byte heartbeat: body should mention trailing content; body=%s", resp.Body.String())
+	}
+}
+
+// workerProgress: a second JSON value after valid must be rejected.
+func TestWorkerProgressRejectsSecondJSONValue(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "progress-second-json.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pairing, err := repo.CreateWorkerPairing(ctx, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, workerToken, err := repo.EnrollWorker(ctx, pairing.Token, remote.WorkerRegistration{
+		Name:         "progress-second-json",
+		Platform:     "linux-amd64",
+		Capabilities: remote.WorkerCapabilities{Proxy: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{
+		DataDir:  t.TempDir(),
+		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+
+	body := `{"stage":"derive","progress":0.5}{"extra":"value"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/worker/jobs/job-1/progress", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+workerToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("progress second JSON: got %d, want 400; body=%s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), "trailing content") {
+		t.Fatalf("progress second JSON: body should mention trailing content; body=%s", resp.Body.String())
+	}
+}
+
+// enrollWorker: trailing bytes must be rejected (was completely missing tail check).
+func TestEnrollWorkerRejectsTrailingBytes(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "enroll-trailing.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pairing, err := repo.CreateWorkerPairing(ctx, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{
+		DataDir:  t.TempDir(),
+		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+
+	// Valid enrollment JSON followed by an extra 'x'.
+	body := `{"pairing_token":"` + pairing.Token + `","name":"trailing-worker","platform":"linux-amd64"}x`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/worker/enroll", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("enroll trailing byte: got %d, want 400; body=%s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), "trailing content") {
+		t.Fatalf("enroll trailing byte: body should mention trailing content; body=%s", resp.Body.String())
+	}
+}
+
 // --- P2-4: denied_actions completeness -------------------------------------------------
 
 func TestAgentCapabilitiesDeniedActionsCoverAllAdminRoutes(t *testing.T) {

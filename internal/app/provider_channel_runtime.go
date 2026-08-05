@@ -28,7 +28,7 @@ type providerChannelRepository interface {
 }
 
 type providerSecretResolver interface {
-	Has(string) (bool, error)
+	Has(context.Context, string) (bool, error)
 	Resolve(string) (string, bool, error)
 }
 
@@ -611,7 +611,7 @@ func (r *providerChannelRuntime) executor(ctx context.Context, capability provid
 			if strings.TrimSpace(member.SecretRef) == "" {
 				continue
 			}
-			ready, hasErr := r.secrets.Has(member.SecretRef)
+			ready, hasErr := r.secrets.Has(ctx, member.SecretRef)
 			if hasErr != nil {
 				return nil, false, hasErr
 			}
@@ -794,11 +794,20 @@ func (r *providerChannelRuntime) resolve(ref string) (string, bool, error) {
 // the entry before the TTL elapses, so provider-channel edits take effect
 // without a Hub restart.
 //
+// Fast-path fingerprint re-validation: the fast path calls executor() with a
+// 1 s timeout to re-read the DB and compute a fresh fingerprint, so that an
+// identity cached before a channel edit is invalidated even when no other
+// executor operation has rebuilt the executor cache.  When the re-validation
+// fails or times out the cached identity is still returned — the slow path
+// on the next lookup will correct it.
+//
 // Resource governance: resolveIdentity receives a context with a 10 s
 // deadline so that its goroutine cannot accumulate indefinitely behind a
 // stalled database or blocked mutex.  The 2 s UI deadline is enforced by
-// the outer select; when it fires the goroutine still completes (and caches
-// its result for the next caller), but it will not outlive 10 s.
+// the outer select; when it fires the goroutine is NOT cancelled — it
+// continues to completion under its own 10 s deadline, caches its result,
+// and exits normally.  The resolveCancel is owned by the goroutine, not by
+// the caller, so the caller returning early never kills background work.
 func (r *providerChannelRuntime) identity(capability providerchannels.Capability, fallback interface {
 	Name() string
 	Model() string
@@ -810,25 +819,42 @@ func (r *providerChannelRuntime) identity(capability providerchannels.Capability
 	cacheKey := string(capability) + "\x00" + fallbackName
 
 	// Fast path: consistent cached pair whose executor fingerprint still
-	// matches the live executor cache.
+	// matches.  The fingerprint is re-validated against a fresh DB read
+	// (short timeout) so that channel edits are visible even when no
+	// executor rebuild has been triggered by another operation.
 	r.identityCacheMu.Lock()
-	if cached, ok := r.identityCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
-		// Validate that the executor route has not changed since the
-		// identity was resolved.  If no executor has ever been built
-		// for this capability the cache entry is still valid — the
-		// next executor build will get a new fingerprint and the cache
-		// check on the following call will catch it.
-		r.cacheMu.Lock()
-		execCached, execOk := r.executors[capability]
-		r.cacheMu.Unlock()
-		if !execOk || execCached.fingerprint == cached.fingerprint {
-			r.identityCacheMu.Unlock()
-			return cached.name, cached.model
+	cached, cacheHit := r.identityCache[cacheKey]
+	r.identityCacheMu.Unlock()
+
+	if cacheHit && time.Now().Before(cached.expiresAt) {
+		// Re-read DB to compute a fresh fingerprint for the cached
+		// entry.  A 1 s timeout keeps this fast; on failure or timeout
+		// the cached identity is returned (the next call will retry).
+		checkCtx, checkCancel := context.WithTimeout(context.Background(), 1*time.Second)
+		_, freshHasRoute, freshErr := r.executor(checkCtx, capability)
+		checkCancel()
+		if freshErr == nil && freshHasRoute {
+			r.cacheMu.Lock()
+			execCached, execOk := r.executors[capability]
+			r.cacheMu.Unlock()
+			if execOk && execCached.fingerprint == cached.fingerprint {
+				return cached.name, cached.model
+			}
+		} else {
+			// Re-validation failed or timed out; compare against the
+			// in-memory executor cache as a fallback (the slow path
+			// will correct on the next call if the fingerprint actually
+			// changed).
+			r.cacheMu.Lock()
+			execCached, execOk := r.executors[capability]
+			r.cacheMu.Unlock()
+			if !execOk || execCached.fingerprint == cached.fingerprint {
+				return cached.name, cached.model
+			}
 		}
 		// Fingerprint mismatch: channel config changed since last
 		// resolution.  Fall through to re-resolve.
 	}
-	r.identityCacheMu.Unlock()
 
 	// Slow path: resolve with overall timeout.
 	type pair struct {
@@ -837,23 +863,21 @@ func (r *providerChannelRuntime) identity(capability providerchannels.Capability
 	}
 	resultCh := make(chan pair, 1)
 
-	// The goroutine's own context has a 10 s deadline so that even when the
-	// 2 s UI timeout fires first the background work cannot persist
-	// indefinitely.  executor() passes ctx to ListProviderChannels so the
-	// SQLite query respects cancellation; the secret-store check and mutex
-	// acquire are bounded by the same deadline indirectly (query failure
-	// unwinds the call).
+	// The goroutine owns its context and its cancellation.  The 10 s
+	// deadline bounds the goroutine lifetime even when the caller has
+	// already returned (the 2 s select below fired first).  executor()
+	// passes ctx to ListProviderChannels so the SQLite query respects
+	// cancellation; the secret-store check is also context-aware.
 	resolveCtx, resolveCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer resolveCancel()
 
 	go func() {
+		defer resolveCancel()
 		n, m := r.resolveIdentity(resolveCtx, capability)
 		select {
 		case resultCh <- pair{n, m}:
-		case <-resolveCtx.Done():
-			// Caller already gave up; cache the result anyway so the
-			// next caller (which may be a retry from the same UI
-			// refresh) can use it.
+		default:
+			// Caller already gave up (the 2 s select below timed out);
+			// cache the result anyway so the next caller can use it.
 			if n != "" {
 				r.cacheIdentity(capability, fallbackName, n, m)
 			}
@@ -882,7 +906,10 @@ func (r *providerChannelRuntime) resolveIdentity(ctx context.Context, capability
 	executor, hasRoute, err := r.executor(ctx, capability)
 	if err == nil && hasRoute {
 		routes := executor.Route(capability)
-		if len(routes) > 0 && routes[0].ProviderName != "" {
+		// Require both name and model non-empty so a partially configured
+		// channel (e.g. provider name set but model field blank) does not
+		// bypass the sentinel pair that cacheFallbackIdentity enforces.
+		if len(routes) > 0 && routes[0].ProviderName != "" && routes[0].Model != "" {
 			return routes[0].ProviderName, routes[0].Model
 		}
 	}
@@ -891,24 +918,26 @@ func (r *providerChannelRuntime) resolveIdentity(ctx context.Context, capability
 
 // cacheIdentity stores a resolved (name, model) pair in the identity cache
 // together with the executor route fingerprint at resolution time.
+//
+// Lock order: identityCacheMu → cacheMu, consistent with the fast path in
+// identity().  The reverse order (cacheMu → identityCacheMu) would deadlock
+// when identity()'s fast path and cacheIdentity() run concurrently.
 func (r *providerChannelRuntime) cacheIdentity(capability providerchannels.Capability, fallbackName, name, model string) {
 	cacheKey := string(capability) + "\x00" + fallbackName
-	fingerprint := ""
-	// Read the executor cache fingerprint without blocking on a new build —
-	// executor() was just called by resolveIdentity, so a nil entry here
-	// means resolution failed or the route has no channels, and the
-	// fingerprint stays empty to match the executor cache's absent entry.
+
+	// Lock identityCacheMu first (consistent with identity's fast path), then
+	// cacheMu to read the executor fingerprint.
+	r.identityCacheMu.Lock()
 	r.cacheMu.Lock()
+	fingerprint := ""
 	if cached, ok := r.executors[capability]; ok {
 		fingerprint = cached.fingerprint
 	}
-	r.cacheMu.Unlock()
-
-	r.identityCacheMu.Lock()
 	r.identityCache[cacheKey] = cachedIdentity{
 		name: name, model: model, fingerprint: fingerprint,
 		expiresAt: time.Now().Add(identityCacheTTL),
 	}
+	r.cacheMu.Unlock()
 	r.identityCacheMu.Unlock()
 }
 

@@ -284,7 +284,7 @@ func (s *Service) TestProviderChannel(ctx context.Context, id string) (ProviderC
 	result := ProviderChannelTestResult{ChannelID: channel.ID, ProviderName: channel.ProviderName, Status: "not_ready"}
 	for _, member := range channel.Members {
 		if member.Enabled && member.SecretRef != "" {
-			ready, resolveErr := s.secrets.Has(member.SecretRef)
+			ready, resolveErr := s.secrets.Has(ctx, member.SecretRef)
 			if resolveErr != nil {
 				return ProviderChannelTestResult{}, errors.New("provider channel secret store unavailable")
 			}

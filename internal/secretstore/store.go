@@ -4,6 +4,7 @@
 package secretstore
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -311,7 +312,7 @@ func (s *Store) Resolve(ref string) (string, bool, error) {
 }
 
 // Has reports whether ref is present without exposing its value.
-func (s *Store) Has(ref string) (bool, error) {
+func (s *Store) Has(_ context.Context, ref string) (bool, error) {
 	if err := validateRef(ref); err != nil {
 		return false, err
 	}

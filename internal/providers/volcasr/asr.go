@@ -49,16 +49,24 @@ func (a *ASR) Model() string {
 }
 
 // GoString prevents %#v from exposing the API key. The URL is sanitised
-// to strip any embedded credentials (userinfo, sensitive query params).
+// to strip any embedded credentials (userinfo, sensitive query params,
+// fragment credentials). Case-insensitive param matching.
 func (a ASR) GoString() string {
 	safeURL := a.URL
 	if safeURL != "" {
 		if u, err := url.Parse(safeURL); err == nil {
 			u.User = nil
+
+			sensitiveParams := map[string]bool{
+				"api_key": true, "apikey": true, "api_key_id": true,
+				"key": true, "token": true, "secret": true, "password": true,
+				"access_token": true, "credential": true, "authorization": true,
+			}
+
 			q := u.Query()
 			stripped := false
-			for _, param := range []string{"api_key", "key", "token", "secret", "password"} {
-				if q.Has(param) {
+			for param := range q {
+				if sensitiveParams[strings.ToLower(param)] {
 					q.Del(param)
 					stripped = true
 				}
@@ -66,6 +74,24 @@ func (a ASR) GoString() string {
 			if stripped {
 				u.RawQuery = q.Encode()
 			}
+
+			// Strip sensitive parameters from fragment.
+			if u.Fragment != "" {
+				fragValues, fragErr := url.ParseQuery(u.Fragment)
+				if fragErr == nil {
+					fragStripped := false
+					for param := range fragValues {
+						if sensitiveParams[strings.ToLower(param)] {
+							fragValues.Del(param)
+							fragStripped = true
+						}
+					}
+					if fragStripped {
+						u.Fragment = fragValues.Encode()
+					}
+				}
+			}
+
 			safeURL = u.String()
 		}
 	}

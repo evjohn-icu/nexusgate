@@ -282,6 +282,30 @@ func TestCredentialMarshalJSONSanitizesBaseURL(t *testing.T) {
 			want:    "",
 			absent:  "",
 		},
+		{
+			name:    "API_KEY case-insensitive removed",
+			baseURL: "https://api.example.com/v1?API_KEY=sk-leaked&x=1",
+			want:    "x=1",
+			absent:  "sk-leaked",
+		},
+		{
+			name:    "fragment token stripped",
+			baseURL: "https://api.example.com/path?mode=1#token=abc",
+			want:    "mode=1",
+			absent:  "token=abc",
+		},
+		{
+			name:    "apikey param removed",
+			baseURL: "https://api.example.com/v1?apikey=secret&x=1",
+			want:    "x=1",
+			absent:  "secret",
+		},
+		{
+			name:    "access_token param removed",
+			baseURL: "https://api.example.com/v1?access_token=secret&x=1",
+			want:    "x=1",
+			absent:  "secret",
+		},
 	}
 
 	for _, tc := range tests {
@@ -409,6 +433,56 @@ func TestSanitizeURL(t *testing.T) {
 			name:  "invalid URL returned as-is",
 			input: "not-a-url",
 			want:  "not-a-url",
+		},
+		{
+			name:  "API_KEY case-insensitive removed",
+			input: "https://host/path?API_KEY=secret&x=1",
+			want:  "https://host/path?x=1",
+		},
+		{
+			name:  "ApiKey camelCase removed",
+			input: "https://host/path?ApiKey=secret&x=1",
+			want:  "https://host/path?x=1",
+		},
+		{
+			name:  "apikey param removed",
+			input: "https://host/path?apikey=secret&mode=test",
+			want:  "https://host/path?mode=test",
+		},
+		{
+			name:  "access_token param removed",
+			input: "https://host/path?access_token=secret&x=1",
+			want:  "https://host/path?x=1",
+		},
+		{
+			name:  "api_key_id param removed",
+			input: "https://host/path?api_key_id=secret&x=1",
+			want:  "https://host/path?x=1",
+		},
+		{
+			name:  "credential param removed",
+			input: "https://host/path?credential=secret&x=1",
+			want:  "https://host/path?x=1",
+		},
+		{
+			name:  "authorization param removed",
+			input: "https://host/path?authorization=secret&x=1",
+			want:  "https://host/path?x=1",
+		},
+		{
+			name:  "fragment token param removed",
+			input: "https://host/path?mode=test#token=abc",
+			want:  "https://host/path?mode=test",
+		},
+		{
+			name:  "fragment access_token removed but non-sensitive kept",
+			input: "https://host/path?mode=test#access_token=secret&page=1",
+			want:  "https://host/path?mode=test#page=1",
+		},
+		{
+			name:  "truly malformed URL returns placeholder",
+			input: "http://[::1%25",
+			want:  "[invalid-url]",
 		},
 	}
 	for _, tc := range tests {
