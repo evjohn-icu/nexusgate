@@ -25,9 +25,11 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/mount"
 	"github.com/evjohn-icu/timingdex/internal/providers"
 	"github.com/evjohn-icu/timingdex/internal/remote"
+	sqlite "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 	"github.com/evjohn-icu/timingdex/internal/repurpose"
 	"github.com/evjohn-icu/timingdex/internal/secretstore"
 	"github.com/evjohn-icu/timingdex/internal/staging"
+	"github.com/evjohn-icu/timingdex/internal/webdavspace"
 )
 
 var ErrInvalidRepurposeRevision = errors.New("invalid repurpose revision")
@@ -171,6 +173,12 @@ type Service struct {
 	adminToken string
 	agentToken string
 	secrets    *secretstore.Store
+
+	// webdav is the on-demand WebDAV space manager for footage delivery to
+	// editing agents; nil when the operator has not enabled the feature.
+	webdav *webdavspace.Manager
+	// webdavAccounts persists WebDAV Basic-Auth accounts (bcrypt hashes).
+	webdavAccounts webdavspace.AccountStore
 
 	// channelRuntime is the same bridge NewService hands the pipeline and
 	// curator/embedder/planner wrappers, kept here too so
@@ -1415,6 +1423,105 @@ func (s *Service) OriginalMediaPath(ctx context.Context, assetID string) string 
 		return ""
 	}
 	return loc.AbsolutePath
+}
+
+// SetWebDAVSpaceManager wires the on-demand WebDAV delivery manager and its
+// persisted account store into the service. Called during startup when the
+// feature is enabled; nil manager disables the admin endpoints below.
+func (s *Service) SetWebDAVSpaceManager(m *webdavspace.Manager, accounts webdavspace.AccountStore) {
+	s.webdav = m
+	s.webdavAccounts = accounts
+}
+
+// WebDAVLinker adapts the service's asset resolution to the space linker.
+type WebDAVLinker struct{ Service *Service }
+
+func (l WebDAVLinker) OriginalPath(ctx context.Context, assetID string) string {
+	return l.Service.OriginalMediaPath(ctx, assetID)
+}
+
+func (l WebDAVLinker) ProxyPath(ctx context.Context, assetID string) string {
+	a, err := l.Service.GetArtifact(ctx, assetID, "proxy")
+	if err != nil || a == nil {
+		return ""
+	}
+	return a.LocalPath
+}
+
+// CreateWebDAVAccount hashes the plaintext password with bcrypt (via the
+// manager's account store) and persists it. Plaintext never enters the
+// repository.
+func (s *Service) CreateWebDAVAccount(ctx context.Context, username, password string) error {
+	if s.webdavAccounts == nil {
+		return errors.New("WebDAV delivery is not enabled")
+	}
+	// The repository-backed store only persists; hashing is done here so the
+	// plaintext never crosses into the repository layer.
+	hash, err := webdavspace.HashPassword(password)
+	if err != nil {
+		return err
+	}
+	repoStore, ok := s.webdavAccounts.(sqlite.WebDAVAccountStore)
+	if !ok {
+		return errors.New("WebDAV account store is not repository-backed")
+	}
+	return repoStore.Repo.SaveWebDAVAccount(ctx, username, hash)
+}
+
+// CreateWebDAVSpace registers a new on-demand delivery space and returns its
+// id. The space starts empty; assets appear only when linked.
+func (s *Service) CreateWebDAVSpace(ctx context.Context) (string, error) {
+	if s.webdav == nil {
+		return "", errors.New("WebDAV delivery is not enabled")
+	}
+	space := s.webdav.CreateSpace(idgen.New())
+	return space.ID, nil
+}
+
+// LinkWebDAVAsset adds the asset's original media or proxy artifact to the
+// space as a virtual entry, returning the WebDAV path it will be served at.
+func (s *Service) LinkWebDAVAsset(ctx context.Context, spaceID, assetID, kind string) (string, error) {
+	if s.webdav == nil {
+		return "", errors.New("WebDAV delivery is not enabled")
+	}
+	space := s.webdav.Space(spaceID)
+	if space == nil {
+		return "", errors.New("unknown WebDAV space")
+	}
+	switch kind {
+	case "original":
+		return space.LinkOriginal(ctx, assetID)
+	case "proxy":
+		return space.LinkProxy(ctx, assetID)
+	default:
+		return "", fmt.Errorf("unknown link kind %q (want original or proxy)", kind)
+	}
+}
+
+// ListWebDAVSpaces returns the ids of all live delivery spaces.
+func (s *Service) ListWebDAVSpaces() []string {
+	if s.webdav == nil {
+		return nil
+	}
+	return s.webdav.SpaceIDs()
+}
+
+// ListWebDAVAccounts returns every delivery account username.
+func (s *Service) ListWebDAVAccounts(ctx context.Context) ([]string, error) {
+	repoStore, ok := s.webdavAccounts.(sqlite.WebDAVAccountStore)
+	if !ok {
+		return nil, errors.New("WebDAV account store is not repository-backed")
+	}
+	return repoStore.Repo.ListWebDAVAccounts(ctx)
+}
+
+// DeleteWebDAVAccount removes a delivery account.
+func (s *Service) DeleteWebDAVAccount(ctx context.Context, username string) error {
+	repoStore, ok := s.webdavAccounts.(sqlite.WebDAVAccountStore)
+	if !ok {
+		return errors.New("WebDAV account store is not repository-backed")
+	}
+	return repoStore.Repo.DeleteWebDAVAccount(ctx, username)
 }
 
 func (s *Service) ListCanonicalTags(ctx context.Context) ([]domain.CanonicalTag, error) {

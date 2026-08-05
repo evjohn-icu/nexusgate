@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — 2026-08-05 剪辑 agent 接入（MCP + 按需 WebDAV 交付）
+
+- **按需 WebDAV 交付空间**：空间初始为空，素材经软链（虚拟映射）按需可见；
+  只读（PUT/MKCOL 拒绝）、字节从 NAS 原文件流式读取、真实路径不泄露、
+  未请求素材 404。账号 bcrypt 哈希落库（`golang.org/x/crypto`），
+  虚拟 FileSystem 基于 `golang.org/x/net/webdav`。
+- **管理端点**：admin 建账号/建空间/软链 asset（`/api/v1/admin/webdav/*`），
+  WebDAV Basic Auth 挂载于 `/spaces/{id}/...`。
+- 新增依赖：`golang.org/x/net`、`golang.org/x/crypto`。
+
 ## v0.22.0 — 2026-08-05（优化轮：依赖卫生、测试覆盖、CI 门禁、搜索、可观测性）
 
 三轮并行优化的合集（openspec changes 0021–0033），覆盖：依赖升级、测试覆盖

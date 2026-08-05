@@ -49,6 +49,17 @@ func (m *memAccountStore) GetAccount(_ context.Context, username string) (*Accou
 	return a, ok, nil
 }
 
+// HashPassword returns a bcrypt hash of the plaintext password. It is the
+// only place plaintext is turned into a stored credential; the caller passes
+// only the hash onward.
+func HashPassword(password string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
 // CreateAccount hashes the plaintext password with bcrypt and stores it. It
 // returns an error when the username is taken or the password is empty.
 func (m *memAccountStore) CreateAccount(username, password string) error {
@@ -56,7 +67,7 @@ func (m *memAccountStore) CreateAccount(username, password string) error {
 	if username == "" || password == "" {
 		return errors.New("username and password are required")
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := HashPassword(password)
 	if err != nil {
 		return err
 	}
@@ -65,7 +76,7 @@ func (m *memAccountStore) CreateAccount(username, password string) error {
 	if _, exists := m.accounts[username]; exists {
 		return errors.New("account already exists")
 	}
-	m.accounts[username] = &Account{Username: username, PasswordHash: string(hash)}
+	m.accounts[username] = &Account{Username: username, PasswordHash: hash}
 	return nil
 }
 

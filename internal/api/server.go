@@ -115,6 +115,11 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/v1/roots", s.requireHubAdmin(s.listRoots))
 	mux.HandleFunc("POST /api/v1/hub/worker-pairings", s.requireHubAdmin(s.createWorkerPairing))
+	mux.HandleFunc("GET /api/v1/admin/webdav/accounts", s.requireHubAdmin(s.listWebDAVAccounts))
+	mux.HandleFunc("POST /api/v1/admin/webdav/accounts", s.requireHubAdmin(s.createWebDAVAccount))
+	mux.HandleFunc("DELETE /api/v1/admin/webdav/accounts/{username}", s.requireHubAdmin(s.deleteWebDAVAccount))
+	mux.HandleFunc("POST /api/v1/admin/webdav/spaces", s.requireHubAdmin(s.createWebDAVSpace))
+	mux.HandleFunc("POST /api/v1/admin/webdav/spaces/{id}/links", s.requireHubAdmin(s.linkWebDAVAsset))
 	mux.HandleFunc("GET /api/v1/hub/workers", s.requireHubAdmin(s.listWorkers))
 	mux.HandleFunc("GET /api/v1/admin/provider-channels", s.requireHubAdmin(s.listProviderChannels))
 	mux.HandleFunc("GET /api/v1/admin/provider-channels/status", s.requireHubAdmin(s.providerChannelRuntimeStatus))
@@ -137,7 +142,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/roots", s.requireHubAdmin(s.createRoot))
 	mux.HandleFunc("POST /api/v1/roots/{id}/scan", s.requireHubAdmin(s.scanRoot))
 	mux.HandleFunc("POST /api/v1/roots/inspect", s.requireHubAdmin(s.inspectRoot))
-	mux.HandleFunc("GET /", s.index)
+	mux.HandleFunc("GET /{$}", s.index)
 	mux.HandleFunc("GET /setup", s.setupPage)
 	mux.HandleFunc("GET /progress", s.progressPage)
 	mux.HandleFunc("GET /workers", s.workersPage)
@@ -275,6 +280,68 @@ func (s *Server) createWorkerPairing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, pairing)
+}
+
+func (s *Server) listWebDAVAccounts(w http.ResponseWriter, r *http.Request) {
+	accounts, err := s.service.ListWebDAVAccounts(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if accounts == nil {
+		accounts = []string{}
+	}
+	writeJSON(w, http.StatusOK, accounts)
+}
+
+func (s *Server) createWebDAVAccount(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if err := s.service.CreateWebDAVAccount(r.Context(), req.Username, req.Password); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (s *Server) deleteWebDAVAccount(w http.ResponseWriter, r *http.Request) {
+	if err := s.service.DeleteWebDAVAccount(r.Context(), r.PathValue("username")); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) createWebDAVSpace(w http.ResponseWriter, r *http.Request) {
+	spaceID, err := s.service.CreateWebDAVSpace(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"space_id": spaceID})
+}
+
+func (s *Server) linkWebDAVAsset(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AssetID string `json:"asset_id"`
+		Kind    string `json:"kind"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	path, err := s.service.LinkWebDAVAsset(r.Context(), r.PathValue("id"), req.AssetID, req.Kind)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"path": path})
 }
 
 func (s *Server) listWorkers(w http.ResponseWriter, r *http.Request) {

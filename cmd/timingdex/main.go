@@ -24,6 +24,7 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/remote"
 	sqliterepo "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 	"github.com/evjohn-icu/timingdex/internal/secretstore"
+	"github.com/evjohn-icu/timingdex/internal/webdavspace"
 	"github.com/evjohn-icu/timingdex/internal/worker"
 )
 
@@ -119,7 +120,9 @@ func run() error {
 		if status := service.LibrarySupervisorStatus(); status.Enabled {
 			fmt.Printf("Library supervisor: rescanning every root every %s\n", (time.Duration(status.IntervalSeconds) * time.Second).String())
 		}
-		serveErr := api.NewTLSServer(*addr, service, certificate, key).Run(ctx)
+		server := api.NewTLSServer(*addr, service, certificate, key)
+		setupWebDAVDelivery(service, server, repo)
+		serveErr := server.Run(ctx)
 		// Joined, not abandoned: the supervisor may be mid-pass, and the point
 		// of running the pipeline inline in it is that this wait is what makes
 		// "the process exited" mean "no job and no Provider call is still
@@ -194,6 +197,19 @@ func runSecretsCommand(cfg config.Config) error {
 	default:
 		return errors.New("usage: timingdex secrets rekey")
 	}
+}
+
+// setupWebDAVDelivery wires the on-demand WebDAV footage-delivery feature
+// into the service and server: a repository-backed account store (bcrypt
+// hashes), the space manager whose linker resolves assets through the
+// service, and the /spaces/ route on the API server. The feature is always
+// compiled in; the admin endpoints gate creation of accounts and spaces.
+func setupWebDAVDelivery(service *app.Service, server *api.Server, repo *sqliterepo.Repository) {
+	accounts := sqliterepo.WebDAVAccountStore{Repo: repo}
+	linker := app.WebDAVLinker{Service: service}
+	manager := webdavspace.NewManager(linker, accounts)
+	service.SetWebDAVSpaceManager(manager, accounts)
+	server.SetWebDAVSpaceManager(manager)
 }
 
 func hubTLSFiles(cfg config.Config) (string, string, error) {

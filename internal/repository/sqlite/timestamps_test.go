@@ -173,11 +173,21 @@ func TestMigration0021CoversEveryTimestampColumn(t *testing.T) {
 	}
 	defer rows.Close()
 
+	// Tables created after migration 0021 are exempt: their timestamp columns
+	// are written with the fixed-width formatTime layout from birth, so there
+	// is nothing for 0021 to rewrite. Keeping this set explicit (rather than
+	// inferring from sqlite_master order) makes the exemption auditable when
+	// the next post-0021 table is added.
+	post0021Tables := map[string]bool{"webdav_accounts": true}
+
 	var uncovered []string
 	for rows.Next() {
 		var table string
 		if err := rows.Scan(&table); err != nil {
 			t.Fatal(err)
+		}
+		if post0021Tables[table] {
+			continue
 		}
 		cols, err := repo.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
 		if err != nil {
