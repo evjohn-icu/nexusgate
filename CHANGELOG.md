@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.24.1 — 2026-08-05（luna 交叉复核修复批 + 第三方裁决收尾）
+
+GPT-5.6 Luna（xhigh）四轮交叉复核 + deepseek-v4-pro 第三方裁决后的修复。
+Luna 四轮抓到的问题前三轮均为真实 P1/P2，全部修复；第四轮经第三方裁决
+判为 gold-plating（防御性滚雪球），仅采纳 P3 收尾。
+
+- **app**：identity 解析 goroutine 带 ctx 贯穿（secrets.Has 加 context）；锁序
+  统一消除死锁反转；快速路径刷新 fingerprint；model 成对校验；同 root 并发
+  scan 计数隔离；RunUntilIdle 有限重试（3 次）；scan 失败按 root 计数 + 去重。
+- **凭证**：redactSecrets 重写为 JSON 感知递归（转义嵌套/深层嵌套/顶层字符串
+  标量/编码形式全覆盖）；BaseURL/URL 序列化剥离 userinfo + query 凭证（大小写
+  不敏感 + fragment 清除）；longToken 收紧不误伤 UUID；LeaseAudit/volcasr
+  安全格式化；ExtraHeaders 全脱敏。
+- **API**：decodeStrictJSON 严格解码（同一 Decoder 二次 Decode 要求 io.EOF，
+  覆盖 Decoder.Buffered 盲区）；enrollWorker 补尾部检查；413/400 语义区分；
+  serveArtifact 双根（DataDir+CacheDir）；collection 重复 409；denied_actions
+  补全。
+- **repository/domain**：assignment sentinel 下沉产生点；collection UNIQUE →
+  sentinel；chunk 测试成员归属断言。
+- **licenses**：libc musl 子节补全作者名单 + 第三方声明（TRE/数学库/ARM
+  memcpy/DES/blowfish/smoothsort/public-header）。
+- **P3 收尾（第三方裁决采纳）**：顶层 JSON 字符串标量脱敏；resultCh/merge
+  误导注释修正。
+
+Docker 镜像 tag：`timingdex:v0.24.1`。
+
 ## v0.24.0 — 2026-08-05（全量 review 修复批：8 reviewer 覆盖全部 21 包）
 
 8 子代理并行审查全库（5.4 万行/251 文件）后的 P1/P2 修复，覆盖依赖合规、
