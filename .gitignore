@@ -21,9 +21,21 @@ config.json
 
 # Compose reads .env automatically, and docker-compose.yml passes six provider
 # key variables through from it. That makes an untracked .env the intended place
-# for them and a tracked one a committed key.
+# for them and a tracked one a committed key. .env.example stays tracked as the
+# documented template (same convention as config.example.json).
 .env
 .env.*
+!.env.example
+
+# Real MCP configuration carries agent/admin tokens. The tracked template is
+# skills/timingdex/mcp/.mcp.json.example; a filled-in copy at the repo root or
+# anywhere else must never be committed.
+.mcp.json
+
+# Editor/backup noise.
+*.tmp
+*.bak
+*~
 
 # Worker configuration written by `timingdex worker enroll` (node token).
 worker.json
