@@ -27,7 +27,7 @@ func TestRetryJobReschedulesLeasedWorkWithBackoff(t *testing.T) {
 	if err := repo.EnqueueJob(ctx, "asset-retry", domain.JobAnalyze, "retry-input", 10); err != nil {
 		t.Fatal(err)
 	}
-	job, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+	job, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{})
 	if err != nil || job == nil || job.AttemptCount != 1 {
 		t.Fatalf("lease job=%+v err=%v", job, err)
 	}
@@ -42,7 +42,7 @@ func TestRetryJobReschedulesLeasedWorkWithBackoff(t *testing.T) {
 	if jobs[0].State != domain.JobPending || jobs[0].RunAfter.Before(before.Add(time.Second)) || jobs[0].LastError != "temporary provider outage" {
 		t.Fatalf("retry was not delayed and observable: %+v", jobs[0])
 	}
-	if next, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{}); err != nil || next != nil {
+	if next, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{}); err != nil || next != nil {
 		t.Fatalf("backoff job must not be immediately leased: job=%+v err=%v", next, err)
 	}
 }
@@ -68,7 +68,7 @@ func TestFailJobTerminallyStopsFurtherLeasing(t *testing.T) {
 	if err := repo.EnqueueJob(ctx, "asset-terminal", domain.JobAnalyze, "terminal-input", 10); err != nil {
 		t.Fatal(err)
 	}
-	job, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+	job, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{})
 	if err != nil || job == nil {
 		t.Fatalf("lease job=%+v err=%v", job, err)
 	}
@@ -78,7 +78,7 @@ func TestFailJobTerminallyStopsFurtherLeasing(t *testing.T) {
 	if err := repo.FailJobTerminally(ctx, job.ID, "worker", "video provider channel \"x\" is disabled"); err != nil {
 		t.Fatal(err)
 	}
-	if next, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{}); err != nil || next != nil {
+	if next, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{}); err != nil || next != nil {
 		t.Fatalf("terminally failed job must not be leased again: job=%+v err=%v", next, err)
 	}
 	jobs, err := repo.ListJobs(ctx, 10)
@@ -125,7 +125,7 @@ func TestRequeueFailedJobsRevivesTerminalAndExhaustedWork(t *testing.T) {
 		('j-done','asset-requeue','probe','succeeded',0,1,3,?,'h-done',NULL,0,?,?)`, now, now, now, now, now, now, now, now, now); err != nil {
 		t.Fatal(err)
 	}
-	if next, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{}); err != nil || next != nil {
+	if next, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{}); err != nil || next != nil {
 		t.Fatalf("neither failed job should be leasable before requeue: job=%+v err=%v", next, err)
 	}
 
@@ -139,7 +139,7 @@ func TestRequeueFailedJobsRevivesTerminalAndExhaustedWork(t *testing.T) {
 
 	leased := map[string]bool{}
 	for range 2 {
-		job, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+		job, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{})
 		if err != nil || job == nil {
 			t.Fatalf("requeued job should be leasable: job=%+v err=%v", job, err)
 		}
@@ -196,7 +196,7 @@ func TestDeferJobParksWorkWithoutSpendingAnAttempt(t *testing.T) {
 	// an attempt would strand the job on the fourth, which is the whole reason
 	// this method exists rather than a longer RetryJob delay.
 	for cycle := range 4 {
-		job, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+		job, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{})
 		if err != nil || job == nil {
 			t.Fatalf("cycle %d: a deferred job must come back: job=%+v err=%v", cycle, job, err)
 		}
@@ -225,7 +225,7 @@ func TestDeferJobParksWorkWithoutSpendingAnAttempt(t *testing.T) {
 		if !parked.RunAfter.After(time.Now().Add(4 * time.Hour)) {
 			t.Fatalf("cycle %d: run_after=%s did not carry the wait", cycle, parked.RunAfter)
 		}
-		if next, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{}); err != nil || next != nil {
+		if next, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{}); err != nil || next != nil {
 			t.Fatalf("cycle %d: a parked job must not be handed out early: job=%+v err=%v", cycle, next, err)
 		}
 
@@ -269,7 +269,7 @@ func TestDeferJobOnTheLastAttemptStillLeavesTheJobLeasable(t *testing.T) {
 
 	var job *domain.Job
 	for attempt := 1; attempt <= 3; attempt++ {
-		job, err = repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+		job, err = repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{})
 		if err != nil || job == nil {
 			t.Fatalf("attempt %d: job=%+v err=%v", attempt, job, err)
 		}
@@ -302,7 +302,7 @@ func TestDeferJobOnTheLastAttemptStillLeavesTheJobLeasable(t *testing.T) {
 	if err := repo.DeferJob(ctx, job.ID, "worker", time.Now().Add(-time.Second), domain.JobDeferProviderRouteExhausted, "every provider key on this route is failing"); err != nil {
 		t.Fatal(err)
 	}
-	next, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+	next, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{})
 	if err != nil || next == nil {
 		t.Fatalf("a job deferred on its last attempt must still run again: job=%+v err=%v", next, err)
 	}
@@ -397,14 +397,14 @@ func TestLeaseNextJobHonoursSizeCeilingWithoutSpendingAttempts(t *testing.T) {
 
 	// The oversized asset outranks the small one on priority, so if the ceiling
 	// were ignored it would be handed out first.
-	job, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{MaxAssetBytes: 1000})
+	job, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{MaxAssetBytes: 1000})
 	if err != nil || job == nil {
 		t.Fatalf("lease job=%+v err=%v", job, err)
 	}
 	if job.AssetID != "small" {
 		t.Fatalf("ceiling ignored: leased %q", job.AssetID)
 	}
-	if next, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{MaxAssetBytes: 1000}); err != nil || next != nil {
+	if next, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{MaxAssetBytes: 1000}); err != nil || next != nil {
 		t.Fatalf("oversized asset must stay held: job=%+v err=%v", next, err)
 	}
 
@@ -419,7 +419,7 @@ func TestLeaseNextJobHonoursSizeCeilingWithoutSpendingAttempts(t *testing.T) {
 	}
 
 	// Window opens: no ceiling, and the held work becomes available untouched.
-	released, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+	released, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{})
 	if err != nil || released == nil || released.AssetID != "big" {
 		t.Fatalf("removing the ceiling must release the held job: job=%+v err=%v", released, err)
 	}
@@ -447,14 +447,14 @@ func TestCompleteJobLeavesFailedJobLeasable(t *testing.T) {
 	if err := repo.EnqueueJob(ctx, "asset-cf", domain.JobAnalyze, "cf-input", 10); err != nil {
 		t.Fatal(err)
 	}
-	job, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+	job, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{})
 	if err != nil || job == nil {
 		t.Fatalf("lease job=%+v err=%v", job, err)
 	}
 	if err := repo.CompleteJob(ctx, job.ID, "worker", domain.JobFailed, "boom"); err != nil {
 		t.Fatal(err)
 	}
-	next, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+	next, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,21 +488,21 @@ func TestResumeDeferredJobsReleasesOnlyQuotaWaitsAndLeasesImmediately(t *testing
 		t.Fatal(err)
 	}
 
-	deferred, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+	deferred, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{})
 	if err != nil || deferred == nil {
 		t.Fatalf("lease deferred job: %+v %v", deferred, err)
 	}
 	if err := repo.DeferJob(ctx, deferred.ID, "worker", time.Now().Add(5*time.Hour), domain.JobDeferProviderRouteExhausted, "every key failing"); err != nil {
 		t.Fatal(err)
 	}
-	backoff, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+	backoff, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{})
 	if err != nil || backoff == nil {
 		t.Fatalf("lease backoff job: %+v %v", backoff, err)
 	}
 	if err := repo.RetryJob(ctx, backoff.ID, "worker", "transient", time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	if job, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{}); err != nil || job != nil {
+	if job, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{}); err != nil || job != nil {
 		t.Fatalf("nothing should be due yet, got %+v %v", job, err)
 	}
 
@@ -514,7 +514,7 @@ func TestResumeDeferredJobsReleasesOnlyQuotaWaitsAndLeasesImmediately(t *testing
 		t.Fatalf("resumed %d jobs, want exactly the quota wait", resumed)
 	}
 
-	got, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+	got, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{})
 	if err != nil || got == nil {
 		t.Fatalf("resumed job did not become leasable: %+v %v", got, err)
 	}
@@ -522,7 +522,7 @@ func TestResumeDeferredJobsReleasesOnlyQuotaWaitsAndLeasesImmediately(t *testing
 		t.Fatalf("leased %s, want the resumed quota wait %s", got.ID, deferred.ID)
 	}
 	// The ordinary backoff must still be waiting out its hour.
-	if job, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{}); err != nil || job != nil {
+	if job, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{}); err != nil || job != nil {
 		t.Fatalf("resume disturbed an unrelated backoff: %+v %v", job, err)
 	}
 	if resumed, err := repo.ResumeDeferredJobs(ctx, domain.JobDeferProviderRouteExhausted); err != nil || resumed != 0 {

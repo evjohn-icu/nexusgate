@@ -17,7 +17,7 @@ import (
 // 2-minute Hub-local lease.
 func leaseAndExpire(t *testing.T, ctx context.Context, repo *Repository, owner string) *domain.Job {
 	t.Helper()
-	job, err := repo.LeaseNextJob(ctx, owner, time.Millisecond, domain.LeaseFilter{})
+	job, err := repo.LeaseNextJob(ctx, owner, func(domain.JobType) time.Duration { return time.Millisecond }, domain.LeaseFilter{})
 	if err != nil || job == nil {
 		t.Fatalf("lease as %s: job=%+v err=%v", owner, job, err)
 	}
@@ -86,7 +86,7 @@ func TestStaleLeaseHolderCannotWriteAJobReclaimedByAnotherOwner(t *testing.T) {
 
 	// The reclaim: owner-b takes the same row through the exact path a paired
 	// Worker or a second `timingdex serve`/`pipeline run` process would.
-	reclaimed, err := repo.LeaseNextJob(ctx, "owner-b", time.Minute, domain.LeaseFilter{})
+	reclaimed, err := repo.LeaseNextJob(ctx, "owner-b", nil, domain.LeaseFilter{})
 	if err != nil || reclaimed == nil {
 		t.Fatalf("reclaim as owner-b: job=%+v err=%v", reclaimed, err)
 	}
@@ -169,7 +169,7 @@ func TestStaleLeaseHolderCannotSaveArtifactForAJobReclaimedByAnotherOwner(t *tes
 	}
 
 	original := leaseAndExpire(t, ctx, repo, "owner-a")
-	reclaimed, err := repo.LeaseNextJob(ctx, "owner-b", time.Minute, domain.LeaseFilter{})
+	reclaimed, err := repo.LeaseNextJob(ctx, "owner-b", nil, domain.LeaseFilter{})
 	if err != nil || reclaimed == nil || reclaimed.ID != original.ID {
 		t.Fatalf("reclaim as owner-b: job=%+v err=%v", reclaimed, err)
 	}

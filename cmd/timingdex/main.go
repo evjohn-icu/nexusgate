@@ -159,6 +159,9 @@ func run() error {
 			return errors.New("usage: timingdex pipeline run|retry-failed")
 		}
 
+	case "reanalyze":
+		return runReanalyzeCommand(service, os.Args[2:])
+
 	case "doctor":
 		fmt.Printf("database: %s\n", cfg.DatabasePath)
 		fmt.Printf("cache:    %s\n", cfg.CacheDir)
@@ -171,6 +174,36 @@ func run() error {
 	default:
 		return usage()
 	}
+}
+
+// runReanalyzeCommand forces the analyze stage to run again for selected
+// assets — after a prompt/schema/validator or provider change, canonical
+// analysis must be refreshable without deleting the database. Old model runs
+// stay immutable and auditable; the new run switches the canonical analysis
+// and rebuilds search when it lands.
+func runReanalyzeCommand(service *app.Service, args []string) error {
+	flags := flag.NewFlagSet("reanalyze", flag.ContinueOnError)
+	assetID := flags.String("asset", "", "reanalyze a single asset by id")
+	rootID := flags.String("root", "", "reanalyze every asset under a library root")
+	all := flags.Bool("all", false, "reanalyze every asset in the library")
+	reason := flags.String("reason", "", "why this reanalysis is happening (recorded for audit)")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	ids, err := service.ResolveReanalysisAssets(context.Background(), app.ReanalysisSelector{AssetID: *assetID, RootID: *rootID, All: *all, Reason: *reason})
+	if err != nil {
+		return err
+	}
+	enqueued, err := service.ReanalyzeAssets(context.Background(), ids, *reason)
+	if err != nil {
+		return err
+	}
+	effective := *reason
+	if effective == "" {
+		effective = "reanalysis-v1"
+	}
+	fmt.Printf("enqueued reanalysis for %d asset(s) (reason: %s); run `timingdex pipeline run` to process them\n", enqueued, effective)
+	return nil
 }
 
 // runSecretsCommand exposes secretstore operations on the CLI. Currently the

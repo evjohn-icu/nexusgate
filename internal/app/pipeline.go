@@ -35,7 +35,7 @@ type PipelineRepository interface {
 	GetArtifact(context.Context, string, string) (*domain.DerivedArtifact, error)
 	SaveSpeechClassification(context.Context, string, domain.SpeechClassification) error
 	EnqueueJob(context.Context, string, domain.JobType, string, int) error
-	LeaseNextJob(context.Context, string, time.Duration, domain.LeaseFilter) (*domain.Job, error)
+	LeaseNextJob(context.Context, string, func(domain.JobType) time.Duration, domain.LeaseFilter) (*domain.Job, error)
 	// The string after id on each of these four is owner: the identity
 	// RunUntilIdle minted for this pipeline run and passed to LeaseNextJob.
 	// Every one of them now carries a compare-and-swap predicate mirroring
@@ -65,9 +65,11 @@ type PipelineRepository interface {
 	GetSpeechClassification(context.Context, string) (*domain.SpeechClassification, error)
 	SaveTranscript(context.Context, string, string, string, string, domain.Transcript) error
 	GetTranscript(context.Context, string) (*domain.Transcript, error)
+	GetAlignmentWords(context.Context, string) ([]domain.AlignmentWord, error)
 	GetProviderFile(context.Context, string, string, string, string) (*domain.ProviderFile, error)
 	SaveProviderFile(context.Context, domain.ProviderFile) error
 	SaveAlignment(context.Context, string, string, string, string, string, domain.AlignmentResult) error
+	EnqueueReanalysis(context.Context, string, string) error
 }
 
 type Pipeline struct {
@@ -115,6 +117,28 @@ func (p *Pipeline) EnqueueAsset(ctx context.Context, assetID string) error {
 // transient blips.
 const maxConsecutiveLeaseErrors = 3
 
+// leaseTTLByType gives each stage a lease ceiling it can plausibly outlive.
+// The old flat 2-minute lease was routinely exceeded by derive encodes,
+// windowed analysis and ASR calls, so a second process (a paired Worker, or
+// `timingdex serve` alongside `timingdex pipeline run`) reclaimed the job
+// mid-flight and both executors burned the same paid work. Correctness never
+// broke -- every completion write is CAS-protected -- but cost doubled. The
+// ceiling is a heuristic: a lease that still expires is simply reclaimed,
+// exactly as before.
+var leaseTTLByType = map[domain.JobType]time.Duration{
+	domain.JobProbe:      2 * time.Minute,
+	domain.JobDerive:     30 * time.Minute,
+	domain.JobTranscribe: 15 * time.Minute,
+	domain.JobAnalyze:    20 * time.Minute,
+}
+
+func leaseTTL(typ domain.JobType) time.Duration {
+	if ttl, ok := leaseTTLByType[typ]; ok {
+		return ttl
+	}
+	return 2 * time.Minute
+}
+
 func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 	worker := "local-" + idgen.New()
 	executed := 0
@@ -133,7 +157,7 @@ func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 			throttle = domain.DefaultPipelineThrottle()
 		}
 		now := time.Now()
-		job, err := p.repo.LeaseNextJob(ctx, worker, 2*time.Minute, domain.LeaseFilter{MaxAssetBytes: throttle.MaxAssetBytesAt(now)})
+		job, err := p.repo.LeaseNextJob(ctx, worker, leaseTTL, domain.LeaseFilter{MaxAssetBytes: throttle.MaxAssetBytesAt(now)})
 		if err != nil {
 			consecutiveLeaseErrors++
 			if consecutiveLeaseErrors%5 == 1 || consecutiveLeaseErrors == 1 {
@@ -544,8 +568,13 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 			return domain.Permanent(fmt.Errorf("metadata missing"))
 		}
 		reqJSON := fmt.Sprintf(`{"asset_id":%q,"path":%q}`, j.AssetID, sourcePath)
-		providerName, modelName, promptVersion := p.videoProvider.Name(), p.videoProvider.Model(), "footage-analysis-v3"
-		runID, cached, err := p.repo.CreateModelRun(ctx, j.AssetID, "vision", providerName, modelName, j.InputHash, promptVersion, "asset-analysis/v1", reqJSON)
+		// v4 of the prompt and v2 of the schema change shot semantics: a shot
+		// that did not observe an object/action/mood keeps empty lists instead
+		// of inheriting the asset-global ones, and Gemini now reports per-shot
+		// objects/actions/mood. The version bump is what breaks CreateModelRun's
+		// cache so an old run can never satisfy a new analysis.
+		providerName, modelName, promptVersion := p.videoProvider.Name(), p.videoProvider.Model(), "footage-analysis-v4"
+		runID, cached, err := p.repo.CreateModelRun(ctx, j.AssetID, "vision", providerName, modelName, j.InputHash, promptVersion, "asset-analysis/v2", reqJSON)
 		if err != nil {
 			return err
 		}
@@ -562,6 +591,21 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 			transcript, e := p.repo.GetTranscript(ctx, j.AssetID)
 			if e != nil {
 				return e
+			}
+			// The strongest timing evidence wins: a forced alignment's
+			// word-level timestamps place speech on the asset timeline far
+			// more precisely than the ASR transcript's segments (which some
+			// providers emit as a single 0-0 placeholder, or not at all).
+			// Without this, alignment results were persisted and never read.
+			if transcript != nil {
+				words, e := p.repo.GetAlignmentWords(ctx, j.AssetID)
+				if e != nil {
+					return e
+				}
+				if aligned := domain.TranscriptFromAlignmentWords(words); aligned != nil {
+					aligned.Language = transcript.Language
+					transcript = aligned
+				}
 			}
 			analyzeReq := videoanalysis.Input{VideoPath: proxy.LocalPath, Transcript: transcript, Metadata: *m}
 			requiresPreparation := false
@@ -619,7 +663,7 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 			if err := p.repo.StageModelRun(ctx, runID, raw, string(parsed)); err != nil {
 				return err
 			}
-			if err := p.repo.CommitAnalysisWithShots(ctx, j.AssetID, runID, "asset-analysis/v1", a, shots); err != nil {
+			if err := p.repo.CommitAnalysisWithShots(ctx, j.AssetID, runID, "asset-analysis/v2", a, shots); err != nil {
 				return err
 			}
 		}

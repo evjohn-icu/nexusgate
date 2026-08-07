@@ -65,3 +65,18 @@ type FacetFilter struct {
 	MinDurationMS *int64   `json:"min_duration_ms,omitempty"`
 	MaxDurationMS *int64   `json:"max_duration_ms,omitempty"`
 }
+
+// HybridSearchWeights blends the two shot-search signals. The "semantic" side
+// is a deterministic heuristic feature hash (see discovery.HeuristicVectorModel),
+// not a learned embedding, so its share must be decided by measurement against
+// the retrieval golden set, not by intuition. DefaultHybridSearchWeights
+// returns the current measured default; both terms must be in [0,1] and the
+// blend is Score = semantic*SemanticScore + lexical*LexicalScore.
+type HybridSearchWeights struct {
+	Semantic float64
+	Lexical  float64
+}
+
+func DefaultHybridSearchWeights() HybridSearchWeights {
+	return HybridSearchWeights{Semantic: 0.70, Lexical: 0.30}
+}

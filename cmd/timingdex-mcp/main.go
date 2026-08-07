@@ -89,12 +89,15 @@ func (c *hubClient) do(ctx context.Context, method, path string, token string, b
 func (c *hubClient) inspectLibrary(ctx context.Context) (map[string]any, error) {
 	result := map[string]any{}
 	var health map[string]any
+	// /health is anonymous by design; /hardware sits behind requireTrustedRead,
+	// so a client outside the trusted LAN (or Tailnet) needs the agent token
+	// or it gets a 403.
 	if err := c.do(ctx, http.MethodGet, "/api/v1/health", "", nil, &health); err != nil {
 		return nil, err
 	}
 	result["health"] = health
 	var hardware map[string]any
-	if err := c.do(ctx, http.MethodGet, "/api/v1/hardware", "", nil, &hardware); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/api/v1/hardware", c.agentToken, nil, &hardware); err != nil {
 		return nil, err
 	}
 	result["hardware"] = hardware
@@ -109,7 +112,7 @@ func (c *hubClient) searchFootage(ctx context.Context, q string, limit int) ([]m
 	params.Set("q", q)
 	params.Set("limit", fmt.Sprintf("%d", limit))
 	var out []map[string]any
-	if err := c.do(ctx, http.MethodGet, "/api/v1/search/shots/hybrid?"+params.Encode(), "", nil, &out); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/api/v1/search/shots/hybrid?"+params.Encode(), c.agentToken, nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil

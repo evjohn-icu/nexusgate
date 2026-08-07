@@ -48,7 +48,7 @@ func TestWorkerProviderProxyRequiresLeaseAndKeepsKeysServerSide(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err := repo.LeaseNextJob(ctx, worker.ID, time.Minute, domain.LeaseFilter{})
+	job, err := repo.LeaseNextJob(ctx, worker.ID, nil, domain.LeaseFilter{})
 	if err != nil || job == nil {
 		t.Fatalf("lease=%+v err=%v", job, err)
 	}
@@ -107,7 +107,7 @@ func TestWorkerProviderProxyRejectsMediaAndOversizedBodies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err := repo.LeaseNextJob(ctx, worker.ID, time.Minute, domain.LeaseFilter{})
+	job, err := repo.LeaseNextJob(ctx, worker.ID, nil, domain.LeaseFilter{})
 	if err != nil || job == nil {
 		t.Fatalf("lease=%+v err=%v", job, err)
 	}

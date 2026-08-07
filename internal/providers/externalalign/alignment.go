@@ -7,9 +7,12 @@ package externalalign
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	"github.com/evjohn-icu/timingdex/internal/providers/common"
@@ -23,10 +26,16 @@ type Provider struct {
 
 func (p *Provider) Name() string { return "external_command" }
 func (p *Provider) Model() string {
-	if p.ModelName == "" {
-		return "forced-aligner"
+	if p.ModelName != "" {
+		return p.ModelName
 	}
-	return p.ModelName
+	// The aligner command line IS the model identity: two different binaries
+	// (or argument sets) produce two different word timelines, and the align
+	// job's input hash keys on Name()+Model(). A constant here would mean an
+	// operator swapping the aligner keeps the old alignment forever — the job
+	// never re-enqueues and GetAlignmentWords keeps serving the stale words.
+	h := sha256.Sum256([]byte(p.Command + "\x00" + strings.Join(p.Args, "\x00")))
+	return "forced-aligner-" + hex.EncodeToString(h[:8])
 }
 
 func (p *Provider) Align(ctx context.Context, req common.AlignRequest) (domain.AlignmentResult, error) {

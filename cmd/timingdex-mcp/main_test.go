@@ -42,13 +42,24 @@ func (f *fakeHub) handler() http.Handler {
 		}
 	}
 
+	// /health is anonymous by design; /hardware and the hybrid search route
+	// are behind requireTrustedRead, which admits a bearer agent token from
+	// anywhere — a remote (off-LAN) MCP client must carry one or get 403.
 	mux.HandleFunc("GET /api/v1/health", errWrapper(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte(`{"status":"ok"}`))
 	}))
-	mux.HandleFunc("GET /api/v1/hardware", errWrapper(func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /api/v1/hardware", errWrapper(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
+			http.Error(w, "hardware requires trusted read", http.StatusForbidden)
+			return
+		}
 		w.Write([]byte(`{"hardware":"software"}`))
 	}))
 	mux.HandleFunc("GET /api/v1/search/shots/hybrid", errWrapper(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
+			http.Error(w, "search requires trusted read", http.StatusForbidden)
+			return
+		}
 		if got := r.URL.Query().Get("q"); got != "" {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(f.searchHits)
@@ -135,6 +146,23 @@ func TestSearchFootageEmptyResults(t *testing.T) {
 	}
 	if len(hits) != 0 {
 		t.Fatalf("empty search returned %d hits, want 0", len(hits))
+	}
+}
+
+// A client that never configured TIMINGDEX_AGENT_TOKEN is exactly the remote
+// 403 the v0.23.1 changelog claimed to have fixed and did not: the read routes
+// behind requireTrustedRead reject empty tokens off the trusted network, and
+// the MCP tool must surface that as a clear error instead of silently passing.
+func TestReadToolsWithoutAgentTokenSurfaceRemote403(t *testing.T) {
+	hub := &fakeHub{searchHits: []map[string]any{}}
+	srv := httptest.NewServer(hub.handler())
+	t.Cleanup(srv.Close)
+	client := &hubClient{baseURL: srv.URL, http: srv.Client()}
+	if _, err := client.inspectLibrary(context.Background()); err == nil {
+		t.Fatal("inspectLibrary without agent token must fail on a remote Hub")
+	}
+	if _, err := client.searchFootage(context.Background(), "sunset", 10); err == nil {
+		t.Fatal("searchFootage without agent token must fail on a remote Hub")
 	}
 }
 

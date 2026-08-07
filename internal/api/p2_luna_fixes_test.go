@@ -120,7 +120,7 @@ func TestWorkerCompleteJobReportsLeaseLostAs409(t *testing.T) {
 	handler := NewServer("", service).Handler()
 
 	// Worker A leases a derive job.
-	leased, err := repo.LeaseNextJob(ctx, "worker-a", 30*time.Second, domain.LeaseFilter{})
+	leased, err := repo.LeaseNextJob(ctx, "worker-a", nil, domain.LeaseFilter{})
 	if err != nil || leased == nil {
 		t.Fatalf("lease failed: err=%v job=%+v", err, leased)
 	}
@@ -366,7 +366,7 @@ func TestServeArtifactRejectsPathOutsideDataDir(t *testing.T) {
 	if err := repo.EnqueueJob(ctx, assetID, domain.JobDerive, "boundary-input", 90); err != nil {
 		t.Fatal(err)
 	}
-	leased, err := repo.LeaseNextJob(ctx, "worker-boundary", 30*time.Second, domain.LeaseFilter{})
+	leased, err := repo.LeaseNextJob(ctx, "worker-boundary", nil, domain.LeaseFilter{})
 	if err != nil || leased == nil {
 		t.Fatalf("lease failed: err=%v job=%+v", err, leased)
 	}
@@ -418,7 +418,7 @@ func TestServeArtifactRejectsWhenDataDirIsEmpty(t *testing.T) {
 	if err := repo.EnqueueJob(ctx, assetID, domain.JobDerive, "nodir-input", 90); err != nil {
 		t.Fatal(err)
 	}
-	leased, err := repo.LeaseNextJob(ctx, "worker-nodir", 30*time.Second, domain.LeaseFilter{})
+	leased, err := repo.LeaseNextJob(ctx, "worker-nodir", nil, domain.LeaseFilter{})
 	if err != nil || leased == nil {
 		t.Fatalf("lease failed: err=%v job=%+v", err, leased)
 	}
@@ -480,7 +480,7 @@ func TestServeArtifactServesValidPathInsideDataDir(t *testing.T) {
 	if err := repo.EnqueueJob(ctx, assetID, domain.JobDerive, "valid-input", 90); err != nil {
 		t.Fatal(err)
 	}
-	leased, err := repo.LeaseNextJob(ctx, "worker-valid", 30*time.Second, domain.LeaseFilter{})
+	leased, err := repo.LeaseNextJob(ctx, "worker-valid", nil, domain.LeaseFilter{})
 	if err != nil || leased == nil {
 		t.Fatalf("lease failed: err=%v job=%+v", err, leased)
 	}
@@ -1115,7 +1115,7 @@ func TestServeArtifactServesFromCacheDirOutsideDataDir(t *testing.T) {
 	if err := repo.EnqueueJob(ctx, assetID, domain.JobDerive, "cache-outside-input", 90); err != nil {
 		t.Fatal(err)
 	}
-	leased, err := repo.LeaseNextJob(ctx, "worker-cache-outside", 30*time.Second, domain.LeaseFilter{})
+	leased, err := repo.LeaseNextJob(ctx, "worker-cache-outside", nil, domain.LeaseFilter{})
 	if err != nil || leased == nil {
 		t.Fatalf("lease failed: err=%v job=%+v", err, leased)
 	}

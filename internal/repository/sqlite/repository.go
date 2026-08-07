@@ -907,7 +907,15 @@ func (r *Repository) EnqueueJob(ctx context.Context, assetID string, typ domain.
 	_, err := r.db.ExecContext(ctx, `INSERT OR IGNORE INTO jobs(id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,created_at,updated_at) VALUES(?,?,?,'pending',?,0,3,?,?,?,?)`, idgen.New(), assetID, string(typ), priority, formatTime(time.Now()), inputHash, formatTime(time.Now()), formatTime(time.Now()))
 	return err
 }
-func (r *Repository) LeaseNextJob(ctx context.Context, worker string, lease time.Duration, filter domain.LeaseFilter) (*domain.Job, error) {
+
+// LeaseNextJob atomically claims the next leasable job for worker. ttlFor, when
+// non-nil, picks the lease duration from the job's type once it is known (a
+// long derive or windowed analysis outlasts any fixed short lease, and an
+// expired lease is what lets a second holder reclaim the work and pay for it
+// again); nil means a fixed 2 minutes. The duration is a heuristic ceiling,
+// not a contract: a lease that expires is simply reclaimed, and the losing
+// holder's completion writes all miss their CAS.
+func (r *Repository) LeaseNextJob(ctx context.Context, worker string, ttlFor func(domain.JobType) time.Duration, filter domain.LeaseFilter) (*domain.Job, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -978,6 +986,12 @@ func (r *Repository) LeaseNextJob(ctx context.Context, worker string, lease time
 	// a job that is actually still live -- RowsAffected below reports 0 either
 	// way, the same CAS-miss handling every other lease path in this package
 	// uses.
+	lease := 2 * time.Minute
+	if ttlFor != nil {
+		if ttl := ttlFor(j.Type); ttl > 0 {
+			lease = ttl
+		}
+	}
 	res, err := tx.ExecContext(ctx, `UPDATE jobs SET state='running',attempt_count=attempt_count+1,lease_owner=?,lease_expires_at=?,updated_at=? WHERE id=? AND assigned_worker_id IS NULL AND (state IN ('pending','failed') OR (state='running' AND lease_expires_at<=?))`, worker, formatTime(now.Add(lease)), formatTime(now), j.ID, formatTime(now))
 	if err != nil {
 		return nil, err
@@ -1393,7 +1407,7 @@ func (r *Repository) replaceAssetShotsTx(ctx context.Context, tx *sql.Tx, assetI
 			return err
 		}
 		sourceText := strings.Join(append([]string{shot.Description}, append(append(shot.Tags, shot.Objects...), append(shot.Actions, shot.Mood...)...)...), " ")
-		if _, err := tx.ExecContext(ctx, `INSERT INTO shot_semantic_vectors(shot_id,model,vector_json,source_text,created_at) VALUES(?,?,?,?,?)`, id, discovery.VectorModel, string(vector), sourceText, formatTime(created)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO shot_semantic_vectors(shot_id,model,vector_json,source_text,created_at) VALUES(?,?,?,?,?)`, id, discovery.HeuristicVectorModel, string(vector), sourceText, formatTime(created)); err != nil {
 			return err
 		}
 	}
@@ -1585,13 +1599,13 @@ func (h *topShotHeap) Pop() any {
 // Behaviourally identical to HybridSearchShotsFiltered with a zero-value
 // domain.FacetFilter.
 func (r *Repository) HybridSearchShots(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error) {
-	return r.hybridSearchShots(ctx, q, limit, domain.FacetFilter{})
+	return r.hybridSearchShots(ctx, q, limit, domain.FacetFilter{}, domain.DefaultHybridSearchWeights())
 }
 
 // HybridSearchShotsFiltered narrows HybridSearchShots by the controlled
 // vocabulary and a duration range.
 func (r *Repository) HybridSearchShotsFiltered(ctx context.Context, q string, limit int, facets domain.FacetFilter) ([]domain.ShotSearchResult, error) {
-	return r.hybridSearchShots(ctx, q, limit, facets)
+	return r.hybridSearchShots(ctx, q, limit, facets, domain.DefaultHybridSearchWeights())
 }
 
 // bm25HalfScore is the |bm25| that earns exactly half of the lexical term
@@ -1637,8 +1651,12 @@ func lexicalScoreFromBM25(rank float64) float64 {
 
 // hybridSearchShots blends local lexical FTS with deterministic semantic
 // features generated from the model's already-persisted visual observations.
-// It stays SQLite-first and returns source shot time ranges.
-func (r *Repository) hybridSearchShots(ctx context.Context, q string, limit int, facets domain.FacetFilter) ([]domain.ShotSearchResult, error) {
+// It stays SQLite-first and returns source shot time ranges. The weights
+// parameter exists so the retrieval golden set can sweep the blend and the
+// measured result can set the default — the semantic side is a heuristic
+// feature hash, not a learned embedding, so its share is a measurement
+// decision, not a design constant.
+func (r *Repository) hybridSearchShots(ctx context.Context, q string, limit int, facets domain.FacetFilter, weights domain.HybridSearchWeights) ([]domain.ShotSearchResult, error) {
 	if limit <= 0 || strings.TrimSpace(q) == "" {
 		return []domain.ShotSearchResult{}, nil
 	}
@@ -1671,12 +1689,12 @@ func (r *Repository) hybridSearchShots(ctx context.Context, q string, limit int,
 	// v.model=? is mandatory, not one more optional facet clause: a vector
 	// written under a superseded embedding scheme must never be scored
 	// against a query vector from the current one (see semanticVector below
-	// and the discovery.VectorModel doc comment). Facets narrow further, but
+	// and the discovery.HeuristicVectorModel doc comment). Facets narrow further, but
 	// never replace this filter.
 	clauses, args := facetWhere(facets)
 	clauses, args = appendShotDurationBounds(clauses, args, facets)
 	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,v.vector_json FROM asset_shots s JOIN shot_semantic_vectors v ON v.shot_id=s.id LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id WHERE v.model=?`
-	queryArgs := append([]any{discovery.VectorModel}, args...)
+	queryArgs := append([]any{discovery.HeuristicVectorModel}, args...)
 	if len(clauses) > 0 {
 		query += ` AND ` + strings.Join(clauses, ` AND `)
 	}
@@ -1703,7 +1721,7 @@ func (r *Repository) hybridSearchShots(ctx context.Context, q string, limit int,
 		}
 		result.SemanticScore = discovery.Cosine(queryVector, vector)
 		result.LexicalScore = lexical[result.ID]
-		result.Score = 0.70*result.SemanticScore + 0.30*result.LexicalScore
+		result.Score = weights.Semantic*result.SemanticScore + weights.Lexical*result.LexicalScore
 		if result.Score > 0 {
 			heap.Push(&top, result)
 			if top.Len() > limit {
@@ -1744,7 +1762,7 @@ func (r *Repository) similarShots(ctx context.Context, shotID string, limit int,
 		return []domain.ShotSearchResult{}, nil
 	}
 	var encoded string
-	err := r.db.QueryRowContext(ctx, `SELECT vector_json FROM shot_semantic_vectors WHERE shot_id=? AND model=?`, shotID, discovery.VectorModel).Scan(&encoded)
+	err := r.db.QueryRowContext(ctx, `SELECT vector_json FROM shot_semantic_vectors WHERE shot_id=? AND model=?`, shotID, discovery.HeuristicVectorModel).Scan(&encoded)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Now that the lookup is scoped to the current scheme, no-rows covers
 		// two different situations, and the message must not claim the first
@@ -1752,7 +1770,7 @@ func (r *Repository) similarShots(ctx context.Context, shotID string, limit int,
 		// exist with a vector from a superseded scheme and simply need
 		// re-analysis. Saying "not found" about a shot the operator can see in
 		// the library would send them looking for the wrong problem.
-		return nil, fmt.Errorf("%w: %s is either unknown or was embedded under a scheme older than %s and needs re-analysis", domain.ErrShotVectorNotFound, shotID, discovery.VectorModel)
+		return nil, fmt.Errorf("%w: %s is either unknown or was embedded under a scheme older than %s and needs re-analysis", domain.ErrShotVectorNotFound, shotID, discovery.HeuristicVectorModel)
 	}
 	if err != nil {
 		return nil, err
@@ -1856,7 +1874,7 @@ type semanticShotRecord struct {
 	vector []float64
 }
 
-// loadSemanticShotRecords always scopes to discovery.VectorModel — see the
+// loadSemanticShotRecords always scopes to discovery.HeuristicVectorModel — see the
 // mandatory v.model=? filter in hybridSearchShots above for why a vector from
 // a superseded embedding scheme must never reach a caller that scores it
 // against a current-scheme query vector. facets narrows the candidate set
@@ -1865,7 +1883,7 @@ func (r *Repository) loadSemanticShotRecords(ctx context.Context, facets domain.
 	clauses, args := facetWhere(facets)
 	clauses, args = appendShotDurationBounds(clauses, args, facets)
 	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,v.vector_json FROM asset_shots s JOIN shot_semantic_vectors v ON v.shot_id=s.id LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id WHERE v.model=?`
-	queryArgs := append([]any{discovery.VectorModel}, args...)
+	queryArgs := append([]any{discovery.HeuristicVectorModel}, args...)
 	if len(clauses) > 0 {
 		query += ` AND ` + strings.Join(clauses, ` AND `)
 	}
@@ -2350,6 +2368,17 @@ func (r *Repository) GetAssetDetail(ctx context.Context, assetID string) (*domai
 	}
 	d.Metadata, _ = r.GetMediaMetadata(ctx, assetID)
 	d.Transcript, _ = r.GetTranscript(ctx, assetID)
+	// The API and the video model must tell the same story: when a forced
+	// alignment exists, its word timeline supersedes the raw ASR transcript
+	// (which some providers persist as a single untimed 0-0 placeholder).
+	if d.Transcript != nil {
+		if words, err := r.GetAlignmentWords(ctx, assetID); err == nil {
+			if aligned := domain.TranscriptFromAlignmentWords(words); aligned != nil {
+				aligned.Language = d.Transcript.Language
+				d.Transcript = aligned
+			}
+		}
+	}
 	if a, _ := r.GetArtifact(ctx, assetID, "thumbnail"); a != nil {
 		d.ThumbnailPath = a.LocalPath
 	}

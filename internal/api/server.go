@@ -1054,20 +1054,29 @@ func parseInt(value string, fallback int) int {
 	return parsed
 }
 
-// facetQueryFields pairs each facet query parameter with the normalize
-// vocabulary it must be drawn from, listed once so the browse endpoint and
-// the three shot-search endpoints can't drift out of sync on param names or
-// allowed values.
+// facetQueryFields pairs each controlled-vocabulary facet with the vocabulary
+// it must be drawn from, listed once so the browse endpoint and the three
+// shot-search endpoints can't drift out of sync on param names or allowed
+// values.
+//
+// The params are asset_* names because that is what they filter: all six
+// fields live only in asset_analysis, one row per asset, so a shot search
+// resolves them through the shot's own asset (see domain.FacetFilter). The
+// un-prefixed legacy names remain accepted as aliases so existing callers and
+// bookmarked URLs keep working; new UI and new callers should use the
+// asset_* names to avoid implying shot-level truth. When both names are
+// present, the asset_* parameter wins and the alias is ignored.
 var facetQueryFields = []struct {
 	param  string
+	alias  string
 	values []string
 }{
-	{"asset_type", normalize.AssetTypeValues},
-	{"shot_size", normalize.ShotSizeValues},
-	{"camera_motion", normalize.MotionValues},
-	{"audio_type", normalize.AudioTypeValues},
-	{"quality", normalize.QualityValues},
-	{"usable_as", normalize.UsableAsValues},
+	{"asset_type", "", normalize.AssetTypeValues},
+	{"asset_shot_size", "shot_size", normalize.ShotSizeValues},
+	{"asset_camera_motion", "camera_motion", normalize.MotionValues},
+	{"asset_audio_type", "audio_type", normalize.AudioTypeValues},
+	{"asset_quality", "quality", normalize.QualityValues},
+	{"asset_usable_as", "usable_as", normalize.UsableAsValues},
 }
 
 // parseFacetFilter reads the controlled-vocabulary and duration query
@@ -1080,15 +1089,18 @@ var facetQueryFields = []struct {
 func parseFacetFilter(query url.Values) (domain.FacetFilter, error) {
 	var f domain.FacetFilter
 	targets := map[string]*[]string{
-		"asset_type":    &f.AssetTypes,
-		"shot_size":     &f.ShotSizes,
-		"camera_motion": &f.CameraMotions,
-		"audio_type":    &f.AudioTypes,
-		"quality":       &f.Qualities,
-		"usable_as":     &f.UsableAs,
+		"asset_type":          &f.AssetTypes,
+		"asset_shot_size":     &f.ShotSizes,
+		"asset_camera_motion": &f.CameraMotions,
+		"asset_audio_type":    &f.AudioTypes,
+		"asset_quality":       &f.Qualities,
+		"asset_usable_as":     &f.UsableAs,
 	}
 	for _, spec := range facetQueryFields {
 		raw := strings.TrimSpace(query.Get(spec.param))
+		if raw == "" && spec.alias != "" {
+			raw = strings.TrimSpace(query.Get(spec.alias))
+		}
 		if raw == "" {
 			continue
 		}

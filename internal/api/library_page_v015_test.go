@@ -122,9 +122,10 @@ func TestLibraryPageRendersSemanticFacetControls(t *testing.T) {
 	if !strings.Contains(page, `<option value="extreme_close_up">特写</option>`) {
 		t.Fatalf("facet options are not rendered from the vocabulary with Chinese labels")
 	}
-	// The select ids must be wired to the API's facet parameter names.
+	// The select ids must be wired to the API's asset_* facet parameter names
+	// (the un-prefixed names are legacy aliases, kept only for old callers).
 	for _, param := range []string{
-		"'asset_type'", "'shot_size'", "'camera_motion'", "'audio_type'", "'quality'", "'usable_as'",
+		"'asset_type'", "'asset_shot_size'", "'asset_camera_motion'", "'asset_audio_type'", "'asset_quality'", "'asset_usable_as'",
 		"'min_duration_ms'", "'max_duration_ms'",
 	} {
 		if !strings.Contains(page, param) {

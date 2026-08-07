@@ -336,7 +336,7 @@ func TestPinnedRequiredJobNotTakenByHubLocalLease(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	job, err := repo.LeaseNextJob(ctx, "local-"+idgen.New(), time.Minute, domain.LeaseFilter{})
+	job, err := repo.LeaseNextJob(ctx, "local-"+idgen.New(), nil, domain.LeaseFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}

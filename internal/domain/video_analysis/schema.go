@@ -80,34 +80,20 @@ func (r Result) ToStructuredAnalysis() domain.StructuredAnalysis {
 	return a
 }
 
+// ToAssetShots maps the model's per-shot observations onto the canonical shot
+// table. Shot metadata must come from the shot's own evidence: an object that
+// was only seen at 08:20 of a ten-minute asset belongs to the shots the model
+// put it in, not to every shot that happened to be missing a list. The
+// asset-global lists stay on the asset (ToStructuredAnalysis) where they
+// describe the whole file without masquerading as per-shot evidence.
 func (r Result) ToAssetShots(assetID, sourceRunID string) []domain.AssetShot {
-	objects := make([]string, 0, len(r.Objects))
-	for _, object := range r.Objects {
-		objects = appendUnique(objects, object.Name)
-	}
-	actions := make([]string, 0, len(r.Actions))
-	for _, action := range r.Actions {
-		actions = appendUnique(actions, action.Name)
-	}
 	shots := make([]domain.AssetShot, 0, len(r.Shots))
 	for i, shot := range r.Shots {
-		shotObjects := shot.Objects
-		if len(shotObjects) == 0 {
-			shotObjects = objects
-		}
-		shotActions := shot.Actions
-		if len(shotActions) == 0 {
-			shotActions = actions
-		}
-		shotMood := shot.Mood
-		if len(shotMood) == 0 {
-			shotMood = r.Mood
-		}
 		shots = append(shots, domain.AssetShot{
 			AssetID: assetID, SourceRunID: sourceRunID, Ordinal: i,
 			StartMS: shot.StartMS, EndMS: shot.EndMS, Description: shot.Description,
-			Tags: shot.Tags, Objects: shotObjects, Actions: shotActions,
-			Mood: shotMood, Confidence: shot.Confidence,
+			Tags: shot.Tags, Objects: shot.Objects, Actions: shot.Actions,
+			Mood: shot.Mood, Confidence: shot.Confidence,
 		})
 	}
 	return shots

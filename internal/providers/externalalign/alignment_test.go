@@ -110,8 +110,18 @@ echo '{"words":[{"start_ms":0,"end_ms":500,"text":"hello"},{"start_ms":600,"end_
 }
 
 func TestAlign_DefaultModel(t *testing.T) {
-	p := &Provider{Command: "/bin/true"}
-	if p.Model() != "forced-aligner" {
-		t.Errorf("expected default model 'forced-aligner', got %q", p.Model())
+	// The default model identity is derived from the command line, so swapping
+	// the aligner binary re-keys the align job and the old word timeline can
+	// never keep being served as the current one.
+	p := &Provider{Command: "/bin/true", Args: []string{"-a"}}
+	if got := p.Model(); !strings.HasPrefix(got, "forced-aligner-") {
+		t.Errorf("expected derived model id, got %q", got)
+	}
+	q := &Provider{Command: "/bin/true", Args: []string{"-b"}}
+	if p.Model() == q.Model() {
+		t.Error("different aligner command lines must yield different model identities")
+	}
+	if p.Model() != p.Model() {
+		t.Error("model identity must be deterministic")
 	}
 }

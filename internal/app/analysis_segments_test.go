@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
@@ -204,6 +205,100 @@ func TestSliceTranscriptNarrowsAndRebasesToTheWindow(t *testing.T) {
 	}
 	if sliceTranscript(nil, media.AnalysisWindow{StartMS: 0, EndMS: 1000}) != nil {
 		t.Fatal("a missing transcript must stay missing")
+	}
+}
+
+// Case A: an ASR provider (Qwen, Volcengine) returns the full text with a
+// single 0-0 placeholder segment. That segment is not a timestamp — it must
+// not make the transcript look timed, and the text must not be handed to any
+// window, not even the first one, which would otherwise attribute speech from
+// anywhere in the asset to the window's footage.
+func TestSliceTranscriptWithholdsUntimedTranscriptFromEveryWindow(t *testing.T) {
+	transcript := &domain.Transcript{
+		Language: "zh",
+		Text:     "整段视频的完整语音内容",
+		Segments: []domain.TranscriptSegment{{StartMS: 0, EndMS: 0, Text: "整段视频的完整语音内容"}},
+	}
+	for _, window := range []media.AnalysisWindow{
+		{Index: 0, StartMS: 0, EndMS: 300_000},
+		{Index: 1, StartMS: 295_000, EndMS: 600_000},
+	} {
+		if got := sliceTranscript(transcript, window); got != nil {
+			t.Fatalf("window %d-%d received an untimed transcript: %+v", window.StartMS, window.EndMS, got)
+		}
+	}
+}
+
+// Case C: a window that ends before a segment begins must not receive its
+// text, whether the transcript is timed by ASR segments or by alignment
+// words. 310s of speech belongs to the 300-600s window, never to 0-300s.
+func TestSliceTranscriptWindowBeforeSpeechGetsNothing(t *testing.T) {
+	transcript := &domain.Transcript{
+		Text: "hello",
+		Segments: []domain.TranscriptSegment{
+			{StartMS: 0, EndMS: 5_000, Text: "intro"},
+			{StartMS: 310_000, EndMS: 315_000, Text: "hello"},
+		},
+	}
+	early := sliceTranscript(transcript, media.AnalysisWindow{StartMS: 0, EndMS: 300_000})
+	if early == nil {
+		t.Fatal("timed transcript must be sliced even when nothing overlaps")
+	}
+	if len(early.Segments) != 1 || early.Segments[0].Text != "intro" {
+		t.Fatalf("0-300s window received out-of-window speech: %+v", early.Segments)
+	}
+	if strings.Contains(early.Text, "hello") {
+		t.Fatalf("0-300s window must not receive 310s text: %q", early.Text)
+	}
+}
+
+// A mixed transcript — real segments plus one degenerate 0-0 placeholder —
+// is timed overall, and the placeholder must never reach the model inside
+// any window, not even the first.
+func TestSliceTranscriptDropsDegenerateSegmentInsideTimedTranscript(t *testing.T) {
+	transcript := &domain.Transcript{
+		Text: "hello full",
+		Segments: []domain.TranscriptSegment{
+			{StartMS: 0, EndMS: 0, Text: "full text placeholder"},
+			{StartMS: 0, EndMS: 5_000, Text: "hello"},
+			{StartMS: 100, EndMS: 50, Text: "inverted"},
+		},
+	}
+	for _, window := range []media.AnalysisWindow{
+		{Index: 0, StartMS: 0, EndMS: 300_000},
+		{Index: 1, StartMS: 295_000, EndMS: 600_000},
+	} {
+		sliced := sliceTranscript(transcript, window)
+		if sliced == nil {
+			t.Fatal("a timed transcript must be sliced, not withheld")
+		}
+		for _, segment := range sliced.Segments {
+			if segment.EndMS <= segment.StartMS {
+				t.Fatalf("degenerate segment %+v reached the model in window %d", segment, window.Index)
+			}
+		}
+	}
+}
+
+// TranscriptFromAlignmentWords is the canonical timed-transcript constructor:
+// word timestamps from a forced alignment place speech precisely, and the
+// analysis windows must be fed from them rather than from an untimed ASR text.
+func TestTranscriptFromAlignmentWords(t *testing.T) {
+	aligned := domain.TranscriptFromAlignmentWords([]domain.AlignmentWord{
+		{StartMS: 310_000, EndMS: 313_000, Text: "hel"},
+		{StartMS: 313_000, EndMS: 315_000, Text: "lo"},
+	})
+	if aligned == nil || !aligned.Timed() {
+		t.Fatal("valid alignment words must produce a timed transcript")
+	}
+	if len(aligned.Segments) != 2 || aligned.Segments[1].EndMS != 315_000 {
+		t.Fatalf("segments not built from words: %+v", aligned.Segments)
+	}
+	if aligned.Text != "hel lo" {
+		t.Fatalf("text = %q, want words joined", aligned.Text)
+	}
+	if domain.TranscriptFromAlignmentWords([]domain.AlignmentWord{{StartMS: 0, EndMS: 0, Text: "no timing"}}) != nil {
+		t.Fatal("degenerate words must not produce a transcript")
 	}
 }
 

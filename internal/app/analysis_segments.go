@@ -87,19 +87,28 @@ func (p *Pipeline) analyzeVideo(ctx context.Context, assetID string, input video
 // and re-bases it to window-relative time, matching the video the model is
 // shown. Handing it the whole asset's transcript would describe speech that is
 // not in the clip it is looking at.
+//
+// Only a transcript whose segments carry real timestamps is sliced. Some ASR
+// providers (Qwen, Volcengine) return the full text with a single 0-0
+// placeholder segment: that text has no placement on the timeline, and giving
+// it to a window — any window — would let the model attribute speech from
+// elsewhere in the asset to the footage it is looking at. In split mode such a
+// transcript is withheld entirely; the single-call path (analyzeVideo's
+// `single`) passes the whole text alongside the whole video, where it is
+// honest context. Alignment word timestamps are the recovery path for long
+// assets: when an aligner is configured the analyze stage feeds these slices
+// from the aligned transcript instead.
 func sliceTranscript(transcript *domain.Transcript, window media.AnalysisWindow) *domain.Transcript {
-	if transcript == nil {
+	if transcript == nil || !transcript.Timed() {
 		return nil
-	}
-	if len(transcript.Segments) == 0 {
-		// Nothing to place on the timeline; the plain text is all there is, and
-		// it describes the whole asset rather than this window.
-		return transcript
 	}
 	sliced := &domain.Transcript{Language: transcript.Language}
 	text := make([]byte, 0, len(transcript.Text))
 	for _, segment := range transcript.Segments {
-		if segment.EndMS <= window.StartMS || segment.StartMS >= window.EndMS {
+		// Degenerate segments (EndMS <= StartMS) are dropped outright: the
+		// overlap check below is enough for a 0-0 placeholder, but an inverted
+		// segment would otherwise survive re-basing and reach the model.
+		if segment.EndMS <= segment.StartMS || segment.EndMS <= window.StartMS || segment.StartMS >= window.EndMS {
 			continue
 		}
 		shifted := segment

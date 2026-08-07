@@ -51,6 +51,45 @@ func TestParseFacetFilterValidatesAgainstTheVocabulary(t *testing.T) {
 			},
 		},
 		{
+			name:  "asset_* facet names parse (the names new callers must use)",
+			query: "asset_shot_size=wide&asset_camera_motion=static&asset_quality=usable&asset_usable_as=hook",
+			checkGood: func(t *testing.T, f domain.FacetFilter) {
+				if len(f.ShotSizes) != 1 || f.ShotSizes[0] != "wide" {
+					t.Fatalf("ShotSizes=%v, want [wide]", f.ShotSizes)
+				}
+				if len(f.CameraMotions) != 1 || f.CameraMotions[0] != "static" {
+					t.Fatalf("CameraMotions=%v, want [static]", f.CameraMotions)
+				}
+				if len(f.Qualities) != 1 || f.Qualities[0] != "usable" {
+					t.Fatalf("Qualities=%v, want [usable]", f.Qualities)
+				}
+				if len(f.UsableAs) != 1 || f.UsableAs[0] != "hook" {
+					t.Fatalf("UsableAs=%v, want [hook]", f.UsableAs)
+				}
+			},
+		},
+		{
+			name:  "legacy un-prefixed names remain accepted as aliases",
+			query: "shot_size=wide&camera_motion=static",
+			checkGood: func(t *testing.T, f domain.FacetFilter) {
+				if len(f.ShotSizes) != 1 || f.ShotSizes[0] != "wide" {
+					t.Fatalf("ShotSizes=%v, want [wide]", f.ShotSizes)
+				}
+				if len(f.CameraMotions) != 1 || f.CameraMotions[0] != "static" {
+					t.Fatalf("CameraMotions=%v, want [static]", f.CameraMotions)
+				}
+			},
+		},
+		{
+			name:  "asset_* name wins when both it and the legacy alias are sent",
+			query: "shot_size=close_up&asset_shot_size=wide",
+			checkGood: func(t *testing.T, f domain.FacetFilter) {
+				if len(f.ShotSizes) != 1 || f.ShotSizes[0] != "wide" {
+					t.Fatalf("ShotSizes=%v, want [wide] (alias must lose)", f.ShotSizes)
+				}
+			},
+		},
+		{
 			name:  "one facet two values is OR (comma separated)",
 			query: "shot_size=wide,medium",
 			checkGood: func(t *testing.T, f domain.FacetFilter) {
@@ -126,19 +165,19 @@ func TestParseFacetFilterValidatesAgainstTheVocabulary(t *testing.T) {
 			},
 		},
 		{
-			name:    "invalid shot_size value is rejected and the error names the field",
-			query:   "shot_size=extremely_wide",
-			wantErr: "shot_size",
+			name:    "invalid shot_size value is rejected and the error names the asset_* field",
+			query:   "asset_shot_size=extremely_wide",
+			wantErr: "asset_shot_size",
 		},
 		{
-			name:    "invalid camera_motion value is rejected and the error names the field",
-			query:   "camera_motion=spin",
-			wantErr: "camera_motion",
+			name:    "invalid camera_motion value is rejected and the error names the asset_* field",
+			query:   "asset_camera_motion=spin",
+			wantErr: "asset_camera_motion",
 		},
 		{
-			name:    "invalid usable_as value is rejected and the error names the field",
+			name:    "invalid usable_as value via the legacy alias still names the asset_* field",
 			query:   "usable_as=hook,not_a_real_value",
-			wantErr: "usable_as",
+			wantErr: "asset_usable_as",
 		},
 		{
 			name:    "non-numeric min_duration_ms is rejected",

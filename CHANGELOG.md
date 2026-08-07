@@ -1,5 +1,54 @@
 # Changelog
 
+## v0.25.0 — 2026-08-07（shot truth / transcript timeline / retrieval correctness）
+
+GPT review 轮的 P0/P1 正确性修复，主线是"一个 shot 的 metadata 必须来自这个
+shot 的证据"。全部 5 条 finding 在代码中验证属实（其中 2 条比描述更严重，见下），
+并首次引入 retrieval golden set 作为检索回归基准。
+
+- **P0 shot 元数据污染（真修复）**：`ToAssetShots` 不再把 whole-asset
+  Objects/Actions/Mood 复制进没有观测的 shot——08:20 出现的 car 不再污染
+  00:10 的 shot。FTS / semantic vector / hybrid / similar / repurpose 候选
+  全部受益。Gemini prompt 的 shots schema 补 per-shot objects/actions/mood；
+  prompt_version `footage-analysis-v3`→`v4`、schema `asset-analysis/v1`→`v2`
+  打破 model_run 缓存。回归测试断言 asset 全局 car + 空 shot 在 FTS 与 hybrid
+  下均不命中。
+- **P0 transcript 时间轴（比描述更严重）**：Qwen/Volcengine ASR 产出单条
+  `{0,0}` 伪 segment，拆窗时被 `EndMS <= window.StartMS` 在**每一个**窗口
+  （含第一个）丢弃——长视频的 ASR 完全到不了模型。`align` 的
+  `transcript_words` 写完就死（仓库无任何读路径）。现在：transcript 时间轴
+  分类（0-0 伪 segment 不算时间戳）；新增 `GetAlignmentWords` 读路径；
+  analyze 优先消费 alignment 词级时间轴；拆窗时无时间轴的文本一律不传
+  （单调用模式仍传全文，本机 mimo 配 external_command aligner 即可恢复
+  长视频时序）。
+- **P1 MCP 远程 403（changelog 声称与实现不符）**：v0.23.1 声称
+  "inspectLibrary 带 agent token"，实际 commit f21eb42 只改了 stderr 日志，
+  代码仍以空 token 调 `requireTrustedRead` 路由。本轮真正修复：`/hardware`
+  与 `/search/shots/hybrid` 带 agent token，`/health` 保持匿名；远程无 token
+  403 的 httptest；本条 changelog 即为对旧声称的更正。
+- **P1 hybrid 权重首次测量**：`0.70*Semantic + 0.30*Lexical` 自初版未动过。
+  新增 retrieval golden set（8 个 adversarial case：后半段对象、全局 tag 污染、
+  中英文同义、全局 tag 相反、wide/close-up 混排、窗口边界、重叠去重、ASR 定时
+  区间），sweep 结果：lexical-only R@10=0.667（丢 4/12 跨语言查询），任意带
+  heuristic 项的 blend R@10=1.000 且 false-positive=0——默认保持 0.70/0.30。
+  `semantic-hash-v1` 常量改名 `HeuristicVectorModel`（存储值不变，无 migration）。
+- **P1 facet 语义**：shot search 的 shot_size/camera_motion/audio_type/quality/
+  usable_as 均解析自素材级 `asset_analysis`，参数重命名为 `asset_*` 前缀，
+  旧名保留为别名；UI 标注"景别(素材级)"等；close-up shot 被素材级 wide 命中
+  现在是文档化语义而非 bug。
+- **P1 reanalysis 机制（新增）**：`timingdex reanalyze --asset <id> | --root <id> |
+  --all [--reason]`。nonce 化 input hash 打破 job/model_run 双重 dedup，产生新
+  model_run、canonical 切换、FTS/vector 重建；旧 run 留在 model_runs 可审计；
+  `reanalysis_requests` 表记录 who/why；不需要删库刷新旧分析。
+- **P2 lease stage TTL**：本地 pipeline 固定 2 分钟租约常被 derive/long analyze/
+  transcribe 超过，第二个执行者 reclaim 造成重复付费调用。改为按类型 TTL
+  （probe 2m / derive 30m / transcribe 15m / analyze 20m / 默认 2m），worker
+  derive 初始租约 2m→30m；lost-lease 竞态测试保持全绿。
+
+**Migration**：无需 schema 迁移；新增 `reanalysis_requests` 表随迁移自动创建。
+**旧素材需要 `timingdex reanalyze --all`** 才能吃到 v4 prompt 的新 shot 语义
+与时间轴逻辑。
+
 ## v0.24.1 — 2026-08-05（luna 交叉复核修复批 + 第三方裁决收尾）
 
 GPT-5.6 Luna（xhigh）四轮交叉复核 + deepseek-v4-pro 第三方裁决后的修复。
@@ -65,7 +114,9 @@ Docker 镜像 tag：`timingdex:v0.24.0`。
 - **THIRD-PARTY-LICENSES**：重写覆盖 go.mod 全部 19 依赖（删 nhooyr/x-exp，
   补 mcp-go/x-crypto/x-net/x-text/jsonschema/cast/uritemplate/coder-websocket
   许可证）——二进制分发合规恢复。
-- **MCP 边界**：`inspectLibrary` 带 agent token（远程 403 修复）；错误消息截断
+- **MCP 边界**：~~`inspectLibrary` 带 agent token（远程 403 修复）~~ —— 该声称
+  不实（commit f21eb42 仅改 stderr 日志，代码仍以空 token 调用
+  `requireTrustedRead` 路由），v0.25.0 已真正修复；错误消息截断
   256B；文档标注 `request_source_media` 是唯一 admin token 工具。
 - **页面 XSS 面**：进度页/tags 页 `esc()` 补全 5 字符转义 + `log()` 转义。
 - **测试补全**：只读全入口（RemoveAll/Rename/O_TRUNC/O_APPEND）、Revoke、路径

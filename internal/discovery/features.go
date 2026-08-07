@@ -14,11 +14,18 @@ import (
 
 const VectorSize = 64
 
-// VectorModel identifies the hashing scheme in VectorForText. Stored vectors
-// carry it, so vectors produced by a different scheme are never scored against
-// vectors from this one: a scheme change must re-embed rather than silently
-// compare across dimension spaces.
-const VectorModel = "semantic-hash-v1"
+// HeuristicVectorModel identifies the hashing scheme in VectorForText. Stored
+// vectors carry it, so vectors produced by a different scheme are never scored
+// against vectors from this one: a scheme change must re-embed rather than
+// silently compare across dimension spaces.
+//
+// The stored value keeps the historical name "semantic-hash-v1" so existing
+// rows keep matching; do not read that string as a claim. This vector is a
+// deterministic heuristic feature built from FNV hashing and a hand-written
+// multilingual alias table — explicitly NOT a learned embedding — and every
+// consumer (hybrid search, similar shots, rare-shot discovery) treats it as
+// such. Capability docs must not upgrade its wording.
+const HeuristicVectorModel = "semantic-hash-v1"
 
 func VectorForShot(shot domain.AssetShot) []float64 {
 	parts := append([]string{shot.Description}, shot.Tags...)

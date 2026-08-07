@@ -1528,7 +1528,7 @@ func TestProgressSurfacesJobsWaitingOnProviderQuota(t *testing.T) {
 	if err := repo.EnqueueJob(ctx, assetID, domain.JobAnalyze, "deferred-input", 10); err != nil {
 		t.Fatal(err)
 	}
-	job, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+	job, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{})
 	if err != nil || job == nil {
 		t.Fatalf("lease job=%+v err=%v", job, err)
 	}
@@ -1648,7 +1648,7 @@ func TestJobsEndpointRedactsFailureTextFromPublicCallers(t *testing.T) {
 	if _, err := service.ScanLibraryRoot(ctx, root.ID); err != nil {
 		t.Fatal(err)
 	}
-	leased, err := repo.LeaseNextJob(ctx, "redaction-test", time.Minute, domain.LeaseFilter{})
+	leased, err := repo.LeaseNextJob(ctx, "redaction-test", nil, domain.LeaseFilter{})
 	if err != nil || leased == nil {
 		t.Fatalf("lease job=%+v err=%v", leased, err)
 	}

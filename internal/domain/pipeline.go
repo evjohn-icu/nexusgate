@@ -144,6 +144,48 @@ type Transcript struct {
 	RawResponse string              `json:"-"`
 }
 
+// Timed reports whether the transcript's segments carry trustworthy
+// timestamps. Some ASR providers (Qwen, Volcengine) return a single
+// placeholder segment with StartMS=0 and EndMS=0 alongside the full text:
+// those are not timestamps, and treating them as such would place the whole
+// asset's speech into whichever window happens to start at zero. A segment
+// only carries timing when it spans real media time (EndMS > StartMS);
+// degenerate segments carry no placement information and are ignored.
+func (t Transcript) Timed() bool {
+	for _, segment := range t.Segments {
+		if segment.EndMS > segment.StartMS {
+			return true
+		}
+	}
+	return false
+}
+
+// TranscriptFromAlignmentWords builds the canonical timed transcript from a
+// word-level forced-alignment result. Word timestamps are the strongest
+// timing evidence the pipeline has; when they exist, analysis must consume
+// them rather than the ASR transcript's segments (or its untimed text).
+// Degenerate words (EndMS <= StartMS) carry no placement and are dropped;
+// if none survive the result is nil and the caller falls back to the ASR
+// transcript.
+func TranscriptFromAlignmentWords(words []AlignmentWord) *Transcript {
+	segments := make([]TranscriptSegment, 0, len(words))
+	text := make([]byte, 0, len(words)*8)
+	for _, word := range words {
+		if word.EndMS <= word.StartMS {
+			continue
+		}
+		segments = append(segments, TranscriptSegment{StartMS: word.StartMS, EndMS: word.EndMS, Text: word.Text})
+		if len(text) > 0 {
+			text = append(text, ' ')
+		}
+		text = append(text, word.Text...)
+	}
+	if len(segments) == 0 {
+		return nil
+	}
+	return &Transcript{Segments: segments, Text: string(text)}
+}
+
 type StructuredAnalysis struct {
 	AssetType       string   `json:"asset_type"`
 	SceneTags       []string `json:"scene_tags"`

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -732,7 +733,7 @@ func (s *Service) LeaseNextWorkerDerive(ctx context.Context, worker remote.Worke
 		throttle = domain.DefaultPipelineThrottle()
 	}
 	now := time.Now()
-	job, err := s.repo.LeaseNextWorkerDerive(ctx, worker, 2*time.Minute, domain.LeaseFilter{MaxAssetBytes: throttle.MaxAssetBytesAt(now)})
+	job, err := s.repo.LeaseNextWorkerDerive(ctx, worker, 30*time.Minute, domain.LeaseFilter{MaxAssetBytes: throttle.MaxAssetBytesAt(now)})
 	if err != nil || job == nil {
 		return job, err
 	}
@@ -1046,6 +1047,103 @@ func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.Sc
 
 func (s *Service) ListAssets(ctx context.Context, limit, offset int) ([]domain.Asset, error) {
 	return s.repo.ListAssets(ctx, limit, offset)
+}
+
+// ReanalysisSelector picks the assets a reanalysis run should cover.
+type ReanalysisSelector struct {
+	AssetID string
+	RootID  string
+	All     bool
+	Reason  string
+}
+
+// ResolveReanalysisAssets turns a selector into the concrete asset list.
+// Exactly one of AssetID / RootID / All must be set; combining them would be
+// ambiguous about intent and is rejected rather than silently preferring one.
+func (s *Service) ResolveReanalysisAssets(ctx context.Context, sel ReanalysisSelector) ([]string, error) {
+	selectors := 0
+	if sel.AssetID != "" {
+		selectors++
+	}
+	if sel.RootID != "" {
+		selectors++
+	}
+	if sel.All {
+		selectors++
+	}
+	if selectors != 1 {
+		return nil, fmt.Errorf("select exactly one of --asset, --root or --all")
+	}
+	switch {
+	case sel.AssetID != "":
+		asset, err := s.repo.GetAssetDetail(ctx, sel.AssetID)
+		if err != nil {
+			return nil, err
+		}
+		if asset == nil {
+			return nil, fmt.Errorf("asset %s not found", sel.AssetID)
+		}
+		return []string{sel.AssetID}, nil
+	case sel.RootID != "":
+		if _, err := s.repo.GetLibraryRoot(ctx, sel.RootID); err != nil {
+			return nil, err
+		}
+		assets, err := s.repo.ListAssets(ctx, 1<<31-1, 0)
+		if err != nil {
+			return nil, err
+		}
+		ids := make([]string, 0, len(assets))
+		for _, asset := range assets {
+			loc, err := s.repo.GetPrimaryLocation(ctx, asset.ID)
+			if err != nil {
+				// A catalogued asset can briefly have no on-disk location (a
+				// scan removed its file); that must not fail every other asset
+				// in the root with a raw sql error.
+				if errors.Is(err, sql.ErrNoRows) {
+					continue
+				}
+				return nil, err
+			}
+			if loc.RootID == sel.RootID {
+				ids = append(ids, asset.ID)
+			}
+		}
+		if len(ids) == 0 {
+			return nil, fmt.Errorf("root %s has no assets", sel.RootID)
+		}
+		return ids, nil
+	case sel.All:
+		assets, err := s.repo.ListAssets(ctx, 1<<31-1, 0)
+		if err != nil {
+			return nil, err
+		}
+		if len(assets) == 0 {
+			return nil, fmt.Errorf("library has no assets to reanalyze")
+		}
+		ids := make([]string, 0, len(assets))
+		for _, asset := range assets {
+			ids = append(ids, asset.ID)
+		}
+		return ids, nil
+	default:
+		return nil, fmt.Errorf("select one of --asset, --root or --all")
+	}
+}
+
+// ReanalyzeAssets enqueues a fresh analyze job for each asset. Old model runs
+// stay immutable; the new run switches the canonical analysis when it lands.
+func (s *Service) ReanalyzeAssets(ctx context.Context, assetIDs []string, reason string) (int, error) {
+	if reason == "" {
+		reason = "reanalysis-v1"
+	}
+	enqueued := 0
+	for _, id := range assetIDs {
+		if err := s.repo.EnqueueReanalysis(ctx, id, reason); err != nil {
+			return enqueued, fmt.Errorf("enqueue reanalysis for %s: %w", id, err)
+		}
+		enqueued++
+	}
+	return enqueued, nil
 }
 
 func (s *Service) Doctor(ctx context.Context, writer io.Writer) error {

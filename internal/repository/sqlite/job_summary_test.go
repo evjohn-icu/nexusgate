@@ -72,21 +72,21 @@ func TestJobSummarySeparatesDeferredAndTerminalFromTheRest(t *testing.T) {
 		}
 	}
 
-	parked, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+	parked, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{})
 	if err != nil || parked == nil {
 		t.Fatalf("lease for defer: %+v %v", parked, err)
 	}
 	if err := repo.DeferJob(ctx, parked.ID, "worker", time.Now().Add(5*time.Hour), domain.JobDeferProviderRouteExhausted, "every key failing"); err != nil {
 		t.Fatal(err)
 	}
-	dead, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+	dead, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{})
 	if err != nil || dead == nil {
 		t.Fatalf("lease for terminal: %+v %v", dead, err)
 	}
 	if err := repo.FailJobTerminally(ctx, dead.ID, "worker", "permanent"); err != nil {
 		t.Fatal(err)
 	}
-	live, err := repo.LeaseNextJob(ctx, "worker", time.Minute, domain.LeaseFilter{})
+	live, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{})
 	if err != nil || live == nil {
 		t.Fatalf("lease for running: %+v %v", live, err)
 	}
