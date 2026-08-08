@@ -6,10 +6,11 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
-// The full-scale retrieval golden corpus. 40 assets, 67 queries, fixture-
-// driven: each asset is committed through the real commit path (see
-// seedGoldenCorpus in retrieval_golden_test.go), so FTS rows, semantic
-// vectors and asset_analysis are exactly what production search reads.
+// The full-scale retrieval golden corpus. 22 assets (7 handwritten adversarial
+// families + 15 generated distractors), 65 queries, fixture-driven: each
+// asset is committed through the real commit path (see seedGoldenCorpus in
+// retrieval_golden_test.go), so FTS rows, semantic vectors and
+// asset_analysis are exactly what production search reads.
 //
 // The families below are the retrieval contract, in the same order as the
 // review round's adversarial list plus the additions that public release
