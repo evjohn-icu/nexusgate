@@ -125,6 +125,25 @@ Two rules live in `internal/app/pipeline.go` and are easy to break:
   software x264 proxy is never mislabelled as an NVENC/QSV/VideoToolbox result. Keep that
   property when touching `media.HardwarePlan` or artifact naming.
 
+### Search (v0.27+)
+
+`internal/search` is the layered retrieval engine behind every search endpoint: query
+compiler (offline controlled vocabulary, positional negation) → intent router
+(auto/fact/speech/semantic/similar/creative, no LLM) → retrieval channels → fusion
+(RRF k=60; WeightedBlend is the compat mode) → evidence gate → diversity selection.
+**Recall may be fuzzy; claims may not**: a shot may rank for any signal, but only the
+gate says a shot *contains* something (`confirmed`/`possible`/`contradicted`/`unknown`
+— unknown is never "确认无人"). The text-embedding channel
+(`shot_text_embeddings`, per-shot float32 cosine scan, model-tagged, cluster threshold
+`embeddingCutoffFraction`) is a retrieval signal, never evidence; the pipeline embeds
+changed shots after each analysis commit, and `timingdex search rebuild-embeddings`
+rebuilds all rows — the model-switch entry, and it never re-runs VLM analysis. The
+legacy GET hybrid endpoint is served by the same engine via
+`search.Service.LegacySearch`, pinned by `TestSearchV2CompatMatchesLegacy`. The
+regression floor is `TestRetrievalGolden` + `TestSearchV2Benchmark` (72 queries, six
+pipelines, per-intent RetrievalFP/AssertionFP) in `internal/repository/sqlite`; a
+ranking change that moves these numbers needs a deliberate reason, not an accident.
+
 ### Model safety boundary (non-negotiable)
 
 Model output never writes directly to canonical tables:

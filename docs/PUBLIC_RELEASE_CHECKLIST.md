@@ -41,8 +41,10 @@ a yes/no with the evidence where it lives.
 - [ ] README quickstart works from a clean data dir
 - [ ] README states alpha / technical-preview status and the "do not expose
       the Hub to the public Internet" boundary
-- [ ] README architecture section does not claim embeddings / reranker /
-      cascade routing (not implemented)
+- [ ] README architecture section does not claim visual embeddings / reranker /
+      cascade routing (not implemented). Text embeddings are implemented
+      (`shot_text_embeddings`, cosine scan in Go, no vector database) and must
+      be described as retrieval signals, never evidence
 - [ ] Local VLM quickstart matches `config.example.json` fields
 - [ ] `/providers` vs `providers.*` boundary documented (openai_multiframe
       is config-only)

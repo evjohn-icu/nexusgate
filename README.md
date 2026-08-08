@@ -43,8 +43,10 @@ Two more deliberate non-claims:
   recognised and their render state recorded; without a compatible renderer the
   asset is reported as unrendered rather than silently treated as SDR.
 - **Shot similarity is a heuristic feature vector**, built from the model's own
-  descriptions and tags, blended with SQLite FTS5. It is not a learned visual
-  embedding, and no vector database is involved.
+  descriptions and tags, blended with SQLite FTS5. Text retrieval may
+  additionally use a configured embedding provider (SQLite-stored float32
+  vectors, cosine scan in Go — no vector database), but shot similarity itself
+  is not a learned visual embedding.
 
 ## How it works
 
@@ -87,7 +89,10 @@ for actually is. Search is a layered retrieval engine (`internal/search`):
 query compilation, per-intent retrieval channels, RRF fusion, an evidence gate
 that refuses to claim a shot contains something without shot-level evidence
 (`confirmed`/`possible`/`contradicted`/`unknown` — unknown is never "确认无
-人"), and a diversity selection pass. The structured endpoint
+人"), and a diversity selection pass. A configured embedding provider adds a
+text-embedding channel (`providers.embedding`); its vectors are a retrieval
+signal, never evidence, and `timingdex search rebuild-embeddings` rebuilds
+them when the model changes. The structured endpoint
 `POST /api/v1/search/shots` serves UI, MCP and editing agents alike with
 per-constraint evidence; the legacy GET endpoints keep their exact behaviour.
 
@@ -180,6 +185,7 @@ export TIMINGDEX_DATA_DIR="$PWD/.timingdex-dev"
 ./timingdex doctor                        # check ffmpeg, hardware profile, paths
 ./timingdex root add /path/to/footage     # read-only; nothing is written there
 ./timingdex root scan <root-id>           # enqueues idempotent jobs
+./timingdex search rebuild-embeddings     # re-embed all shots (after a model switch)
 ./timingdex serve                         # HTTPS by default; prints the Worker fingerprint
 ```
 
@@ -372,6 +378,7 @@ export TIMINGDEX_DATA_DIR="$PWD/.timingdex-dev"
 ./timingdex root add /path/to/footage
 ./timingdex root scan <root-id>
 ./timingdex pipeline run      # leases and runs jobs until the queue is idle
+./timingdex search rebuild-embeddings   # after switching the embedding model
 ./timingdex serve
 ```
 
@@ -476,9 +483,12 @@ absent from the unresolved pool, and writes nothing to the canonical catalog unt
 a human approves.
 
 Optional embedding-based clustering finds candidate groups before the Curator
-names them. It embeds normalised tag **strings** only; it never sees video and is
-not used to search footage. Without an embedding provider, clustering is simply
+names them. It embeds normalised tag **strings** only; it never sees video and
+does not rank footage. Without an embedding provider, clustering is simply
 unavailable — a lexical fallback is not presented as semantic clustering.
+(The search engine's `text_embedding` channel is a separate use of the same
+provider interface: it embeds shot text — description/tags/speech — and only
+ever ranks, never proves; evidence comes from the gate, not the vectors.)
 
 ```bash
 curl -X POST 'http://127.0.0.1:8787/api/v1/tags/clusters?limit=500&threshold=0.86'
