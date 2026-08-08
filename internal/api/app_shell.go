@@ -17,12 +17,15 @@ import "strings"
 const shellHeaderMarker = "<!--SHELL_HEADER-->"
 
 // shelledPage injects the shared shell into one page constant: the shell CSS
-// last in the page's own <style> block (so it wins at equal specificity), the
-// shell header in place of the {{marker}}, and the shared script before
-// </body>. Each page constant carries exactly one </style> and one </body>,
-// so the replace-first semantics are exact per page.
+// immediately before the page's own </style> close (so it wins at equal
+// specificity), the shell header in place of the {{marker}}, and the shared
+// script before </body>. Each page constant carries exactly one </style> and
+// one </body>, so the replace-first semantics are exact per page. The CSS
+// must land INSIDE the style element: appending it after </style> makes the
+// browser treat it as raw text and the whole shell silently loses its
+// styling — the exact silent no-op this project's anchor tests exist for.
 func shelledPage(page string) string {
-	page = strings.Replace(page, "</style>", "</style>"+shellCSS, 1)
+	page = strings.Replace(page, "</style>", shellCSS+"</style>", 1)
 	page = strings.Replace(page, shellHeaderMarker, shellHeaderHTML(), 1)
 	page = strings.Replace(page, "</body>", shellScriptBlock+"</body>", 1)
 	return page
@@ -103,7 +106,7 @@ const shellCSS = `
 .status-cell .dot.warn{background:#ffc783}
 .status-cell .dot.err{background:#ff7b8a}
 .status-cell .dot.off{background:#47597a}
-@media(max-width:860px){.shell-nav{gap:12px}.shell-actions{width:100%;justify-content:space-between}.shell-actions input{width:100%}}
+@media(max-width:860px){.shell-nav{gap:12px}.shell-actions{width:100%;justify-content:space-between}.shell-actions input{width:100%}.status-strip{flex-wrap:wrap;justify-content:flex-start}}
 `
 
 // shellScriptBlock is the shared script every page carries. It defines only
