@@ -64,3 +64,4 @@ coverage.out
 # Stray build artifacts from local packaging. The MCP server builds from
 # cmd/timingdex-mcp; a committed binary only bloats history.
 timingdex-mcp
+timingdex-corpusgen
