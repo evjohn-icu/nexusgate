@@ -27,11 +27,23 @@ type ShootSession struct {
 // session, reel, or flight marker can join captures without that automatic
 // rule. Proxy and sidecar observations are always excluded.
 func AggregateSessions(captures []Capture) []ShootSession {
+	// One file is one capture. The same asset can be linked from several
+	// locations under a root (a mirrored folder, a hardlinked copy), and the
+	// repository builds the capture list from a location join — so the same
+	// asset ID can arrive more than once. Deduplicating here keeps the
+	// aggregation invariant "one asset per session at most" independent of
+	// how the list was gathered; callers that persist session→asset links
+	// (UNIQUE(asset_id, session_id)) depend on it.
 	eligible := make([]Capture, 0, len(captures))
+	seen := make(map[string]struct{}, len(captures))
 	for _, capture := range captures {
 		if isSessionExcluded(capture.Source) {
 			continue
 		}
+		if _, dup := seen[capture.ID]; dup {
+			continue
+		}
+		seen[capture.ID] = struct{}{}
 		eligible = append(eligible, capture)
 	}
 	if len(eligible) == 0 {

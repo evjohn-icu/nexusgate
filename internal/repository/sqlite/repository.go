@@ -739,7 +739,7 @@ func (r *Repository) ListProviderChannels(ctx context.Context, capability string
 // capture groups for one library root. Manual sessions are intentionally left
 // untouched; source files and metadata are never modified.
 func (r *Repository) RebuildAutomaticShootSessions(ctx context.Context, rootID string) error {
-	rows, err := r.db.QueryContext(ctx, `SELECT a.id,COALESCE(al.relative_path,''),COALESCE(cm.vendor,''),COALESCE(cm.model,''),COALESCE(cm.device_serial,''),cm.captured_at,COALESCE(m.duration_ms,0),COALESCE(cm.session_marker,''),COALESCE(cm.reel,'') FROM assets a JOIN asset_locations al ON al.asset_id=a.id AND al.root_id=? AND al.exists_now=1 LEFT JOIN capture_metadata cm ON cm.asset_id=a.id LEFT JOIN media_metadata m ON m.asset_id=a.id WHERE cm.captured_at IS NOT NULL`, rootID)
+	rows, err := r.db.QueryContext(ctx, `SELECT a.id,COALESCE(al.relative_path,''),COALESCE(cm.vendor,''),COALESCE(cm.model,''),COALESCE(cm.device_serial,''),cm.captured_at,COALESCE(m.duration_ms,0),COALESCE(cm.session_marker,''),COALESCE(cm.reel,'') FROM assets a JOIN asset_locations al ON al.asset_id=a.id AND al.root_id=? AND al.exists_now=1 LEFT JOIN capture_metadata cm ON cm.asset_id=a.id LEFT JOIN media_metadata m ON m.asset_id=a.id WHERE cm.captured_at IS NOT NULL GROUP BY a.id`, rootID)
 	if err != nil {
 		return err
 	}

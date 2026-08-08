@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.28.1-alpha — 2026-08-09（发布前修复）
+
+- **修复 `RebuildAutomaticShootSessions` 多 location asset 撞
+  UNIQUE(asset_id, session_id)**：同一文件经多个路径链入一个 root
+  （镜像目录 / 硬链接副本）时，location JOIN 产生重复行，会话重建把同一
+  (asset, session) 插两次，`pipeline run` 整体中断（实测复现）。修复：
+  聚合契约层按 asset 去重（一个文件 = 一条 capture）+ 重建 SELECT
+  `GROUP BY a.id`。回归测试
+  `TestRebuildAutomaticShootSessionsDeduplicatesMultiLocationAssets`（sqlite
+  层，真 DB + 约束）与 `TestAggregateSessionsDeduplicatesSameAsset`
+  （capture 层）。
+
 ## v0.28.0-alpha — 2026-08-08（Text Embedding 通道）
 
 Search v2 的第五检索通道：真正的文本 embedding，retrieval_generation 从

@@ -320,6 +320,62 @@ func TestRebuildAutomaticShootSessionsGroupsSameCameraWithinThirtyMinutes(t *tes
 	}
 }
 
+// TestRebuildAutomaticShootSessionsDeduplicatesMultiLocationAssets pins the
+// UNIQUE(asset_id, session_id) boundary: one file linked from two locations
+// under a root (mirrored folder, hardlinked copy) is one capture, so the
+// rebuild must not insert the same (asset, session) pair twice. Before the
+// GROUP BY dedup this failed with a constraint error and aborted the whole
+// pipeline pass.
+func TestRebuildAutomaticShootSessionsDeduplicatesMultiLocationAssets(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "sessions-multi-location.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	stamp := formatTime(now)
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO library_roots(id,path,created_at,updated_at) VALUES('root-multi','/footage',?,?)`, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"multi-a", "multi-b"} {
+		if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES(?,?,1,'discovered',?,?)`, id, id, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// multi-a lives at two paths under the same root: two location rows,
+	// one asset. multi-b is the single-location control.
+	for i, path := range []string{"clips/a.mov", "mirror/a.mov"} {
+		if _, err := repo.db.ExecContext(ctx, `INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,exists_now,is_primary,last_seen_at) VALUES(?, 'multi-a','root-multi',?,?,1,1,?,?)`, "loc-a-"+path, path, "/footage/"+path, formatTime(now.Add(time.Duration(i)*time.Hour)), stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,exists_now,is_primary,last_seen_at) VALUES('loc-b','multi-b','root-multi','clips/b.mov','/footage/clips/b.mov',1,1,1,?)`, stamp); err != nil {
+		t.Fatal(err)
+	}
+	for id, capturedAt := range map[string]time.Time{"multi-a": now, "multi-b": now.Add(10 * time.Minute)} {
+		if err := repo.SaveMediaMetadata(ctx, id, domain.MediaMetadata{CapturedAt: &capturedAt, CameraMake: "Sony", CameraModel: "FX3", CameraSerial: "serial-m", DurationMS: 5000}, "session-fixture"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.RebuildAutomaticShootSessions(ctx, "root-multi"); err != nil {
+		t.Fatalf("rebuild must not violate UNIQUE(asset_id, session_id): %v", err)
+	}
+	var mappings int
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM asset_shoot_sessions`).Scan(&mappings); err != nil {
+		t.Fatal(err)
+	}
+	if mappings != 2 {
+		t.Fatalf("mappings=%d, want 2 (one per asset, multi-a once despite two locations)", mappings)
+	}
+	if err := repo.RebuildAutomaticShootSessions(ctx, "root-multi"); err != nil {
+		t.Fatalf("second rebuild must be idempotent: %v", err)
+	}
+}
+
 // explainQueryPlan runs EXPLAIN QUERY PLAN and returns each step's detail
 // text, in order -- the fourth column of the `id|parent|notused|detail` shape
 // SQLite returns.

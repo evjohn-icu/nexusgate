@@ -65,6 +65,36 @@ func TestAggregateSessionsExcludesProxiesAndSidecars(t *testing.T) {
 	}
 }
 
+// TestAggregateSessionsDeduplicatesSameAsset pins the "one file is one
+// capture" invariant: the repository builds the capture list from a location
+// join, so the same asset ID can arrive more than once (a file mirrored
+// under a root). Each asset must appear in exactly one session, once.
+func TestAggregateSessionsDeduplicatesSameAsset(t *testing.T) {
+	base := time.Date(2026, 7, 26, 9, 0, 0, 0, time.UTC)
+	dupe := fixtureCapture("mirrored", SourceOriginal, "device-a", "SERIAL-A", base, "")
+	captures := []Capture{
+		dupe,
+		{ID: "mirrored", Source: SourceOriginal, Identity: dupe.Identity, Context: dupe.Context},
+		{ID: "other", Source: SourceOriginal, Identity: dupe.Identity, Context: CaptureContext{CapturedAt: base.Add(5 * time.Minute)}},
+	}
+
+	sessions := AggregateSessions(captures)
+	total := 0
+	for _, session := range sessions {
+		seen := make(map[string]struct{}, len(session.Captures))
+		for _, capture := range session.Captures {
+			if _, dup := seen[capture.ID]; dup {
+				t.Fatalf("session %s contains capture %q twice", session.ID, capture.ID)
+			}
+			seen[capture.ID] = struct{}{}
+			total++
+		}
+	}
+	if total != 2 {
+		t.Fatalf("distinct captures=%d, want 2 (mirrored deduplicated)", total)
+	}
+}
+
 func fixtureCapture(id string, source SourceKind, deviceID, serial string, capturedAt time.Time, marker string) Capture {
 	return Capture{
 		ID:       id,
