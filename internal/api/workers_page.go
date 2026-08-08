@@ -4,7 +4,7 @@ import "net/http"
 
 func (s *Server) workersPage(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(shelledPage(brandedPage(workersPageHTML))))
+	_, _ = w.Write([]byte(brandedPage(shelledPage(workersPageHTML))))
 }
 
 const workersPageHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · 处理节点</title><style>

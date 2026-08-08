@@ -65,3 +65,6 @@ coverage.out
 # cmd/timingdex-mcp; a committed binary only bloats history.
 timingdex-mcp
 timingdex-corpusgen
+
+# Playwright CLI session artifacts.
+.playwright-cli/

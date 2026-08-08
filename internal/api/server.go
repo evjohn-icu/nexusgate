@@ -1869,7 +1869,7 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// The shell nav (app_shell.go) carries the Tags and 模型服务 links now;
 	// the legacy header's tags→providers splice died with the header.
-	_, _ = w.Write([]byte(shelledPage(brandedPage(libraryIndexHTML))))
+	_, _ = w.Write([]byte(brandedPage(shelledPage(libraryIndexHTML))))
 }
 
 const legacyLibraryIndexHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · 素材库</title><style>
@@ -1886,17 +1886,17 @@ async function search(){const q=document.getElementById('q').value.trim();if(!q)
 
 func (s *Server) providersPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(shelledPage(brandedPage(providersHTML))))
+	_, _ = w.Write([]byte(brandedPage(shelledPage(providersHTML))))
 }
 
 func (s *Server) setupPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(shelledPage(brandedPage(setupHTML))))
+	_, _ = w.Write([]byte(brandedPage(shelledPage(setupHTML))))
 }
 
 func (s *Server) progressPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(shelledPage(brandedPage(progressHTML))))
+	_, _ = w.Write([]byte(brandedPage(shelledPage(progressHTML))))
 }
 
 const progressHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · 处理进度</title><style>
@@ -1928,7 +1928,7 @@ async function runPipeline(){const b=document.getElementById('run');b.disabled=t
 
 func (s *Server) repurposePage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(shelledPage(brandedPage(repurposeWorkspaceHTML))))
+	_, _ = w.Write([]byte(brandedPage(shelledPage(repurposeWorkspaceHTML))))
 }
 
 const repurposeWorkspaceHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · 翻新工作台</title><style>
@@ -2191,7 +2191,7 @@ func writeExportError(w http.ResponseWriter, r *http.Request, err error) {
 
 func (s *Server) tagsPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(shelledPage(brandedPage(tagsHTML))))
+	_, _ = w.Write([]byte(brandedPage(shelledPage(tagsHTML))))
 }
 
 const tagsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex Tag Curator</title><style>

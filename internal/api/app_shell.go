@@ -115,6 +115,10 @@ const shellScriptBlock = `<script>
 function getAdminToken(){const el=document.getElementById('admin-token');return el?el.value.trim():''}
 function shellAuthHeaders(){const headers=new Headers();const token=getAdminToken();if(token)headers.set('Authorization','Bearer '+token);return headers}
 function statusCell(id,state,text){const el=document.getElementById(id);if(!el)return;el.textContent=text;const cell=el.closest('.status-cell');if(cell){const dot=cell.querySelector('.dot');if(dot)dot.className='dot '+state}}
+// The old per-page headers marked the current page with nav-active; the
+// shell header derives it from the URL instead of taking an argument, so a
+// page can never forget to pass it. Runs at end of body, so the DOM is ready.
+document.querySelectorAll('.nav-link').forEach(function(a){if(a.getAttribute('href')===location.pathname)a.classList.add('active')});
 async function refreshStatus(){
   try{const r=await fetch('/api/v1/health');statusCell('status-hub',r.ok?'ok':'err',r.ok?'Hub 正常':'Hub 异常')}catch(e){statusCell('status-hub','err','Hub 异常')}
   try{const s=await fetch('/api/v1/jobs/summary',{headers:shellAuthHeaders()}).then(r=>r.ok?r.json():null);if(s){let state='idle',text='空闲';if(s.running>0){state='ok';text='运行中 '+s.running}else if(s.deferred>0){state='warn';text='等待额度 '+s.deferred}else if((s.failed||0)+(s.terminal||0)>0){state='err';text='失败 '+(s.failed+s.terminal)}else if(s.pending>0){text='排队 '+s.pending}statusCell('status-pipeline',state,text)}else{statusCell('status-pipeline','off','—')}}catch(e){statusCell('status-pipeline','off','—')}

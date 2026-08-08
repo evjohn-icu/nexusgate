@@ -4,7 +4,7 @@ import "net/http"
 
 func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(shelledPage(brandedPage(settingsHTML))))
+	_, _ = w.Write([]byte(brandedPage(shelledPage(settingsHTML))))
 }
 
 // settingsHTML is the editable view of domain.PipelineThrottle. Like every other

@@ -34,7 +34,7 @@ func (s *Server) registerWorkerSetupRoutes(mux *http.ServeMux) {
 
 func (s *Server) workerSetupPage(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(shelledPage(brandedPage(workerSetupPageHTML))))
+	_, _ = w.Write([]byte(brandedPage(shelledPage(workerSetupPageHTML))))
 }
 
 func (s *Server) workerSetupContext(w http.ResponseWriter, r *http.Request) {

@@ -57,12 +57,8 @@ type expectedShot struct {
 	endMS   int64
 }
 
-// corpus mirrors internal/eval's on-disk contract: a Corpus is clips/ plus
-// ground_truth.json, and ground_truth queries carry expected shot spans.
-type corpus struct {
-	Queries []groundTruthQuery `json:"queries"`
-}
-
+// groundTruthQuery is one line of ground_truth.json, mirroring
+// internal/eval's Query shape.
 type groundTruthQuery struct {
 	Query    string            `json:"query"`
 	Language string            `json:"language"`
@@ -85,6 +81,10 @@ func main() {
 	fmt.Printf("corpus written to %s (clips/ + ground_truth.json)\n", *out)
 }
 
+// ground_truth.json is a top-level JSON ARRAY of queries — the exact shape
+// internal/eval LoadCorpus unmarshals (json.Unmarshal into Corpus.Queries).
+// Wrapping it in an object would load fine by hand and fail at eval time with
+// "cannot unmarshal object into Go value of type []eval.Query".
 func generate(out string) error {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		return fmt.Errorf("ffmpeg is required to synthesize clips: %w", err)
@@ -94,7 +94,7 @@ func generate(out string) error {
 	if err := os.MkdirAll(clipsDir, 0o755); err != nil {
 		return err
 	}
-	var gt corpus
+	queries := []groundTruthQuery{}
 	for _, clip := range clips {
 		path := filepath.Join(clipsDir, clip.name+".mp4")
 		if err := synthClip(clip, path); err != nil {
@@ -109,10 +109,10 @@ func generate(out string) error {
 					EndMS:   e.endMS,
 				})
 			}
-			gt.Queries = append(gt.Queries, entry)
+			queries = append(queries, entry)
 		}
 	}
-	raw, err := json.MarshalIndent(gt, "", "  ")
+	raw, err := json.MarshalIndent(queries, "", "  ")
 	if err != nil {
 		return err
 	}
