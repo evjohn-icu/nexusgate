@@ -68,3 +68,6 @@ timingdex-corpusgen
 
 # Playwright CLI session artifacts.
 .playwright-cli/
+
+# Local demo screenshots.
+demo-*.png
