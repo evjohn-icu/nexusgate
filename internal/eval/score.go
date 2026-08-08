@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
@@ -32,6 +33,23 @@ type RunScore struct {
 	MeanRTFactor    float64       `json:"mean_real_time_factor"`
 	Frames          int           `json:"frames_processed"`
 	QueryDetail     []QueryDetail `json:"queries,omitempty"`
+	// PerIntent breaks the same metrics down by the corpus queries' intent
+	// tags (eval.Query.Intent; queries without a tag land in "auto"). The
+	// retrieval golden set's per-intent benchmark is the authoritative
+	// measurement; this exists so provider comparisons can see an intent
+	// family regress without hunting through QueryDetail.
+	PerIntent map[string]*IntentScore `json:"per_intent,omitempty"`
+}
+
+// IntentScore aggregates one intent family's metrics with the same fixed-K
+// conventions as the golden set.
+type IntentScore struct {
+	Queries         int     `json:"queries"`
+	Precision5      float64 `json:"precision_5"`
+	Precision10     float64 `json:"precision_10"`
+	Recall10        float64 `json:"recall_10"`
+	FalsePositives  int     `json:"false_positives"`
+	RelevantInTop10 int     `json:"relevant_in_top_10"`
 }
 
 // QueryDetail is one query's verdict, so an operator can see exactly which
@@ -68,6 +86,7 @@ func Score(ctx context.Context, dataDir, label string, corpus *Corpus) (*RunScor
 	score := &RunScore{
 		Label: label, Provider: report.Provider, Model: report.Model,
 		TotalQueries: len(corpus.Queries),
+		PerIntent:    map[string]*IntentScore{},
 	}
 	var rtTotal float64
 	for _, asset := range report.Assets {
@@ -134,11 +153,32 @@ func Score(ctx context.Context, dataDir, label string, corpus *Corpus) (*RunScor
 		score.Recall10 += r10
 		score.RelevantInTop10 += hitCount
 		score.QueryDetail = append(score.QueryDetail, detail)
+		intent := strings.TrimSpace(query.Intent)
+		if intent == "" {
+			intent = "auto"
+		}
+		bucket := score.PerIntent[intent]
+		if bucket == nil {
+			bucket = &IntentScore{}
+			score.PerIntent[intent] = bucket
+		}
+		bucket.Queries++
+		bucket.Precision5 += p5
+		bucket.Precision10 += p10
+		bucket.Recall10 += r10
+		bucket.FalsePositives += detail.FalsePositives
+		bucket.RelevantInTop10 += hitCount
 	}
 	n := float64(len(corpus.Queries))
 	score.Precision5 /= n
 	score.Precision10 /= n
 	score.Recall10 /= n
+	for _, bucket := range score.PerIntent {
+		nb := float64(bucket.Queries)
+		bucket.Precision5 /= nb
+		bucket.Precision10 /= nb
+		bucket.Recall10 /= nb
+	}
 	return score, nil
 }
 

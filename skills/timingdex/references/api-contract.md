@@ -61,9 +61,71 @@ GET /api/v1/health
 GET /api/v1/hardware
 GET /api/v1/jobs?limit=100
 GET /api/v1/search/shots/hybrid?q=<query>&limit=20
+POST /api/v1/search/shots
 GET /api/v1/shots/{shot-id}/similar?limit=10
 GET /api/v1/discover/rare-shots?limit=20
 ```
+
+`GET /api/v1/search/shots/hybrid` is the legacy retrieval endpoint and keeps
+its exact response shape. `POST /api/v1/search/shots` is the structured
+Search v2 endpoint (same read scoping: trusted network or a credential; it
+never mutates state):
+
+```json
+POST /api/v1/search/shots
+{
+  "query": "夜晚下雨，有人撑伞走过街道",
+  "mode": "auto",
+  "limit": 20,
+  "diversity": 0.2,
+  "include_evidence": true,
+  "include_context": false,
+  "facets": { "shot_sizes": ["wide"] }
+}
+```
+
+`mode` is `auto` (the default; the Hub routes the intent itself) or one of
+`fact`/`speech`/`semantic`/`similar`/`creative`. The response echoes the
+resolved intent, adds `search_id`/`query_hash` (for correlating feedback with
+a query), and each result carries per-constraint `evidence`:
+
+```json
+{
+  "query": { "raw": "夜晚下雨，有人撑伞走过街道", "intent": "fact" },
+  "search_id": "9f2c…", "query_hash": "a1b2c3d4e5f60718",
+  "results": [{
+    "shot_id": "shot_123", "asset_id": "asset_8", "filename": "A0038.MOV",
+    "start_ms": 50120, "end_ms": 56480, "score": 0.91,
+    "scores": { "lexical": 0.78, "heuristic_semantic": 0.82, "rrf": 0.91 },
+    "rank": 1,
+    "evidence": [
+      { "constraint_type": "object", "constraint": "person", "state": "confirmed", "sources": ["objects"] },
+      { "constraint_type": "object", "constraint": "umbrella", "state": "confirmed", "sources": ["objects", "description"] },
+      { "constraint_type": "weather", "constraint": "rain", "state": "possible", "sources": ["description"] }
+    ]
+  }]
+}
+```
+
+Evidence semantics — the boundary this Skill must respect:
+
+- `confirmed` — the canonical term appears in a structured observation field
+  (objects/actions/tags/mood). This is a model observation.
+- `possible` — the term appears only in the description (narrative) or in
+  aligned transcript speech. Mention is not visual proof.
+- `contradicted` — the shot's own words explicitly negate the term
+  ("no people", "没有人").
+- `unknown` — no evidence found. `unknown` is NOT "确认无人": absence is never
+  asserted from silence. A `negated: true` evidence entry means the query
+  asked for the absence (e.g. "没有人的海边空镜"): `confirmed` there means the
+  forbidden thing was observed in that shot, `unknown` means it was not
+  observed — never read `unknown` on a negated entry as a confirmed absence.
+
+Do not treat a high `score` as proof that the shot contains what the query
+named: scores are retrieval signals, evidence is the claim. The `scores` map
+may include `text_embedding` when the Hub has an embedding provider
+configured (`providers.embedding` or a provider channel); like every other
+signal it is retrieval, never evidence.
 
 Shot results contain an `id` (the shot ID), `asset_id`, `start_ms`, `end_ms`,
 `score`, `description`, `tags`, and the `lexical_score`/`semantic_score` when

@@ -142,7 +142,10 @@ process_file() {
         fail "$md: cannot resolve file '$go_file'"
         continue
       fi
-      prev_go_file="$(echo "$resolved" | head -1)"
+      # Keep every candidate: a bare filename like `store.go` matches several
+      # packages, and a later "第 NNN 行" reference with no file must validate
+      # against whichever candidate actually fits the line numbers.
+      prev_go_file="$resolved"
     fi
 
     # Check for 同文件 (same file as previous)

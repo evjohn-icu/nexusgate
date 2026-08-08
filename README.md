@@ -83,7 +83,13 @@ OpenAI-compatible `chat/completions` surface a llama.cpp / LM Studio / vLLM /
 SGLang runtime exposes — and cloud providers plug into the same pipeline.
 Whatever answers, a shot's metadata comes only from that shot's own evidence,
 and search returns the exact `start_ms` / `end_ms` where the thing you asked
-for actually is.
+for actually is. Search is a layered retrieval engine (`internal/search`):
+query compilation, per-intent retrieval channels, RRF fusion, an evidence gate
+that refuses to claim a shot contains something without shot-level evidence
+(`confirmed`/`possible`/`contradicted`/`unknown` — unknown is never "确认无
+人"), and a diversity selection pass. The structured endpoint
+`POST /api/v1/search/shots` serves UI, MCP and editing agents alike with
+per-constraint evidence; the legacy GET endpoints keep their exact behaviour.
 
 | Stage | What it does |
 | --- | --- |

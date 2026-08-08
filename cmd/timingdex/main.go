@@ -162,6 +162,22 @@ func run() error {
 	case "reanalyze":
 		return runReanalyzeCommand(service, os.Args[2:])
 
+	case "search":
+		if len(os.Args) < 3 {
+			return errors.New("usage: timingdex search rebuild-embeddings")
+		}
+		switch os.Args[2] {
+		case "rebuild-embeddings":
+			rebuilt, err := service.RebuildShotTextEmbeddings(context.Background())
+			if err != nil {
+				return err
+			}
+			fmt.Printf("rebuilt %d shot text embedding(s); run `timingdex pipeline run` if jobs are queued\n", rebuilt)
+			return nil
+		default:
+			return errors.New("usage: timingdex search rebuild-embeddings")
+		}
+
 	case "doctor":
 		fmt.Printf("database: %s\n", cfg.DatabasePath)
 		fmt.Printf("cache:    %s\n", cfg.CacheDir)
@@ -322,6 +338,7 @@ Usage:
   timingdex worker enroll --hub https://nas:8787 --pairing <token> [--name worker] [--mount root-id=/mounted/path] [--provider-operation video_analysis]
   timingdex worker run [--config path] [--tray]
   timingdex worker doctor [--config path]
+  timingdex search rebuild-embeddings
   timingdex doctor`)
 	return errors.New("invalid command")
 }

@@ -185,7 +185,11 @@ func (p *Pipeline) analyzeTwoPass(ctx context.Context, j *domain.Job, m *domain.
 	// The refinement run's shots are canonical now; its record must say so.
 	// The asset-level analysis stays with the pass-1 run, which is why this
 	// commit marker exists without a CommitAnalysis call.
-	return p.repo.MarkModelRunCommitted(ctx, runID)
+	if err := p.repo.MarkModelRunCommitted(ctx, runID); err != nil {
+		return err
+	}
+	p.afterShotsCommitted(ctx, j.AssetID)
+	return nil
 }
 
 // analysisTranscript is the shared transcript+alignment resolution the

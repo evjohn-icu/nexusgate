@@ -166,27 +166,34 @@ func TestLibraryPageRendersSemanticFacetControls(t *testing.T) {
 }
 
 // TestLibraryPageSearchIsShotFirst pins the shot-first search: search()
-// must ask the hybrid shot endpoint (the same retrieval the golden set
-// measures), forward the facets, and render shot-level result cards carrying
-// the shot's own evidence — filename, time range, description, score — so a
-// user lands on a concrete shot, not a whole-asset card. The drawer the
-// cards open must seek the proxy to the shot's own range.
+// must ask the structured v2 shot endpoint (the same evidence-bearing
+// retrieval the v2 golden benchmark measures), forward the facets in the
+// body, and render shot-level result cards carrying the shot's own evidence
+// — filename, time range, description, score, and the "为什么命中" evidence
+// line — so a user lands on a concrete shot, not a whole-asset card. The
+// drawer the cards open must seek the proxy to the shot's own range.
 func TestLibraryPageSearchIsShotFirst(t *testing.T) {
 	page := libraryIndexHTML
-	if !strings.Contains(page, `'/api/v1/search/shots/hybrid?q='+encodeURIComponent(q)+'&limit=40'+filterQuery()`) {
-		t.Fatalf("search() must query the hybrid shot endpoint with the facet params")
+	if !strings.Contains(page, `fetch('/api/v1/search/shots',{method:'POST'`) {
+		t.Fatalf("search() must POST to the structured v2 shot endpoint")
+	}
+	if !strings.Contains(page, `include_evidence:true`) {
+		t.Fatalf("search() must request evidence")
 	}
 	if strings.Contains(page, `'/api/v1/search?q='+encodeURIComponent(q)`) {
 		t.Fatalf("search() must not query the facet-blind asset search endpoint")
 	}
-	if !strings.Contains(page, `renderShotResults(Array.isArray(data)?data:[])`) {
-		t.Fatalf("search() must render shot-level results")
+	if !strings.Contains(page, `renderShotResults(data&&data.results?data.results:[])`) {
+		t.Fatalf("search() must render shot-level results from the v2 response")
 	}
 	for _, marker := range []string{
 		`data-shot-result`, // result cards are shot rows
 		`shot-result-time`, // start — end rendered
 		`shot-result-file`, // owning asset filename rendered
 		`s.filename`,       // filename comes from the joined asset
+		`shotEvidence(s)`,  // the evidence line renders per card
+		`为什么命中：`,           // the evidence line is human-readable
+		`未确认`,              // unknown evidence must render, not vanish
 		`/api/v1/assets/'+encodeURIComponent(s.asset_id)+'/thumbnail`, // shot thumb via asset endpoint
 	} {
 		if !strings.Contains(page, marker) {

@@ -87,6 +87,13 @@ type Pipeline struct {
 	// failing at once. It is resolved once at construction from configuration
 	// so RunUntilIdle never reads config itself.
 	routeDeferral time.Duration
+	// onShotsCommitted is the optional post-commit hook (set by NewService
+	// via SetAfterShotsCommitted): it runs after shot rows become canonical,
+	// synchronously inside the job, so "the process exited" still means "no
+	// job and no Provider call is still running" — the pipeline's own
+	// invariant. The hook never fails the job: its implementation swallows
+	// errors (the embedding layer is derived and best-effort).
+	onShotsCommitted func(ctx context.Context, assetID string)
 }
 
 func NewPipeline(repo PipelineRepository, cacheDir string, asr providers.ASR, asrFallback providers.ASR, videoProvider videoproviders.VideoUnderstandingProvider, alignment providers.Alignment, shotDetector shotdetect.Detector, hardware media.HardwarePlan, sourceStager *staging.SourceStager, deferral time.Duration) *Pipeline {
@@ -101,6 +108,19 @@ func NewPipeline(repo PipelineRepository, cacheDir string, asr providers.ASR, as
 		deferral = minProviderRouteDeferral
 	}
 	return &Pipeline{repo: repo, cacheDir: cacheDir, asr: asr, asrFallback: asrFallback, videoProvider: videoProvider, alignment: alignment, shotDetector: shotDetector, hardware: hardware, sourceStager: sourceStager, routeDeferral: deferral}
+}
+
+// SetAfterShotsCommitted attaches the post-commit hook (see onShotsCommitted).
+// Tests construct pipelines without one; the hook stays nil there.
+func (p *Pipeline) SetAfterShotsCommitted(hook func(ctx context.Context, assetID string)) {
+	p.onShotsCommitted = hook
+}
+
+// afterShotsCommitted fires the post-commit hook when one is attached.
+func (p *Pipeline) afterShotsCommitted(ctx context.Context, assetID string) {
+	if p.onShotsCommitted != nil {
+		p.onShotsCommitted(ctx, assetID)
+	}
 }
 
 func (p *Pipeline) EnqueueAsset(ctx context.Context, assetID string) error {

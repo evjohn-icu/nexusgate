@@ -84,6 +84,125 @@ func TestHandlerServesHybridShotSearch(t *testing.T) {
 	}
 }
 
+// TestSearchShotsV2StructuredEndpoint exercises the structured POST search:
+// evidence-bearing response, intent echo, and strict validation.
+func TestSearchShotsV2StructuredEndpoint(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "search-v2-api.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := t.TempDir()
+	videoPath := filepath.Join(rootPath, "fixture.mp4")
+	if err := os.WriteFile(videoPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := repo.CreateLibraryRoot(ctx, rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(videoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.UpsertScannedFile(ctx, root, "fixture.mp4", videoPath, info, "fixture-fingerprint"); err != nil {
+		t.Fatal(err)
+	}
+	assets, err := repo.ListAssets(ctx, 10, 0)
+	if err != nil || len(assets) != 1 {
+		t.Fatalf("assets=%+v err=%v", assets, err)
+	}
+	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{{ID: "shot-1", StartMS: 0, EndMS: 5000, Description: "雨夜城市街道", Tags: []string{"rain", "urban_night", "street"}, Objects: []string{"person", "umbrella"}}}); err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer("", service)
+
+	send := func(body string) (*httptest.ResponseRecorder, error) {
+		request := lanRequest(http.MethodPost, "/api/v1/search/shots", bytes.NewBufferString(body))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response, nil
+	}
+
+	// A fact query returns an evidence-bearing result.
+	response, err := send(`{"query":"夜晚下雨，有人撑伞走过街道","mode":"auto","limit":10,"include_evidence":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var parsed struct {
+		Query struct {
+			Raw    string `json:"raw"`
+			Intent string `json:"intent"`
+		} `json:"query"`
+		SearchID  string `json:"search_id"`
+		QueryHash string `json:"query_hash"`
+		Results   []struct {
+			ShotID   string  `json:"shot_id"`
+			Score    float64 `json:"score"`
+			Evidence []struct {
+				Constraint string   `json:"constraint"`
+				State      string   `json:"state"`
+				Sources    []string `json:"sources"`
+			} `json:"evidence"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Query.Raw == "" || parsed.SearchID == "" || len(parsed.QueryHash) != 16 {
+		t.Fatalf("metadata missing: %+v", parsed)
+	}
+	if len(parsed.Results) != 1 || parsed.Results[0].ShotID != "shot-1" {
+		t.Fatalf("results=%+v", parsed.Results)
+	}
+	confirmed := 0
+	for _, e := range parsed.Results[0].Evidence {
+		if e.State == "confirmed" {
+			confirmed++
+		}
+	}
+	if confirmed < 2 {
+		t.Fatalf("person/umbrella must be confirmed, got %+v", parsed.Results[0].Evidence)
+	}
+
+	// Unknown mode 400s.
+	response, err = send(`{"query":"car","mode":"bogus"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unknown mode must 400, got %d", response.Code)
+	}
+	// Bad facet value 400s, same vocabulary as the GET endpoints.
+	response, err = send(`{"query":"car","facets":{"shot_sizes":["spin"]}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("bad facet must 400, got %d", response.Code)
+	}
+	// Missing query 400s.
+	response, err = send(`{"limit":5}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("missing query must 400, got %d", response.Code)
+	}
+}
+
 func TestHomePageUsesLibraryFirstShotTimeline(t *testing.T) {
 	ctx := context.Background()
 	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "library-browser.db"))

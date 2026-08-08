@@ -24,6 +24,7 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/nleexport"
 	"github.com/evjohn-icu/timingdex/internal/normalize"
 	"github.com/evjohn-icu/timingdex/internal/remote"
+	"github.com/evjohn-icu/timingdex/internal/search"
 	"github.com/evjohn-icu/timingdex/internal/webdavspace"
 )
 
@@ -186,6 +187,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/search", s.requireTrustedRead(s.search))
 	mux.HandleFunc("GET /api/v1/search/shots", s.requireTrustedRead(s.searchShots))
 	mux.HandleFunc("GET /api/v1/search/shots/hybrid", s.requireTrustedRead(s.hybridSearchShots))
+	// The structured Search v2 endpoint: same read scoping as the GET search
+	// routes (trusted network, or admin/agent token), but the request carries
+	// mode/diversity/evidence/context/facets and the response carries
+	// per-constraint evidence. Read-only in effect — it never mutates state.
+	mux.HandleFunc("POST /api/v1/search/shots", s.requireTrustedRead(s.searchShotsV2))
 	mux.HandleFunc("GET /api/v1/shots/{id}/similar", s.requireTrustedRead(s.similarShots))
 	mux.HandleFunc("GET /api/v1/discover/rare-shots", s.requireTrustedRead(s.rareShots))
 	mux.HandleFunc("GET /api/v1/tags", s.requireTrustedRead(s.listTags))
@@ -1104,18 +1110,11 @@ func parseFacetFilter(query url.Values) (domain.FacetFilter, error) {
 		if raw == "" {
 			continue
 		}
-		allowed := make(map[string]bool, len(spec.values))
-		for _, v := range spec.values {
-			allowed[v] = true
-		}
 		var values []string
 		for _, part := range strings.Split(raw, ",") {
 			part = strings.TrimSpace(part)
 			if part == "" {
 				continue
-			}
-			if !allowed[part] {
-				return domain.FacetFilter{}, fmt.Errorf("invalid %s value: %q", spec.param, part)
 			}
 			values = append(values, part)
 		}
@@ -1135,16 +1134,49 @@ func parseFacetFilter(query url.Values) (domain.FacetFilter, error) {
 		}
 		f.MaxDurationMS = &v
 	}
+	if err := validateFacetFilter(&f); err != nil {
+		return domain.FacetFilter{}, err
+	}
+	return f, nil
+}
+
+// validateFacetFilter rejects facet values outside the controlled vocabulary
+// and inverted duration ranges, for both the query-parameter path
+// (parseFacetFilter) and the structured POST body. The shared list
+// facetQueryFields keeps the two paths from drifting apart on allowed values.
+func validateFacetFilter(f *domain.FacetFilter) error {
+	targets := []struct {
+		name   string
+		values []string
+	}{
+		{"asset_type", f.AssetTypes},
+		{"asset_shot_size", f.ShotSizes},
+		{"asset_camera_motion", f.CameraMotions},
+		{"asset_audio_type", f.AudioTypes},
+		{"asset_quality", f.Qualities},
+		{"asset_usable_as", f.UsableAs},
+	}
+	for i, spec := range facetQueryFields {
+		allowed := make(map[string]bool, len(spec.values))
+		for _, v := range spec.values {
+			allowed[v] = true
+		}
+		for _, part := range targets[i].values {
+			if !allowed[part] {
+				return fmt.Errorf("invalid %s value: %q", targets[i].name, part)
+			}
+		}
+	}
 	// An inverted range is the same class of mistake as a misspelled facet
 	// value: both parse cleanly and compile into SQL that matches nothing, and
 	// an empty result is indistinguishable from "you have no footage". Equal
 	// bounds stay valid — both ends are inclusive, so that is a legitimate
 	// exact-duration query, not an empty one. The check sits after both values
-	// have parsed so an unparseable bound still reports as unparseable.
+	// have been provided so an unparseable bound still reports as unparseable.
 	if f.MinDurationMS != nil && f.MaxDurationMS != nil && *f.MinDurationMS > *f.MaxDurationMS {
-		return domain.FacetFilter{}, fmt.Errorf("invalid duration range: min_duration_ms=%d exceeds max_duration_ms=%d", *f.MinDurationMS, *f.MaxDurationMS)
+		return fmt.Errorf("invalid duration range: min_duration_ms=%d exceeds max_duration_ms=%d", *f.MinDurationMS, *f.MaxDurationMS)
 	}
-	return f, nil
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -1460,6 +1492,32 @@ func (s *Server) searchShots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, hits)
+}
+
+func (s *Server) searchShotsV2(w http.ResponseWriter, r *http.Request) {
+	var req search.SearchRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Query) == "" {
+		http.Error(w, "missing query", http.StatusBadRequest)
+		return
+	}
+	if !search.ValidMode(req.Mode) {
+		http.Error(w, "unknown mode: "+req.Mode, http.StatusBadRequest)
+		return
+	}
+	if err := validateFacetFilter(&req.Facets); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	response, err := s.service.SearchV2(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) hybridSearchShots(w http.ResponseWriter, r *http.Request) {

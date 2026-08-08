@@ -24,10 +24,13 @@ type ExpectedShot struct {
 	EndMS   int64  `json:"end_ms"`
 }
 
-// Query is one retrieval question plus its ground truth.
+// Query is one retrieval question plus its ground truth. Intent is the
+// optional hand-tagged Search v2 intent family (fact/speech/semantic/
+// negative/creative/auto) used by the score step for per-intent metrics.
 type Query struct {
 	Query    string         `json:"query"`
 	Language string         `json:"language,omitempty"`
+	Intent   string         `json:"intent,omitempty"`
 	Expected []ExpectedShot `json:"expected"`
 }
 

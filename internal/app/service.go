@@ -29,6 +29,7 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/remote"
 	sqlite "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 	"github.com/evjohn-icu/timingdex/internal/repurpose"
+	"github.com/evjohn-icu/timingdex/internal/search"
 	"github.com/evjohn-icu/timingdex/internal/secretstore"
 	"github.com/evjohn-icu/timingdex/internal/staging"
 	"github.com/evjohn-icu/timingdex/internal/webdavspace"
@@ -187,6 +188,12 @@ type Service struct {
 	// duplicated -- both are the one instance constructed below.
 	channelRuntime *providerChannelRuntime
 
+	// searchV2 is the Search Architecture v2 engine. Wired by NewService only
+	// when repo implements search.ShotStore; nil in tests and minimal setups,
+	// where the legacy repository search methods remain the path. Nil-safe:
+	// every method guards it.
+	searchV2 *search.Service
+
 	pipelineMu      sync.Mutex
 	pipelineRunning bool
 
@@ -295,6 +302,24 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 	// Constructing it unconditionally keeps the status endpoint answerable
 	// ("configured but not running") instead of nil.
 	service.supervisor = newLibrarySupervisor(service, cfg.LibrarySupervisor)
+	// The Search v2 engine is wired when the repository implements the
+	// ShotStore contract (real sqlite does; test fakes do not). When it is
+	// absent the legacy repository search methods keep serving — the
+	// compatibility fallback.
+	if store, ok := repo.(search.ShotStore); ok {
+		opts := search.DefaultOptions()
+		if service.embedder != nil {
+			// The adapter makes "embedding not configured" a no-op channel
+			// instead of a failed search (see searchEmbedderAdapter).
+			opts.Embedder = searchEmbedderAdapter{embedder: service.embedder}
+		}
+		service.searchV2 = search.NewService(store, opts)
+	}
+	// The text-embedding layer (if configured) keeps its derived vectors
+	// fresh after every analysis commit. The pipeline fires the hook
+	// synchronously inside the job; ensureShotTextEmbeddings swallows its own
+	// errors so an embedding hiccup can never fail an analysis job.
+	service.pipeline.SetAfterShotsCommitted(service.ensureShotTextEmbeddings)
 	return service, nil
 }
 
@@ -1350,12 +1375,30 @@ func (s *Service) SearchShotsFiltered(ctx context.Context, q string, limit int, 
 }
 
 func (s *Service) HybridSearchShots(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error) {
-	return s.repo.HybridSearchShots(ctx, q, limit)
+	return s.HybridSearchShotsFiltered(ctx, q, limit, domain.FacetFilter{})
 }
 
 // HybridSearchShotsFiltered narrows HybridSearchShots by domain.FacetFilter.
+// When the Search v2 engine is wired, this delegates to its compatibility
+// path (LegacySearch), which reproduces the legacy hybrid ranking exactly —
+// pinned by the golden set's equality test — so the old GET endpoints, the
+// MCP tool and the repurpose planner keep their behaviour under the new
+// engine. Without the engine (test fakes), it falls back to the repository.
 func (s *Service) HybridSearchShotsFiltered(ctx context.Context, q string, limit int, facets domain.FacetFilter) ([]domain.ShotSearchResult, error) {
+	if s.searchV2 != nil {
+		return s.searchV2.LegacySearch(ctx, q, limit, facets)
+	}
 	return s.repo.HybridSearchShotsFiltered(ctx, q, limit, facets)
+}
+
+// SearchV2 runs the structured Search v2 pipeline (compile, route, channels,
+// fusion, evidence gate, selection) and returns the evidence-bearing
+// response. It is the backend of POST /api/v1/search/shots.
+func (s *Service) SearchV2(ctx context.Context, req search.SearchRequest) (*search.SearchResponse, error) {
+	if s.searchV2 == nil {
+		return nil, fmt.Errorf("search engine not available")
+	}
+	return s.searchV2.Search(ctx, req)
 }
 
 func (s *Service) SimilarShots(ctx context.Context, shotID string, limit int) ([]domain.ShotSearchResult, error) {

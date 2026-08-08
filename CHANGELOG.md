@@ -1,5 +1,65 @@
 # Changelog
 
+## v0.28.0-alpha — 2026-08-08（Text Embedding 通道）
+
+Search v2 的第五检索通道：真正的文本 embedding，retrieval_generation 从
+概念落地为可运行层。
+
+- **TextEmbedding 通道**：`search.TextEmbedder` 批量接口与
+  `providers.Embedder` 结构性一致（OpenAI-compatible / Gemini 适配器
+  零改动直接满足）；`shot_text_embeddings` 表（每 shot 一行、model 标记、
+  float32 LE blob、source_text_hash 驱动增量重建）；稠密通道阈值
+  `embeddingCutoffFraction`（0.8 × 通道最高相似度）防止近正交噪声长尾
+  冲垮 RRF。
+- **自动增量 + 全量重建**：pipeline 提交后 hook（分析/精修两个提交点）
+  只重嵌 derived 文本变化的 shot，错误只记日志绝不失败分析 job；
+  `timingdex search rebuild-embeddings` 全量重建。换 embedding 模型 =
+  重建 derived 层，**绝不重跑 VLM analysis**。
+- **语义 profile 调整**：semantic `{heuristic 0.45, text_embedding 0.35,
+  lexical 0.20}`、fact 含 `text_embedding 0.15`；speech/creative 不参与。
+  evidence gate 零改动（embedding 是检索信号，不是证据）。
+- **Benchmark**：72 query 第六管道 v2-rrf-gate-embed（fake embedder +
+  真实存储路径）：R@10=0.986、RetrievalFP=0、AssertionFP=0，与 v0.27
+  gate 基线完全持平——通道加性成立。httptest 真实适配器 roundtrip、
+  hook 增量语义、模型切换测试。详见
+  docs/retrieval-benchmark-v028-text-embedding.md。
+- **文档**：docs/search-architecture.md embedding 从 future 升 v1。
+
+## v0.27.0-alpha — 2026-08-08（Search Architecture v2 + Evidence Gate + Selection 骨架）
+
+把检索系统从"一个 hybrid 端点 + 一个 0.70/0.30 权重"升级为分层的
+local-first footage retrieval and selection engine：**召回可以大胆，
+声称必须有证据**。
+
+- **Search Architecture v2**（`internal/search`，纯 Go）：query compiler
+  （离线受控词表，ASCII 整词纪律：carefree≠car / raining≠train；位置化
+  否定：没有人的海边空镜 → mustNot person，海边保持正向）+ intent router
+  （auto/fact/speech/semantic/similar/creative，无 LLM）+ 四通道召回
+  （lexical 加权 bm25 / heuristic semantic / transcript 时间重叠 /
+  metadata 仅文件名）+ fusion（WeightedBlend 兼容 + RRF k=60）。
+- **Evidence Gate**：confirmed（结构化观察字段）/ possible（仅描述或口述）
+  / contradicted（shot 自己否定）/ unknown（**绝不是"确认无人"**）。
+  fact/negative 查询的 must 无证据即排除，部分支持降权；
+  missing≠negative 语义在 API 层强制诚实。
+- **Selection 骨架**：near-time 近重复硬跳过（A001 10.1s/10.9s/11.5s 不
+  能霸占 top-10）+ 同 asset / 同 session 软罚；creative 更高 diversity。
+- **结构化 API**：`POST /api/v1/search/shots`（mode/diversity/evidence/
+  context/facets + search_id/query_hash/result_rank，为未来反馈挂钩）。
+- **旧端点内部接管**：GET hybrid 由 v2 compat 路径服务，compat 相等性
+  测试对全部 legacy golden query 断言 ID 序列与分数（≤1e-12）一致；
+  UI/MCP/repurpose planner 行为不变。
+- **UI**：搜索改走 v2 端点，结果卡片渲染"为什么命中"证据行（✓ 确认 /
+  可能 / 未确认 / ✗ 矛盾），unknown 与否定项绝不显示成"确定"。
+- **Benchmark**：legacy 语料 + 6 家族 v2 hard negatives 共 72 query，
+  5 pipeline × per-intent 指标 + RetrievalFP/AssertionFP。gate 管道：
+  RetrievalFP 3→**0**、AssertionFP 56→**0**、R@10 0.972→**0.986**
+  （不降反升，gate 把被噪音挤掉的 relevant shot 释放回 top-10）。
+  详见 docs/retrieval-benchmark-v027-search-v2.md。
+- **文档**：docs/search-architecture.md（长期架构：canonical shot truth、
+  检索/断言分离、future embedding/OCR/temporal/sequence）、
+  docs/v0.27-search-architecture-goal.md、api-contract 增补结构化搜索 +
+  evidence 语义。
+
 ## v0.26.0-alpha — 2026-08-08（检索基准 + 控制界面产品化）
 
 公开前一轮：把「系统说的话必须是真的」从口号变成可测量的门禁，并把十个

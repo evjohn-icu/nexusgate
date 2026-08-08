@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,10 +40,23 @@ type goldenShotSpec struct {
 	tags, objects, actions, mood []string
 }
 
+// goldenTranscriptWord is one aligned ASR word, seeded through the real
+// SaveTranscript + SaveAlignment write path.
+type goldenTranscriptWord struct {
+	startMS, endMS int64
+	text           string
+	confidence     float64
+}
+
 type goldenAssetSpec struct {
 	id       string
 	analysis domain.StructuredAnalysis
 	shots    []goldenShotSpec
+	// transcriptWords seeds a transcript + alignment run so the v2 transcript
+	// channel and evidence source have real data to read.
+	transcriptWords []goldenTranscriptWord
+	// session puts the asset in a shoot session (diversity testing).
+	session string
 }
 
 type goldenQuerySpec struct {
@@ -244,6 +258,31 @@ func seedGoldenCorpus(t *testing.T) (*Repository, map[string]string) {
 		}
 		if err := repo.CommitAnalysisWithShots(ctx, asset.id, runID, "asset-analysis/v2", asset.analysis, shots); err != nil {
 			t.Fatal(err)
+		}
+		if len(asset.transcriptWords) > 0 {
+			words := make([]domain.AlignmentWord, 0, len(asset.transcriptWords))
+			joined := ""
+			for _, w := range asset.transcriptWords {
+				confidence := w.confidence
+				words = append(words, domain.AlignmentWord{StartMS: w.startMS, EndMS: w.endMS, Text: w.text, Confidence: &confidence})
+				joined += w.text + " "
+			}
+			if err := repo.SaveTranscript(ctx, asset.id, "fixture", "fixture-model", "golden-transcript-"+asset.id, domain.Transcript{Language: "zh", Text: strings.TrimSpace(joined)}); err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.SaveAlignment(ctx, asset.id, "fixture", "fixture-model", "golden-align-"+asset.id, "{}", domain.AlignmentResult{Words: words}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if asset.session != "" {
+			startsAt := time.Now().UTC()
+			session := domain.ShootSession{
+				ID: asset.session, Title: asset.session, State: "manual",
+				AssetIDs: []string{asset.id}, StartsAt: &startsAt,
+			}
+			if err := repo.SaveShootSession(ctx, session); err != nil {
+				t.Fatal(err)
+			}
 		}
 		committed, err := repo.ListAssetShots(ctx, asset.id)
 		if err != nil {

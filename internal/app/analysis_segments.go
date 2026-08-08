@@ -120,7 +120,15 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 	if err := p.repo.StageModelRun(ctx, runID, raw, string(parsed)); err != nil {
 		return err
 	}
-	return p.repo.CommitAnalysisWithShots(ctx, j.AssetID, runID, "asset-analysis/v2", a, shots)
+	if err := p.repo.CommitAnalysisWithShots(ctx, j.AssetID, runID, "asset-analysis/v2", a, shots); err != nil {
+		return err
+	}
+	// The shots are canonical now; the embedding layer (if configured) gets
+	// its incremental rebuild. Synchronous on purpose — the pipeline's
+	// "process exited means no call in flight" invariant. Errors are the
+	// hook's problem, never this job's.
+	p.afterShotsCommitted(ctx, j.AssetID)
+	return nil
 }
 
 // analyzeVideo runs the video model over an asset's proxy and returns one
