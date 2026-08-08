@@ -114,9 +114,26 @@ func semanticTokens(text string) []string {
 			output = append(output, token)
 		}
 	}
+	// Alias words are matched by whole word, not substring: "car" must not
+	// match "carefree", "careful" or "carpet" (a live retrieval finding — the
+	// golden corpus's first pass missed it because no fixture carried such a
+	// word). CJK alias words stay substring-based: Chinese text has no word
+	// boundaries, and "车" inside "红色轿车" is the semantic bridge.
+	asciiTokens := map[string]bool{}
+	for _, field := range strings.FieldsFunc(text, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	}) {
+		asciiTokens[field] = true
+	}
 	for canonical, words := range aliases {
 		for _, word := range words {
-			if strings.Contains(text, word) {
+			matched := false
+			if hasCJK(word) {
+				matched = strings.Contains(text, word)
+			} else {
+				matched = asciiTokens[word]
+			}
+			if matched {
 				appendToken(canonical)
 				break
 			}
@@ -145,6 +162,18 @@ func containsAlias(aliases map[string][]string, value string) bool {
 			if value == word {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// hasCJK reports whether the string carries CJK runes. Alias words with CJK
+// runes are matched as substrings (Chinese text has no spaces); everything
+// else is matched as a whole token.
+func hasCJK(s string) bool {
+	for _, r := range s {
+		if r >= 0x2E80 {
+			return true
 		}
 	}
 	return false

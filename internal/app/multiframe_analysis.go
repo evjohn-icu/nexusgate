@@ -27,10 +27,10 @@ type multiframeRoute struct {
 }
 
 // multiframeRouteOf resolves the route from the pipeline's provider. The
-// Router exposes the two selectors; a bare provider (the channel runtime's
-// wrapper, say) yields nil, which keeps channel-managed video on the plain
-// video path — a multiframe protocol on a channel surfaces a clear per-call
-// error from the adapter instead of being silently rerouted.
+// Router exposes the two selectors; a bare provider yields nil, which keeps
+// non-multiframe deployments on the plain video path. Production wiring hands
+// the pipeline a pipelineVideo bridge (channel wrapper + legacy router), so
+// this resolves whenever the legacy router carries a multiframe member.
 func (p *Pipeline) multiframeRouteOf() *multiframeRoute {
 	router, ok := p.videoProvider.(interface {
 		MultiframeAnalyzer() videoproviders.MultiframeShotAnalyzer

@@ -25,6 +25,7 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/media"
 	"github.com/evjohn-icu/timingdex/internal/mount"
 	"github.com/evjohn-icu/timingdex/internal/providers"
+	videoproviders "github.com/evjohn-icu/timingdex/internal/providers/video"
 	"github.com/evjohn-icu/timingdex/internal/remote"
 	sqlite "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 	"github.com/evjohn-icu/timingdex/internal/repurpose"
@@ -274,9 +275,16 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 		return nil, fmt.Errorf("initialize Hub provider secret store: %w", err)
 	}
 	channelRuntime := newProviderChannelRuntime(repo, cfg, secrets, asr, fallback, videoProvider, tagCurator, embedder, planner)
+	// The pipeline sees the channel wrapper with the legacy router's
+	// multiframe surface lifted on top (see pipelineVideo): channel-managed
+	// video keeps routing, and the multiframe orchestration — which is
+	// legacy-config-only by design — actually runs in production instead of
+	// falling through to the plain path.
+	videoRouter, _ := videoProvider.(*videoproviders.Router)
+	pipelineVideoProvider := &pipelineVideo{channel: channelRuntime.video().(*channelVideo), router: videoRouter}
 	service := &Service{
 		repo: repo, cfg: cfg, scanner: ingest.NewScanner(repo),
-		pipeline: NewPipeline(repo, cfg.CacheDir, channelRuntime.asr(), channelRuntime.asrFallback(), channelRuntime.video(), alignment, shotDetector, plan, sourceStager, time.Duration(cfg.Pipeline.ProviderRouteDeferralMinutes)*time.Minute),
+		pipeline: NewPipeline(repo, cfg.CacheDir, channelRuntime.asr(), channelRuntime.asrFallback(), pipelineVideoProvider, alignment, shotDetector, plan, sourceStager, time.Duration(cfg.Pipeline.ProviderRouteDeferralMinutes)*time.Minute),
 		curator:  channelRuntime.curator(), embedder: channelRuntime.embedder(), planner: channelRuntime.planner(),
 		hardware: hardware, adminToken: adminToken, agentToken: agentToken, secrets: secrets,
 		channelRuntime: channelRuntime,

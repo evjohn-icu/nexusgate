@@ -297,6 +297,19 @@ func goldenCorpus() []goldenAssetSpec {
 				{startMS: 10_000, endMS: 20_000, description: "children sledding on the hill"},
 			},
 		},
+		// Case 11: alias words must match whole words, not substrings. The
+		// heuristic's traffic alias contains "car", and substring matching
+		// made "carefree" (and "carpet", "careful") match a "car" query — a
+		// search for a vehicle returning shots with no vehicle evidence. The
+		// query below is a hard gate across every weight set.
+		{
+			id:       "asset-carefree-beach",
+			analysis: domain.StructuredAnalysis{Summary: "summer holiday"},
+			shots: []goldenShotSpec{
+				{startMS: 0, endMS: 10_000, description: "carefree people relaxing under a carpet of clouds", mood: []string{"carefree"}},
+				{startMS: 10_000, endMS: 20_000, description: "people carrying picnic baskets to the shore", tags: []string{"summer"}},
+			},
+		},
 	}
 	corpus = append(corpus, goldenDistractors()...)
 	return corpus
@@ -416,6 +429,13 @@ func goldenQueries() []goldenQuerySpec {
 		{q: "empty counter", relevant: []string{"asset-cafe-coffee:1"}, comment: "the empty shot is evidence on its own"},
 		{q: "snow rooftops", relevant: []string{"asset-snow-town:0"}, comment: "snow shot"},
 		{q: "sledding hill", relevant: []string{"asset-snow-town:1"}, comment: "sledding shot"},
+
+		// Case 11: substring alias false positives. "carefree" contains
+		// "car", "carpet" contains "car" — neither may surface for a vehicle
+		// query, under any weight set.
+		{q: "car", relevant: []string{"asset-car-second-half:1"}, notRelevant: []string{"asset-carefree-beach:0", "asset-carefree-beach:1"}, comment: "substring 'car' must not match carefree/carpet"},
+		{q: "beach picnic", relevant: []string{"asset-carefree-beach:1"}, comment: "the beach shot itself is retrievable"},
+		{q: "carefree", relevant: []string{"asset-carefree-beach:0"}, notRelevant: []string{"asset-carefree-beach:1"}, comment: "mood word stays retrievable"},
 		{q: "雨中", relevant: []string{"asset-city-night:1"}, comment: "CN bigram rain scene"},
 		{q: "霓虹灯", relevant: []string{"asset-city-night:0"}, comment: "CN bigram neon shot"},
 

@@ -45,6 +45,17 @@
   - Tag Curator 收敛进统一深色主题。
 - **检索正确性附带**：hybrid shot 结果与 jobs 列表带资产文件名（join
   主 location，无需二次请求）；评估基准、eval CLI、corpusgen 均离线。
+- **生产 wiring 修复（P0，实测暴露）**：Pipeline 此前拿到的是 channel
+  runtime 的裸包装器，不暴露 multiframe 选择器——multiframe 编排在生产
+  路径上从未运行，纯帧 provider 报 "does not support video preparation"
+  而非进入 detector 模式（只有直连 Router 的测试是绿的）。新增
+  `pipelineVideo` 桥（channel 包装 + legacy router 的 multiframe 表面），
+  `TestServiceWiring*` 钉死装配路径。
+- **alias 子串假阳性修复（P0，实测暴露）**：`semanticTokens` 的 alias
+  匹配用 `strings.Contains`——"carefree" 含 "car"、"train" 含 "rain"，
+  搜 "car" 会命中无车辆证据的镜头。ASCII alias 词改为整词匹配（CJK
+  词保持子串——中文无词边界）。golden 语料新增陷阱 asset +
+  硬门禁，discovery 单测钉死。
 
 **Migration**：无 schema 迁移。旧素材无需 reanalyze（检索打分变化是
 检索期的，不触碰已提交的 shot 行）。语义分 token-overlap 门禁在检索期
