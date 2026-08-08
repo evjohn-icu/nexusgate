@@ -60,3 +60,7 @@ coverage.out
 # Server logs from a hand-run `timingdex serve` during testing.
 *.log
 *.tar.gz
+
+# Stray build artifacts from local packaging. The MCP server builds from
+# cmd/timingdex-mcp; a committed binary only bloats history.
+timingdex-mcp

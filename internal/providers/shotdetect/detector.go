@@ -58,6 +58,24 @@ const (
 // and returns the shots that may be analysed. The rules below are
 // deterministic verdicts on bytes Timingdex already holds, so a violation is
 // permanent at the call site; the caller marks it so.
+//
+// A shot shorter than MinShotLengthMS carries no information a model call can
+// pay for — a transition flash becomes an extra canonical shot, an extra VLM
+// inference, a caption/object pollution vector and a retrieval false positive
+// — so short shots are merged, not stretched. Stretching does not even work
+// for adjacent boundaries (a 150 ms shot between 1000 and 1150 ms has no
+// stretch room). The merge rule is deterministic and documented:
+//
+//   - the only shot of an asset: extends to cover the whole asset [0, duration];
+//   - the first shot: merges into the next (the next shot's start becomes the
+//     short shot's start, so coverage is preserved);
+//   - any other shot: merges into the previous (the previous shot's end
+//     becomes the short shot's end).
+//
+// Each merge removes one shot and inherits only already-validated boundaries,
+// so monotonicity, non-overlap, start >= 0, end <= duration and full coverage
+// are preserved by construction, no new gaps are introduced, and the shot
+// count never grows. The loop terminates: every iteration deletes a shot.
 func Normalize(bounds []ShotBound, durationMS int64) ([]ShotBound, error) {
 	if len(bounds) > MaxShots {
 		return nil, fmt.Errorf("shot count %d exceeds limit %d", len(bounds), MaxShots)
@@ -73,30 +91,36 @@ func Normalize(bounds []ShotBound, durationMS int64) ([]ShotBound, error) {
 			return nil, fmt.Errorf("shot at ordinal %d ends after asset duration: %d > %d", i, b.EndMS, durationMS)
 		}
 	}
-	// Short shots are stretched to the minimum length, capped by the next
-	// shot's start (or the asset duration) so stretching never creates an
-	// overlap or an out-of-bounds end.
 	out := make([]ShotBound, len(bounds))
-	for i, b := range bounds {
-		out[i] = b
-		if b.EndMS-b.StartMS >= MinShotLengthMS {
-			continue
+	copy(out, bounds)
+	for {
+		short := -1
+		for i, b := range out {
+			if b.EndMS-b.StartMS < MinShotLengthMS {
+				short = i
+				break
+			}
 		}
-		cap := durationMS
-		if durationMS <= 0 {
-			cap = b.EndMS + MinShotLengthMS
+		if short < 0 {
+			return out, nil
 		}
-		if i+1 < len(bounds) && bounds[i+1].StartMS < cap {
-			cap = bounds[i+1].StartMS
+		if len(out) == 1 {
+			// A single short shot is the whole asset's observation: extend
+			// it to full coverage rather than keep a canonical shot that
+			// does not represent the asset. Without a known duration there
+			// is nothing to extend to, so the shot is kept as-is.
+			if durationMS > 0 {
+				out[0] = ShotBound{StartMS: 0, EndMS: durationMS}
+			}
+			return out, nil
 		}
-		if end := b.StartMS + MinShotLengthMS; end < cap {
-			cap = end
+		if short == 0 {
+			out[1].StartMS = out[0].StartMS
+		} else {
+			out[short-1].EndMS = out[short].EndMS
 		}
-		if cap > b.EndMS {
-			out[i].EndMS = cap
-		}
+		out = append(out[:short], out[short+1:]...)
 	}
-	return out, nil
 }
 
 // ExternalCommand delegates shot detection to an external binary via the

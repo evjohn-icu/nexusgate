@@ -13,6 +13,19 @@ Import → Understand → Search → Select
 `Re:Footage` is the product name; `timingdex` remains the binary and the
 configuration namespace, so existing libraries and Workers keep working.
 
+## Project status
+
+**Alpha / technical preview.** The core ingestion, per-shot analysis, search,
+the local multimodal path, and the Hub/Worker architecture are functional and
+regression-tested, but APIs, database migrations and model contracts may still
+change. There is no stable release yet, no API stability promise, and no
+supported-version table.
+
+**Do not expose the Hub directly to the public Internet.** It is built for a
+trusted LAN (or a private overlay like Tailscale): library reads are gated by
+source network, administrative routes by a token, and the security model
+assumes a single trusted machine.
+
 ## What it is, and what it is not
 
 It is a **video asset intelligence layer**. It builds an index over footage you
@@ -35,13 +48,42 @@ Two more deliberate non-claims:
 
 ## How it works
 
+**Timingdex owns the timeline. VLMs describe the frames.**
+
 A scan enqueues jobs; each stage enqueues its successor, so the whole chain is
 idempotent and resumable.
+
+```text
+Footage / NAS
+     ↓
+probe + proxy          (ffprobe + read-only derive: thumbnail, 720p proxy)
+     ↓
+deterministic shot detection
+     ↓
+2 / 4 / 6 representative frames + timestamped transcript
+     ↓
+Local VLM / Cloud VLM  (Gemini, Qwen, Volcengine, local OpenAI-compatible)
+     ↓
+shot-level metadata
+     ↓
+SQLite FTS5 + hybrid retrieval
+     ↓
+exact source time range
+```
 
 ```text
 probe → derive → speech_gate → transcribe → [align] → analyze → index
            └────────────── (no audio) ──────────────────┘
 ```
+
+Everything is local-first: original media stays read-only, derived files live
+in a separate cache, all search state is SQLite, and **no vector database is
+currently required**. A local VLM is optional — `local_vlm` speaks the same
+OpenAI-compatible `chat/completions` surface a llama.cpp / LM Studio / vLLM /
+SGLang runtime exposes — and cloud providers plug into the same pipeline.
+Whatever answers, a shot's metadata comes only from that shot's own evidence,
+and search returns the exact `start_ms` / `end_ms` where the thing you asked
+for actually is.
 
 | Stage | What it does |
 | --- | --- |
@@ -73,7 +115,7 @@ approve.**
 
 ## Requirements
 
-- Go 1.23+
+- Go 1.25.5 (match `go.mod` — the module is the dependency truth)
 - `ffmpeg` / `ffprobe`. Any recent build runs the pipeline. The read-rate limit
   additionally needs **FFmpeg 5.1+**, since `-readrate` does not exist before
   that; on an older build that one setting is skipped with a warning instead of
@@ -81,9 +123,9 @@ approve.**
 - `exiftool` — recommended, optional. Without it, capture metadata is limited to
   what ffprobe exposes.
 
-No database server, no web framework, no frontend build step. The only direct
-dependencies are `modernc.org/sqlite` and `nhooyr.io/websocket`; everything else
-is the standard library.
+No database server, no web framework, no frontend build step. Timingdex
+intentionally keeps its dependency surface small and avoids a web framework,
+ORM and frontend build system; `go.mod` lists every direct dependency.
 
 ## Build
 
@@ -275,11 +317,63 @@ Set `providers.vision_primary` to `gemini`, `qwen_video`, `volcengine_video` or
 `none` to browse an existing library without analysing: jobs then fail visibly
 rather than being filled with a fabricated local result.
 
-Prefer `/providers` over the config file. A channel is capability-scoped, can hold
-several keys for the same provider, and gets health-aware retry, cooldown,
-concurrency limits and ordered fallback. Keys are encrypted in the Hub-only
-`provider-secrets/` directory (`0700`, files `0600`) and are never returned by any
-API, written to SQLite, or sent to a Worker's configuration.
+Prefer `/providers` over the config file for **cloud** channels. A channel is
+capability-scoped, can hold several keys for the same provider, and gets
+health-aware retry, cooldown, concurrency limits and ordered fallback. Keys
+are encrypted in the Hub-only `provider-secrets/` directory (`0700`, files
+`0600`) and are never returned by any API, written to SQLite, or sent to a
+Worker's configuration.
+
+One deliberate exception: **Local Multiframe v1 currently uses
+`providers.local_vlm` in `config.json`.** The `/providers` channel UI does not
+yet route `openai_multiframe` through the multiframe orchestration path; a
+channel with that protocol is refused with a clear message at build time
+rather than failing mid-analysis. See below.
+
+### Local multimodal analysis (Local Multiframe)
+
+Timingdex detects shot boundaries itself (ffmpeg scene filter or an external
+detector), samples 2/4/6 representative frames per shot, slices the timed
+transcript per shot, and sends *still frames* to a local OpenAI-compatible
+VLM — the endpoint never receives whole videos. This is the cheapest way to
+index a library on one machine with an 8–16 GB consumer GPU.
+
+Timingdex does **not** download models or start the VLM runtime. Point it at
+an OpenAI-compatible multimodal HTTP endpoint:
+
+```json
+{
+  "providers": {
+    "vision_primary": "local_vlm",
+    "local_vlm": {
+      "enabled": true,
+      "protocol": "openai_multiframe",
+      "base_url": "http://127.0.0.1:8080/v1",
+      "path": "chat/completions",
+      "model": "Qwen3-VL-4B-Instruct"
+    },
+    "shot_detection": {
+      "enabled": true,
+      "mode": "ffmpeg_scene",
+      "scene_threshold": 0.3
+    }
+  }
+}
+```
+
+```bash
+export TIMINGDEX_DATA_DIR="$PWD/.timingdex-dev"
+./timingdex root add /path/to/footage
+./timingdex root scan <root-id>
+./timingdex pipeline run      # leases and runs jobs until the queue is idle
+./timingdex serve
+```
+
+Any OpenAI-compatible multimodal runtime (llama.cpp, LM Studio, vLLM, SGLang,
+Ollama) satisfies the contract; the model only has to describe still frames
+and return the shot-metadata schema. See
+[docs/v0.25.1-multiframe-local-vlm.md](docs/v0.25.1-multiframe-local-vlm.md)
+for the sampling rules and honest boundaries of the v1 path.
 
 ### Relay and reverse-proxy endpoints
 
@@ -693,6 +787,12 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the dependency rule, the local test
 gate and the boundaries a change must not cross. Report vulnerabilities
 privately — [SECURITY.md](SECURITY.md).
 
+## Screenshots
+
+The UI is a work in progress; screenshots will land in `docs/images/` as the
+product stabilizes. Planned slots: the library with the shot semantic
+timeline, shot-first search results, and the shot preview drawer.
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE). Third-party
@@ -704,7 +804,9 @@ Copyright 2026 ev
 ```
 
 Apache-2.0 was chosen over MIT for its explicit patent grant, which matters for a
-tool that may be used commercially. The two direct dependencies keep their own
-licences: `modernc.org/sqlite` (BSD-3-Clause) and `nhooyr.io/websocket` (ISC).
-`ffmpeg`, `ffprobe` and `exiftool` are external programs Timingdex invokes, not
-bundled code — their licences are their own.
+tool that may be used commercially. The direct dependencies keep their own
+licences — see `THIRD-PARTY-LICENSES` for the full list (`modernc.org/sqlite`
+BSD-3-Clause, `github.com/coder/websocket` ISC, `github.com/mark3labs/mcp-go`
+MIT, `golang.org/x/crypto` / `golang.org/x/net` BSD-3-Clause, and their
+transitive modules). `ffmpeg`, `ffprobe` and `exiftool` are external programs
+Timingdex invokes, not bundled code — their licences are their own.

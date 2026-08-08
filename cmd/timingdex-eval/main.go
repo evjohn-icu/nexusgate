@@ -67,43 +67,55 @@ Corpus layout:
 `)
 }
 
-func parseFlags(args []string, names ...string) (*flag.FlagSet, error) {
-	fs := flag.NewFlagSet("timingdex-eval", flag.ExitOnError)
-	corpus := fs.String("corpus", "", "corpus directory (clips/ + ground_truth.json)")
-	dataDir := fs.String("data-dir", "", "evaluation data directory")
-	label := fs.String("label", "", "run label")
-	labels := fs.String("labels", "", "comma-separated run labels")
+func parseRunArgs(args []string) (corpus, dataDir, label string, err error) {
+	fs := flag.NewFlagSet("timingdex-eval run", flag.ContinueOnError)
+	corpusFlag := fs.String("corpus", "", "corpus directory (clips/ + ground_truth.json)")
+	dataDirFlag := fs.String("data-dir", "", "evaluation data directory")
+	labelFlag := fs.String("label", "", "run label")
 	if err := fs.Parse(args); err != nil {
-		return nil, err
+		return "", "", "", err
 	}
-	for i, name := range names {
-		value := *corpus
-		switch i {
-		case 1:
-			value = *dataDir
-		case 2:
-			value = *label
-		case 3:
-			value = *labels
-		}
-		if value == "" {
-			fs.Usage()
-			return nil, fmt.Errorf("%s is required", name)
-		}
+	if *corpusFlag == "" {
+		return "", "", "", fmt.Errorf("--corpus is required")
 	}
-	return fs, nil
+	if *dataDirFlag == "" {
+		return "", "", "", fmt.Errorf("--data-dir is required")
+	}
+	if *labelFlag == "" {
+		return "", "", "", fmt.Errorf("--label is required")
+	}
+	return *corpusFlag, *dataDirFlag, *labelFlag, nil
+}
+
+func parseScoreArgs(args []string) (corpus, dataDir, labels string, err error) {
+	fs := flag.NewFlagSet("timingdex-eval score", flag.ContinueOnError)
+	corpusFlag := fs.String("corpus", "", "corpus directory (clips/ + ground_truth.json)")
+	dataDirFlag := fs.String("data-dir", "", "evaluation data directory")
+	labelsFlag := fs.String("labels", "", "comma-separated run labels")
+	if err := fs.Parse(args); err != nil {
+		return "", "", "", err
+	}
+	if *corpusFlag == "" {
+		return "", "", "", fmt.Errorf("--corpus is required")
+	}
+	if *dataDirFlag == "" {
+		return "", "", "", fmt.Errorf("--data-dir is required")
+	}
+	if *labelsFlag == "" {
+		return "", "", "", fmt.Errorf("--labels is required")
+	}
+	return *corpusFlag, *dataDirFlag, *labelsFlag, nil
 }
 
 func runCmd(ctx context.Context, args []string) error {
-	fs, err := parseFlags(args, "--corpus", "--data-dir", "--label")
+	corpus, dataDir, label, err := parseRunArgs(args)
 	if err != nil {
 		return err
 	}
-	corpus, err := eval.LoadCorpus(fs.Lookup("corpus").Value.String())
+	loaded, err := eval.LoadCorpus(corpus)
 	if err != nil {
 		return err
 	}
-	dataDir := fs.Lookup("data-dir").Value.String()
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return err
 	}
@@ -116,7 +128,7 @@ func runCmd(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config from %s: %w", dataDir, err)
 	}
-	report, err := eval.Run(ctx, cfg, corpus, dataDir, fs.Lookup("label").Value.String())
+	report, err := eval.Run(ctx, cfg, loaded, dataDir, label)
 	if err != nil {
 		return err
 	}
@@ -133,23 +145,21 @@ func runCmd(ctx context.Context, args []string) error {
 }
 
 func scoreCmd(ctx context.Context, args []string) error {
-	fs, err := parseFlags(args, "--corpus", "--data-dir", "--labels")
+	corpus, dataDir, labels, err := parseScoreArgs(args)
 	if err != nil {
 		return err
 	}
-	corpus, err := eval.LoadCorpus(fs.Lookup("corpus").Value.String())
+	loaded, err := eval.LoadCorpus(corpus)
 	if err != nil {
 		return err
 	}
-	dataDir := fs.Lookup("data-dir").Value.String()
-	labels := strings.Split(fs.Lookup("labels").Value.String(), ",")
 	scores := make([]*eval.RunScore, 0, len(labels))
-	for _, label := range labels {
+	for _, label := range strings.Split(labels, ",") {
 		label = strings.TrimSpace(label)
 		if label == "" {
 			continue
 		}
-		score, err := eval.Score(ctx, dataDir, label, corpus)
+		score, err := eval.Score(ctx, dataDir, label, loaded)
 		if err != nil {
 			return fmt.Errorf("score %s: %w", label, err)
 		}

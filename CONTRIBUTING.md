@@ -26,9 +26,10 @@ Security bugs do **not** belong in a public issue or pull request. See
 
 ## The dependency rule
 
-The binary is standard library plus exactly two direct dependencies:
-`modernc.org/sqlite` and `nhooyr.io/websocket`. No web framework, no ORM, no
-router, no logging library, no frontend build step, no assertion library.
+The binary is the Go standard library plus a deliberately small set of direct
+dependencies — no web framework, no ORM, no router, no logging library, no
+frontend build step, no assertion library. `go.mod` is the dependency truth:
+do not document a dependency contract anywhere else, because it will drift.
 
 **Adding a dependency is a discussion, not a PR detail.** Open an issue that
 says what it buys, what it costs at build and audit time, and why the standard

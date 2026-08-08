@@ -229,6 +229,26 @@ func TestSliceTranscriptWithholdsUntimedTranscriptFromEveryWindow(t *testing.T) 
 	}
 }
 
+// A transcript with a literally empty segment slice is untimed: with no
+// segment spanning real media time, the full text has no place on the
+// timeline and must not be copied into any window. This is the nil-segments
+// shape the domain Timed() test covers; this is its window-slicing side.
+func TestSliceTranscriptWithholdsEmptySegmentSlice(t *testing.T) {
+	transcript := &domain.Transcript{
+		Language: "zh",
+		Text:     "整段视频的完整语音内容",
+		Segments: []domain.TranscriptSegment{},
+	}
+	for _, window := range []media.AnalysisWindow{
+		{Index: 0, StartMS: 0, EndMS: 300_000},
+		{Index: 1, StartMS: 295_000, EndMS: 600_000},
+	} {
+		if got := sliceTranscript(transcript, window); got != nil {
+			t.Fatalf("window %d-%d received a segmentless transcript: %+v", window.StartMS, window.EndMS, got)
+		}
+	}
+}
+
 // Case C: a window that ends before a segment begins must not receive its
 // text, whether the transcript is timed by ASR segments or by alignment
 // words. 310s of speech belongs to the 300-600s window, never to 0-300s.

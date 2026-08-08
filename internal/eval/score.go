@@ -13,6 +13,10 @@ import (
 
 // RunScore is the retrieval outcome of one run: Precision@5/@10, Recall@10
 // and the false-positive count, plus the throughput numbers from its report.
+// SemanticFPs/LexicalFPs attribute false positives to the signal that would
+// have surfaced them on its own: the "semantic false-positive assertion"
+// measurement — a search claiming a shot has evidence it lacks, carried by
+// the heuristic vector side.
 type RunScore struct {
 	Label           string        `json:"label"`
 	Provider        string        `json:"provider"`
@@ -21,6 +25,8 @@ type RunScore struct {
 	Precision10     float64       `json:"precision_10"`
 	Recall10        float64       `json:"recall_10"`
 	FalsePositives  int           `json:"false_positives"`
+	SemanticFPs     int           `json:"semantic_false_positives"`
+	LexicalFPs      int           `json:"lexical_false_positives"`
 	RelevantInTop10 int           `json:"relevant_in_top_10"`
 	TotalQueries    int           `json:"total_queries"`
 	MeanRTFactor    float64       `json:"mean_real_time_factor"`
@@ -35,6 +41,8 @@ type QueryDetail struct {
 	HitRelevant    int      `json:"hit_relevant"`
 	TotalRelevant  int      `json:"total_relevant"`
 	FalsePositives int      `json:"false_positives"`
+	SemanticFPs    int      `json:"semantic_false_positives"`
+	LexicalFPs     int      `json:"lexical_false_positives"`
 	Missed         []string `json:"missed,omitempty"`
 	FPs            []string `json:"false_positives_ids,omitempty"`
 }
@@ -101,10 +109,21 @@ func Score(ctx context.Context, dataDir, label string, corpus *Corpus) (*RunScor
 		for _, r := range results {
 			if relevant[r.ID] {
 				hitCount++
-			} else {
-				score.FalsePositives++
-				detail.FalsePositives++
-				detail.FPs = append(detail.FPs, r.ID)
+				continue
+			}
+			score.FalsePositives++
+			detail.FalsePositives++
+			detail.FPs = append(detail.FPs, r.ID)
+			// Attribute the false positive to the signal that would have
+			// surfaced it alone: rerun the pure signals and check top-10
+			// membership. Same convention as the retrieval golden set's
+			// FP-by-signal breakdown (see retrieval_golden_test.go).
+			if inPureSignal(ctx, repo, r.ID, query.Query, 1, 0) {
+				score.SemanticFPs++
+				detail.SemanticFPs++
+			} else if inPureSignal(ctx, repo, r.ID, query.Query, 0, 1) {
+				score.LexicalFPs++
+				detail.LexicalFPs++
 			}
 		}
 		detail.HitRelevant = hitCount
@@ -121,6 +140,23 @@ func Score(ctx context.Context, dataDir, label string, corpus *Corpus) (*RunScor
 	score.Precision10 /= n
 	score.Recall10 /= n
 	return score, nil
+}
+
+// inPureSignal reports whether shotID appears in the top-10 of a search
+// scored by a single signal only (semantic = weights{1,0}, lexical = {0,1}).
+// A false positive that neither pure signal would have ranked is blend-edge:
+// only the fused score surfaced it.
+func inPureSignal(ctx context.Context, repo *sqlite.Repository, shotID, q string, semantic, lexical float64) bool {
+	pure, err := repo.HybridSearchShotsWithWeights(ctx, q, 10, domain.HybridSearchWeights{Semantic: semantic, Lexical: lexical})
+	if err != nil {
+		return false
+	}
+	for _, hit := range pure {
+		if hit.ID == shotID {
+			return true
+		}
+	}
+	return false
 }
 
 // findExpectedShot locates the canonical shot that matches a ground-truth

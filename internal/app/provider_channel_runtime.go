@@ -51,6 +51,17 @@ var ErrProviderChannelNotConfigured = domain.Permanent(errors.New("provider chan
 // sentences, which is how the substring list acquired dead entries.
 var errProviderChannelSecretMissing = domain.Permanent(errors.New("provider channel secret is not configured"))
 
+// errProviderChannelMultiframeUnsupported is the fail-fast for a video
+// channel configured with the openai_multiframe protocol. Channel routing
+// has no multiframe orchestration yet: channelVideo exposes only the plain
+// video path, so a multiframe provider built here would be called with zero
+// sampled frames and fail downstream as "multiframe summary call requires at
+// least one frame" — the operator would be debugging an engine error instead
+// of a configuration boundary. Naming the boundary at construction time beats
+// running into it: a channel protocol is metadata the Hub already holds, so
+// this verdict is permanent, like the other channel configuration failures.
+var errProviderChannelMultiframeUnsupported = domain.Permanent(errors.New("openai_multiframe is currently supported through providers.local_vlm config only; provider-channel routing support is not available yet"))
+
 // providerChannelRuntime is the Hub-side bridge from persisted channel
 // metadata to the existing provider implementations. It deliberately stores
 // no API-key value. A key is resolved only inside an Executor operation and is
@@ -1031,6 +1042,12 @@ func (r *providerChannelRuntime) videoProvider(invocation providerchannels.Invoc
 }
 
 func (r *providerChannelRuntime) buildVideoProvider(invocation providerchannels.Invocation, key string) (videoproviders.VideoUnderstandingProvider, error) {
+	// Fail fast on the protocol that channel routing cannot orchestrate yet
+	// (see errProviderChannelMultiframeUnsupported): building the provider
+	// here would succeed and then die on the first frame-less call.
+	if invocation.Protocol == providers.ProtocolOpenAIMultiframe {
+		return nil, errProviderChannelMultiframeUnsupported
+	}
 	providersConfig := r.cfg.Providers
 	clearProviderSecrets(&providersConfig)
 	name := strings.TrimSpace(invocation.ProviderName)

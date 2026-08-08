@@ -1,5 +1,91 @@
 # Changelog
 
+## v0.26.0-alpha — 2026-08-08（检索基准 + 控制界面产品化）
+
+公开前一轮：把「系统说的话必须是真的」从口号变成可测量的门禁，并把十个
+独立后台页面收敛成同一个 Re:Footage 控制界面。
+
+- **检索 golden set 扩到全量语料**：8 asset / 12 query → **40 asset / 62
+  query**（`internal/repository/sqlite/retrieval_golden_corpus_test.go`），
+  10 个 adversarial 家族全覆盖（后半段对象、全局标签污染、中英同义、
+  矛盾全局、景别区分、窗口边界钉时间、overlap 去重、定时 speech、
+  纯否定断言、干扰语料）。权重扫描加入 **RRF**（k=60）。指标：
+  lexical-only R@10=0.871 vs 语义 blend 0.984，**全 blend FP=0**；
+  默认 0.70/0.30 维持不变。详见 docs/retrieval-benchmark-v026-alpha.md。
+- **修掉被测出来的 semantic false-positive assertion**：64 维 FNV 哈希
+  向量在 query 与 shot **零共享 token** 时仍给出 0.33 余弦（维度碰撞
+  噪声），使无关 shot 进入所有含语义权重的 top-10——正是「搜汽车命中
+  没有汽车的时间段」这类错误。修复：无共享语义 token 时语义分强制为 0
+  （alias-canonical token 算共享）。这是打分契约，不是权重微调。
+- **eval 工具修复**：`timingdex-eval score` 的位置索引 flag 校验 bug
+  （传 `--labels` 却检查 `label`，导致正确调用报 "--labels is required"）
+  重写为显式校验 + 回归测试；`score` 输出新增按信号归因的
+  semantic/lexical false positives。新增 `cmd/timingdex-corpusgen`
+  生成可复现的离线 eval 语料（lavfi 合成 clips + ground_truth.json）。
+- **shot 检测真正 merge**：`Normalize` 从 stretch 改为 merge（stretch 在
+  相邻边界下无空间，150ms 闪帧此前会残留为 canonical shot 并多付一次
+  VLM 调用）。规则：唯一短 shot 扩至全资产；首个并入后一个；其余并入
+  前一个；连续短 shot 全溶解。9 个回归测试（含 ffmpeg adjacent 形态）。
+- **channel fail-fast**：`/providers` 通道配 `openai_multiframe` 协议
+  在构建期即拒绝并指名 remedy（此前会运行到 "multiframe summary call
+  requires at least one frame" 才失败）。
+- **UI 产品化**（无框架、无 npm、单二进制不变）：
+  - 统一 App Shell：十个页面共用同一 header/导航/配色/管理 Token 输入
+    （仍 memory-only）+ **全局状态条**（Hub / Pipeline / Providers /
+    Workers 四格，点击直达对应页）；
+  - **shot-first 搜索**：搜索返回镜头级结果卡片（文件名、start–end、
+    缩略图、description、tags/objects/actions/mood、匹配度），不再是
+    整素材卡片；
+  - **Shot 预览抽屉**：点击时间轴镜头或结果卡片 → 抽屉内 proxy 自动
+    seek 到 start_ms 并播放该区间，不离开当前查询/筛选/滚动位置；
+  - 筛选收敛：高频条件默认显示，语义 facets 收进「高级筛选」折叠
+    （素材级标注保留）；
+  - /progress 操作台化：新增「正在处理」hero（文件名 + 阶段 +
+    尝试次数），危险操作按钮层级区分；
+  - Tag Curator 收敛进统一深色主题。
+- **检索正确性附带**：hybrid shot 结果与 jobs 列表带资产文件名（join
+  主 location，无需二次请求）；评估基准、eval CLI、corpusgen 均离线。
+
+**Migration**：无 schema 迁移。旧素材无需 reanalyze（检索打分变化是
+检索期的，不触碰已提交的 shot 行）。语义分 token-overlap 门禁在检索期
+生效，已提交向量无需重建。
+
+## v0.25.1 — 2026-08-08（Local Multiframe Analysis v1）
+
+Roadmap 第一阶段：把 shot 时间轴从 LLM 手里拿出来。Timingdex 负责检测与采样，
+VLM 只负责描述画面。目标部署：插上一张 8–16GB 消费级 GPU 就能在后台慢慢索引。
+
+- **`openai_multiframe` 协议**：`local_vlm.protocol` 支持
+  `openai_multiframe`（llama.cpp / LM Studio / vLLM / SGLang 的 OpenAI 兼容
+  chat/completions 表面）。端点永不接收整段视频；Timingdex 对每个 shot 采样
+  2/4/6 帧（boundary-aware 默认，10/35/65/90% 位置）、按 shot 切 transcript、
+  每 shot 一次模型调用，模型只返回纯元数据（无时间字段）。
+- **确定性 shot 检测**：`shot_detection` 配置块，两种 detector——
+  `external_command`（PySceneDetect wrapper，stdin/stdout JSON 契约，与
+  forced aligner 同款）与内置 `ffmpeg_scene`（零新依赖）。Timingdex 硬校验：
+  单调、非重叠、界内、最短 300ms、上限 2000；违规=永久失败。detector 身份
+  进入 model_run 的 request_json，换命令/阈值自动重跑分析。
+- **双模式编排**：配置了 detector 时走纯 detector 模式（detector 出边界 +
+  每资产一次 summary 调用 + 逐 shot 精修）；未配置时回退双 pass（现有 VLM
+  window analysis 出边界和资产级 analysis，multiframe 逐 shot 精修并用
+  `ReplaceAssetShots` 替换 shot 行）。两个 pass 各留一个 model_run，provenance
+  可审计；精修失败保留 pass-1 结果（降级而非丢失）。纯 multiframe 链且无
+  detector 时报永久配置错误并指名 remedy。
+- **资产级字段**：per-shot shot_size/camera_motion/quality/usable_as 聚合
+  （众数/最差/并集）折叠进资产级 analysis；audio_type/has_speech 诚实声明为
+  帧模型不可判（has_speech 由 transcript 判定，audio_type 留 summary 推断）。
+- **eval 工具**：`cmd/timingdex-eval`（内部 `internal/eval`）——真实 clips 进
+  隔离数据目录、走真实 Pipeline（probe→derive→analyze→index），`score` 用
+  产品同款 hybrid 检索 + golden 同口径指标输出 R@10/P@10/FP/RT factor/帧数
+  对比表与逐 query 明细。离线工具，不进 CI。
+- 附带修复：`GetAssetDetail` 的 analysis 从未成功反序列化（`has_speech` 以
+  0/1 数字出现在 json_object 里，Go bool 拒绝）——API 详情页的资产级分析
+  一直是 nil，现修复。
+
+使用：`timingdex-eval run --corpus ./corpus --data-dir ./eval/qwen --label
+qwen3vl-4b && timingdex-eval score --corpus ./corpus --data-dir ./eval
+--labels qwen3vl-4b,gemini-flash`。Worker 路径不在本版本范围（multiframe 是
+Hub 本地 GPU 路径；worker 继续走 proxy 的 openai_video）。
 ## v0.25.0 — 2026-08-07（shot truth / transcript timeline / retrieval correctness）
 
 GPT review 轮的 P0/P1 正确性修复，主线是"一个 shot 的 metadata 必须来自这个
@@ -1295,40 +1381,3 @@ See `docs/v0.21-unattended-and-export.md`,
 - No vector search over footage.
 - No automatic tag merge or database mutation from model output.
 - No hierarchy editor or bulk-review UI; both remain v0.6 governance work.
-
-## v0.25.1 — 2026-08-08（Local Multiframe Analysis v1）
-
-Roadmap 第一阶段：把 shot 时间轴从 LLM 手里拿出来。Timingdex 负责检测与采样，
-VLM 只负责描述画面。目标部署：插上一张 8–16GB 消费级 GPU 就能在后台慢慢索引。
-
-- **`openai_multiframe` 协议**：`local_vlm.protocol` 支持
-  `openai_multiframe`（llama.cpp / LM Studio / vLLM / SGLang 的 OpenAI 兼容
-  chat/completions 表面）。端点永不接收整段视频；Timingdex 对每个 shot 采样
-  2/4/6 帧（boundary-aware 默认，10/35/65/90% 位置）、按 shot 切 transcript、
-  每 shot 一次模型调用，模型只返回纯元数据（无时间字段）。
-- **确定性 shot 检测**：`shot_detection` 配置块，两种 detector——
-  `external_command`（PySceneDetect wrapper，stdin/stdout JSON 契约，与
-  forced aligner 同款）与内置 `ffmpeg_scene`（零新依赖）。Timingdex 硬校验：
-  单调、非重叠、界内、最短 300ms、上限 2000；违规=永久失败。detector 身份
-  进入 model_run 的 request_json，换命令/阈值自动重跑分析。
-- **双模式编排**：配置了 detector 时走纯 detector 模式（detector 出边界 +
-  每资产一次 summary 调用 + 逐 shot 精修）；未配置时回退双 pass（现有 VLM
-  window analysis 出边界和资产级 analysis，multiframe 逐 shot 精修并用
-  `ReplaceAssetShots` 替换 shot 行）。两个 pass 各留一个 model_run，provenance
-  可审计；精修失败保留 pass-1 结果（降级而非丢失）。纯 multiframe 链且无
-  detector 时报永久配置错误并指名 remedy。
-- **资产级字段**：per-shot shot_size/camera_motion/quality/usable_as 聚合
-  （众数/最差/并集）折叠进资产级 analysis；audio_type/has_speech 诚实声明为
-  帧模型不可判（has_speech 由 transcript 判定，audio_type 留 summary 推断）。
-- **eval 工具**：`cmd/timingdex-eval`（内部 `internal/eval`）——真实 clips 进
-  隔离数据目录、走真实 Pipeline（probe→derive→analyze→index），`score` 用
-  产品同款 hybrid 检索 + golden 同口径指标输出 R@10/P@10/FP/RT factor/帧数
-  对比表与逐 query 明细。离线工具，不进 CI。
-- 附带修复：`GetAssetDetail` 的 analysis 从未成功反序列化（`has_speech` 以
-  0/1 数字出现在 json_object 里，Go bool 拒绝）——API 详情页的资产级分析
-  一直是 nil，现修复。
-
-使用：`timingdex-eval run --corpus ./corpus --data-dir ./eval/qwen --label
-qwen3vl-4b && timingdex-eval score --corpus ./corpus --data-dir ./eval
---labels qwen3vl-4b,gemini-flash`。Worker 路径不在本版本范围（multiframe 是
-Hub 本地 GPU 路径；worker 继续走 proxy 的 openai_video）。

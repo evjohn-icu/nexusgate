@@ -20,7 +20,8 @@ anything that leaks a credential or bypasses one of the boundaries below.
 
 A useful report contains:
 
-- the version or commit you tested (`git rev-parse HEAD` — there are no tags yet);
+- the version or commit you tested (`git rev-parse HEAD` — alpha tags exist,
+  the latest is the best reference, but main moves fast);
 - how the Hub was reached: loopback, LAN, Docker published port, reverse proxy,
   Tailscale-style overlay;
 - whether `hub_security.trusted_read_networks` or
@@ -30,14 +31,15 @@ A useful report contains:
   line, the `jobs.last_error_message` row, the DOM node. **Redact the key
   itself**; the surrounding shape is what matters.
 
-## No security-release process yet
+## Security-release process (alpha)
 
-Nothing has been tagged. There is no released version, no supported-version
-table, no backport branch, and no advertised response or fix SLA — promising one
-before the first release would be fiction. What happens today is: reports are
-read, valid ones are fixed on `main`, and the fix is described in `CHANGELOG.md`
-in terms of the boundary it restores. When the project starts tagging releases,
-this section will be replaced with a real policy.
+The project is an alpha / technical preview. Tags exist but there is no
+supported-version table, no backport branch, and no advertised response or fix
+SLA — promising one before a stable release would be fiction. What happens
+today is: reports are read, valid ones are fixed on `main`, and the fix is
+described in `CHANGELOG.md` in terms of the boundary it restores. When the
+project reaches a stable release, this section will be replaced with a real
+policy.
 
 Reporters are credited in the advisory unless they ask not to be.
 

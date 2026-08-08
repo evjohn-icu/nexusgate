@@ -40,6 +40,9 @@ type Job struct {
 	// is never leased again regardless of how many attempts it has left, so it
 	// is reported separately from a job that simply ran out of attempts.
 	Terminal bool `json:"terminal"`
+	// Filename is the owning asset's name (primary location, basename), for
+	// operator surfaces like the progress console's "正在处理" line.
+	Filename string `json:"filename,omitempty"`
 	// DeferredReason is set while a job is parked on wall-clock time for a
 	// reason that is not the job's fault, so a queue that is deliberately quiet
 	// is not mistaken for a stuck one. RunAfter carries when it resumes. It is

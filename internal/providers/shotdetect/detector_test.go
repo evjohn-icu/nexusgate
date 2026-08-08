@@ -53,9 +53,32 @@ func TestNormalizeAcceptsValidAndAdjacent(t *testing.T) {
 	}
 }
 
-func TestNormalizeMergesShortShotsIntoNeighbor(t *testing.T) {
-	// 150 ms shot between two healthy ones is stretched to 300 ms, capped by
-	// the next shot's start.
+func TestNormalizeMergesShortShotIntoPreviousWhenAdjacent(t *testing.T) {
+	// The real ffmpeg scene-detector shape: boundaries are adjacent (next
+	// shot starts exactly where this one ends), so there is no room to
+	// stretch — the 150 ms shot must dissolve into its predecessor. This is
+	// the case the old stretch implementation got wrong: with
+	// next.StartMS == current.EndMS the stretch cap was zero and the flash
+	// survived as a canonical shot.
+	out, err := Normalize([]ShotBound{
+		{StartMS: 0, EndMS: 1000},
+		{StartMS: 1000, EndMS: 1150},
+		{StartMS: 1150, EndMS: 3000},
+	}, 3000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("expected 2 shots after merge, got %+v", out)
+	}
+	if out[0].StartMS != 0 || out[0].EndMS != 1150 || out[1].StartMS != 1150 || out[1].EndMS != 3000 {
+		t.Fatalf("got %+v, want [{0 1150} {1150 3000}]", out)
+	}
+}
+
+func TestNormalizeMergesShortShotIntoPreviousWithGap(t *testing.T) {
+	// A detector that leaves a gap between shots still merges into the
+	// previous one; the pre-existing gap is preserved, not widened.
 	out, err := Normalize([]ShotBound{
 		{StartMS: 0, EndMS: 1000},
 		{StartMS: 1000, EndMS: 1150},
@@ -64,18 +87,28 @@ func TestNormalizeMergesShortShotsIntoNeighbor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) != 3 {
-		t.Fatalf("expected 3 shots, got %+v", out)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 shots after merge, got %+v", out)
 	}
-	if out[1].EndMS != 1300 {
-		t.Errorf("short shot stretched to %dms, want 1300ms", out[1].EndMS)
-	}
-	if out[2].StartMS != 2000 {
-		t.Errorf("neighbor start moved to %dms, want 2000ms", out[2].StartMS)
+	if out[0].EndMS != 1150 || out[1].StartMS != 2000 {
+		t.Fatalf("got %+v, want [{0 1150} {2000 3000}]", out)
 	}
 }
 
-func TestNormalizeMergesShortFirstShot(t *testing.T) {
+func TestNormalizeMergesShortFirstShotIntoNext(t *testing.T) {
+	out, err := Normalize([]ShotBound{
+		{StartMS: 0, EndMS: 100},
+		{StartMS: 100, EndMS: 2000},
+	}, 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].StartMS != 0 || out[0].EndMS != 2000 {
+		t.Fatalf("got %+v, want single [{0 2000}]", out)
+	}
+}
+
+func TestNormalizeMergesShortFirstShotIntoNextWithGap(t *testing.T) {
 	out, err := Normalize([]ShotBound{
 		{StartMS: 0, EndMS: 100},
 		{StartMS: 500, EndMS: 1000},
@@ -83,18 +116,80 @@ func TestNormalizeMergesShortFirstShot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) != 2 || out[0].EndMS != 300 {
-		t.Fatalf("got %+v, want first shot stretched to 300ms", out)
+	if len(out) != 1 || out[0].StartMS != 0 || out[0].EndMS != 1000 {
+		t.Fatalf("got %+v, want single [{0 1000}]", out)
 	}
 }
 
-func TestNormalizeShortShotCappedByDuration(t *testing.T) {
+func TestNormalizeMergesShortLastShotIntoPrevious(t *testing.T) {
+	out, err := Normalize([]ShotBound{
+		{StartMS: 0, EndMS: 1900},
+		{StartMS: 1900, EndMS: 2000},
+	}, 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].StartMS != 0 || out[0].EndMS != 2000 {
+		t.Fatalf("got %+v, want single [{0 2000}]", out)
+	}
+}
+
+func TestNormalizeMergesConsecutiveShortShots(t *testing.T) {
+	// A run of sub-minimum shots must fully dissolve: no canonical shot below
+	// 300 ms may survive, and the merged span keeps full coverage.
+	out, err := Normalize([]ShotBound{
+		{StartMS: 0, EndMS: 1000},
+		{StartMS: 1000, EndMS: 1100},
+		{StartMS: 1100, EndMS: 1200},
+		{StartMS: 1200, EndMS: 3000},
+	}, 3000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("expected 2 shots, got %+v", out)
+	}
+	for _, b := range out {
+		if b.EndMS-b.StartMS < MinShotLengthMS {
+			t.Fatalf("short canonical shot survived the merge: %+v", out)
+		}
+	}
+	if out[0].EndMS != 1200 || out[1].StartMS != 1200 || out[1].EndMS != 3000 {
+		t.Fatalf("got %+v, want [{0 1200} {1200 3000}]", out)
+	}
+}
+
+func TestNormalizeConsecutiveShortShotsAtStartDissolveForward(t *testing.T) {
+	out, err := Normalize([]ShotBound{
+		{StartMS: 0, EndMS: 100},
+		{StartMS: 100, EndMS: 200},
+		{StartMS: 200, EndMS: 2000},
+	}, 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].EndMS != 2000 {
+		t.Fatalf("got %+v, want single [{0 2000}]", out)
+	}
+}
+
+func TestNormalizeSingleShortShotExtendsToFullCoverage(t *testing.T) {
 	out, err := Normalize([]ShotBound{{StartMS: 900, EndMS: 950}}, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out[0].EndMS != 1000 {
-		t.Fatalf("got %+v, want end capped at duration", out)
+	if len(out) != 1 || out[0].StartMS != 0 || out[0].EndMS != 1000 {
+		t.Fatalf("got %+v, want [{0 1000}]", out)
+	}
+}
+
+func TestNormalizeSingleShortShotWithoutDurationStaysPut(t *testing.T) {
+	out, err := Normalize([]ShotBound{{StartMS: 900, EndMS: 950}}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].StartMS != 900 || out[0].EndMS != 950 {
+		t.Fatalf("got %+v", out)
 	}
 }
 
@@ -221,6 +316,46 @@ func TestFFmpegSceneIntegration(t *testing.T) {
 		t.Fatalf("no shot boundary near the 2 s cut: %+v", shots)
 	}
 	if shots[len(shots)-1].EndMS != 4000 {
+		t.Fatalf("last shot must end at the asset duration, got %+v", shots)
+	}
+}
+
+// TestFFmpegSceneIntegrationFlashMerge is the release smoke for the merge
+// rule: scene A, a 150 ms flash (a transition frame), scene B. The detector
+// must not leave a canonical shot below MinShotLengthMS — the flash dissolves
+// into its neighbor instead of becoming an extra model call and a retrieval
+// false positive. Skipped without ffmpeg, like the hard-cut test above.
+func TestFFmpegSceneIntegrationFlashMerge(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	ctx := context.Background()
+	src := filepath.Join(t.TempDir(), "flash.mp4")
+	args := []string{
+		"-hide_banner", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=25",
+		"-f", "lavfi", "-i", "testsrc2=duration=0.15:size=320x240:rate=25",
+		"-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=25",
+		"-filter_complex", "[0:v]trim=duration=1[v0];[1:v]trim=duration=0.15[v1];[2:v]trim=duration=1[v2];[v0][v1][v2]concat=n=3:v=1",
+		"-an", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", src,
+	}
+	if raw, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput(); err != nil {
+		t.Fatalf("generate flash clip: %v: %s", err, raw)
+	}
+	raw, err := (&FFmpegScene{Threshold: 0.3}).Detect(ctx, src, 2150)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shots, err := Normalize(raw, 2150)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range shots {
+		if s.EndMS-s.StartMS < MinShotLengthMS {
+			t.Fatalf("canonical shot below %dms survived the merge: %+v (raw %+v)", MinShotLengthMS, shots, raw)
+		}
+	}
+	if shots[len(shots)-1].EndMS != 2150 {
 		t.Fatalf("last shot must end at the asset duration, got %+v", shots)
 	}
 }

@@ -24,6 +24,9 @@ type AssetShot struct {
 
 type ShotSearchResult struct {
 	AssetShot
+	// Filename is the owning asset's name, joined in by the search query so a
+	// shot result can be shown to a human without a second round trip.
+	Filename      string  `json:"filename,omitempty"`
 	Score         float64 `json:"score"`
 	LexicalScore  float64 `json:"lexical_score,omitempty"`
 	SemanticScore float64 `json:"semantic_score,omitempty"`

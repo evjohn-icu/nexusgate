@@ -32,7 +32,7 @@ button.ghost{background:transparent;border:1px solid #40577a;color:#c9d9ff;paddi
 .keyhead{display:flex;justify-content:space-between;align-items:center;margin:16px 0 8px}.keyhead b{font-size:12px;font-weight:800;letter-spacing:.1em;color:#96aeff}.memberrow{border:1px solid #2b405e;border-radius:10px;background:#0e1a2c;padding:12px;margin-bottom:10px}.rowtop{display:flex;justify-content:space-between;align-items:center;margin-bottom:9px}.rowtop b{font-size:12px;color:#cbd8f2}.addkey{margin-top:12px;padding-top:11px;border-top:1px solid #29405d}.addform{margin-top:10px}[hidden]{display:none}
 @media(max-width:760px){.layout,.formgrid{grid-template-columns:1fr}.auth{display:block}.auth button{margin-top:10px}.wrap{padding:28px 18px}}
 </style></head>
-<body><header><span class="brand">Timingdex</span><a href="/">素材库</a><a href="/setup">启动配置</a><a href="/progress">处理进度</a></header>
+<body><!--SHELL_HEADER-->
 <main class="wrap"><div class="eyebrow">MODEL CHANNELS</div><h1>能力与服务</h1>
 <p class="muted">按能力管理模型通道。同一通道可以配置多个 Key：运行时按并发最少优先轮换，某个 Key 的额度用尽或临时失败时会降级到同通道内的其他 Key。</p>
 <section class="auth"><div class="field"><label for="admin-token">Hub 管理 Token（只保留在当前页面内存）</label><input id="admin-token" type="password" autocomplete="off" placeholder="输入后加载和修改模型通道"></div><button onclick="loadChannels()">加载通道</button></section>

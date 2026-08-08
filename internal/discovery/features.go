@@ -43,6 +43,13 @@ func TokensForShot(shot domain.AssetShot) []string {
 	return semanticTokens(strings.Join(parts, " "))
 }
 
+// TokensForText is the exported form of semanticTokens: the same tokens that
+// VectorForText hashes, so a caller can ask "does this query share any token
+// with this shot" without re-deriving the tokenizer rules.
+func TokensForText(text string) []string {
+	return semanticTokens(text)
+}
+
 func VectorForText(text string) []float64 {
 	vector := make([]float64, VectorSize)
 	for _, token := range semanticTokens(text) {

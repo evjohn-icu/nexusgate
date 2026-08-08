@@ -17,19 +17,21 @@ import (
 // precision/recall table below moves, so a ranking change cannot silently
 // hurt what users actually search for.
 //
-// The adversarial cases are the review round's contract:
+// The adversarial cases are the review round's contract, now carried by the
+// full-scale corpus in retrieval_golden_corpus_test.go:
 //
-//	1. an object appears only in the second half of a video
+//	1. an object appears only in part of a video (second half, first part, tail)
 //	2. whole-asset tags must not pollute shots that never saw the object
 //	3. English/Chinese synonym search
 //	4. a shot's own description is right while the asset-global tag contradicts it
-//	5. wide/close-up shots inside one asset (asset-level facet semantics)
+//	5. wide/medium/close-up shots inside one asset must retrieve distinctly
 //	6. a window-boundary shot's committed times are exact (pinned by the
 //	   corpus input and the returned start/end assertions on that query)
 //	7. the corpus holds post-dedup canonical rows — one observation, one
 //	   shot — so retrieval over canonical data cannot return window copies
-//	   (the overlap-dedup merge itself is pinned in video_analysis/merge_test.go)
 //	8. speech belongs to a specific interval, never to the whole asset
+//	9. negative assertions: plausible queries surface nothing without evidence
+//	10. distractor assets make top-10 competition real
 
 type goldenShotSpec struct {
 	startMS, endMS               int64
@@ -58,109 +60,24 @@ type goldenTimes struct {
 	startMS, endMS int64
 }
 
-func goldenCorpus() []goldenAssetSpec {
-	return []goldenAssetSpec{
-		// Case 1 + 2: the car only exists at 20-30s. The asset-global subjects
-		// claim "car" too; shots without their own evidence must stay clean.
-		{
-			id: "asset-car-second-half",
-			analysis: domain.StructuredAnalysis{
-				Summary: "traffic intersection", Subjects: []string{"car"}, SceneTags: []string{"traffic"},
-			},
-			shots: []goldenShotSpec{
-				{startMS: 0, endMS: 10_000, description: "empty street at dawn"},
-				{startMS: 20_000, endMS: 30_000, description: "red car crossing", objects: []string{"car"}},
-			},
-		},
-		// Case 4: the shot says "person walking" while the asset-global tag
-		// describes an abandoned street. The shot's own evidence must win.
-		{
-			id: "asset-abandoned-street",
-			analysis: domain.StructuredAnalysis{
-				Summary: "abandoned street", SceneTags: []string{"abandoned", "empty_street"},
-			},
-			shots: []goldenShotSpec{
-				{startMS: 0, endMS: 10_000, description: "person walking alone", objects: []string{"person"}},
-				{startMS: 10_000, endMS: 20_000, description: "abandoned shopfront", tags: []string{"empty_street"}},
-			},
-		},
-		// Case 3: the same scene describable in either language.
-		{
-			id:       "asset-city-night",
-			analysis: domain.StructuredAnalysis{Summary: "night city streets"},
-			shots: []goldenShotSpec{
-				{startMS: 0, endMS: 20_000, description: "城市夜景霓虹灯", tags: []string{"城市", "夜景"}},
-				{startMS: 20_000, endMS: 40_000, description: "雨中的海滩", tags: []string{"beach", "rain"}, objects: []string{"ocean"}},
-			},
-		},
-		// Case 5: one asset holds wide AND close-up shots; the asset is
-		// labelled wide. asset_shot_size=wide is an asset-level filter and
-		// matches every shot of the asset — pinned, documented semantics.
-		{
-			id: "asset-mixed-shot-size",
-			analysis: domain.StructuredAnalysis{
-				Summary: "street scene", ShotSize: "wide", CameraMotion: "static",
-			},
-			shots: []goldenShotSpec{
-				{startMS: 0, endMS: 10_000, description: "wide establishing shot of the street"},
-				{startMS: 10_000, endMS: 20_000, description: "close-up of hands on a railing"},
-			},
-		},
-		// Case 6: a windowed analysis places a shot exactly on the 8-minute
-		// window cut; the committed times must be exact.
-		{
-			id:       "asset-window-boundary",
-			analysis: domain.StructuredAnalysis{Summary: "long interview"},
-			shots: []goldenShotSpec{
-				{startMS: 0, endMS: 480_000, description: "interview opening"},
-				{startMS: 480_000, endMS: 485_000, description: "boundary shot at the eight minute cut"},
-				{startMS: 485_000, endMS: 900_000, description: "interview continues"},
-			},
-		},
-		// Case 7: two overlapping windows both saw the same observation; the
-		// canonical table holds it once, with the wider merged span. A search
-		// for it must return exactly one shot, not both window copies.
-		{
-			id:       "asset-overlap-dedup",
-			analysis: domain.StructuredAnalysis{Summary: "street market"},
-			shots: []goldenShotSpec{
-				{startMS: 0, endMS: 600_000, description: "street vendors bustling", tags: []string{"market"}},
-				{startMS: 600_000, endMS: 900_000, description: "empty street after hours"},
-			},
-		},
-		// Case 8: speech at 310-315s belongs to that interval only.
-		{
-			id:       "asset-timed-speech",
-			analysis: domain.StructuredAnalysis{Summary: "documentary"},
-			shots: []goldenShotSpec{
-				{startMS: 0, endMS: 300_000, description: "quiet street scene no speech"},
-				{startMS: 310_000, endMS: 315_000, description: "narrator says hello world 你好世界", tags: []string{"narration"}},
-			},
-		},
-	}
-}
-
-func goldenQueries() []goldenQuerySpec {
-	return []goldenQuerySpec{
-		{q: "car", relevant: []string{"asset-car-second-half:1"}, notRelevant: []string{"asset-car-second-half:0"}, comment: "object only in the second half"},
-		{q: "汽车", relevant: []string{"asset-car-second-half:1"}, notRelevant: []string{"asset-car-second-half:0"}, comment: "CN synonym must not inherit asset-global car"},
-		{q: "person walking", relevant: []string{"asset-abandoned-street:0"}, notRelevant: []string{"asset-abandoned-street:1"}, comment: "shot evidence wins over contradictory asset tag"},
-		{q: "行人", relevant: []string{"asset-abandoned-street:0"}, notRelevant: []string{"asset-abandoned-street:1"}, comment: "CN synonym via alias table"},
-		{q: "city night", relevant: []string{"asset-city-night:0"}, comment: "EN query for a CN-described shot"},
-		{q: "城市夜景", relevant: []string{"asset-city-night:0"}, comment: "CN bigram query"},
-		{q: "rainy beach", relevant: []string{"asset-city-night:1"}, comment: "EN query for a CN-described beach"},
-		{q: "close-up hands", relevant: []string{"asset-mixed-shot-size:1"}, comment: "close-up shot inside a wide-labelled asset"},
-		{q: "eight minute", relevant: []string{"asset-window-boundary:1"}, wantTimes: &goldenTimes{startMS: 480_000, endMS: 485_000}, comment: "window-boundary shot found with exact times"},
-		{q: "vendors market", relevant: []string{"asset-overlap-dedup:0"}, notRelevant: []string{"asset-overlap-dedup:1"}, comment: "merged observation returned once"},
-		{q: "hello", relevant: []string{"asset-timed-speech:1"}, notRelevant: []string{"asset-timed-speech:0"}, comment: "speech confined to its interval"},
-		{q: "你好世界", relevant: []string{"asset-timed-speech:1"}, notRelevant: []string{"asset-timed-speech:0"}, comment: "CN speech confined to its interval"},
-	}
-}
-
 type goldenMetrics struct {
 	precision5, precision10, recall10 float64
 	falsePositives                    int
 	hits                              int
+	// FP attribution: a false positive counts as lexical when the pure
+	// lexical signal alone would rank it in the top-10, semantic when the
+	// pure semantic signal alone would, and blend-edge when neither would
+	// (only the fused score surfaced it). This is the "semantic
+	// false-positive assertions" measurement: a search claiming a shot has
+	// evidence it lacks, carried by the semantic side.
+	lexicalFPs, semanticFPs, blendEdgeFPs int
+}
+
+// pureWeights are the two single-signal blends used to attribute a false
+// positive to the signal that would have surfaced it on its own.
+var pureWeights = []domain.HybridSearchWeights{
+	{Semantic: 1, Lexical: 0},
+	{Semantic: 0, Lexical: 1},
 }
 
 // TestRetrievalGolden runs the golden queries against every candidate weight
@@ -172,26 +89,53 @@ func TestRetrievalGolden(t *testing.T) {
 	repo, ids := seedGoldenCorpus(t)
 	ctx := context.Background()
 	weightSets := []struct {
-		name    string
-		weights domain.HybridSearchWeights
-		gate    bool // a default-candidate blend must not lose relevant shots
+		name   string
+		search func(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error)
+		gate   bool // a default-candidate blend must not lose relevant shots
 	}{
-		{"lexical-only", domain.HybridSearchWeights{Semantic: 0, Lexical: 1}, false},
-		{"current-70s-30l", domain.HybridSearchWeights{Semantic: 0.70, Lexical: 0.30}, true},
-		{"70l-30h", domain.HybridSearchWeights{Semantic: 0.30, Lexical: 0.70}, true},
-		{"80l-20h", domain.HybridSearchWeights{Semantic: 0.20, Lexical: 0.80}, true},
+		{"lexical-only", func(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error) {
+			return repo.hybridSearchShots(ctx, q, limit, domain.FacetFilter{}, domain.HybridSearchWeights{Semantic: 0, Lexical: 1})
+		}, false},
+		{"current-70s-30l", func(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error) {
+			return repo.hybridSearchShots(ctx, q, limit, domain.FacetFilter{}, domain.HybridSearchWeights{Semantic: 0.70, Lexical: 0.30})
+		}, true},
+		{"70l-30h", func(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error) {
+			return repo.hybridSearchShots(ctx, q, limit, domain.FacetFilter{}, domain.HybridSearchWeights{Semantic: 0.30, Lexical: 0.70})
+		}, true},
+		{"80l-20h", func(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error) {
+			return repo.hybridSearchShots(ctx, q, limit, domain.FacetFilter{}, domain.HybridSearchWeights{Semantic: 0.20, Lexical: 0.80})
+		}, true},
+		{"rrf-k60", func(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error) {
+			return repo.HybridSearchShotsRRF(ctx, q, limit, 60)
+		}, true},
 	}
 	queries := goldenQueries()
 	for _, ws := range weightSets {
 		totals := goldenMetrics{}
 		t.Logf("== weight set %s ==", ws.name)
 		for _, gq := range queries {
-			results, err := repo.hybridSearchShots(ctx, gq.q, 10, domain.FacetFilter{}, ws.weights)
+			results, err := ws.search(ctx, gq.q, 10)
 			if err != nil {
 				t.Fatal(err)
 			}
 			relevant := toGoldenIDs(ids, gq.relevant)
 			notRelevant := toGoldenIDs(ids, gq.notRelevant)
+			// Pure single-signal top-10s, for false-positive attribution.
+			lexicalTop := toGoldenIDs(ids, nil)
+			semanticTop := toGoldenIDs(ids, nil)
+			for _, pure := range pureWeights {
+				pureResults, err := repo.hybridSearchShots(ctx, gq.q, 10, domain.FacetFilter{}, pure)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, hit := range pureResults {
+					if pure.Semantic == 1 {
+						semanticTop[hit.ID] = true
+					} else {
+						lexicalTop[hit.ID] = true
+					}
+				}
+			}
 			hitCount := 0
 			for _, hit := range results {
 				if relevant[hit.ID] {
@@ -199,6 +143,14 @@ func TestRetrievalGolden(t *testing.T) {
 				}
 				if notRelevant[hit.ID] {
 					totals.falsePositives++
+					switch {
+					case lexicalTop[hit.ID]:
+						totals.lexicalFPs++
+					case semanticTop[hit.ID]:
+						totals.semanticFPs++
+					default:
+						totals.blendEdgeFPs++
+					}
 					t.Errorf("weight %s, query %q: false positive %s (%s)", ws.name, gq.q, hit.ID, gq.comment)
 				}
 			}
@@ -223,8 +175,9 @@ func TestRetrievalGolden(t *testing.T) {
 			}
 		}
 		n := float64(len(queries))
-		t.Logf("P@5=%.3f P@10=%.3f R@10=%.3f relevant-in-top10=%d/%d false-positives=%d",
-			totals.precision5/n, totals.precision10/n, totals.recall10/n, totals.hits, len(queries), totals.falsePositives)
+		t.Logf("P@5=%.3f P@10=%.3f R@10=%.3f relevant-in-top10=%d/%d false-positives=%d (lexical=%d semantic=%d blend-edge=%d)",
+			totals.precision5/n, totals.precision10/n, totals.recall10/n, totals.hits, len(queries), totals.falsePositives,
+			totals.lexicalFPs, totals.semanticFPs, totals.blendEdgeFPs)
 	}
 }
 

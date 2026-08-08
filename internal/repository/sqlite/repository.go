@@ -1216,7 +1216,7 @@ func (r *Repository) ResumeDeferredJobs(ctx context.Context, reason string) (int
 }
 
 func (r *Repository) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id,COALESCE(asset_id,''),job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,COALESCE(last_error_message,''),terminal,COALESCE(last_error_code,'') FROM jobs ORDER BY created_at DESC LIMIT ?`, limit)
+	rows, err := r.db.QueryContext(ctx, `SELECT j.id,COALESCE(j.asset_id,''),j.job_type,j.state,j.priority,j.attempt_count,j.max_attempts,j.run_after,j.input_hash,COALESCE(j.last_error_message,''),j.terminal,COALESCE(j.last_error_code,''),COALESCE((SELECT loc.relative_path FROM asset_locations loc WHERE loc.asset_id=j.asset_id AND loc.is_primary=1 LIMIT 1),'') FROM jobs j ORDER BY j.created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1225,9 +1225,12 @@ func (r *Repository) ListJobs(ctx context.Context, limit int) ([]domain.Job, err
 	var out []domain.Job
 	for rows.Next() {
 		var j domain.Job
-		var run, code string
-		if err := rows.Scan(&j.ID, &j.AssetID, &j.Type, &j.State, &j.Priority, &j.AttemptCount, &j.MaxAttempts, &run, &j.InputHash, &j.LastError, &j.Terminal, &code); err != nil {
+		var run, code, location string
+		if err := rows.Scan(&j.ID, &j.AssetID, &j.Type, &j.State, &j.Priority, &j.AttemptCount, &j.MaxAttempts, &run, &j.InputHash, &j.LastError, &j.Terminal, &code, &location); err != nil {
 			return nil, err
+		}
+		if location != "" {
+			j.Filename = filepath.Base(location)
 		}
 		j.RunAfter, _ = time.Parse(time.RFC3339Nano, run)
 		// A defer is only in force while the job is still parked. Reading the
@@ -1608,6 +1611,15 @@ func (r *Repository) HybridSearchShotsFiltered(ctx context.Context, q string, li
 	return r.hybridSearchShots(ctx, q, limit, facets, domain.DefaultHybridSearchWeights())
 }
 
+// HybridSearchShotsWithWeights is HybridSearchShots with an explicit blend.
+// The product default is DefaultHybridSearchWeights; the explicit form exists
+// for measurement: the retrieval golden set sweeps blends, and the eval
+// harness attributes false positives to one signal by re-ranking with pure
+// (1,0) / (0,1) weights. Production callers should keep using the default.
+func (r *Repository) HybridSearchShotsWithWeights(ctx context.Context, q string, limit int, weights domain.HybridSearchWeights) ([]domain.ShotSearchResult, error) {
+	return r.hybridSearchShots(ctx, q, limit, domain.FacetFilter{}, weights)
+}
+
 // bm25HalfScore is the |bm25| that earns exactly half of the lexical term
 // below. bm25 has no upper bound, so any mapping onto 0-1 has to nominate
 // some magnitude as "half marks"; leaving that implicit is how the previous
@@ -1660,6 +1672,42 @@ func (r *Repository) hybridSearchShots(ctx context.Context, q string, limit int,
 	if limit <= 0 || strings.TrimSpace(q) == "" {
 		return []domain.ShotSearchResult{}, nil
 	}
+	candidates, err := r.scoreShotCandidates(ctx, q, facets)
+	if err != nil {
+		return nil, err
+	}
+	top := make(topShotHeap, 0, min(limit, maxTopShotPrealloc))
+	for _, result := range candidates {
+		result.Score = weights.Semantic*result.SemanticScore + weights.Lexical*result.LexicalScore
+		if result.Score > 0 {
+			heap.Push(&top, result)
+			if top.Len() > limit {
+				heap.Pop(&top)
+			}
+		}
+	}
+	results := make([]domain.ShotSearchResult, 0, top.Len())
+	for top.Len() > 0 {
+		results = append(results, heap.Pop(&top).(domain.ShotSearchResult))
+	}
+	// Draining pops the weakest member first; flip for score-descending order.
+	for i, j := 0, len(results)-1; i < j; i, j = i+1, j-1 {
+		results[i], results[j] = results[j], results[i]
+	}
+	return results, nil
+}
+
+// scoreShotCandidates scores every candidate shot under the current vector
+// scheme against the query, on both signals, without blending or truncating.
+// hybridSearchShots fuses the two scores into one rank; the RRF fusion needs
+// each signal ranked separately; both must see the same candidate universe,
+// so the scoring lives here once instead of drifting apart.
+//
+// The lexical pass scores by shot_id without a facet filter — it is only a
+// lookup table for the score blend below, so an id absent from it simply
+// contributes a zero lexical score. Facets are applied once, here, to the
+// candidate set that actually becomes the result.
+func (r *Repository) scoreShotCandidates(ctx context.Context, q string, facets domain.FacetFilter) ([]domain.ShotSearchResult, error) {
 	lexical := make(map[string]float64)
 	if ftsQuery := buildFTSQuery(q); ftsQuery != "" {
 		rows, err := r.db.QueryContext(ctx, `SELECT shot_id,bm25(asset_shot_search) FROM asset_shot_search WHERE asset_shot_search MATCH ?`, ftsQuery)
@@ -1681,11 +1729,20 @@ func (r *Repository) hybridSearchShots(ctx context.Context, q string, limit int,
 		}
 		rows.Close()
 	}
-	// The lexical pass above scores by shot_id without a facet filter — it is
-	// only a lookup table for the score blend below, so an id absent from it
-	// simply contributes a zero lexical score. Facets are applied once, here,
-	// to the candidate set that actually becomes the result.
 	queryVector := discovery.VectorForText(q)
+	// The heuristic vector hashes tokens into 64 dimensions, so two texts
+	// sharing no token can still collide into a nonzero cosine. That
+	// collision is not evidence: a shot whose text shares nothing with the
+	// query scores zero on the semantic side, or the blend would rank noise
+	// above honest lexical matches — the "semantic false-positive assertion"
+	// the retrieval golden set exists to catch (an unrelated shot surfacing
+	// for a query it has no evidence for). Alias-canonical tokens count as
+	// shared: that is the cross-language bridge, not a collision.
+	queryTokens := discovery.TokensForText(q)
+	queryTokenSet := make(map[string]struct{}, len(queryTokens))
+	for _, token := range queryTokens {
+		queryTokenSet[token] = struct{}{}
+	}
 	// v.model=? is mandatory, not one more optional facet clause: a vector
 	// written under a superseded embedding scheme must never be scored
 	// against a query vector from the current one (see semanticVector below
@@ -1693,7 +1750,7 @@ func (r *Repository) hybridSearchShots(ctx context.Context, q string, limit int,
 	// never replace this filter.
 	clauses, args := facetWhere(facets)
 	clauses, args = appendShotDurationBounds(clauses, args, facets)
-	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,v.vector_json FROM asset_shots s JOIN shot_semantic_vectors v ON v.shot_id=s.id LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id WHERE v.model=?`
+	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,v.vector_json,COALESCE((SELECT relative_path FROM asset_locations WHERE asset_id=s.asset_id AND is_primary=1 LIMIT 1),'') FROM asset_shots s JOIN shot_semantic_vectors v ON v.shot_id=s.id LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id WHERE v.model=?`
 	queryArgs := append([]any{discovery.HeuristicVectorModel}, args...)
 	if len(clauses) > 0 {
 		query += ` AND ` + strings.Join(clauses, ` AND `)
@@ -1703,12 +1760,15 @@ func (r *Repository) hybridSearchShots(ctx context.Context, q string, limit int,
 		return nil, err
 	}
 	defer rows.Close()
-	top := make(topShotHeap, 0, min(limit, maxTopShotPrealloc))
+	results := make([]domain.ShotSearchResult, 0, 64)
 	for rows.Next() {
 		var result domain.ShotSearchResult
 		var tags, objects, actions, mood, created, encodedVector string
-		if err := rows.Scan(&result.ID, &result.AssetID, &result.SourceRunID, &result.Ordinal, &result.StartMS, &result.EndMS, &result.Description, &tags, &objects, &actions, &mood, &result.Confidence, &created, &encodedVector); err != nil {
+		if err := rows.Scan(&result.ID, &result.AssetID, &result.SourceRunID, &result.Ordinal, &result.StartMS, &result.EndMS, &result.Description, &tags, &objects, &actions, &mood, &result.Confidence, &created, &encodedVector, &result.Filename); err != nil {
 			return nil, err
+		}
+		if result.Filename != "" {
+			result.Filename = filepath.Base(result.Filename)
 		}
 		_ = json.Unmarshal([]byte(tags), &result.Tags)
 		_ = json.Unmarshal([]byte(objects), &result.Objects)
@@ -1720,17 +1780,104 @@ func (r *Repository) hybridSearchShots(ctx context.Context, q string, limit int,
 			return nil, fmt.Errorf("decode shot semantic vector %s: %w", result.ID, err)
 		}
 		result.SemanticScore = discovery.Cosine(queryVector, vector)
-		result.LexicalScore = lexical[result.ID]
-		result.Score = weights.Semantic*result.SemanticScore + weights.Lexical*result.LexicalScore
-		if result.Score > 0 {
-			heap.Push(&top, result)
-			if top.Len() > limit {
-				heap.Pop(&top)
-			}
+		if !sharesSemanticToken(queryTokenSet, result.Description, result.Tags, result.Objects, result.Actions, result.Mood) {
+			result.SemanticScore = 0
 		}
+		result.LexicalScore = lexical[result.ID]
+		results = append(results, result)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	return results, nil
+}
+
+// sharesSemanticToken reports whether the shot's text carries at least one of
+// the query's semantic tokens. It mirrors VectorForShot's input exactly
+// (description + tags + objects + actions + mood), so "shares a token" and
+// "contributes to the same vector" cannot disagree.
+func sharesSemanticToken(queryTokenSet map[string]struct{}, description string, tags, objects, actions, mood []string) bool {
+	parts := append([]string{description}, tags...)
+	parts = append(parts, objects...)
+	parts = append(parts, actions...)
+	parts = append(parts, mood...)
+	for _, token := range discovery.TokensForText(strings.Join(parts, " ")) {
+		if _, ok := queryTokenSet[token]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// DefaultRRFK is the reciprocal-rank-fusion constant: a shot ranked at
+// position p in a signal's list earns 1/(k+p). 60 is the standard choice from
+// the original RRF paper (Cormack, Clarke & Buettcher, SIGIR 2009) — a rank
+// difference inside the top ranks matters, while contributions beyond the
+// hundredth position are too small to flip a top-10.
+const DefaultRRFK = 60
+
+// HybridSearchShotsRRF is HybridSearchShots with reciprocal-rank fusion
+// instead of the weighted sum: each signal ranks the candidates separately,
+// and a shot's final score is the sum of 1/(k+rank) over the signals that
+// ranked it. It exists because the weighted blend lets one signal's noise
+// ride on the other's strong score; RRF cannot — a shot only scores where a
+// signal actually ranked it. k defaults to DefaultRRFK when k <= 0.
+func (r *Repository) HybridSearchShotsRRF(ctx context.Context, q string, limit, k int) ([]domain.ShotSearchResult, error) {
+	return r.hybridSearchShotsRRF(ctx, q, limit, domain.FacetFilter{}, k)
+}
+
+// hybridSearchShotsRRF is the facet-aware form of HybridSearchShotsRRF.
+func (r *Repository) hybridSearchShotsRRF(ctx context.Context, q string, limit int, facets domain.FacetFilter, k int) ([]domain.ShotSearchResult, error) {
+	if limit <= 0 || strings.TrimSpace(q) == "" {
+		return []domain.ShotSearchResult{}, nil
+	}
+	if k <= 0 {
+		k = DefaultRRFK
+	}
+	candidates, err := r.scoreShotCandidates(ctx, q, facets)
+	if err != nil {
+		return nil, err
+	}
+	// Rank each signal on its own. Only shots with a positive signal score
+	// enter that signal's list — the same "no evidence, no rank" rule the
+	// weighted blend applies via Score > 0.
+	semanticRank := make(map[string]int, len(candidates))
+	lexicalRank := make(map[string]int, len(candidates))
+	byLexical := make([]domain.ShotSearchResult, 0, len(candidates))
+	bySemantic := make([]domain.ShotSearchResult, 0, len(candidates))
+	for _, c := range candidates {
+		if c.LexicalScore > 0 {
+			byLexical = append(byLexical, c)
+		}
+		if c.SemanticScore > 0 {
+			bySemantic = append(bySemantic, c)
+		}
+	}
+	sort.SliceStable(byLexical, func(i, j int) bool { return byLexical[i].LexicalScore > byLexical[j].LexicalScore })
+	sort.SliceStable(bySemantic, func(i, j int) bool { return bySemantic[i].SemanticScore > bySemantic[j].SemanticScore })
+	for i, c := range byLexical {
+		lexicalRank[c.ID] = i + 1
+	}
+	for i, c := range bySemantic {
+		semanticRank[c.ID] = i + 1
+	}
+	top := make(topShotHeap, 0, min(limit, maxTopShotPrealloc))
+	for _, c := range candidates {
+		var fused float64
+		if p, ok := lexicalRank[c.ID]; ok {
+			fused += 1 / (float64(k) + float64(p))
+		}
+		if p, ok := semanticRank[c.ID]; ok {
+			fused += 1 / (float64(k) + float64(p))
+		}
+		if fused == 0 {
+			continue
+		}
+		c.Score = fused
+		heap.Push(&top, c)
+		if top.Len() > limit {
+			heap.Pop(&top)
+		}
 	}
 	results := make([]domain.ShotSearchResult, 0, top.Len())
 	for top.Len() > 0 {
@@ -1882,7 +2029,7 @@ type semanticShotRecord struct {
 func (r *Repository) loadSemanticShotRecords(ctx context.Context, facets domain.FacetFilter) ([]semanticShotRecord, error) {
 	clauses, args := facetWhere(facets)
 	clauses, args = appendShotDurationBounds(clauses, args, facets)
-	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,v.vector_json FROM asset_shots s JOIN shot_semantic_vectors v ON v.shot_id=s.id LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id WHERE v.model=?`
+	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,v.vector_json,COALESCE((SELECT relative_path FROM asset_locations WHERE asset_id=s.asset_id AND is_primary=1 LIMIT 1),'') FROM asset_shots s JOIN shot_semantic_vectors v ON v.shot_id=s.id LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id WHERE v.model=?`
 	queryArgs := append([]any{discovery.HeuristicVectorModel}, args...)
 	if len(clauses) > 0 {
 		query += ` AND ` + strings.Join(clauses, ` AND `)
@@ -1896,8 +2043,11 @@ func (r *Repository) loadSemanticShotRecords(ctx context.Context, facets domain.
 	for rows.Next() {
 		var record semanticShotRecord
 		var tags, objects, actions, mood, created, encodedVector string
-		if err := rows.Scan(&record.result.ID, &record.result.AssetID, &record.result.SourceRunID, &record.result.Ordinal, &record.result.StartMS, &record.result.EndMS, &record.result.Description, &tags, &objects, &actions, &mood, &record.result.Confidence, &created, &encodedVector); err != nil {
+		if err := rows.Scan(&record.result.ID, &record.result.AssetID, &record.result.SourceRunID, &record.result.Ordinal, &record.result.StartMS, &record.result.EndMS, &record.result.Description, &tags, &objects, &actions, &mood, &record.result.Confidence, &created, &encodedVector, &record.result.Filename); err != nil {
 			return nil, err
+		}
+		if record.result.Filename != "" {
+			record.result.Filename = filepath.Base(record.result.Filename)
 		}
 		_ = json.Unmarshal([]byte(tags), &record.result.Tags)
 		_ = json.Unmarshal([]byte(objects), &record.result.Objects)

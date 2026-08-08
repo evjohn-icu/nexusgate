@@ -84,6 +84,49 @@ func TestProviderChannelConfigurationFailuresAreNotRetried(t *testing.T) {
 	}
 }
 
+// TestProviderChannelMultiframeProtocolRejected pins the fail-fast for
+// openai_multiframe channels: channel routing has no multiframe
+// orchestration, so building the provider must refuse with the documented
+// boundary sentence instead of letting the pipeline reach "multiframe
+// summary call requires at least one frame" on the first frame-less call.
+// The refusal is permanent (it is a verdict on the channel's own metadata),
+// and the plain video protocol must remain buildable.
+func TestProviderChannelMultiframeProtocolRejected(t *testing.T) {
+	runtime := &providerChannelRuntime{}
+
+	multiframe := providerchannels.Invocation{
+		ProviderName: "local_vlm",
+		Protocol:     "openai_multiframe",
+		Endpoint:     "http://127.0.0.1:8080/v1",
+		Path:         "chat/completions",
+		Model:        "Qwen3-VL-4B-Instruct",
+	}
+	if _, err := runtime.videoProvider(multiframe, "key"); err == nil {
+		t.Fatal("a local_vlm openai_multiframe channel was accepted without multiframe orchestration")
+	} else {
+		if isRetryableJobError(err) {
+			t.Fatalf("an unbuildable multiframe route was classified retryable (%v)", err)
+		}
+		if err.Error() != "openai_multiframe is currently supported through providers.local_vlm config only; provider-channel routing support is not available yet" {
+			t.Fatalf("unexpected refusal message: %v", err)
+		}
+	}
+
+	video := providerchannels.Invocation{
+		ProviderName: "local_vlm",
+		Protocol:     "openai_video",
+		Endpoint:     "http://127.0.0.1:8080/v1",
+		Path:         "chat/completions",
+		Model:        "Qwen3-VL-4B-Instruct",
+	}
+	// The zero-config runtime cannot build any real provider (it reports the
+	// channel disabled) — the control here is only that the multiframe guard
+	// is protocol-specific and did not fire for the plain video protocol.
+	if _, err := runtime.videoProvider(video, "key"); err == errProviderChannelMultiframeUnsupported {
+		t.Fatalf("plain openai_video was refused by the multiframe guard: %v", err)
+	}
+}
+
 func overLimitShots() []domain.AssetShot {
 	shots := make([]domain.AssetShot, maxAnalysisShots+1)
 	for i := range shots {

@@ -66,8 +66,8 @@ func TestFacetLabelsCoverEveryVocabularyValue(t *testing.T) {
 // forget when a control is added.
 func TestLibraryPageRendersSemanticFacetControls(t *testing.T) {
 	page := libraryIndexHTML
-	if !strings.Contains(page, `aria-label="语义筛选"`) {
-		t.Fatalf("library page missing the semantic filter section")
+	if !strings.Contains(page, `aria-label="高级筛选"`) {
+		t.Fatalf("library page missing the advanced-filter section")
 	}
 	selects := []string{
 		"asset-type-select", "shot-size-select", "camera-motion-select",
@@ -165,28 +165,65 @@ func TestLibraryPageRendersSemanticFacetControls(t *testing.T) {
 	}
 }
 
-// TestLibraryPageSearchNarrowsByFacetsAndLoadsHitsByID pins task O — the
-// pre-facet page fetched up to 300 cards and intersected them client-side
-// against up to 100 search ids (two independently capped windows whose
-// overlap silently shrank on a large library, and nothing on screen
-// distinguished that from "no match"). search() must now forward the same
-// facets the card listing uses, and load(ids) must ask for exactly those ids
-// instead of re-deriving the intersection from a second capped listing.
-func TestLibraryPageSearchNarrowsByFacetsAndLoadsHitsByID(t *testing.T) {
+// TestLibraryPageSearchIsShotFirst pins the shot-first search: search()
+// must ask the hybrid shot endpoint (the same retrieval the golden set
+// measures), forward the facets, and render shot-level result cards carrying
+// the shot's own evidence — filename, time range, description, score — so a
+// user lands on a concrete shot, not a whole-asset card. The drawer the
+// cards open must seek the proxy to the shot's own range.
+func TestLibraryPageSearchIsShotFirst(t *testing.T) {
 	page := libraryIndexHTML
-	if !strings.Contains(page, `'/api/v1/search?q='+encodeURIComponent(q)+filterQuery()`) {
-		t.Fatalf("search() must forward filterQuery() to /api/v1/search, so a facet narrows search the same way it narrows the card listing")
+	if !strings.Contains(page, `'/api/v1/search/shots/hybrid?q='+encodeURIComponent(q)+'&limit=40'+filterQuery()`) {
+		t.Fatalf("search() must query the hybrid shot endpoint with the facet params")
 	}
-	if !strings.Contains(page, `'/api/v1/assets?ids='+ids.map(encodeURIComponent).join(',')`) {
-		t.Fatalf("load(ids) must fetch cards by the search hit ids instead of pulling a capped listing and intersecting")
+	if strings.Contains(page, `'/api/v1/search?q='+encodeURIComponent(q)`) {
+		t.Fatalf("search() must not query the facet-blind asset search endpoint")
+	}
+	if !strings.Contains(page, `renderShotResults(Array.isArray(data)?data:[])`) {
+		t.Fatalf("search() must render shot-level results")
+	}
+	for _, marker := range []string{
+		`data-shot-result`, // result cards are shot rows
+		`shot-result-time`, // start — end rendered
+		`shot-result-file`, // owning asset filename rendered
+		`s.filename`,       // filename comes from the joined asset
+		`/api/v1/assets/'+encodeURIComponent(s.asset_id)+'/thumbnail`, // shot thumb via asset endpoint
+	} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("shot result card missing marker %q", marker)
+		}
+	}
+	// No-match must be honest: a clear message, not a fall-through to the
+	// whole-asset listing.
+	if !strings.Contains(page, `没有找到匹配的镜头`) {
+		t.Fatalf("empty shot results must render a no-match message")
 	}
 	if strings.Contains(page, `if(ids)data=data.filter(x=>ids.includes(x.id));`) {
 		t.Fatalf("load(ids) still intersects a capped card listing against search ids client-side")
 	}
-	// A search that matched nothing must render as "no matches", not fall
-	// through to /api/v1/assets with ids= empty, which the server reads as
-	// unset (match everything) — see parseAssetIDs.
 	if !strings.Contains(page, `ids&&!ids.length?Promise.resolve([])`) {
 		t.Fatalf("load(ids) must not call /api/v1/assets with an empty ids list")
+	}
+}
+
+// TestLibraryPageShotDrawerPinsProxySeek asserts the clickable-shot contract:
+// every timeline block carries its own row (so the drawer needs no second
+// round trip), and the drawer video seeks the proxy to the shot's exact
+// range via the HTML5 fragment, playing start → end without navigation.
+func TestLibraryPageShotDrawerPinsProxySeek(t *testing.T) {
+	page := libraryIndexHTML
+	for _, marker := range []string{
+		`data-shot-drawer`,
+		`data-shot-video`,
+		`data-shot="'+esc(JSON.stringify(s))+'"`,
+		`data-asset="'+esc(x.id)+'"`,
+		`data-drawer-close`,
+		`/proxy#t='+Math.floor(s/1000)+','+Math.ceil(Math.max(e-s,1000)/1000)`,
+		`document.addEventListener('click',function(e){const block=e.target.closest('.shot')`,
+		`document.addEventListener('keydown',function(e){if(e.key==='Escape')closeShotDrawer()`,
+	} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("shot drawer missing marker %q", marker)
+		}
 	}
 }
