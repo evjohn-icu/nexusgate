@@ -80,7 +80,7 @@ func TestRunUntilIdleSkipsCooldownWhenCompleteJobLosesLease(t *testing.T) {
 	}
 
 	wrapped := &completeJobLeaseLostRepo{Repository: repo}
-	pipeline := NewPipeline(wrapped, t.TempDir(), nil, nil, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral)
+	pipeline := NewPipeline(wrapped, t.TempDir(), nil, nil, nil, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral)
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()

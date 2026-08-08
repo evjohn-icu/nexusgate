@@ -86,11 +86,18 @@
     },
     "local_vlm": {
       "enabled": false,
-      "protocol": "openai_video",
-      "base_url": "http://127.0.0.1:1234/v1",
+      "protocol": "openai_multiframe",
+      "base_url": "http://127.0.0.1:8080/v1",
       "path": "chat/completions",
-      "model": "qwen2.5-vl",
+      "model": "Qwen3-VL-4B-Instruct",
       "timeout_seconds": 300
+    },
+    "shot_detection": {
+      "enabled": false,
+      "mode": "ffmpeg_scene",
+      "command": "",
+      "args": [],
+      "scene_threshold": 0.3
     },
     "tag_curator": {
       "enabled": false,

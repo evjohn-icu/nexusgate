@@ -108,6 +108,21 @@ func makeSet(v ...string) map[string]bool {
 	}
 	return m
 }
+
+// NormalizeEnumValue coerces one value into a controlled vocabulary the same
+// way normEnum does (case, trimming, separator collapsing, unknown fallback).
+// ValidateAndNormalize only reaches asset-level fields; per-shot metadata
+// (shot_size, camera_motion, quality on a multiframe shot) bypasses it, so
+// the adapter that decodes them calls this with the matching exported list.
+func NormalizeEnumValue(value string, allowed []string) string {
+	if len(allowed) == 0 {
+		return ""
+	}
+	set := makeSet(allowed...)
+	fallback := allowed[len(allowed)-1]
+	return normEnum(value, set, fallback)
+}
+
 func normEnum(v string, set map[string]bool, fallback string) string {
 	v = strings.ToLower(strings.TrimSpace(v))
 	if set[v] {

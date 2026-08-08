@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/evjohn-icu/timingdex/internal/config"
+	videoproviders "github.com/evjohn-icu/timingdex/internal/providers/video"
 )
 
 func TestVolcenginePlanRolesAreSeparated(t *testing.T) {
@@ -47,5 +48,61 @@ func TestVideoFactoryRegistersCompatibleProviderRoutes(t *testing.T) {
 		if err != nil || provider == nil || provider.Name() != name {
 			t.Fatalf("provider %q = %v, err=%v", name, provider, err)
 		}
+	}
+}
+
+func TestVideoFactoryAcceptsMultiframeProtocol(t *testing.T) {
+	cfg := config.ProvidersConfig{
+		LocalVLM: config.ProviderConfig{Enabled: true, Protocol: ProtocolOpenAIMultiframe, BaseURL: "http://127.0.0.1:1234/v1", Model: "Qwen3-VL-4B-Instruct"},
+	}
+	provider, err := NewVideoUnderstandingProvider("local_vlm", nil, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.Name() != "local_vlm" || provider.Model() != "Qwen3-VL-4B-Instruct" {
+		t.Fatalf("identity: %s/%s", provider.Name(), provider.Model())
+	}
+	if analyzer := provider.(interface {
+		MultiframeAnalyzer() videoproviders.MultiframeShotAnalyzer
+	}).MultiframeAnalyzer(); analyzer == nil {
+		t.Fatal("multiframe protocol did not surface a MultiframeShotAnalyzer through the router")
+	}
+}
+
+func TestVideoFactoryRejectsUnknownProtocol(t *testing.T) {
+	cfg := config.ProvidersConfig{
+		LocalVLM: config.ProviderConfig{Enabled: true, Protocol: "openai_frames", BaseURL: "http://127.0.0.1:1234/v1", Model: "m"},
+	}
+	if _, err := NewVideoUnderstandingProvider("local_vlm", nil, cfg); err == nil {
+		t.Fatal("expected rejection of an unknown protocol")
+	}
+}
+
+func TestNewShotDetectorModes(t *testing.T) {
+	cfg := config.ProvidersConfig{ShotDetection: config.ShotDetectionConfig{Enabled: true, Mode: config.ShotDetectionModeFFmpegScene}}
+	detector, err := NewShotDetector(cfg)
+	if err != nil || detector == nil {
+		t.Fatalf("ffmpeg_scene detector: %v err=%v", detector, err)
+	}
+	if detector.Name() == "" {
+		t.Fatal("ffmpeg_scene detector has empty identity")
+	}
+	cfg.ShotDetection = config.ShotDetectionConfig{Enabled: true, Mode: config.ShotDetectionModeExternalCommand, Command: "pyscenedetect.sh"}
+	detector, err = NewShotDetector(cfg)
+	if err != nil || detector == nil {
+		t.Fatalf("external_command detector: %v err=%v", detector, err)
+	}
+	cfg.ShotDetection = config.ShotDetectionConfig{Enabled: true, Mode: config.ShotDetectionModeExternalCommand}
+	if _, err := NewShotDetector(cfg); err == nil {
+		t.Fatal("external_command without a command must fail")
+	}
+	cfg.ShotDetection = config.ShotDetectionConfig{Enabled: true, Mode: "bogus"}
+	if _, err := NewShotDetector(cfg); err == nil {
+		t.Fatal("unknown mode must fail")
+	}
+	cfg.ShotDetection = config.ShotDetectionConfig{Enabled: false}
+	detector, err = NewShotDetector(cfg)
+	if err != nil || detector != nil {
+		t.Fatalf("disabled detection must be nil: %v err=%v", detector, err)
 	}
 }

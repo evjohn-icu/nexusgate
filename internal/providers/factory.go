@@ -8,14 +8,21 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/providers/embedding"
 	"github.com/evjohn-icu/timingdex/internal/providers/externalalign"
 	"github.com/evjohn-icu/timingdex/internal/providers/gemini"
+	"github.com/evjohn-icu/timingdex/internal/providers/multiframe"
 	"github.com/evjohn-icu/timingdex/internal/providers/openaivideo"
 	"github.com/evjohn-icu/timingdex/internal/providers/qwen"
 	"github.com/evjohn-icu/timingdex/internal/providers/repurpose"
+	"github.com/evjohn-icu/timingdex/internal/providers/shotdetect"
 	"github.com/evjohn-icu/timingdex/internal/providers/stepfun"
 	"github.com/evjohn-icu/timingdex/internal/providers/tagcurator"
 	videoproviders "github.com/evjohn-icu/timingdex/internal/providers/video"
 	"github.com/evjohn-icu/timingdex/internal/providers/volcasr"
 )
+
+// openai_multiframe is the protocol for endpoints that understand still
+// frames only (llama.cpp, LM Studio, vLLM, SGLang). Timingdex samples frames
+// deterministically and the model describes what it sees.
+const ProtocolOpenAIMultiframe = "openai_multiframe"
 
 func endpoint(c config.ProviderConfig) common.Endpoint {
 	return common.Endpoint{BaseURL: c.BaseURL, APIKey: c.APIKey, AuthHeader: c.AuthHeader, AuthScheme: c.AuthScheme, ExtraHeaders: c.ExtraHeaders, TimeoutSeconds: c.TimeoutSeconds}
@@ -83,11 +90,21 @@ func NewVideoUnderstandingProvider(name string, fallbacks []string, c config.Pro
 		if !candidate.cfg.Enabled {
 			continue
 		}
-		if candidate.cfg.Protocol != "" && candidate.cfg.Protocol != "openai_video" {
-			return nil, fmt.Errorf("video provider %q requires openai_video protocol, got %q", candidate.name, candidate.cfg.Protocol)
-		}
-		if err := registry.Register(&openaivideo.Provider{ProviderName: candidate.name, Endpoint: endpoint(candidate.cfg), ModelName: candidate.cfg.Model, Path: candidate.cfg.Path, MaxInlineBytes: candidate.cfg.MaxInlineVideoBytes}); err != nil {
-			return nil, err
+		switch candidate.cfg.Protocol {
+		case "", "openai_video":
+			if err := registry.Register(&openaivideo.Provider{ProviderName: candidate.name, Endpoint: endpoint(candidate.cfg), ModelName: candidate.cfg.Model, Path: candidate.cfg.Path, MaxInlineBytes: candidate.cfg.MaxInlineVideoBytes}); err != nil {
+				return nil, err
+			}
+		case ProtocolOpenAIMultiframe:
+			// The multiframe endpoint never sees a video; Timingdex samples
+			// frames deterministically and the model describes them. The
+			// pipeline detects the protocol via MultiframeShotAnalyzer and
+			// runs the shot/refinement flow instead of window analysis.
+			if err := registry.Register(&multiframe.Provider{ProviderName: candidate.name, Endpoint: endpoint(candidate.cfg), ModelName: candidate.cfg.Model, Path: candidate.cfg.Path}); err != nil {
+				return nil, err
+			}
+		default:
+			return nil, fmt.Errorf("video provider %q requires openai_video or openai_multiframe protocol, got %q", candidate.name, candidate.cfg.Protocol)
 		}
 	}
 	return videoproviders.NewRouter(registry, name, fallbacks)
@@ -104,6 +121,26 @@ func NewAlignment(name string, c config.ProvidersConfig) (Alignment, error) {
 		return &externalalign.Provider{Command: c.Alignment.Command, Args: c.Alignment.Args, ModelName: c.Alignment.Model}, nil
 	default:
 		return nil, fmt.Errorf("unsupported alignment provider %q", name)
+	}
+}
+
+// NewShotDetector builds the deterministic shot-boundary detector from
+// config. A nil detector means the multiframe path must fall back to VLM
+// window analysis for its boundaries.
+func NewShotDetector(c config.ProvidersConfig) (shotdetect.Detector, error) {
+	if !c.ShotDetection.Enabled {
+		return nil, nil
+	}
+	switch c.ShotDetection.Mode {
+	case "", config.ShotDetectionModeExternalCommand:
+		if c.ShotDetection.Command == "" {
+			return nil, fmt.Errorf("shot_detection.command is required in external_command mode")
+		}
+		return &shotdetect.ExternalCommand{Command: c.ShotDetection.Command, Args: c.ShotDetection.Args}, nil
+	case config.ShotDetectionModeFFmpegScene:
+		return &shotdetect.FFmpegScene{Threshold: c.ShotDetection.SceneThreshold}, nil
+	default:
+		return nil, fmt.Errorf("unsupported shot detection mode %q", c.ShotDetection.Mode)
 	}
 }
 

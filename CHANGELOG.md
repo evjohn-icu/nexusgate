@@ -1295,3 +1295,40 @@ See `docs/v0.21-unattended-and-export.md`,
 - No vector search over footage.
 - No automatic tag merge or database mutation from model output.
 - No hierarchy editor or bulk-review UI; both remain v0.6 governance work.
+
+## v0.25.1 — 2026-08-08（Local Multiframe Analysis v1）
+
+Roadmap 第一阶段：把 shot 时间轴从 LLM 手里拿出来。Timingdex 负责检测与采样，
+VLM 只负责描述画面。目标部署：插上一张 8–16GB 消费级 GPU 就能在后台慢慢索引。
+
+- **`openai_multiframe` 协议**：`local_vlm.protocol` 支持
+  `openai_multiframe`（llama.cpp / LM Studio / vLLM / SGLang 的 OpenAI 兼容
+  chat/completions 表面）。端点永不接收整段视频；Timingdex 对每个 shot 采样
+  2/4/6 帧（boundary-aware 默认，10/35/65/90% 位置）、按 shot 切 transcript、
+  每 shot 一次模型调用，模型只返回纯元数据（无时间字段）。
+- **确定性 shot 检测**：`shot_detection` 配置块，两种 detector——
+  `external_command`（PySceneDetect wrapper，stdin/stdout JSON 契约，与
+  forced aligner 同款）与内置 `ffmpeg_scene`（零新依赖）。Timingdex 硬校验：
+  单调、非重叠、界内、最短 300ms、上限 2000；违规=永久失败。detector 身份
+  进入 model_run 的 request_json，换命令/阈值自动重跑分析。
+- **双模式编排**：配置了 detector 时走纯 detector 模式（detector 出边界 +
+  每资产一次 summary 调用 + 逐 shot 精修）；未配置时回退双 pass（现有 VLM
+  window analysis 出边界和资产级 analysis，multiframe 逐 shot 精修并用
+  `ReplaceAssetShots` 替换 shot 行）。两个 pass 各留一个 model_run，provenance
+  可审计；精修失败保留 pass-1 结果（降级而非丢失）。纯 multiframe 链且无
+  detector 时报永久配置错误并指名 remedy。
+- **资产级字段**：per-shot shot_size/camera_motion/quality/usable_as 聚合
+  （众数/最差/并集）折叠进资产级 analysis；audio_type/has_speech 诚实声明为
+  帧模型不可判（has_speech 由 transcript 判定，audio_type 留 summary 推断）。
+- **eval 工具**：`cmd/timingdex-eval`（内部 `internal/eval`）——真实 clips 进
+  隔离数据目录、走真实 Pipeline（probe→derive→analyze→index），`score` 用
+  产品同款 hybrid 检索 + golden 同口径指标输出 R@10/P@10/FP/RT factor/帧数
+  对比表与逐 query 明细。离线工具，不进 CI。
+- 附带修复：`GetAssetDetail` 的 analysis 从未成功反序列化（`has_speech` 以
+  0/1 数字出现在 json_object 里，Go bool 拒绝）——API 详情页的资产级分析
+  一直是 nil，现修复。
+
+使用：`timingdex-eval run --corpus ./corpus --data-dir ./eval/qwen --label
+qwen3vl-4b && timingdex-eval score --corpus ./corpus --data-dir ./eval
+--labels qwen3vl-4b,gemini-flash`。Worker 路径不在本版本范围（multiframe 是
+Hub 本地 GPU 路径；worker 继续走 proxy 的 openai_video）。

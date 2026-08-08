@@ -3,6 +3,7 @@ package video
 import (
 	"context"
 
+	"github.com/evjohn-icu/timingdex/internal/domain"
 	videoanalysis "github.com/evjohn-icu/timingdex/internal/domain/video_analysis"
 	"github.com/evjohn-icu/timingdex/internal/providers/common"
 )
@@ -20,6 +21,48 @@ type VideoUnderstandingProvider interface {
 	Model() string
 	Capabilities() []Capability
 	Analyze(context.Context, videoanalysis.Input) (videoanalysis.Result, string, error)
+}
+
+// ShotAnalysisRequest is one shot handed to a multiframe VLM. Timingdex has
+// already decided the shot's boundaries, sampled its frames and sliced the
+// transcript to the shot's window — the model is only asked to describe what
+// the frames show. Frame timestamps are asset-relative.
+type ShotAnalysisRequest struct {
+	Frames      []videoanalysis.Frame
+	ShotStartMS int64
+	ShotEndMS   int64
+	Transcript  *domain.Transcript
+	Metadata    domain.MediaMetadata
+}
+
+// ShotMetadata is what a multiframe VLM returns: pure per-shot understanding,
+// with no timeline fields. The boundaries come from Timingdex's detector; the
+// model must not be able to move a shot, only describe it. Enum-valued fields
+// (shot_size, camera_motion, quality) use the same controlled vocabularies as
+// the asset-level analysis.
+type ShotMetadata struct {
+	Description  string   `json:"description"`
+	Objects      []string `json:"objects,omitempty"`
+	Actions      []string `json:"actions,omitempty"`
+	Mood         []string `json:"mood,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
+	ShotSize     string   `json:"shot_size,omitempty"`
+	CameraMotion string   `json:"camera_motion,omitempty"`
+	Quality      string   `json:"quality,omitempty"`
+	UsableAs     []string `json:"usable_as,omitempty"`
+	Confidence   float64  `json:"confidence,omitempty"`
+}
+
+// MultiframeShotAnalyzer is implemented by providers that understand still
+// frames only (openai_multiframe). The embedded VideoUnderstandingProvider
+// covers the asset-level summary call (Analyze with a handful of
+// representative frames); AnalyzeShot is the per-shot refinement call. The
+// raw response is returned alongside the metadata so the model run can record
+// it; a provider is expected to mark undecodable output permanent at the call
+// site.
+type MultiframeShotAnalyzer interface {
+	VideoUnderstandingProvider
+	AnalyzeShot(context.Context, ShotAnalysisRequest) (ShotMetadata, string, error)
 }
 
 type VideoPreparer interface {

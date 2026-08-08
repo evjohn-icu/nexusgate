@@ -64,12 +64,13 @@ type ProvidersConfig struct {
 	// common.Endpoint.NewRequest treats an empty scheme as Bearer, while the
 	// Worker JSON proxy sends the key unprefixed. Only the explicit form is
 	// correct on both request paths.
-	VolcAgentPlan           ProviderConfig  `json:"volc_agent_plan"`
-	VolcCodingPlan          ProviderConfig  `json:"volc_coding_plan"`
-	VolcAgentPlanEmbedding  ProviderConfig  `json:"volc_agent_plan_embedding"`
-	VolcCodingPlanEmbedding ProviderConfig  `json:"volc_coding_plan_embedding"`
-	VolcASR                 VolcASRConfig   `json:"volc_asr"`
-	Alignment               AlignmentConfig `json:"alignment"`
+	VolcAgentPlan           ProviderConfig      `json:"volc_agent_plan"`
+	VolcCodingPlan          ProviderConfig      `json:"volc_coding_plan"`
+	VolcAgentPlanEmbedding  ProviderConfig      `json:"volc_agent_plan_embedding"`
+	VolcCodingPlanEmbedding ProviderConfig      `json:"volc_coding_plan_embedding"`
+	VolcASR                 VolcASRConfig       `json:"volc_asr"`
+	Alignment               AlignmentConfig     `json:"alignment"`
+	ShotDetection           ShotDetectionConfig `json:"shot_detection"`
 }
 
 // VolcASRConfig is intentionally not a ProviderConfig. Seed ASR 2.0 uses
@@ -95,6 +96,29 @@ type AlignmentConfig struct {
 	Args    []string `json:"args,omitempty"`
 	Model   string   `json:"model,omitempty"`
 }
+
+// ShotDetectionConfig configures deterministic shot-boundary detection for
+// the multiframe analysis path. ShotDetectionModeExternalCommand runs an
+// external binary through the aligner-style stdin/stdout JSON contract;
+// ShotDetectionModeFFmpegScene uses ffmpeg's built-in scene filter and needs
+// nothing beyond the ffmpeg binary the pipeline already requires. When
+// detection is disabled entirely, the multiframe path falls back to a VLM
+// window analysis for its boundaries (two-pass refinement).
+type ShotDetectionConfig struct {
+	Enabled bool     `json:"enabled"`
+	Mode    string   `json:"mode,omitempty"`
+	Command string   `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
+	// SceneThreshold is the ffmpeg scene score at which a frame starts a new
+	// shot (0.3 by default); it is part of the detector identity, so tuning it
+	// re-keys analysis.
+	SceneThreshold float64 `json:"scene_threshold,omitempty"`
+}
+
+const (
+	ShotDetectionModeExternalCommand = "external_command"
+	ShotDetectionModeFFmpegScene     = "ffmpeg_scene"
+)
 
 // SourceStagingConfig controls whether original source files are used in place
 // or copied into Timingdex's local cache before media processing. Copy mode is
@@ -227,6 +251,7 @@ func Load() (Config, error) {
 		VolcCodingPlanEmbedding: ProviderConfig{Enabled: false, Protocol: "openai_embeddings", BaseURL: "https://ark.cn-beijing.volces.com/api/coding/v3", Path: "embeddings", APIKeyEnv: "ARK_CODING_PLAN_API_KEY", Model: "doubao-embedding-vision-251215", AuthHeader: "Authorization", AuthScheme: "Bearer", TimeoutSeconds: 120},
 		VolcASR:                 VolcASRConfig{Enabled: false, URL: "wss://openspeech.bytedance.com/api/v3/plan/sauc/bigmodel_nostream", APIKeyEnv: "ARK_AGENT_PLAN_API_KEY", ResourceID: "volc.seedasr.sauc.duration", RequestModel: "bigmodel", Model: "doubao-seed-asr-2.0", UID: "timingdex", TimeoutSeconds: 300},
 		Alignment:               AlignmentConfig{Enabled: false, Command: "timingdex-align", Model: "qwen3-forced-aligner"},
+		ShotDetection:           ShotDetectionConfig{Enabled: false, Mode: ShotDetectionModeExternalCommand},
 	}}
 	if err := os.MkdirAll(cfg.CacheDir, 0o700); err != nil {
 		return Config{}, fmt.Errorf("create data directories: %w", err)

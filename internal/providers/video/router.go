@@ -82,6 +82,38 @@ func (r *Router) Analyze(ctx context.Context, input videoanalysis.Input) (videoa
 	return videoanalysis.Result{}, lastRaw, errors.Join(errs...)
 }
 
+// MultiframeAnalyzer returns the first chain member that understands still
+// frames only, or nil. The pipeline asks for it once per analyze job: if it
+// exists, analysis can run the multiframe path — deterministic shot
+// boundaries plus one model call per shot — instead of handing a whole video
+// to a single model. Members that implement it are also excluded from the
+// video path (see VideoAnalyzer), because their endpoints cannot consume a
+// video whole.
+func (r *Router) MultiframeAnalyzer() MultiframeShotAnalyzer {
+	for _, name := range r.chain {
+		provider, _ := r.registry.Get(name)
+		if analyzer, ok := provider.(MultiframeShotAnalyzer); ok {
+			return analyzer
+		}
+	}
+	return nil
+}
+
+// VideoAnalyzer returns the first chain member that consumes video whole
+// (i.e. does not implement MultiframeShotAnalyzer), or nil. The two-pass
+// multiframe fallback needs boundaries before it can refine anything, and
+// those boundaries come from a real window analysis over the proxy — an
+// endpoint that can only look at stills cannot produce them.
+func (r *Router) VideoAnalyzer() VideoUnderstandingProvider {
+	for _, name := range r.chain {
+		provider, _ := r.registry.Get(name)
+		if _, multiframe := provider.(MultiframeShotAnalyzer); !multiframe {
+			return provider
+		}
+	}
+	return nil
+}
+
 // RequiresVideoPreparation reports whether the selected primary provider has
 // an explicit remote-file preparation step. It keeps the router from making
 // every provider look like a preparer merely because the router can delegate.

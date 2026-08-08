@@ -2137,6 +2137,11 @@ func nullString(v string) any {
 	return v
 }
 
+// DB exposes the underlying handle for administrative reads and tests. It is
+// not part of the domain contract: callers that need data should use the
+// Repository methods, which own the SQL.
+func (r *Repository) DB() *sql.DB { return r.db }
+
 func (r *Repository) CreateModelRun(ctx context.Context, assetID, capability, provider, model, inputHash, promptVersion, schemaVersion, requestJSON string) (string, bool, error) {
 	var existingID, state string
 	err := r.db.QueryRowContext(ctx, `SELECT id,state FROM model_runs WHERE capability=? AND provider=? AND model=? AND input_hash=? AND prompt_version=? AND schema_version=?`, capability, provider, model, inputHash, promptVersion, schemaVersion).Scan(&existingID, &state)
@@ -2153,6 +2158,16 @@ func (r *Repository) CreateModelRun(ctx context.Context, assetID, capability, pr
 
 func (r *Repository) FailModelRun(ctx context.Context, runID, code, message, raw string) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='failed',raw_response=?,error_code=?,error_message=?,finished_at=? WHERE id=?`, raw, code, message, formatTime(time.Now()), runID)
+	return err
+}
+
+// MarkModelRunCommitted advances a validated run to committed without writing
+// an asset_analysis row. CommitAnalysisWithShots does both; the multiframe
+// refinement run replaces only the shot rows (ReplaceAssetShots) while the
+// asset-level analysis stays attributed to the run that produced it, so its
+// run record needs the same state transition on its own.
+func (r *Repository) MarkModelRunCommitted(ctx context.Context, runID string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND state='validated'`, formatTime(time.Now()), runID)
 	return err
 }
 
@@ -2386,7 +2401,7 @@ func (r *Repository) GetAssetDetail(ctx context.Context, assetID string) (*domai
 		d.ProxyPath = a.LocalPath
 	}
 	var raw string
-	if err := r.db.QueryRowContext(ctx, `SELECT json_object('asset_type',asset_type,'scene_tags',json(scene_tags_json),'subjects',json(subjects_json),'people_count',people_count,'shot_size',shot_size,'camera_motion',camera_motion,'lighting',lighting,'audio_type',audio_type,'has_speech',has_speech,'summary',summary,'usable_as',json(usable_as_json),'mood_tags',json(mood_tags_json),'quality',quality,'quality_flags',json(quality_flags_json),'extra_tags',json(extra_tags_json),'editorial_reason',editorial_reason) FROM asset_analysis WHERE asset_id=?`, assetID).Scan(&raw); err == nil {
+	if err := r.db.QueryRowContext(ctx, `SELECT json_object('asset_type',asset_type,'scene_tags',json(scene_tags_json),'subjects',json(subjects_json),'people_count',people_count,'shot_size',shot_size,'camera_motion',camera_motion,'lighting',lighting,'audio_type',audio_type,'has_speech',CASE WHEN has_speech=1 THEN json('true') ELSE json('false') END,'summary',summary,'usable_as',json(usable_as_json),'mood_tags',json(mood_tags_json),'quality',quality,'quality_flags',json(quality_flags_json),'extra_tags',json(extra_tags_json),'editorial_reason',editorial_reason) FROM asset_analysis WHERE asset_id=?`, assetID).Scan(&raw); err == nil {
 		var a domain.StructuredAnalysis
 		if json.Unmarshal([]byte(raw), &a) == nil {
 			d.Analysis = &a

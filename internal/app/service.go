@@ -235,6 +235,10 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("initialize alignment provider: %w", err)
 	}
+	shotDetector, err := providers.NewShotDetector(cfg.Providers)
+	if err != nil {
+		return nil, fmt.Errorf("initialize shot detector: %w", err)
+	}
 	tagCurator, err := providers.NewTagCurator(cfg.Providers.TagCuratorPrimary, cfg.Providers)
 	if err != nil {
 		return nil, fmt.Errorf("initialize tag curator: %w", err)
@@ -272,7 +276,7 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 	channelRuntime := newProviderChannelRuntime(repo, cfg, secrets, asr, fallback, videoProvider, tagCurator, embedder, planner)
 	service := &Service{
 		repo: repo, cfg: cfg, scanner: ingest.NewScanner(repo),
-		pipeline: NewPipeline(repo, cfg.CacheDir, channelRuntime.asr(), channelRuntime.asrFallback(), channelRuntime.video(), alignment, plan, sourceStager, time.Duration(cfg.Pipeline.ProviderRouteDeferralMinutes)*time.Minute),
+		pipeline: NewPipeline(repo, cfg.CacheDir, channelRuntime.asr(), channelRuntime.asrFallback(), channelRuntime.video(), alignment, shotDetector, plan, sourceStager, time.Duration(cfg.Pipeline.ProviderRouteDeferralMinutes)*time.Minute),
 		curator:  channelRuntime.curator(), embedder: channelRuntime.embedder(), planner: channelRuntime.planner(),
 		hardware: hardware, adminToken: adminToken, agentToken: agentToken, secrets: secrets,
 		channelRuntime: channelRuntime,

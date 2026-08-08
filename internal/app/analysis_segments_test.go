@@ -71,7 +71,7 @@ func TestAnalyzeVideoSplitsAnOversizedProxyIntoWindowsThatFit(t *testing.T) {
 	provider := &recordingVideoProvider{inlineLimit: info.Size() / 3}
 	pipeline := newTestPipelineWithVideo(provider)
 
-	result, raw, err := pipeline.analyzeVideo(context.Background(), "asset-1",
+	result, raw, err := pipeline.analyzeVideo(context.Background(), provider, "asset-1",
 		videoanalysis.Input{VideoPath: proxy}, durationMS)
 	if err != nil {
 		t.Fatalf("analyze: %v", err)
@@ -122,7 +122,7 @@ func TestAnalyzeVideoSendsAFittingProxyWhole(t *testing.T) {
 	provider := &recordingVideoProvider{inlineLimit: 64 << 20}
 	pipeline := newTestPipelineWithVideo(provider)
 
-	if _, _, err := pipeline.analyzeVideo(context.Background(), "asset-1",
+	if _, _, err := pipeline.analyzeVideo(context.Background(), provider, "asset-1",
 		videoanalysis.Input{VideoPath: proxy}, durationMS); err != nil {
 		t.Fatalf("analyze: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestAnalyzeVideoFailsTheAssetWhenAWindowFails(t *testing.T) {
 	provider := &recordingVideoProvider{inlineLimit: info.Size() / 3, failAt: 2}
 	pipeline := newTestPipelineWithVideo(provider)
 
-	_, raw, err := pipeline.analyzeVideo(context.Background(), "asset-1",
+	_, raw, err := pipeline.analyzeVideo(context.Background(), provider, "asset-1",
 		videoanalysis.Input{VideoPath: proxy}, durationMS)
 	if err == nil {
 		t.Fatal("a failed window must fail the asset's analysis")
@@ -172,7 +172,7 @@ func TestAnalyzeVideoRemovesItsScratchWindows(t *testing.T) {
 	provider := &recordingVideoProvider{inlineLimit: info.Size() / 3}
 	pipeline := newTestPipelineWithVideo(provider)
 
-	if _, _, err := pipeline.analyzeVideo(context.Background(), "asset-1",
+	if _, _, err := pipeline.analyzeVideo(context.Background(), provider, "asset-1",
 		videoanalysis.Input{VideoPath: proxy}, durationMS); err != nil {
 		t.Fatalf("analyze: %v", err)
 	}

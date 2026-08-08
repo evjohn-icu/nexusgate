@@ -115,7 +115,7 @@ func TestAnalyzeConsumesAlignedTimelineWhenAlignmentSucceeded(t *testing.T) {
 	}
 
 	video := &recordingVideoProviderForAlignment{}
-	pipeline := NewPipeline(repo, t.TempDir(), nil, nil, video, fakeAlignmentProvider{}, media.HardwarePlan{}, nil, providerRouteDeferral)
+	pipeline := NewPipeline(repo, t.TempDir(), nil, nil, video, fakeAlignmentProvider{}, nil, media.HardwarePlan{}, nil, providerRouteDeferral)
 	if err := repo.EnqueueJob(ctx, assetID, domain.JobAlign, hashStrings("chain", "align"), 50); err != nil {
 		t.Fatal(err)
 	}

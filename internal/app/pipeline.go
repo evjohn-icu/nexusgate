@@ -15,14 +15,13 @@ import (
 	"time"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
-	videoanalysis "github.com/evjohn-icu/timingdex/internal/domain/video_analysis"
 	"github.com/evjohn-icu/timingdex/internal/idgen"
 	"github.com/evjohn-icu/timingdex/internal/media"
-	"github.com/evjohn-icu/timingdex/internal/normalize"
 	"github.com/evjohn-icu/timingdex/internal/providerchannels"
 	"github.com/evjohn-icu/timingdex/internal/providerpool"
 	"github.com/evjohn-icu/timingdex/internal/providers"
 	"github.com/evjohn-icu/timingdex/internal/providers/common"
+	"github.com/evjohn-icu/timingdex/internal/providers/shotdetect"
 	videoproviders "github.com/evjohn-icu/timingdex/internal/providers/video"
 	"github.com/evjohn-icu/timingdex/internal/staging"
 )
@@ -70,6 +69,8 @@ type PipelineRepository interface {
 	SaveProviderFile(context.Context, domain.ProviderFile) error
 	SaveAlignment(context.Context, string, string, string, string, string, domain.AlignmentResult) error
 	EnqueueReanalysis(context.Context, string, string) error
+	ListAssetShots(context.Context, string) ([]domain.AssetShot, error)
+	MarkModelRunCommitted(context.Context, string) error
 }
 
 type Pipeline struct {
@@ -79,6 +80,7 @@ type Pipeline struct {
 	asrFallback   providers.ASR
 	videoProvider videoproviders.VideoUnderstandingProvider
 	alignment     providers.Alignment
+	shotDetector  shotdetect.Detector
 	hardware      media.HardwarePlan
 	sourceStager  *staging.SourceStager
 	// routeDeferral is how long a job is parked when every key on its route is
@@ -87,7 +89,7 @@ type Pipeline struct {
 	routeDeferral time.Duration
 }
 
-func NewPipeline(repo PipelineRepository, cacheDir string, asr providers.ASR, asrFallback providers.ASR, videoProvider videoproviders.VideoUnderstandingProvider, alignment providers.Alignment, hardware media.HardwarePlan, sourceStager *staging.SourceStager, deferral time.Duration) *Pipeline {
+func NewPipeline(repo PipelineRepository, cacheDir string, asr providers.ASR, asrFallback providers.ASR, videoProvider videoproviders.VideoUnderstandingProvider, alignment providers.Alignment, shotDetector shotdetect.Detector, hardware media.HardwarePlan, sourceStager *staging.SourceStager, deferral time.Duration) *Pipeline {
 	// A configured deferral of zero or less is a typo, not a request to park
 	// for no time at all — see minProviderRouteDeferral for why that matters.
 	// Floored here, at the point of use, exactly as the supervisor floors its
@@ -98,7 +100,7 @@ func NewPipeline(repo PipelineRepository, cacheDir string, asr providers.ASR, as
 	if deferral < minProviderRouteDeferral {
 		deferral = minProviderRouteDeferral
 	}
-	return &Pipeline{repo: repo, cacheDir: cacheDir, asr: asr, asrFallback: asrFallback, videoProvider: videoProvider, alignment: alignment, hardware: hardware, sourceStager: sourceStager, routeDeferral: deferral}
+	return &Pipeline{repo: repo, cacheDir: cacheDir, asr: asr, asrFallback: asrFallback, videoProvider: videoProvider, alignment: alignment, shotDetector: shotDetector, hardware: hardware, sourceStager: sourceStager, routeDeferral: deferral}
 }
 
 func (p *Pipeline) EnqueueAsset(ctx context.Context, assetID string) error {
@@ -567,107 +569,21 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		if m == nil {
 			return domain.Permanent(fmt.Errorf("metadata missing"))
 		}
-		reqJSON := fmt.Sprintf(`{"asset_id":%q,"path":%q}`, j.AssetID, sourcePath)
-		// v4 of the prompt and v2 of the schema change shot semantics: a shot
-		// that did not observe an object/action/mood keeps empty lists instead
-		// of inheriting the asset-global ones, and Gemini now reports per-shot
-		// objects/actions/mood. The version bump is what breaks CreateModelRun's
-		// cache so an old run can never satisfy a new analysis.
-		providerName, modelName, promptVersion := p.videoProvider.Name(), p.videoProvider.Model(), "footage-analysis-v4"
-		runID, cached, err := p.repo.CreateModelRun(ctx, j.AssetID, "vision", providerName, modelName, j.InputHash, promptVersion, "asset-analysis/v2", reqJSON)
-		if err != nil {
-			return err
+		route := p.multiframeRouteOf()
+		if route != nil {
+			if p.shotDetector != nil {
+				return p.analyzeWithDetector(ctx, &j, m, route)
+			}
+			if route.video != nil {
+				return p.analyzeTwoPass(ctx, &j, m, route)
+			}
+			// A frame-only endpoint cannot produce its own boundaries and no
+			// fallback can either: the deployment is missing one of the two
+			// things the multiframe path needs. Deterministic config, same
+			// answer on retry — permanent, with the remedy spelled out.
+			return domain.Permanent(fmt.Errorf("multiframe video provider %q requires a shot detector (providers.shot_detection) or a video-capable fallback provider (providers.vision_fallback)", route.analyzer.Name()))
 		}
-		if !cached {
-			var a domain.StructuredAnalysis
-			var raw string
-			proxy, e := p.repo.GetArtifact(ctx, j.AssetID, "proxy")
-			if e != nil {
-				return e
-			}
-			if proxy == nil {
-				return domain.Permanent(fmt.Errorf("proxy artifact missing"))
-			}
-			transcript, e := p.repo.GetTranscript(ctx, j.AssetID)
-			if e != nil {
-				return e
-			}
-			// The strongest timing evidence wins: a forced alignment's
-			// word-level timestamps place speech on the asset timeline far
-			// more precisely than the ASR transcript's segments (which some
-			// providers emit as a single 0-0 placeholder, or not at all).
-			// Without this, alignment results were persisted and never read.
-			if transcript != nil {
-				words, e := p.repo.GetAlignmentWords(ctx, j.AssetID)
-				if e != nil {
-					return e
-				}
-				if aligned := domain.TranscriptFromAlignmentWords(words); aligned != nil {
-					aligned.Language = transcript.Language
-					transcript = aligned
-				}
-			}
-			analyzeReq := videoanalysis.Input{VideoPath: proxy.LocalPath, Transcript: transcript, Metadata: *m}
-			requiresPreparation := false
-			if preparation, ok := p.videoProvider.(interface{ RequiresVideoPreparation() bool }); ok {
-				requiresPreparation = preparation.RequiresVideoPreparation()
-			} else if _, ok := p.videoProvider.(videoproviders.VideoPreparer); ok {
-				requiresPreparation = true
-			}
-			if requiresPreparation {
-				preparer, ok := p.videoProvider.(videoproviders.VideoPreparer)
-				if !ok {
-					return domain.Permanent(fmt.Errorf("video provider %q requires preparation but cannot prepare video", p.videoProvider.Name()))
-				}
-				cachedFile, e := p.repo.GetProviderFile(ctx, j.AssetID, "proxy", proxy.ProfileHash, p.videoProvider.Name())
-				if e != nil {
-					return e
-				}
-				if cachedFile == nil || cachedFile.State != "ACTIVE" || (cachedFile.ExpiresAt != nil && cachedFile.ExpiresAt.Before(time.Now())) {
-					prepared, e := preparer.PrepareVideo(ctx, videoproviders.PrepareVideoRequest{VideoPath: proxy.LocalPath, DisplayName: j.AssetID + "-proxy.mp4", MIMEType: "video/mp4"})
-					if e != nil {
-						return e
-					}
-					cachedFile = &domain.ProviderFile{ID: idgen.New(), AssetID: j.AssetID, ArtifactType: "proxy", ProfileHash: proxy.ProfileHash, Provider: p.videoProvider.Name(), RemoteName: prepared.RemoteName, RemoteURI: prepared.RemoteURI, MIMEType: prepared.MIMEType, State: prepared.State, SizeBytes: prepared.SizeBytes}
-					if e := p.repo.SaveProviderFile(ctx, *cachedFile); e != nil {
-						return e
-					}
-				}
-				analyzeReq.RemoteURI, analyzeReq.MIMEType = cachedFile.RemoteURI, cachedFile.MIMEType
-			}
-			result, rawResult, providerErr := p.analyzeVideo(ctx, j.AssetID, analyzeReq, m.DurationMS)
-			raw = rawResult
-			err = providerErr
-			if err != nil {
-				_ = p.repo.FailModelRun(ctx, runID, "provider_error", err.Error(), raw)
-				return err
-			}
-			// The model has been paid and has answered; nothing from here to the
-			// commit touches the network. Both validators mark their own
-			// rejections permanent (see normalize.ValidateAndNormalize and
-			// validateAnalysisShots), so these two returns stay plain: the
-			// verdict travels with the error rather than being restated by
-			// whoever happens to be calling.
-			a = result.ToStructuredAnalysis()
-			a, err = normalize.ValidateAndNormalize(a)
-			if err != nil {
-				_ = p.repo.FailModelRun(ctx, runID, "validation_error", err.Error(), "")
-				return err
-			}
-			shots := result.ToAssetShots(j.AssetID, runID)
-			if err := validateAnalysisShots(shots, m.DurationMS); err != nil {
-				_ = p.repo.FailModelRun(ctx, runID, "validation_error", err.Error(), raw)
-				return err
-			}
-			parsed, _ := json.Marshal(a)
-			if err := p.repo.StageModelRun(ctx, runID, raw, string(parsed)); err != nil {
-				return err
-			}
-			if err := p.repo.CommitAnalysisWithShots(ctx, j.AssetID, runID, "asset-analysis/v2", a, shots); err != nil {
-				return err
-			}
-		}
-		return p.repo.EnqueueJob(ctx, j.AssetID, domain.JobIndex, hashStrings(j.InputHash, "index-v1"), 10)
+		return p.analyzeAssetVideo(ctx, &j, m, p.videoProvider, sourcePath)
 	case domain.JobIndex:
 		return p.repo.RebuildSearch(ctx, j.AssetID)
 	default:
