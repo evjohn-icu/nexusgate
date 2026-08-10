@@ -239,6 +239,52 @@ func TestSupportBundleCapsRecentErrorCodesAtTwenty(t *testing.T) {
 	}
 }
 
+type largeBundleSource struct{ doctor string }
+
+func (largeBundleSource) JobSummary(context.Context) (domain.JobSummary, error) {
+	return domain.JobSummary{}, nil
+}
+func (largeBundleSource) JobIssues(context.Context) ([]domain.JobIssue, error) { return nil, nil }
+func (s largeBundleSource) Doctor(_ context.Context, w io.Writer) error {
+	_, err := io.WriteString(w, s.doctor)
+	return err
+}
+
+func TestSupportBundleBoundsOversizedEntriesAndLeavesNoPartialOutput(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "doctor.zip")
+	if err := Generate(context.Background(), domain.DoctorReport{}, config.Config{}, largeBundleSource{doctor: strings.Repeat("x", maxBundleEntryBytes+1024)}, out); err != nil {
+		t.Fatal(err)
+	}
+	files := readZip(t, out)
+	if len(files["doctor.txt"]) > maxBundleEntryBytes || !strings.Contains(string(files["doctor.txt"]), "TRUNCATED") {
+		t.Fatalf("doctor entry was not bounded with marker: %d bytes", len(files["doctor.txt"]))
+	}
+	out = filepath.Join(dir, "config.zip")
+	cfg := config.Config{Providers: config.ProvidersConfig{Alignment: config.AlignmentConfig{Args: []string{strings.Repeat("x", maxBundleEntryBytes+1024)}}}}
+	if err := Generate(context.Background(), domain.DoctorReport{}, cfg, largeBundleSource{}, out); err != nil {
+		t.Fatal(err)
+	}
+	files = readZip(t, out)
+	if len(files["config.sanitized.json"]) > maxBundleEntryBytes || !strings.Contains(string(files["config.sanitized.json"]), "TRUNCATED") {
+		t.Fatalf("config entry was not bounded with marker: %d bytes", len(files["config.sanitized.json"]))
+	}
+	bad := filepath.Join(t.TempDir(), "missing", "bundle.zip")
+	if err := Generate(context.Background(), domain.DoctorReport{}, config.Config{}, largeBundleSource{doctor: strings.Repeat("x", maxBundleEntryBytes*3)}, bad); err == nil {
+		t.Fatal("expected failure creating archive in missing directory")
+	}
+	if _, err := os.Stat(bad); !os.IsNotExist(err) {
+		t.Fatalf("partial output exists after failed generation: %v", err)
+	}
+}
+
+func TestSanitizePathTextIsCrossPlatformAndPreservesURLs(t *testing.T) {
+	got := SanitizePathText(`file C:\Users\ev\footage\clip.mp4 URL https://example.test/a/b`)
+	if strings.Contains(got, `C:\Users`) || !strings.Contains(got, "clip.mp4") || !strings.Contains(got, "https://example.test/a/b") {
+		t.Fatalf("sanitized text = %q", got)
+	}
+}
+
 func readZip(t *testing.T, path string) map[string][]byte {
 	t.Helper()
 	file, err := os.Open(path)

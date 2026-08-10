@@ -73,6 +73,16 @@ func NewClient(baseURL, fingerprint string) *Client {
 	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: &http.Client{Transport: transport, Timeout: 30 * time.Second}}
 }
 
+// ValidFingerprint accepts only the canonical 64-character SHA-256 hex form.
+func ValidFingerprint(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
 func (c *Client) Enroll(ctx context.Context, pairingToken string, registration remote.WorkerRegistration) (Enrollment, error) {
 	body := struct {
 		PairingToken string `json:"pairing_token"`

@@ -19,7 +19,7 @@ caveat); this file is the Unraid-specific walkthrough.
 ## 1. Build (or obtain) the GPU image
 
 This project does not publish images to a registry yet, so the exact tag the
-templates reference (`timingdex:v0.19-gpu`) has to exist somewhere Unraid's
+templates reference (`timingdex:v0.29.0-alpha`) has to exist somewhere Unraid's
 Docker can see. The simplest path is building it directly on the Unraid box,
 which needs no registry at all — Unraid's Docker daemon will use a locally
 tagged image instead of trying to pull it:
@@ -27,7 +27,7 @@ tagged image instead of trying to pull it:
 ```sh
 # From the Unraid terminal, with the repo checked out somewhere under /mnt/user:
 cd /mnt/user/.../timingdex
-docker build --target gpu -t timingdex:v0.19-gpu .
+docker build --target gpu -t timingdex:v0.29.0-alpha .
 ```
 
 If you'd rather build elsewhere, push the same tag to a registry your Unraid
@@ -120,7 +120,7 @@ chown -R 10001:10001 /mnt/user/appdata/timingdex-worker
 
 docker run --rm -it \
   -v /mnt/user/appdata/timingdex-worker:/var/lib/timingdex-worker \
-  timingdex:v0.19-gpu \
+  timingdex:v0.29.0-alpha \
   worker enroll --hub https://<hub-ip>:8787 \
     --fingerprint <hub-fingerprint-from-/workers> \
     --pairing <one-time-token-from-/workers> \
@@ -152,7 +152,7 @@ docker exec timingdex-hub vainfo      # only present in the gpu image variant
 ## Updating
 
 There is no PUID/PGID or root-owned migration step to worry about on
-upgrade: rebuild or repull the `timingdex:v0.19-gpu` tag, then recreate both
+upgrade: rebuild or repull the `timingdex:v0.29.0-alpha` tag, then recreate both
 containers from the CA UI (**Force Update** / **Apply**). The uid stays
 10001 across versions, so the one-time `chown` above does not need to be
 repeated.

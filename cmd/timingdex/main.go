@@ -404,7 +404,7 @@ Usage:
   timingdex doctor [-json]
   timingdex secrets rekey
   timingdex support bundle [-out path]
-  timingdex worker enroll --hub https://nas:8787 --pairing <token> [--name worker] [--mount root-id=/mounted/path] [--provider-operation video_analysis]
+  timingdex worker enroll --hub https://nas:8787 --fingerprint <sha256> --pairing <token> [--name worker] [--mount root-id=/mounted/path] [--provider-operation video_analysis]
   timingdex worker run [--config path] [--tray]
   timingdex worker doctor [--config path]`)
 	return errors.New("invalid command")
@@ -433,6 +433,9 @@ func runWorkerCommand() error {
 		}
 		if *hub == "" || *pairing == "" {
 			return errors.New("--hub and --pairing are required")
+		}
+		if !worker.ValidFingerprint(*fingerprint) {
+			return errors.New("--fingerprint is required and must be a SHA-256 hex fingerprint")
 		}
 		if !strings.HasPrefix(strings.ToLower(*hub), "https://") {
 			return errors.New("Worker enrollment requires an https Hub URL")

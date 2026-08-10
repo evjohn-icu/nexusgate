@@ -157,11 +157,10 @@ func runCacheInspect(ctx context.Context, repo *sqliterepo.Repository, cfg confi
 	fmt.Printf("%-14s %-8s %6s\n", "scratch", countLabel(stats.ScratchCount, "files"), humanBytes(stats.ScratchBytes))
 	fmt.Printf("%-14s %-8s %6s\n", "orphans", countLabel(len(orphans), "dirs"), humanBytes(orphanBytes))
 	fmt.Printf("%-14s %-8s %6s\n", "database", "-", humanBytes(dbBytes))
-	fmt.Printf("%-14s %-8s %6s\n", "total derived", "-", humanBytes(stats.TotalBytes))
-	// Everything except the database is regenerable: derived artifacts come
-	// back from a pipeline re-run, staging copies re-arrive on demand, and
-	// orphan directories are stale by definition.
-	fmt.Printf("可安全释放（可重建）: %s\n", humanBytes(stats.TotalBytes))
+	fmt.Printf("%-14s %-8s %6s\n", "total cache", countLabel(stats.TotalFiles, "files"), humanBytes(stats.TotalBytes))
+	fmt.Printf("%-14s %-8s %6s\n", "rebuildable", "-", humanBytes(stats.RebuildableBytes))
+	fmt.Printf("%-14s %-8s %6s\n", "unclassified", countLabel(stats.OrphanCount, "files"), humanBytes(stats.OrphanBytes))
+	fmt.Printf("可安全释放（仅可重建）: %s\n", humanBytes(stats.RebuildableBytes))
 	return nil
 }
 
