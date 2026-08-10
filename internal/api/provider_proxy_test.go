@@ -283,7 +283,7 @@ func TestWorkerProviderProxyAuthSchemes(t *testing.T) {
 			if err != nil || job == nil {
 				t.Fatalf("lease=%+v err=%v", job, err)
 			}
-			service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), Providers: config.ProvidersConfig{VisionPrimary: "volcengine_video", VolcVideo: config.ProviderConfig{Enabled: true, BaseURL: upstream.URL, APIKey: "secret-auth-key", AuthScheme: tc.scheme}}})
+			service, err := app.NewService(repo, config.Config{DataDir: secureTestDataDir(t), Providers: config.ProvidersConfig{VisionPrimary: "volcengine_video", VolcVideo: config.ProviderConfig{Enabled: true, BaseURL: upstream.URL, APIKey: "secret-auth-key", AuthScheme: tc.scheme}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -344,7 +344,7 @@ func proxyFixture(t *testing.T, ctx context.Context, provider config.ProviderCon
 	if err != nil || job == nil {
 		t.Fatalf("lease=%+v err=%v", job, err)
 	}
-	service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), Providers: config.ProvidersConfig{VisionPrimary: "volcengine_video", VolcVideo: provider}})
+	service, err := app.NewService(repo, config.Config{DataDir: secureTestDataDir(t), Providers: config.ProvidersConfig{VisionPrimary: "volcengine_video", VolcVideo: provider}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -350,7 +350,6 @@ func (s *Server) createWebDAVAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if !decodeStrictJSON(w, r, &req, 1<<20) {
 		return
-		return
 	}
 	if err := s.service.CreateWebDAVAccount(r.Context(), req.Username, req.Password); err != nil {
 		switch {
@@ -405,7 +404,6 @@ func (s *Server) linkWebDAVAsset(w http.ResponseWriter, r *http.Request) {
 		Kind    string `json:"kind"`
 	}
 	if !decodeStrictJSON(w, r, &req, 1<<20) {
-		return
 		return
 	}
 	path, err := s.service.LinkWebDAVAsset(r.Context(), r.PathValue("id"), req.AssetID, req.Kind)
@@ -509,7 +507,6 @@ func (s *Server) saveProviderChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	if !decodeStrictJSON(w, r, &input, 1<<20) {
 		return
-		return
 	}
 	channel := domain.ProviderChannel{ID: input.ID, Capability: strings.TrimSpace(input.Capability), Label: strings.TrimSpace(input.Label), ProviderName: strings.TrimSpace(input.ProviderName), Protocol: strings.TrimSpace(input.Protocol), Endpoint: strings.TrimSpace(input.Endpoint), Model: strings.TrimSpace(input.Model), Enabled: input.Enabled, RouteOrder: input.RouteOrder, CostPerRequest: input.CostPerRequest, CostPerVideoMinute: input.CostPerVideoMinute, CostPerAudioMinute: input.CostPerAudioMinute}
 	// keys is positional, aligned with channel.Members below. Labels are
@@ -558,7 +555,6 @@ func (s *Server) saveProviderChannel(w http.ResponseWriter, r *http.Request) {
 func (s *Server) updateProviderChannel(w http.ResponseWriter, r *http.Request) {
 	var patch app.ProviderChannelUpdate
 	if !decodeStrictJSON(w, r, &patch, 1<<20) {
-		return
 		return
 	}
 	updated, err := s.service.UpdateProviderChannel(r.Context(), r.PathValue("id"), patch)
@@ -1517,7 +1513,6 @@ func (s *Server) setWorkerJobAssignment(w http.ResponseWriter, r *http.Request) 
 	}
 	if !decodeStrictJSON(w, r, &input, 16<<10) {
 		return
-		return
 	}
 	// Validate mode and worker_id before calling the service so an invalid
 	// value is a 400, not a 500 from writeError.
@@ -1630,7 +1625,6 @@ func (s *Server) storageOverview(w http.ResponseWriter, r *http.Request) {
 func (s *Server) savePipelineThrottle(w http.ResponseWriter, r *http.Request) {
 	var throttle domain.PipelineThrottle
 	if !decodeStrictJSON(w, r, &throttle, 8<<10) {
-		return
 		return
 	}
 	if err := throttle.Validate(); err != nil {
@@ -2018,7 +2012,6 @@ func (s *Server) listCollectionAssets(w http.ResponseWriter, r *http.Request) {
 func (s *Server) saveCollection(w http.ResponseWriter, r *http.Request) {
 	var collection domain.AssetCollection
 	if !decodeStrictJSON(w, r, &collection, 64<<10) {
-		return
 		return
 	}
 	// Validate required fields before calling the service so an invalid
@@ -2429,7 +2422,6 @@ func (s *Server) reviewTagProposal(w http.ResponseWriter, r *http.Request) {
 	}
 	if !decodeStrictJSON(w, r, &req, 1<<20) {
 		return
-		return
 	}
 	if err := s.service.ReviewTagProposal(r.Context(), r.PathValue("id"), req.Action, req.Note); err != nil {
 		writeError(w, err)
@@ -2503,7 +2495,6 @@ func (s *Server) reviseRepurposePlan(w http.ResponseWriter, r *http.Request) {
 		EditorNote string               `json:"editor_note"`
 	}
 	if !decodeStrictJSON(w, r, &request, 1<<20) {
-		return
 		return
 	}
 	revision, err := s.service.ReviseRepurposePlan(r.Context(), r.PathValue("id"), request.Sections, request.EditorNote)
