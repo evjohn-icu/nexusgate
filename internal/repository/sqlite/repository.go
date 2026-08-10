@@ -2662,8 +2662,22 @@ func (r *Repository) CreateModelRun(ctx context.Context, assetID, capability, pr
 		return "", false, err
 	}
 	id := idgen.New()
-	_, err = r.db.ExecContext(ctx, `INSERT INTO model_runs(id,asset_id,capability,provider,model,input_hash,prompt_version,schema_version,state,request_json,started_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, id, assetID, capability, provider, model, inputHash, promptVersion, schemaVersion, "running", requestJSON, formatTime(time.Now()))
-	return id, false, err
+	now := formatTime(time.Now().UTC())
+	res, err := r.db.ExecContext(ctx, `INSERT INTO model_runs(id,asset_id,capability,provider,model,input_hash,prompt_version,schema_version,state,request_json,started_at)
+SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?))`, id, assetID, capability, provider, model, inputHash, promptVersion, schemaVersion, "running", requestJSON, now, jobID, jobID, assetID, owner, now)
+	if err != nil {
+		return "", false, err
+	}
+	if jobID != "" {
+		n, err := res.RowsAffected()
+		if err != nil {
+			return "", false, err
+		}
+		if n != 1 {
+			return "", false, leaseLostErr(jobID, owner)
+		}
+	}
+	return id, false, nil
 }
 
 func (r *Repository) FailModelRun(ctx context.Context, runID, code, message, raw string, lease ...string) error {

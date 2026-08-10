@@ -96,7 +96,9 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 	raw = rawResult
 	err = providerErr
 	if err != nil {
-		_ = p.failModelRun(ctx, runID, "provider_error", err.Error(), raw, j, worker)
+		if failErr := p.failModelRun(ctx, runID, "provider_error", err.Error(), raw, j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 	// The model has been paid and has answered; nothing from here to the
@@ -108,12 +110,16 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 	a = result.ToStructuredAnalysis()
 	a, err = normalize.ValidateAndNormalize(a)
 	if err != nil {
-		_ = p.failModelRun(ctx, runID, "validation_error", err.Error(), "", j, worker)
+		if failErr := p.failModelRun(ctx, runID, "validation_error", err.Error(), "", j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 	shots := result.ToAssetShots(j.AssetID, runID)
 	if err := validateAnalysisShots(shots, m.DurationMS); err != nil {
-		_ = p.failModelRun(ctx, runID, "validation_error", err.Error(), raw, j, worker)
+		if failErr := p.failModelRun(ctx, runID, "validation_error", err.Error(), raw, j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 	parsed, _ := json.Marshal(a)

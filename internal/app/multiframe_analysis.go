@@ -78,7 +78,9 @@ func (p *Pipeline) analyzeWithDetector(ctx context.Context, j *domain.Job, m *do
 
 	bounds, err := p.shotDetector.Detect(ctx, proxy.LocalPath, m.DurationMS)
 	if err != nil {
-		_ = p.failModelRun(ctx, runID, "provider_error", err.Error(), "", j, worker)
+		if failErr := p.failModelRun(ctx, runID, "provider_error", err.Error(), "", j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 	// A boundary set that violates the timingdex-owned rules is a verdict on
@@ -87,31 +89,41 @@ func (p *Pipeline) analyzeWithDetector(ctx context.Context, j *domain.Job, m *do
 	// permanent, exactly like a model answer that fails validation.
 	normalized, err := shotdetect.Normalize(bounds, m.DurationMS)
 	if err != nil {
-		_ = p.failModelRun(ctx, runID, "validation_error", err.Error(), "", j, worker)
+		if failErr := p.failModelRun(ctx, runID, "validation_error", err.Error(), "", j, worker); failErr != nil {
+			return failErr
+		}
 		return domain.Permanent(err)
 	}
 
 	summary, summaryRaw, err := p.summaryCall(ctx, route.analyzer, proxy, transcript, m, normalized)
 	raws = append(raws, rawMessage(summaryRaw))
 	if err != nil {
-		_ = p.failModelRun(ctx, runID, "provider_error", err.Error(), joinRaw(raws), j, worker)
+		if failErr := p.failModelRun(ctx, runID, "provider_error", err.Error(), joinRaw(raws), j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 	a := summary.ToStructuredAnalysis()
 	a, err = normalize.ValidateAndNormalize(a)
 	if err != nil {
-		_ = p.failModelRun(ctx, runID, "validation_error", err.Error(), joinRaw(raws), j, worker)
+		if failErr := p.failModelRun(ctx, runID, "validation_error", err.Error(), joinRaw(raws), j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 
 	shots, metas, raws2, err := p.refineShots(ctx, j.AssetID, runID, proxy, transcript, m, route.analyzer, normalized)
 	raws = append(raws, raws2...)
 	if err != nil {
-		_ = p.failModelRun(ctx, runID, "provider_error", err.Error(), joinRaw(raws), j, worker)
+		if failErr := p.failModelRun(ctx, runID, "provider_error", err.Error(), joinRaw(raws), j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 	if err := validateAnalysisShots(shots, m.DurationMS); err != nil {
-		_ = p.failModelRun(ctx, runID, "validation_error", err.Error(), joinRaw(raws), j, worker)
+		if failErr := p.failModelRun(ctx, runID, "validation_error", err.Error(), joinRaw(raws), j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 	foldShotMetadata(&a, metas)
@@ -169,11 +181,15 @@ func (p *Pipeline) analyzeTwoPass(ctx context.Context, j *domain.Job, m *domain.
 	refined, _, raws2, err := p.refineShots(ctx, j.AssetID, runID, proxy, transcript, m, route.analyzer, shotsToBounds(passOneShots))
 	raws = append(raws, raws2...)
 	if err != nil {
-		_ = p.failModelRun(ctx, runID, "provider_error", err.Error(), joinRaw(raws), j, worker)
+		if failErr := p.failModelRun(ctx, runID, "provider_error", err.Error(), joinRaw(raws), j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 	if err := validateAnalysisShots(refined, m.DurationMS); err != nil {
-		_ = p.failModelRun(ctx, runID, "validation_error", err.Error(), joinRaw(raws), j, worker)
+		if failErr := p.failModelRun(ctx, runID, "validation_error", err.Error(), joinRaw(raws), j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 	if err := p.repo.StageModelRun(ctx, runID, joinRaw(raws), "", j.ID, worker); err != nil {

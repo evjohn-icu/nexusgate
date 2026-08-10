@@ -144,3 +144,20 @@ func TestStaleLeaseModelRunLifecycleWritesRejected(t *testing.T) {
 		t.Fatalf("stale lifecycle changed state to %q", state)
 	}
 }
+
+func TestStaleLeaseCreateModelRunRejected(t *testing.T) {
+	ctx := context.Background()
+	repo, assetID := setupModelRunsTest(t)
+	jobID := leaseBoundaryJob(t, repo, "owner-a")
+	reclaimLease(t, repo, jobID, "owner-b")
+	if _, _, err := repo.CreateModelRun(ctx, assetID, "vision", "fixture", "model", "stale-create", "prompt", "schema", "{}", jobID, "owner-a"); !errors.Is(err, domain.ErrJobLeaseLost) {
+		t.Fatalf("CreateModelRun error=%v", err)
+	}
+	var count int
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM model_runs WHERE input_hash='stale-create'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("stale CreateModelRun inserted %d rows", count)
+	}
+}

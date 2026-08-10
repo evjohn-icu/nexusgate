@@ -135,9 +135,9 @@ type Pipeline struct {
 func (p *Pipeline) failModelRun(ctx context.Context, runID, code, message, raw string, j *domain.Job, worker string) error {
 	err := p.repo.FailModelRun(ctx, runID, code, message, raw, j.ID, worker)
 	if errors.Is(err, domain.ErrJobLeaseLost) {
-		return nil
+		return err
 	}
-	return err
+	return nil
 }
 
 func NewPipeline(repo PipelineRepository, cacheDir string, asr providers.ASR, asrFallback providers.ASR, videoProvider videoproviders.VideoUnderstandingProvider, alignment providers.Alignment, shotDetector shotdetect.Detector, hardware media.HardwarePlan, sourceStager *staging.SourceStager, deferral time.Duration, minFreeBytes int64) *Pipeline {
