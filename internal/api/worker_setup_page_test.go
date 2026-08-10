@@ -74,6 +74,37 @@ func TestWorkerSetupPageRendersWithStepMarkers(t *testing.T) {
 	}
 }
 
+func TestWorkerSetupPagePreservesRedactedRootsWhenAdminDetailsFail(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "worker-setup-page-fallback.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	NewServer("", service).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/worker-setup", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, marker := range []string{
+		"管理员路径详情加载失败，已保留脱敏素材目录。",
+		"路径需管理员 Token",
+		"renderMounts()",
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("page missing redacted-root fallback marker %q", marker)
+		}
+	}
+}
+
 func TestWorkerSetupContextAuthMatrixRedactsPaths(t *testing.T) {
 	ctx := context.Background()
 	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "worker-setup-context-auth.db"))
