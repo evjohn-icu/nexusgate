@@ -72,7 +72,7 @@ func seed(ctx context.Context, repo *sqlite.Repository, rootPath string) error {
 	if _, err := db.ExecContext(ctx, `INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,exists_now,is_primary,last_seen_at) VALUES(?,?,?,?,?,1,1,1,?)`, "location-fixture", "asset-fixture", root.ID, `"><img src=x onerror=window.__xss=1>.mp4`, `/tmp/fixture.mp4`, now); err != nil {
 		return err
 	}
-	if err := repo.ReplaceAssetShots(ctx, "asset-fixture", "", []domain.AssetShot{{ID: "shot-fixture", AssetID: "asset-fixture", Ordinal: 0, StartMS: 0, EndMS: 5000, Description: `"><img src=x onerror=window.__xss=1>`, Tags: []string{`"><img src=x onerror=window.__xss=1>`}, Objects: []string{"camera"}, Confidence: .9, CreatedAt: time.Now().UTC()}}); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, "asset-fixture", "", []domain.AssetShot{{ID: "shot-fixture", AssetID: "asset-fixture", Ordinal: 0, StartMS: 0, EndMS: 5000, Description: `"><img src=x onerror=window.__xss=1>`, Tags: []string{`"><img src=x onerror=window.__xss=1>`}, Objects: []string{"camera"}, Confidence: .9, CreatedAt: time.Now().UTC()}}, "", ""); err != nil {
 		return err
 	}
 	collection, err := repo.SaveAssetCollection(ctx, domain.AssetCollection{ID: "collection-fixture", Name: `"><img src=x onerror=window.__xss=1>`, Description: `"><img src=x onerror=window.__xss=1>`, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
@@ -89,6 +89,12 @@ func seed(ctx context.Context, repo *sqlite.Repository, rootPath string) error {
 		if err := repo.EnqueueJob(ctx, "asset-fixture", typ, "fixture-hash-"+string(rune('0'+i)), i); err != nil {
 			return err
 		}
+	}
+	if err := repo.EnqueueJob(ctx, "asset-fixture", domain.JobIndex, "fixture-hash-failed", 1); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE jobs SET state='failed',terminal=1,last_error_code='configuration',last_error_message=? WHERE asset_id=? AND job_type=? AND input_hash=?`, "fixture provider failure: offline provider is intentionally unavailable", "asset-fixture", string(domain.JobIndex), "fixture-hash-failed"); err != nil {
+		return err
 	}
 	return nil
 }
