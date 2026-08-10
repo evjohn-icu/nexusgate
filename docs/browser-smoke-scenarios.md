@@ -20,3 +20,16 @@ The Playwright smoke suite runs against the offline SQLite fixture server. It ne
 Every page assertion verifies that the admin token is absent from both `localStorage` and `sessionStorage`. After a reload, the token input and any generated pairing token must be gone from page state; the suite does not accept a token restored from browser storage. The token must not appear in rendered HTML, DOM text, URLs, request URLs, request bodies, or provider-channel responses. Provider requests are inspected to ensure the key value is never sent or exposed by the browser; only the in-memory admin authorization header is permitted for admin API calls.
 
 Run the temporary server with `/tmp/timingdex-playwright/run-fixture.sh`, then run the scenarios with Playwright at both viewports. The scenario source is intentionally not committed.
+
+## CI
+
+The `browser-smoke` CI job runs on pushes to `main`, pull requests, and manual dispatch. It
+installs Chromium with its system dependencies, verifies the tagged fixture compiles, starts
+the offline server, and runs `/tmp/timingdex-playwright/specs/`. The `/tmp/timingdex-playwright`
+spec bundle is an external CI input and must be provided before the job runs; it is not checked
+into this repository. The job is intentionally
+non-blocking for this release (`continue-on-error: true`) while the smoke signal is established.
+
+Failure artifacts are retained for three days. They are untrusted test output: never include
+admin tokens, provider keys, or other credentials in screenshots, traces, reports, or fixture
+logs.

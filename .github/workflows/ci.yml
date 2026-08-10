@@ -173,12 +173,47 @@ jobs:
       - run: go test -count=1 ./internal/app ./internal/media ./internal/providers/... ./internal/worker
 
   browser-smoke:
-    if: github.event_name == 'workflow_dispatch'
+    # Keep this signal non-blocking for this release while exercising it on pushes and PRs.
     continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go.mod, cache: true}
       - uses: actions/setup-node@v4
         with: {node-version: 22}
-      - run: npx --yes playwright --version
+      - name: install Playwright Chromium
+        run: npx --yes playwright install --with-deps chromium
+      - name: verify Playwright spec bundle
+        run: test -d /tmp/timingdex-playwright/specs && test -n "$(ls -A /tmp/timingdex-playwright/specs)"
+      - name: fail fast if browser fixture does not compile
+        run: bash scripts/check-browser-fixture.sh
+      - name: start browser fixture
+        run: |
+          TIMINGDEX_PLAYWRIGHT_SERVE=1 TIMINGDEX_PLAYWRIGHT_ADDR=127.0.0.1:4173 \
+            go test -tags playwrightfixture ./internal/api/browserfixture \
+            -run '^TestServePlaywrightFixture$' -count=1 -v > fixture.log 2>&1 &
+          echo $! > fixture.pid
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:4173/ >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat fixture.log
+          exit 1
+      - name: run browser smoke
+        run: npx --yes playwright test /tmp/timingdex-playwright/specs/
+      # Playwright output is untrusted test data: do not put tokens or provider keys in it.
+      - name: upload browser smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-smoke-artifacts
+          retention-days: 3
+          path: |
+            playwright-report/
+            test-results/
+            /tmp/timingdex-playwright/screenshots/
+            fixture.log
