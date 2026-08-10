@@ -171,10 +171,10 @@ func (r *Repository) LeaseNextWorkerDerive(ctx context.Context, worker remote.Wo
 	}
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(worker.Capabilities.LibraryRoots)), ",")
 	args := make([]any, 0, len(worker.Capabilities.LibraryRoots)+4)
-	args = append(args, string(domain.JobDerive), worker.ID)
 	for _, root := range worker.Capabilities.LibraryRoots {
 		args = append(args, root)
 	}
+	args = append(args, string(domain.JobDerive), worker.ID)
 	now := time.Now().UTC()
 	args = append(args, formatTime(now), formatTime(now), filter.MaxAssetBytes, filter.MaxAssetBytes, worker.ID)
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -197,7 +197,7 @@ func (r *Repository) LeaseNextWorkerDerive(ctx context.Context, worker remote.Wo
 	// strings.Repeat("?,", n) above: the format verb only expands '?'
 	// characters.  Actual root-ID values arrive via the args slice as bound
 	// parameters, so there is no SQL-injection path here.
-	query := fmt.Sprintf(`SELECT j.id,j.asset_id,al.root_id,al.relative_path,al.modified_ns,j.job_type,j.attempt_count,j.max_attempts,j.current_stage,j.progress,COALESCE(j.preferred_worker_id,''),COALESCE(j.assigned_worker_id,''),COALESCE((SELECT a.file_size FROM assets a WHERE a.id=j.asset_id),0) FROM jobs j JOIN asset_locations al ON al.asset_id=j.asset_id AND al.is_primary=1 AND al.exists_now=1 WHERE j.job_type=? AND (j.assigned_worker_id IS NULL OR j.assigned_worker_id=?) AND j.state IN ('pending','failed','running') AND j.terminal=0 AND j.attempt_count<j.max_attempts AND al.root_id IN (%s) AND j.run_after<=? AND (j.lease_expires_at IS NULL OR j.lease_expires_at<=?) AND (?=0 OR NOT EXISTS (SELECT 1 FROM assets a WHERE a.id=j.asset_id AND a.file_size>?)) ORDER BY CASE WHEN j.preferred_worker_id=? THEN 0 ELSE 1 END,j.priority DESC,j.created_at LIMIT 1`, placeholders)
+	query := fmt.Sprintf(`SELECT j.id,j.asset_id,al.root_id,al.relative_path,al.modified_ns,j.job_type,j.attempt_count,j.max_attempts,j.current_stage,j.progress,COALESCE(j.preferred_worker_id,''),COALESCE(j.assigned_worker_id,''),COALESCE((SELECT a.file_size FROM assets a WHERE a.id=j.asset_id),0) FROM jobs j JOIN asset_locations al ON al.id=(SELECT el.id FROM asset_locations el JOIN library_roots er ON er.id=el.root_id WHERE el.asset_id=j.asset_id AND el.exists_now=1 AND er.health_state<>'unavailable' AND el.root_id IN (%s) ORDER BY el.is_primary DESC,el.last_seen_at DESC,er.created_at,er.id,el.relative_path,el.id LIMIT 1) WHERE j.job_type=? AND (j.assigned_worker_id IS NULL OR j.assigned_worker_id=?) AND j.state IN ('pending','failed','running') AND j.terminal=0 AND j.attempt_count<j.max_attempts AND j.run_after<=? AND (j.lease_expires_at IS NULL OR j.lease_expires_at<=?) AND (?=0 OR NOT EXISTS (SELECT 1 FROM assets a WHERE a.id=j.asset_id AND a.file_size>?)) ORDER BY CASE WHEN j.preferred_worker_id=? THEN 0 ELSE 1 END,j.priority DESC,j.created_at LIMIT 1`, placeholders)
 	var job remote.WorkerJob
 	err = tx.QueryRowContext(ctx, query, args...).Scan(&job.JobID, &job.AssetID, &job.RootID, &job.RelativePath, &job.ModifiedNS, &job.JobType, &job.AttemptCount, &job.MaxAttempts, &job.CurrentStage, &job.Progress, &job.PreferredWorkerID, &job.AssignedWorkerID, &job.SourceBytes)
 	if errors.Is(err, sql.ErrNoRows) {

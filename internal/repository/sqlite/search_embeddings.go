@@ -51,7 +51,7 @@ func (r *Repository) UpsertShotTextEmbeddings(ctx context.Context, rows []search
 // superseded model never get scored against a query embedded by the current
 // one.
 func (r *Repository) ListShotTextEmbeddings(ctx context.Context, model string) ([]search.ShotEmbeddingRow, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT relative_path FROM asset_locations WHERE asset_id=s.asset_id AND is_primary=1 LIMIT 1),''),e.model,e.vector_blob,e.source_text_hash FROM shot_text_embeddings e JOIN asset_shots s ON s.id=e.shot_id WHERE e.model=? ORDER BY e.shot_id`, model)
+	rows, err := r.db.QueryContext(ctx, `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),''),e.model,e.vector_blob,e.source_text_hash FROM shot_text_embeddings e JOIN asset_shots s ON s.id=e.shot_id WHERE e.model=? ORDER BY e.shot_id`, model)
 	if err != nil {
 		return nil, err
 	}

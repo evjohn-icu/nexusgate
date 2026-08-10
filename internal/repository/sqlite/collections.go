@@ -227,7 +227,7 @@ func (r *Repository) RemoveShotFromCollection(ctx context.Context, collectionID,
 // ListCollectionShots returns the pinned shots in display order, joined with
 // the owning asset's name and the shot fields a basket needs.
 func (r *Repository) ListCollectionShots(ctx context.Context, collectionID string) ([]domain.CollectionShotDetail, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT cs.collection_id,cs.shot_id,cs.position,cs.created_at,s.asset_id,s.start_ms,s.end_ms,s.description,s.objects_json,COALESCE((SELECT relative_path FROM asset_locations WHERE asset_id=s.asset_id AND is_primary=1 LIMIT 1),'')
+	rows, err := r.db.QueryContext(ctx, `SELECT cs.collection_id,cs.shot_id,cs.position,cs.created_at,s.asset_id,s.start_ms,s.end_ms,s.description,s.objects_json,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),'')
 FROM collection_shots cs
 JOIN asset_shots s ON s.id=cs.shot_id
 WHERE cs.collection_id=? ORDER BY cs.position,cs.shot_id`, collectionID)

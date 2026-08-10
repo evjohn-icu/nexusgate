@@ -46,7 +46,7 @@ func (r *Repository) LexicalRankedShots(ctx context.Context, q string, weights [
 			sanitized[i] = w
 		}
 	}
-	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT relative_path FROM asset_locations WHERE asset_id=s.asset_id AND is_primary=1 LIMIT 1),''),bm25(asset_shot_search,0,0,?,?,?,?,?) AS rank FROM asset_shot_search JOIN asset_shots s ON s.id=asset_shot_search.shot_id WHERE asset_shot_search MATCH ? ORDER BY rank LIMIT ?`
+	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),''),bm25(asset_shot_search,0,0,?,?,?,?,?) AS rank FROM asset_shot_search JOIN asset_shots s ON s.id=asset_shot_search.shot_id WHERE asset_shot_search MATCH ? ORDER BY rank LIMIT ?`
 	rows, err := r.db.QueryContext(ctx, query, sanitized[0], sanitized[1], sanitized[2], sanitized[3], sanitized[4], ftsQuery, limit)
 	if err != nil {
 		return nil, err
@@ -87,7 +87,7 @@ func (r *Repository) TranscriptRankedShots(ctx context.Context, q string, limit 
 		where = append(where, `w.text LIKE ? ESCAPE '\'`)
 		args = append(args, p)
 	}
-	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT relative_path FROM asset_locations WHERE asset_id=s.asset_id AND is_primary=1 LIMIT 1),''),MIN(SUM(COALESCE(w.confidence,1)),5.0)/5.0 AS tscore FROM transcript_words w JOIN asset_shots s ON s.asset_id=w.asset_id AND s.start_ms < w.end_ms AND s.end_ms > w.start_ms WHERE ` + strings.Join(where, ` OR `) + ` GROUP BY s.id ORDER BY tscore DESC LIMIT ?`
+	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),''),MIN(SUM(COALESCE(w.confidence,1)),5.0)/5.0 AS tscore FROM transcript_words w JOIN asset_shots s ON s.asset_id=w.asset_id AND s.start_ms < w.end_ms AND s.end_ms > w.start_ms WHERE ` + strings.Join(where, ` OR `) + ` GROUP BY s.id ORDER BY tscore DESC LIMIT ?`
 	args = append(args, limit)
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -164,7 +164,7 @@ func (r *Repository) MetadataRankedShots(ctx context.Context, q string, limit in
 			ascii[token] = true
 		}
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT a.id,COALESCE(l.relative_path,'') FROM assets a LEFT JOIN asset_locations l ON l.asset_id=a.id AND l.is_primary=1`)
+	rows, err := r.db.QueryContext(ctx, `SELECT a.id,COALESCE(l.relative_path,'') FROM assets a LEFT JOIN asset_locations l ON l.id=(SELECT l2.id FROM asset_locations l2 JOIN library_roots lr ON lr.id=l2.root_id WHERE l2.asset_id=a.id AND l2.is_primary=1 AND l2.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l2.last_seen_at DESC,lr.created_at,lr.id,l2.relative_path,l2.id LIMIT 1)`)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +198,7 @@ func (r *Repository) MetadataRankedShots(ctx context.Context, q string, limit in
 		byID[a.id] = a.score
 	}
 	placeholders := strings.TrimSuffix(strings.Repeat(`?,`, len(ids)), `,`)
-	shotRows, err := r.db.QueryContext(ctx, `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT relative_path FROM asset_locations WHERE asset_id=s.asset_id AND is_primary=1 LIMIT 1),'') FROM asset_shots s WHERE s.asset_id IN (`+placeholders+`) ORDER BY s.asset_id,s.ordinal`, strSliceToAny(ids)...)
+	shotRows, err := r.db.QueryContext(ctx, `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),'') FROM asset_shots s WHERE s.asset_id IN (`+placeholders+`) ORDER BY s.asset_id,s.ordinal`, strSliceToAny(ids)...)
 	if err != nil {
 		return nil, err
 	}

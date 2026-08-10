@@ -87,6 +87,42 @@ func TestLeaseNextWorkerDeriveMatchesLibraryRootAndCapability(t *testing.T) {
 	}
 }
 
+func TestLeaseNextWorkerDeriveUsesEligibleRootLocalAlternate(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "remote-local.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := formatTime(time.Now().UTC())
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO library_roots(id,path,created_at,updated_at,health_state) VALUES('root-global','/global',?,?, 'healthy'),('root-local','/local',?,?, 'healthy')`, now, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES('asset-local','local-fp',100,'discovered',?,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,exists_now,is_primary,last_seen_at) VALUES('loc-global','asset-local','root-global','global.mp4','/global/global.mp4',1,1,1,?),('loc-local','asset-local','root-local','local.mp4','/local/local.mp4',2,1,0,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.EnqueueJob(ctx, "asset-local", domain.JobDerive, "derive-local", 90); err != nil {
+		t.Fatal(err)
+	}
+	worker := remote.Worker{ID: "worker-local", Capabilities: remote.WorkerCapabilities{Proxy: true, Thumbnail: true, LibraryRoots: []string{"root-local"}}}
+	job, err := repo.LeaseNextWorkerDerive(ctx, worker, time.Minute, domain.LeaseFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job == nil {
+		t.Fatal("local worker did not lease job")
+	}
+	if job.RootID != "root-local" || job.RelativePath != "local.mp4" {
+		t.Fatalf("leased non-local location: %+v", job)
+	}
+}
+
 func TestCompleteWorkerDeriveEnqueuesAnalysisWhenNoAudioArtifactExists(t *testing.T) {
 	ctx := context.Background()
 	repo, err := Open(filepath.Join(t.TempDir(), "worker-complete.db"))
