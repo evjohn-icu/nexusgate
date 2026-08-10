@@ -131,6 +131,31 @@ func TestMarkUnseenLocationsMissingPromotesLiveAlternate(t *testing.T) {
 	}
 }
 
+func TestUpsertScannedFileReappearanceIsChanged(t *testing.T) {
+	ctx := context.Background()
+	repo, root, rootDir := newScanRepo(t)
+	path := filepath.Join(rootDir, "reappear.mp4")
+	scanWriteVideo(t, path)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := repo.UpsertScannedFile(ctx, root, "reappear.mp4", path, info, "reappear-fp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.MarkUnseenLocationsMissing(ctx, root.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	reappeared, err := repo.UpsertScannedFile(ctx, root, "reappear.mp4", path, info, "reappear-fp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reappeared.AssetID != first.AssetID || !reappeared.Changed {
+		t.Fatalf("reappearance asset=%q changed=%v, want asset %q and Changed=true", reappeared.AssetID, reappeared.Changed, first.AssetID)
+	}
+}
+
 func TestGetPrimaryLocationDeterministic(t *testing.T) {
 	ctx := context.Background()
 	repo, root, _ := newScanRepo(t)

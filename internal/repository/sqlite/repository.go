@@ -645,8 +645,9 @@ func (r *Repository) UpsertScannedFile(ctx context.Context, root domain.LibraryR
 	var locationID string
 	var existingAbsolutePath, oldAssetID string
 	var existingModifiedNS int64
+	var existingExistsNow int
 	locationExists := true
-	err = tx.QueryRowContext(ctx, `SELECT id, asset_id, modified_ns, absolute_path FROM asset_locations WHERE root_id = ? AND relative_path = ?`, root.ID, relativePath).Scan(&locationID, &oldAssetID, &existingModifiedNS, &existingAbsolutePath)
+	err = tx.QueryRowContext(ctx, `SELECT id, asset_id, modified_ns, absolute_path, exists_now FROM asset_locations WHERE root_id = ? AND relative_path = ?`, root.ID, relativePath).Scan(&locationID, &oldAssetID, &existingModifiedNS, &existingAbsolutePath, &existingExistsNow)
 	if errors.Is(err, sql.ErrNoRows) {
 		locationExists = false
 		locationID = idgen.New()
@@ -673,7 +674,7 @@ func (r *Repository) UpsertScannedFile(ctx context.Context, root domain.LibraryR
 	// when content and mtime are unchanged).
 	// A newly discovered alternate location only changes the canonical choice;
 	// it does not change the media inputs keyed by the asset.
-	result.Changed = result.Created || (!locationExists && (assetHadLiveLocationInRoot || !assetHadLiveLocation)) || (locationExists && (existingModifiedNS != info.ModTime().UnixNano() || existingAbsolutePath != absolutePath))
+	result.Changed = result.Created || (!locationExists && (assetHadLiveLocationInRoot || !assetHadLiveLocation)) || (locationExists && (existingExistsNow == 0 || existingModifiedNS != info.ModTime().UnixNano() || existingAbsolutePath != absolutePath))
 
 	_, err = tx.ExecContext(ctx, `UPDATE assets SET state = 'discovered', last_seen_at = ?, missing_since = NULL WHERE id = ?`, formatTime(now), assetID)
 	if err != nil {
