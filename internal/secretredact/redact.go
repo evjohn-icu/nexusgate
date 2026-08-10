@@ -42,11 +42,10 @@ func New(m Material) Redactor {
 		r.short[s] = len([]byte(s)) < 8
 	}
 	add(m.APIKey)
-	for name, s := range m.ExtraHeaders {
-		lower := strings.ToLower(name)
-		if sensitiveKey[lower] || strings.Contains(lower, "auth") || strings.Contains(lower, "secret") || strings.Contains(lower, "token") || strings.Contains(lower, "password") || strings.Contains(lower, "credential") || strings.Contains(lower, "key") {
-			add(s)
-		}
+	for _, s := range m.ExtraHeaders {
+		// Extra headers are write-only credential configuration. Header names are
+		// not a reliable indication of what a relay expects in their values.
+		add(s)
 	}
 	if u, err := url.Parse(m.BaseURL); err == nil {
 		if u.User == nil {
@@ -58,15 +57,19 @@ func New(m Material) Redactor {
 			}
 			add(u.User.Username())
 		}
-		for _, values := range u.Query() {
+		for name, values := range u.Query() {
 			for _, value := range values {
-				add(value)
+				if sensitiveKey[strings.ToLower(name)] || len([]byte(value)) >= 8 {
+					add(value)
+				}
 			}
 		}
 		if fragment, err := url.ParseQuery(u.Fragment); err == nil {
-			for _, values := range fragment {
+			for name, values := range fragment {
 				for _, value := range values {
-					add(value)
+					if sensitiveKey[strings.ToLower(name)] || len([]byte(value)) >= 8 {
+						add(value)
+					}
 				}
 			}
 		}
@@ -166,10 +169,21 @@ func (r Redactor) URL(raw string) string {
 	}
 	u.RawQuery = strip(u.RawQuery)
 	u.Fragment = strip(u.Fragment)
-	return u.String()
+	// Sanitising the URL structure does not catch a configured secret in an
+	// ordinary parameter, nor its percent-encoded representation.
+	sanitized := u.String()
+	for _, secret := range r.secrets {
+		if escaped := url.QueryEscape(secret); escaped != secret {
+			sanitized = strings.ReplaceAll(sanitized, escaped, marker)
+			sanitized = strings.ReplaceAll(sanitized, strings.ReplaceAll(escaped, "+", "%20"), marker)
+		}
+	}
+	return sanitized
 }
 
-func identifier(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' }
+func identifier(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == '.'
+}
 
 func boundary(s string, start, end int) bool {
 	if start > 0 {

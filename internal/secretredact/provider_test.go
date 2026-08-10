@@ -64,6 +64,25 @@ func TestProviderRedactorTextAndURL(t *testing.T) {
 	}
 }
 
+func TestProviderRedactorArbitraryExtraHeaderAndURLPostProcessing(t *testing.T) {
+	const headerSecret = "arbitrary-header-secret-123"
+	const querySecret = "query credential / 123"
+	r := New(Material{
+		ExtraHeaders: map[string]string{"X-Custom-Provider": headerSecret},
+		BaseURL:      "https://url-user:url-password@example.invalid/v1?relay=" + strings.ReplaceAll(querySecret, " ", "%20") + "&keep=yes#note=keep",
+	})
+	out, err := r.JSON([]byte(`{"header":"` + headerSecret + `","url":"https://url-user:url-password@example.invalid/v1?relay=query%20credential%20%2F%20123&keep=yes#note=keep"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), headerSecret) || strings.Contains(string(out), querySecret) || strings.Contains(string(out), "url-user") || strings.Contains(string(out), "url-password") {
+		t.Fatalf("credential leaked: %s", out)
+	}
+	if !strings.Contains(string(out), marker) || !strings.Contains(string(out), "keep=yes") || !strings.Contains(string(out), "note=keep") {
+		t.Fatalf("redaction or ordinary URL values missing: %s", out)
+	}
+}
+
 func TestProviderRedactorInvalidJSON(t *testing.T) {
 	if _, err := New(Material{APIKey: "long-secret"}).JSON([]byte(`{"broken":`)); err == nil {
 		t.Fatal("invalid JSON accepted")
