@@ -7,8 +7,8 @@ following requests.
 ## Authentication
 
 Timingdex has two independent bearer credentials, generated once on first Hub
-start and stored under the Hub's data directory (mode 0600, never in SQLite,
-never returned by any API response):
+start and stored under the Hub's data directory as raw token text in exact-0600
+files (never in SQLite, never returned by any API response):
 
 - **Hub administrator token** (`admin-token`) — full control: provider
   channels, roots, worker pairing, plan approval, pipeline runs. This Skill is
@@ -18,7 +18,12 @@ never returned by any API response):
   - `POST /api/v1/repurpose/plans`
   - `POST /api/v1/repurpose/plans/{id}/revisions`
 
-  Every other write route — most importantly
+The raw agent token is read from the local `agent-token` file. The file is a
+regular, non-symlink file with exact mode 0600; the Hub reuses its value after a
+restart. Never print, log, persist elsewhere, or expect the token in an API
+response.
+
+Every other write route — most importantly
   `POST /api/v1/repurpose/plans/{id}/revisions/{revision}/approve` and
   `POST /api/v1/pipeline/run` — accepts only the administrator token and
   returns `401 Unauthorized` for the agent token, or for no credential at all.
@@ -64,6 +69,8 @@ GET /api/v1/search/shots/hybrid?q=<query>&limit=20
 POST /api/v1/search/shots
 GET /api/v1/shots/{shot-id}/similar?limit=10
 GET /api/v1/discover/rare-shots?limit=20
+GET /api/v1/cost/summary
+GET /api/v1/pipeline/throttle
 ```
 
 `GET /api/v1/search/shots/hybrid` is the legacy retrieval endpoint and keeps
@@ -142,6 +149,19 @@ Shot results contain an `id` (the shot ID), `asset_id`, `start_ms`, `end_ms`,
 `score`, `description`, `tags`, and the `lexical_score`/`semantic_score` when
 available. Rare-shot results additionally carry a `rarity_score` and a `reason`.
 Never infer a source file path from these IDs.
+
+## Cost Guide Reads
+
+`GET /api/v1/cost/summary` is a trusted read and returns the accumulated ledger
+guides for the current UTC periods:
+
+```json
+{ "today_estimate": 0.0, "month_estimate": 0.0 }
+```
+
+`GET /api/v1/pipeline/throttle` returns the configured advisory settings under
+`throttle.daily_cost_guide` and `throttle.monthly_cost_guide`. These values are
+operator references only; they never gate or defer transcription or analysis.
 
 ## Plan lifecycle
 
