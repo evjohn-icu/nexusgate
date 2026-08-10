@@ -1112,8 +1112,26 @@ func (r *Repository) RebuildAutomaticShootSessions(ctx context.Context, rootID s
 }
 
 func (r *Repository) SaveMediaMetadata(ctx context.Context, assetID string, m domain.MediaMetadata, version string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var oldRaw string
+	err = tx.QueryRowContext(ctx, `SELECT normalized_json FROM media_metadata WHERE asset_id=?`, assetID).Scan(&oldRaw)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
+	}
+	if err != nil {
+		return err
+	}
+	var old domain.MediaMetadata
+	if oldRaw != "" {
+		_ = json.Unmarshal([]byte(oldRaw), &old)
+	}
+	m = mergeMediaMetadata(old, m)
 	norm, _ := json.Marshal(m)
-	_, err := r.db.ExecContext(ctx, `INSERT INTO media_metadata(asset_id,ffprobe_json,exiftool_json,normalized_json,probe_version,updated_at,duration_ms,width,height,fps,video_codec,audio_codec,has_audio,orientation,captured_at,camera_model,latitude,longitude)
+	_, err = tx.ExecContext(ctx, `INSERT INTO media_metadata(asset_id,ffprobe_json,exiftool_json,normalized_json,probe_version,updated_at,duration_ms,width,height,fps,video_codec,audio_codec,has_audio,orientation,captured_at,camera_model,latitude,longitude)
 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(asset_id) DO UPDATE SET ffprobe_json=excluded.ffprobe_json,exiftool_json=excluded.exiftool_json,normalized_json=excluded.normalized_json,probe_version=excluded.probe_version,updated_at=excluded.updated_at,duration_ms=excluded.duration_ms,width=excluded.width,height=excluded.height,fps=excluded.fps,video_codec=excluded.video_codec,audio_codec=excluded.audio_codec,has_audio=excluded.has_audio,orientation=excluded.orientation,captured_at=excluded.captured_at,camera_model=excluded.camera_model,latitude=excluded.latitude,longitude=excluded.longitude`, assetID, m.FFProbeRaw, m.ExifToolRaw, string(norm), version, formatTime(time.Now()), m.DurationMS, m.Width, m.Height, m.FPS, m.VideoCodec, m.AudioCodec, boolInt(m.HasAudio), m.Orientation, nullableTime(m.CapturedAt), m.CameraModel, m.Latitude, m.Longitude)
 	if err != nil {
 		return err
@@ -1122,45 +1140,158 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(asset_id) DO UPDATE SET 
 	if previewStatus == "" {
 		previewStatus = "unknown"
 	}
-	_, err = r.db.ExecContext(ctx, `INSERT INTO capture_metadata(asset_id,vendor,make,model,device_serial,captured_at,capture_time_source,capture_time_confidence,latitude,longitude,location_source,location_precision,source_color,color_profile,raw_format,preview_status,normalized_json,updated_at)
+	_, err = tx.ExecContext(ctx, `INSERT INTO capture_metadata(asset_id,vendor,make,model,device_serial,captured_at,capture_time_source,capture_time_confidence,latitude,longitude,location_source,location_precision,source_color,color_profile,raw_format,preview_status,normalized_json,updated_at)
 VALUES(?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(asset_id) DO UPDATE SET vendor=excluded.vendor,make=excluded.make,model=excluded.model,device_serial=excluded.device_serial,captured_at=excluded.captured_at,capture_time_source=excluded.capture_time_source,capture_time_confidence=excluded.capture_time_confidence,latitude=excluded.latitude,longitude=excluded.longitude,location_source=excluded.location_source,location_precision=excluded.location_precision,source_color=excluded.source_color,color_profile=excluded.color_profile,raw_format=excluded.raw_format,preview_status=excluded.preview_status,normalized_json=excluded.normalized_json,updated_at=excluded.updated_at`,
 		assetID, m.CaptureVendor, m.CameraMake, m.CameraModel, m.CameraSerial, nullableTime(m.CapturedAt), captureTimeSource(m), captureTimeConfidence(m), m.Latitude, m.Longitude, captureLocationSource(m), captureLocationPrecision(m), m.SourceColor, m.ColorProfile, m.RawFormat, previewStatus, string(norm), formatTime(time.Now()))
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func captureTimeSource(m domain.MediaMetadata) string {
-	if m.CapturedAt == nil {
-		return ""
-	}
-	if m.ExifToolRaw != "" {
-		return "embedded"
-	}
-	return "probe"
+	return m.CaptureTimeSource
 }
 
 func captureTimeConfidence(m domain.MediaMetadata) float64 {
-	if m.CapturedAt == nil {
-		return 0
-	}
-	if m.ExifToolRaw != "" {
-		return 0.9
-	}
-	return 0.6
+	return m.CaptureTimeConfidence
 }
 
 func captureLocationSource(m domain.MediaMetadata) string {
-	if m.Latitude == nil || m.Longitude == nil {
-		return ""
-	}
-	return "embedded"
+	return m.LocationSource
 }
 
 func captureLocationPrecision(m domain.MediaMetadata) string {
-	if m.Latitude == nil || m.Longitude == nil {
-		return ""
+	return m.LocationPrecision
+}
+
+func mergeMediaMetadata(old, next domain.MediaMetadata) domain.MediaMetadata {
+	if next.DurationMS == 0 {
+		next.DurationMS = old.DurationMS
 	}
-	return "precise"
+	if next.Width == 0 {
+		next.Width = old.Width
+	}
+	if next.Height == 0 {
+		next.Height = old.Height
+	}
+	if next.FPS == 0 {
+		next.FPS = old.FPS
+	}
+	if next.VideoCodec == "" {
+		next.VideoCodec = old.VideoCodec
+	}
+	if next.AudioCodec == "" {
+		next.AudioCodec = old.AudioCodec
+	}
+	if !next.HasAudio {
+		next.HasAudio = old.HasAudio
+	}
+	if next.Orientation == "" {
+		next.Orientation = old.Orientation
+	}
+	if next.CaptureVendor == "" {
+		next.CaptureVendor = old.CaptureVendor
+	}
+	if next.CameraMake == "" {
+		next.CameraMake = old.CameraMake
+	}
+	if next.CameraModel == "" {
+		next.CameraModel = old.CameraModel
+	}
+	if next.CameraSerial == "" {
+		next.CameraSerial = old.CameraSerial
+	}
+	if next.LensModel == "" {
+		next.LensModel = old.LensModel
+	}
+	if next.Reel == "" {
+		next.Reel = old.Reel
+	}
+	if next.Clip == "" {
+		next.Clip = old.Clip
+	}
+	if next.SourceTimecode == "" {
+		next.SourceTimecode = old.SourceTimecode
+	}
+	if next.PixelFormat == "" {
+		next.PixelFormat = old.PixelFormat
+	}
+	if next.BitDepth == 0 {
+		next.BitDepth = old.BitDepth
+	}
+	if next.ColorSpace == "" {
+		next.ColorSpace = old.ColorSpace
+	}
+	if next.ColorTransfer == "" {
+		next.ColorTransfer = old.ColorTransfer
+	}
+	if next.ColorPrimaries == "" {
+		next.ColorPrimaries = old.ColorPrimaries
+	}
+	if next.SourceColor == "" {
+		next.SourceColor = old.SourceColor
+	}
+	if next.ColorProfile == "" {
+		next.ColorProfile = old.ColorProfile
+	}
+	if next.RawFormat == "" {
+		next.RawFormat = old.RawFormat
+	}
+	if next.PreviewStatus == "" {
+		next.PreviewStatus = old.PreviewStatus
+	}
+	if next.PreviewRenderMode == "" {
+		next.PreviewRenderMode = old.PreviewRenderMode
+	}
+	if !next.PreviewAvailable {
+		next.PreviewAvailable = old.PreviewAvailable
+	}
+	if !next.PreviewRequiresLUT {
+		next.PreviewRequiresLUT = old.PreviewRequiresLUT
+	}
+	if next.FFProbeRaw == "" {
+		next.FFProbeRaw = old.FFProbeRaw
+	}
+	if next.ExifToolRaw == "" {
+		next.ExifToolRaw = old.ExifToolRaw
+	}
+	if next.CapturedAt == nil || timeSourceRank(next.CaptureTimeSource) < timeSourceRank(old.CaptureTimeSource) && old.CapturedAt != nil {
+		next.CapturedAt, next.CaptureTimeSource, next.CaptureTimeConfidence = old.CapturedAt, old.CaptureTimeSource, old.CaptureTimeConfidence
+	}
+	if next.Latitude == nil || next.Longitude == nil || (old.Latitude != nil && old.Longitude != nil && (locationSourceRank(next.LocationSource) < locationSourceRank(old.LocationSource) || locationSourceRank(next.LocationSource) == locationSourceRank(old.LocationSource) && locationPrecisionRank(next.LocationPrecision) < locationPrecisionRank(old.LocationPrecision))) {
+		next.Latitude, next.Longitude, next.LocationSource, next.LocationPrecision = old.Latitude, old.Longitude, old.LocationSource, old.LocationPrecision
+	}
+	return next
+}
+
+func timeSourceRank(s string) int {
+	switch s {
+	case "manual":
+		return 500
+	case "embedded_exif":
+		return 400
+	case "embedded_probe":
+		return 300
+	case "filesystem":
+		return 100
+	default:
+		return 0
+	}
+}
+func locationSourceRank(s string) int { return timeSourceRank(s) }
+func locationPrecisionRank(s string) int {
+	switch s {
+	case "exact", "precise":
+		return 300
+	case "approximate":
+		return 200
+	case "region":
+		return 100
+	default:
+		return 0
+	}
 }
 
 func (r *Repository) GetMediaMetadata(ctx context.Context, assetID string) (*domain.MediaMetadata, error) {
@@ -1175,6 +1306,9 @@ func (r *Repository) GetMediaMetadata(ctx context.Context, assetID string) (*dom
 	var m domain.MediaMetadata
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		return nil, err
+	}
+	if m.LocationPrecision == "precise" {
+		m.LocationPrecision = "exact"
 	}
 	return &m, nil
 }

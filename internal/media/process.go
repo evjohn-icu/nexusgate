@@ -89,14 +89,21 @@ func NormalizeMetadata(probe FFProbeResult, exif map[string]any) domain.MediaMet
 	}
 	if capturedAt, ok := captureTime(exif); ok {
 		m.CapturedAt = &capturedAt
+		m.CaptureTimeSource, m.CaptureTimeConfidence = captureTimeProvenance(exif)
 	} else if capturedAt, ok := captureTimeFromProbe(probe); ok {
 		m.CapturedAt = &capturedAt
+		m.CaptureTimeSource = "embedded_probe"
+		m.CaptureTimeConfidence = 0.75
+	} else if capturedAt, ok := captureTimeValue(exif["FileModifyDate"]); ok {
+		m.CapturedAt = &capturedAt
+		m.CaptureTimeSource, m.CaptureTimeConfidence = "filesystem", 0.25
 	}
-	if v, ok := number(exif["GPSLatitude"]); ok {
-		m.Latitude = &v
-	}
-	if v, ok := number(exif["GPSLongitude"]); ok {
-		m.Longitude = &v
+	if lat, lon, ok := completeCoordinates(exif); ok {
+		m.Latitude, m.Longitude = &lat, &lon
+		m.LocationSource, m.LocationPrecision = "embedded_exif", "exact"
+	} else if lat, lon, ok := probeCoordinates(probe); ok {
+		m.Latitude, m.Longitude = &lat, &lon
+		m.LocationSource, m.LocationPrecision = "embedded_probe", "exact"
 	}
 	return m
 }
@@ -238,7 +245,7 @@ func captureExifFields(exif map[string]any) []string {
 // as UTC for the legacy MediaMetadata field; CaptureContext records its source
 // and timezone confidence before it is used for automatic session grouping.
 func captureTime(exif map[string]any) (time.Time, bool) {
-	for _, key := range []string{"DateTimeOriginal", "CreateDate", "MediaCreateDate", "TrackCreateDate", "FileModifyDate"} {
+	for _, key := range []string{"DateTimeOriginal", "CreateDate", "MediaCreateDate", "TrackCreateDate"} {
 		value, ok := exif[key]
 		if !ok {
 			continue
@@ -255,12 +262,53 @@ func captureTime(exif map[string]any) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+func captureTimeProvenance(exif map[string]any) (string, float64) {
+	for _, key := range []string{"DateTimeOriginal", "CreateDate", "MediaCreateDate", "TrackCreateDate"} {
+		if _, ok := captureTimeValue(exif[key]); ok {
+			return "embedded_exif", 0.95
+		}
+	}
+	if _, ok := captureTimeValue(exif["FileModifyDate"]); ok {
+		return "filesystem", 0.25
+	}
+	return "unknown", 0
+}
+
+func captureTimeValue(value any) (time.Time, bool) {
+	switch v := value.(type) {
+	case time.Time:
+		return v.UTC(), true
+	case string:
+		return parseCaptureTime(v)
+	default:
+		return time.Time{}, false
+	}
+}
+
+func completeCoordinates(values map[string]any) (float64, float64, bool) {
+	lat, latOK := number(values["GPSLatitude"])
+	lon, lonOK := number(values["GPSLongitude"])
+	return lat, lon, latOK && lonOK
+}
+
+func probeCoordinates(probe FFProbeResult) (float64, float64, bool) {
+	fields := [][]metadataField{probeMetadataFields(probe)}
+	lat, latOK := numberString(firstMetadataString(fields, "GPSLatitude"))
+	lon, lonOK := numberString(firstMetadataString(fields, "GPSLongitude"))
+	return lat, lon, latOK && lonOK
+}
+
+func numberString(value string) (float64, bool) {
+	if value == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	return v, err == nil
+}
+
 func captureTimeFromProbe(probe FFProbeResult) (time.Time, bool) {
 	groups := [][]metadataField{probeMetadataFields(probe)}
-	for _, key := range []string{
-		"CreationTime", "CreationDate", "DateCreated", "CreateDate",
-		"MediaCreateDate", "TrackCreateDate", "FileModifyDate",
-	} {
+	for _, key := range []string{"CreationTime", "CreationDate", "DateCreated", "CreateDate", "MediaCreateDate", "TrackCreateDate"} {
 		if value := firstMetadataString(groups, key); value != "" {
 			if parsed, ok := parseCaptureTime(value); ok {
 				return parsed, true

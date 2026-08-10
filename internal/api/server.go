@@ -2135,10 +2135,12 @@ func (s *Server) assetCaptureLocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"available": true,
-		"latitude":  *detail.Metadata.Latitude,
-		"longitude": *detail.Metadata.Longitude,
-		"precision": "source",
+		"available":  true,
+		"latitude":   *detail.Metadata.Latitude,
+		"longitude":  *detail.Metadata.Longitude,
+		"precision":  detail.Metadata.LocationPrecision,
+		"source":     detail.Metadata.LocationSource,
+		"confidence": detail.Metadata.CaptureTimeConfidence,
 	})
 }
 

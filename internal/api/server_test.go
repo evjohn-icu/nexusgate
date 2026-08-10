@@ -1437,7 +1437,8 @@ func TestPublicAssetDetailHidesPreciseLocationAndAbsolutePath(t *testing.T) {
 		t.Fatalf("assets=%+v err=%v", assets, err)
 	}
 	latitude, longitude := 22.543096, 114.057865
-	if err := repo.SaveMediaMetadata(ctx, assets[0].ID, domain.MediaMetadata{Latitude: &latitude, Longitude: &longitude, CameraModel: "DJI Mavic 3"}, "privacy-fixture"); err != nil {
+	capturedAt := time.Now().UTC()
+	if err := repo.SaveMediaMetadata(ctx, assets[0].ID, domain.MediaMetadata{CapturedAt: &capturedAt, CaptureTimeSource: "embedded_exif", Latitude: &latitude, Longitude: &longitude, LocationSource: "embedded_exif", LocationPrecision: "exact", CaptureTimeConfidence: .95, CameraModel: "DJI Mavic 3"}, "privacy-fixture"); err != nil {
 		t.Fatal(err)
 	}
 	handler := NewServer("", service).Handler()
@@ -1461,7 +1462,7 @@ func TestPublicAssetDetailHidesPreciseLocationAndAbsolutePath(t *testing.T) {
 	request := lanRequest(http.MethodGet, "/api/v1/admin/assets/"+assets[0].ID+"/capture-location", nil)
 	request.Header.Set("Authorization", "Bearer "+service.AdminToken())
 	handler.ServeHTTP(admin, request)
-	if admin.Code != http.StatusOK || !strings.Contains(admin.Body.String(), "22.543096") || !strings.Contains(admin.Body.String(), "114.057865") {
+	if admin.Code != http.StatusOK || !strings.Contains(admin.Body.String(), "22.543096") || !strings.Contains(admin.Body.String(), "114.057865") || !strings.Contains(admin.Body.String(), `"precision":"exact"`) || !strings.Contains(admin.Body.String(), `"source":"embedded_exif"`) || !strings.Contains(admin.Body.String(), `"confidence":0.95`) {
 		t.Fatalf("admin precise location status=%d body=%s", admin.Code, admin.Body.String())
 	}
 }

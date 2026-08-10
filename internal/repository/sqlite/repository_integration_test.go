@@ -277,6 +277,72 @@ func TestSaveMediaMetadataProjectsCaptureFields(t *testing.T) {
 	}
 }
 
+func TestSaveMediaMetadataMergesCaptureProvenance(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "capture-merge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES('asset-merge','fp',1,'discovered',?,?)`, formatTime(now), formatTime(now)); err != nil {
+		t.Fatal(err)
+	}
+	strongTime := now.Add(-time.Hour)
+	weakTime := now.Add(time.Hour)
+	strongLat, strongLon := 35.0, 139.0
+	weakLat, weakLon := 36.0, 140.0
+	if err := repo.SaveMediaMetadata(ctx, "asset-merge", domain.MediaMetadata{
+		CapturedAt: &strongTime, CaptureTimeSource: "embedded_exif", CaptureTimeConfidence: .95,
+		Latitude: &strongLat, Longitude: &strongLon, LocationSource: "embedded_exif", LocationPrecision: "exact",
+		CameraModel: "preserved-camera", DurationMS: 42,
+	}, "strong"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SaveMediaMetadata(ctx, "asset-merge", domain.MediaMetadata{
+		CapturedAt: &weakTime, CaptureTimeSource: "filesystem", CaptureTimeConfidence: .25,
+		Latitude: &weakLat, Longitude: &weakLon, LocationSource: "filesystem", LocationPrecision: "approximate",
+	}, "weak"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetMediaMetadata(ctx, "asset-merge")
+	if err != nil || got == nil {
+		t.Fatalf("GetMediaMetadata=%+v err=%v", got, err)
+	}
+	if !got.CapturedAt.Equal(strongTime) || got.CaptureTimeSource != "embedded_exif" || got.CameraModel != "preserved-camera" || got.DurationMS != 42 {
+		t.Fatalf("weak re-probe replaced stronger/absent metadata: %+v", got)
+	}
+	if *got.Latitude != strongLat || *got.Longitude != strongLon || got.LocationSource != "embedded_exif" || got.LocationPrecision != "exact" {
+		t.Fatalf("weak coordinates replaced stronger coordinates: %+v", got)
+	}
+	partial := domain.MediaMetadata{Latitude: &weakLat, LocationSource: "manual", LocationPrecision: "exact"}
+	if err := repo.SaveMediaMetadata(ctx, "asset-merge", partial, "partial"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = repo.GetMediaMetadata(ctx, "asset-merge")
+	if err != nil || *got.Latitude != strongLat || *got.Longitude != strongLon {
+		t.Fatalf("partial coordinate pair was not ignored: %+v err=%v", got, err)
+	}
+	equalTime := now.Add(2 * time.Hour)
+	if err := repo.SaveMediaMetadata(ctx, "asset-merge", domain.MediaMetadata{CapturedAt: &equalTime, CaptureTimeSource: "embedded_exif", CaptureTimeConfidence: .95}, "equal"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = repo.GetMediaMetadata(ctx, "asset-merge")
+	if err != nil || !got.CapturedAt.Equal(equalTime) {
+		t.Fatalf("equal-rank observation was not accepted: %+v err=%v", got, err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `UPDATE media_metadata SET normalized_json=json_set(normalized_json,'$.location_precision','precise') WHERE asset_id='asset-merge'`); err != nil {
+		t.Fatal(err)
+	}
+	got, err = repo.GetMediaMetadata(ctx, "asset-merge")
+	if err != nil || got.LocationPrecision != "exact" {
+		t.Fatalf("legacy precision was not normalized: %+v err=%v", got, err)
+	}
+}
+
 func TestRebuildAutomaticShootSessionsGroupsSameCameraWithinThirtyMinutes(t *testing.T) {
 	ctx := context.Background()
 	repo, err := Open(filepath.Join(t.TempDir(), "sessions.db"))
