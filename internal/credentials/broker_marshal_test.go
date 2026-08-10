@@ -196,6 +196,19 @@ func TestLeaseAuditAPIKeyNotSerializable(t *testing.T) {
 	}
 }
 
+func TestLeaseAuditSerializationIsKeyFreeAcrossRepresentations(t *testing.T) {
+	audit := LeaseAudit{JobID: "job", WorkerID: "worker", Provider: "provider", Operation: OperationVideoAnalysis, APIKey: "audit-api-key", BaseURL: "https://audit-user:audit-pass@example.invalid?token=leak"}
+	raw, err := json.Marshal(audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, output := range []string{string(raw), fmt.Sprintf("%v", audit), fmt.Sprintf("%+v", audit), fmt.Sprintf("%#v", audit), fmt.Sprintf("%s", audit)} {
+		if strings.Contains(output, "audit-api-key") || strings.Contains(output, "audit-user") || strings.Contains(output, "audit-pass") || strings.Contains(output, "token=leak") {
+			t.Fatalf("LeaseAudit representation leaked credentials: %s", output)
+		}
+	}
+}
+
 func TestLeaseJSONRedactsCredentialAPIKey(t *testing.T) {
 	l := Lease{
 		JobID:     "job-1",

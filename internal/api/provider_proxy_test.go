@@ -237,4 +237,116 @@ func TestWorkerProviderProxyRejectsMediaAndOversizedBodies(t *testing.T) {
 	if response.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized proxy status=%d body=%s", response.Code, response.Body.String())
 	}
+	// A valid JSON document one byte below the limit must pass the API size
+	// guard, even though this fixture endpoint is intentionally unreachable.
+	under := []byte(`{"x":"` + strings.Repeat("a", int(app.MaxProviderProxyBodyBytes())-len(`{"x":""}`)-1) + `"}`)
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/worker/jobs/"+job.ID+"/provider/video_analysis", bytes.NewReader(under))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code == http.StatusRequestEntityTooLarge {
+		t.Fatalf("2MiB-1 proxy request was rejected as oversized: %d", response.Code)
+	}
+}
+
+func TestWorkerProviderProxyAuthSchemes(t *testing.T) {
+	for _, tc := range []struct{ name, scheme, want string }{
+		{"default bearer", "", "Bearer secret-auth-key"},
+		{"raw", "raw", "secret-auth-key"},
+		{"custom", "Token", "Token secret-auth-key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			var got string
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.Header.Get("Authorization")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"ok":true}`))
+			}))
+			defer upstream.Close()
+			repo, err := sqlite.Open(filepath.Join(t.TempDir(), "auth.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer repo.Close()
+			if err := repo.Migrate(ctx); err != nil {
+				t.Fatal(err)
+			}
+			seedRemoteAnalyzeJob(t, ctx, repo)
+			pairing, _ := repo.CreateWorkerPairing(ctx, time.Minute)
+			worker, token, err := repo.EnrollWorker(ctx, pairing.Token, remote.WorkerRegistration{Name: tc.name, Platform: "linux", Capabilities: remote.WorkerCapabilities{ProviderOperations: []string{"video_analysis"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			job, err := repo.LeaseNextJob(ctx, worker.ID, nil, domain.LeaseFilter{})
+			if err != nil || job == nil {
+				t.Fatalf("lease=%+v err=%v", job, err)
+			}
+			service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), Providers: config.ProvidersConfig{VisionPrimary: "volcengine_video", VolcVideo: config.ProviderConfig{Enabled: true, BaseURL: upstream.URL, APIKey: "secret-auth-key", AuthScheme: tc.scheme}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/worker/jobs/"+job.ID+"/provider/video_analysis", strings.NewReader(`{"x":1}`))
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			NewServer("", service).Handler().ServeHTTP(response, req)
+			if response.Code != http.StatusOK || got != tc.want {
+				t.Fatalf("status=%d auth=%q want=%q", response.Code, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWorkerProviderProxyRejectsMalformedUpstreamJSON(t *testing.T) {
+	for _, body := range []string{"not-json", `{"broken":`} {
+		t.Run(strings.ReplaceAll(body, "{", "object-"), func(t *testing.T) {
+			ctx := context.Background()
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+			defer upstream.Close()
+			repo, service, token, job := proxyFixture(t, ctx, config.ProviderConfig{Enabled: true, BaseURL: upstream.URL, APIKey: "malformed-key"})
+			defer repo.Close()
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/worker/jobs/"+job.ID+"/provider/video_analysis", strings.NewReader(`{"x":1}`))
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			NewServer("", service).Handler().ServeHTTP(response, req)
+			if response.Code != http.StatusBadGateway {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func proxyFixture(t *testing.T, ctx context.Context, provider config.ProviderConfig) (*sqlite.Repository, *app.Service, string, *domain.Job) {
+	t.Helper()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "fixture.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	seedRemoteAnalyzeJob(t, ctx, repo)
+	pairing, err := repo.CreateWorkerPairing(ctx, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, token, err := repo.EnrollWorker(ctx, pairing.Token, remote.WorkerRegistration{Name: "proxy-fixture", Platform: "linux", Capabilities: remote.WorkerCapabilities{ProviderOperations: []string{"video_analysis"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := repo.LeaseNextJob(ctx, worker.ID, nil, domain.LeaseFilter{})
+	if err != nil || job == nil {
+		t.Fatalf("lease=%+v err=%v", job, err)
+	}
+	service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), Providers: config.ProvidersConfig{VisionPrimary: "volcengine_video", VolcVideo: provider}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return repo, service, token, job
 }
