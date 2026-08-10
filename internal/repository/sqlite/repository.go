@@ -2520,7 +2520,7 @@ func (r *Repository) DB() *sql.DB { return r.db }
 
 func (r *Repository) CreateModelRun(ctx context.Context, assetID, capability, provider, model, inputHash, promptVersion, schemaVersion, requestJSON string) (string, bool, error) {
 	var existingID, state string
-	err := r.db.QueryRowContext(ctx, `SELECT id,state FROM model_runs WHERE capability=? AND provider=? AND model=? AND input_hash=? AND prompt_version=? AND schema_version=?`, capability, provider, model, inputHash, promptVersion, schemaVersion).Scan(&existingID, &state)
+	err := r.db.QueryRowContext(ctx, `SELECT id,state FROM model_runs WHERE capability=? AND provider=? AND model=? AND input_hash=? AND prompt_version=? AND schema_version=? AND state != 'failed'`, capability, provider, model, inputHash, promptVersion, schemaVersion).Scan(&existingID, &state)
 	if err == nil {
 		return existingID, state == "committed", nil
 	}
@@ -2533,8 +2533,11 @@ func (r *Repository) CreateModelRun(ctx context.Context, assetID, capability, pr
 }
 
 func (r *Repository) FailModelRun(ctx context.Context, runID, code, message, raw string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='failed',raw_response=?,error_code=?,error_message=?,finished_at=? WHERE id=?`, raw, code, message, formatTime(time.Now()), runID)
-	return err
+	res, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='failed',raw_response=?,error_code=?,error_message=?,finished_at=? WHERE id=? AND state='running'`, raw, code, message, formatTime(time.Now()), runID)
+	if err != nil {
+		return err
+	}
+	return modelRunTransitionResult(res, domain.ErrModelRunNotRunning, runID)
 }
 
 // MarkModelRunCommitted advances a validated run to committed without writing
@@ -2543,13 +2546,59 @@ func (r *Repository) FailModelRun(ctx context.Context, runID, code, message, raw
 // asset-level analysis stays attributed to the run that produced it, so its
 // run record needs the same state transition on its own.
 func (r *Repository) MarkModelRunCommitted(ctx context.Context, runID string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND state='validated'`, formatTime(time.Now()), runID)
-	return err
+	res, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND state='validated'`, formatTime(time.Now()), runID)
+	if err != nil {
+		return err
+	}
+	return modelRunTransitionResult(res, domain.ErrCommitRunNotValidated, runID)
 }
 
 func (r *Repository) StageModelRun(ctx context.Context, runID, raw, parsed string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='validated',raw_response=?,parsed_json=?,validation_errors=NULL,finished_at=? WHERE id=?`, raw, parsed, formatTime(time.Now()), runID)
-	return err
+	res, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='validated',raw_response=?,parsed_json=?,validation_errors=NULL,finished_at=? WHERE id=? AND state='running'`, raw, parsed, formatTime(time.Now()), runID)
+	if err != nil {
+		return err
+	}
+	return modelRunTransitionResult(res, domain.ErrModelRunNotRunning, runID)
+}
+
+func modelRunTransitionResult(res sql.Result, sentinel error, runID string) error {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return domain.Permanent(fmt.Errorf("%w: run %s", sentinel, runID))
+	}
+	return nil
+}
+
+// CommitShotRefinement makes refined shots visible only if this run is still
+// validated. The state guard and shot replacement share one transaction so a
+// stale refinement cannot leave canonical shots partially replaced.
+func (r *Repository) CommitShotRefinement(ctx context.Context, assetID, runID string, shots []domain.AssetShot) error {
+	if err := validateAssetShots(shots); err != nil {
+		return err
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := r.replaceAssetShotsTx(ctx, tx, assetID, runID, shots); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND state='validated'`, formatTime(time.Now()), runID)
+	if err != nil {
+		return err
+	}
+	if err := modelRunTransitionResult(res, domain.ErrCommitRunNotValidated, runID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	r.clearSemanticVectorCache()
+	return nil
 }
 
 func (r *Repository) CommitAnalysis(ctx context.Context, assetID, runID, schemaVersion string, a domain.StructuredAnalysis) error {
@@ -2625,7 +2674,11 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(asset_id) DO UPDATE 
 	if err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND state='validated'`, formatTime(time.Now()), runID); err != nil {
+	res, err := tx.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND state='validated'`, formatTime(time.Now()), runID)
+	if err != nil {
+		return err
+	}
+	if err := modelRunTransitionResult(res, domain.ErrCommitRunNotValidated, runID); err != nil {
 		return err
 	}
 	return nil

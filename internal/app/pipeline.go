@@ -83,6 +83,7 @@ type PipelineRepository interface {
 	CommitAnalysisWithShots(context.Context, string, string, string, domain.StructuredAnalysis, []domain.AssetShot) error
 	SyncAnalysisTags(context.Context, string, string, domain.StructuredAnalysis) error
 	ReplaceAssetShots(context.Context, string, string, []domain.AssetShot) error
+	CommitShotRefinement(context.Context, string, string, []domain.AssetShot) error
 	GetSpeechClassification(context.Context, string) (*domain.SpeechClassification, error)
 	SaveTranscript(context.Context, string, string, string, string, domain.Transcript) error
 	GetTranscript(context.Context, string) (*domain.Transcript, error)

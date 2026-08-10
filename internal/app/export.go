@@ -34,6 +34,9 @@ var ErrPlanNotExportable = errors.New("repurpose plan cannot be exported")
 // export path below being the other.
 var ErrPlanNotFound = domain.ErrPlanNotFound
 
+// ErrModelRunNotRunning is the repository's strict CAS transition sentinel.
+var ErrModelRunNotRunning = domain.ErrModelRunNotRunning
+
 // ExportPlanEDL renders an approved plan as a CMX3600 edit decision list.
 func (s *Service) ExportPlanEDL(ctx context.Context, planID string) (string, error) {
 	timeline, _, err := s.planTimeline(ctx, planID)

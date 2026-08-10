@@ -136,6 +136,11 @@ var ErrPlanRevisionNotLatest = errors.New("only the latest repurpose plan revisi
 // Unwrap chain.
 var ErrCommitRunNotValidated = errors.New("commit requires a validated model run")
 
+// ErrModelRunNotRunning reports a strict transition attempted against a run
+// that is not currently running. Model-run completion is deliberately
+// non-idempotent so stale provider callbacks cannot overwrite a newer result.
+var ErrModelRunNotRunning = errors.New("model run is not running")
+
 // ErrPermanentFailure marks a failure that a retry cannot change. It replaces
 // the list of message substrings isRetryableJobError (internal/app/pipeline.go)
 // used to keep, and it exists because that list could not stay correct by
