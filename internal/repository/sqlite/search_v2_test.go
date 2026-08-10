@@ -49,11 +49,18 @@ func TestSearchV2LexicalFlatEqualsLegacy(t *testing.T) {
 func TestSearchV2OffsetPaginationAgainstSQLite(t *testing.T) {
 	repo, ids := seedGoldenCorpus(t)
 	ctx := context.Background()
-	for i := 0; i < 6; i++ {
+	ids = seedOneAsset(t, repo, ids, goldenAssetSpec{
+		id: "asset-pagination-burst", analysis: domain.StructuredAnalysis{Summary: "pagination match"},
+		shots: []goldenShotSpec{
+			{startMS: 0, endMS: 1000, description: "pagination match footage"},
+			{startMS: 30_000, endMS: 31_000, description: "pagination match footage"},
+			{startMS: 60_000, endMS: 61_000, description: "pagination match footage"},
+		}, session: "session-pagination",
+	})
+	for i := 0; i < 3; i++ {
 		ids = seedOneAsset(t, repo, ids, goldenAssetSpec{
-			id:       fmt.Sprintf("asset-pagination-%d", i),
-			analysis: domain.StructuredAnalysis{Summary: "pagination match"},
-			shots:    []goldenShotSpec{{startMS: int64(i) * 1000, endMS: int64(i+1) * 1000, description: "pagination match footage"}},
+			id: fmt.Sprintf("asset-pagination-%d", i), analysis: domain.StructuredAnalysis{Summary: "pagination match"},
+			shots: []goldenShotSpec{{startMS: int64(i) * 1000, endMS: int64(i+1) * 1000, description: "pagination match footage"}},
 		})
 	}
 	svc := search.NewService(repo, search.DefaultOptions())
@@ -69,8 +76,22 @@ func TestSearchV2OffsetPaginationAgainstSQLite(t *testing.T) {
 		}
 		return out
 	}
-	for _, diversity := range []float64{0, 0.6} {
-		all := page(4, 0, diversity)
+	withoutDiversity := page(4, 0, 0)
+	for _, id := range withoutDiversity {
+		if id == "" {
+			t.Fatal("pagination result has empty shot ID")
+		}
+	}
+	withDiversity := page(4, 0, 0.6)
+	for _, tc := range []struct {
+		diversity float64
+		all       []string
+	}{
+		{0, withoutDiversity}, {0.6, withDiversity},
+	} {
+		diversity := tc.diversity
+		all := tc.all
+		first := page(2, 0, diversity)
 		second := page(2, 2, diversity)
 		if len(all) < 4 || len(second) != 2 {
 			t.Fatalf("diversity=%v all=%v second=%v", diversity, all, second)
@@ -80,12 +101,23 @@ func TestSearchV2OffsetPaginationAgainstSQLite(t *testing.T) {
 		}
 		seen := map[string]bool{}
 		for _, id := range all {
+			if seen[id] {
+				t.Fatalf("diversity=%v full page contains duplicate ID: %v", diversity, all)
+			}
 			seen[id] = true
 		}
-		for _, id := range second {
-			if seen[id] && (id == all[0] || id == all[1]) {
-				t.Fatalf("diversity=%v pages overlap before page2: all=%v second=%v", diversity, all, second)
+		pageSeen := map[string]bool{}
+		for _, id := range first {
+			if pageSeen[id] {
+				t.Fatalf("diversity=%v page1 contains duplicate ID: %v", diversity, first)
 			}
+			pageSeen[id] = true
+		}
+		for _, id := range second {
+			if pageSeen[id] {
+				t.Fatalf("diversity=%v pages are not disjoint/unique: all=%v second=%v", diversity, all, second)
+			}
+			pageSeen[id] = true
 		}
 	}
 }

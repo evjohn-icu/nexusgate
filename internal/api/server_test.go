@@ -255,14 +255,15 @@ func TestSearchShotsV2AcceptsOffset(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	for _, tc := range []struct {
-		body string
-		want int
+		body     string
+		want     int
+		wantCode string
 	}{
-		{`{"query":"夜晚下雨","offset":-1,"limit":1}`, http.StatusBadRequest},
-		{`{"query":"夜晚下雨","offset":199,"limit":1}`, http.StatusOK},
-		{`{"query":"夜晚下雨","offset":199,"limit":2}`, http.StatusBadRequest},
-		{fmt.Sprintf(`{"query":"夜晚下雨","offset":%d,"limit":1}`, math.MaxInt), http.StatusBadRequest},
-		{`{"query":"夜晚下雨","offset":0,"limit":500}`, http.StatusOK},
+		{`{"query":"夜晚下雨","offset":-1,"limit":1}`, http.StatusBadRequest, "invalid_request"},
+		{`{"query":"夜晚下雨","offset":199,"limit":1}`, http.StatusOK, ""},
+		{`{"query":"夜晚下雨","offset":199,"limit":2}`, http.StatusBadRequest, "invalid_request"},
+		{fmt.Sprintf(`{"query":"夜晚下雨","offset":%d,"limit":1}`, math.MaxInt), http.StatusBadRequest, "invalid_request"},
+		{`{"query":"夜晚下雨","offset":0,"limit":500}`, http.StatusOK, ""},
 	} {
 		request := lanRequest(http.MethodPost, "/api/v1/search/shots", bytes.NewBufferString(tc.body))
 		request.Header.Set("Content-Type", "application/json")
@@ -270,6 +271,19 @@ func TestSearchShotsV2AcceptsOffset(t *testing.T) {
 		server.Handler().ServeHTTP(response, request)
 		if response.Code != tc.want {
 			t.Fatalf("body=%s status=%d want %d response=%s", tc.body, response.Code, tc.want, response.Body.String())
+		}
+		if tc.wantCode != "" {
+			var envelope struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+				t.Fatalf("body=%s decode error envelope: %v", tc.body, err)
+			}
+			if envelope.Error.Code != tc.wantCode {
+				t.Fatalf("body=%s error.code=%q want %q", tc.body, envelope.Error.Code, tc.wantCode)
+			}
 		}
 	}
 }
