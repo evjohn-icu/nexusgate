@@ -118,9 +118,15 @@ func GC(cacheDir string, opts GCOptions) (GCResult, error) {
 				return filepath.SkipDir
 			}
 			if IsScratchDirName(name) && opts.RemoveScratch {
+				if shouldSkipDirectory(&result, cacheDir, path, opts) {
+					return filepath.SkipDir
+				}
 				return removeDir(&result, cacheDir, path, opts.DryRun)
 			}
 			if _, ok := orphans[filepath.Clean(path)]; ok {
+				if shouldSkipDirectory(&result, cacheDir, path, opts) {
+					return filepath.SkipDir
+				}
 				return removeDir(&result, cacheDir, path, opts.DryRun)
 			}
 			return nil
@@ -146,6 +152,32 @@ func GC(cacheDir string, opts GCOptions) (GCResult, error) {
 		return nil
 	})
 	return result, err
+}
+
+func shouldSkipDirectory(result *GCResult, cacheDir, path string, opts GCOptions) bool {
+	rel, err := filepath.Rel(cacheDir, path)
+	if err != nil {
+		return false
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	assetID := ""
+	if len(parts) > 1 && !IsScratchDirName(parts[0]) && parts[0] != "sources" {
+		assetID = parts[0]
+	}
+	if _, ok := opts.ProtectedAssetIDs[assetID]; assetID != "" && ok {
+		size, _ := dirSize(path)
+		result.SkippedActiveFiles++
+		result.SkippedActiveBytes += size
+		return true
+	}
+	info, err := os.Stat(path)
+	if err == nil && opts.Now.Sub(info.ModTime()) < opts.MinAge {
+		size, _ := dirSize(path)
+		result.SkippedYoungFiles++
+		result.SkippedYoungBytes += size
+		return true
+	}
+	return false
 }
 
 // removeDir deletes (or, in a dry run, sizes) a whole directory and prevents

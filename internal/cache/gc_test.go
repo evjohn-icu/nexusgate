@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -54,6 +55,14 @@ func gcFixture(t *testing.T) (cacheDir string, rebuildableBytes, scratchBytes, o
 		if err := os.Chtimes(filepath.Join(cacheDir, "assetA", name), old, old); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := filepath.WalkDir(cacheDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		return os.Chtimes(path, old, old)
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	return cacheDir, rebuildableBytes, scratchBytes, orphanBytes

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/evjohn-icu/timingdex/internal/cachecoord"
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	videoanalysis "github.com/evjohn-icu/timingdex/internal/domain/video_analysis"
 	"github.com/evjohn-icu/timingdex/internal/media"
@@ -76,7 +77,12 @@ func (p *Pipeline) analyzeWithDetector(ctx context.Context, j *domain.Job, m *do
 	}
 	raws := make([]json.RawMessage, 0, 32)
 
+	cacheLock, err := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+	if err != nil {
+		return err
+	}
 	bounds, err := p.shotDetector.Detect(ctx, proxy.LocalPath, m.DurationMS)
+	_ = cacheLock.Release()
 	if err != nil {
 		if failErr := p.failModelRun(ctx, runID, "provider_error", err.Error(), "", j, worker); failErr != nil {
 			return failErr
@@ -95,7 +101,12 @@ func (p *Pipeline) analyzeWithDetector(ctx context.Context, j *domain.Job, m *do
 		return domain.Permanent(err)
 	}
 
+	cacheLock, err = cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+	if err != nil {
+		return err
+	}
 	summary, summaryRaw, err := p.summaryCall(ctx, route.analyzer, proxy, transcript, m, normalized)
+	_ = cacheLock.Release()
 	raws = append(raws, rawMessage(summaryRaw))
 	if err != nil {
 		if failErr := p.failModelRun(ctx, runID, "provider_error", err.Error(), joinRaw(raws), j, worker); failErr != nil {
@@ -112,7 +123,12 @@ func (p *Pipeline) analyzeWithDetector(ctx context.Context, j *domain.Job, m *do
 		return err
 	}
 
+	cacheLock, err = cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+	if err != nil {
+		return err
+	}
 	shots, metas, raws2, err := p.refineShots(ctx, j.AssetID, runID, proxy, transcript, m, route.analyzer, normalized)
+	_ = cacheLock.Release()
 	raws = append(raws, raws2...)
 	if err != nil {
 		if failErr := p.failModelRun(ctx, runID, "provider_error", err.Error(), joinRaw(raws), j, worker); failErr != nil {
@@ -178,7 +194,12 @@ func (p *Pipeline) analyzeTwoPass(ctx context.Context, j *domain.Job, m *domain.
 		return err
 	}
 	raws := make([]json.RawMessage, 0, len(passOneShots))
+	cacheLock, err := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+	if err != nil {
+		return err
+	}
 	refined, _, raws2, err := p.refineShots(ctx, j.AssetID, runID, proxy, transcript, m, route.analyzer, shotsToBounds(passOneShots))
+	_ = cacheLock.Release()
 	raws = append(raws, raws2...)
 	if err != nil {
 		if failErr := p.failModelRun(ctx, runID, "provider_error", err.Error(), joinRaw(raws), j, worker); failErr != nil {

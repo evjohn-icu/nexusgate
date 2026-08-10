@@ -17,8 +17,8 @@ func acquire(path string, exclusive bool) (*Lock, error) {
 		return nil, err
 	}
 	flags := uint32(0)
-	if !exclusive {
-		flags = windows.LOCKFILE_FAIL_IMMEDIATELY
+	if exclusive {
+		flags = windows.LOCKFILE_EXCLUSIVE_LOCK
 	}
 	if err := windows.LockFileEx(windows.Handle(f.Fd()), flags, 0, 1, 0, &windows.Overlapped{}); err != nil {
 		_ = f.Close()

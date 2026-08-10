@@ -201,24 +201,27 @@ func runCacheGC(ctx context.Context, repo *sqliterepo.Repository, cfg config.Con
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	lock, err := cachecoord.AcquireExclusive(cfg.DataDir)
-	if err != nil {
-		return fmt.Errorf("acquire cache maintenance lock: %w", err)
-	}
-	defer lock.Release()
-	live, err := repo.ListLiveJobAssetIDs(ctx, time.Now().UTC())
-	if err != nil {
-		return fmt.Errorf("list live job assets: %w", err)
-	}
-	protected := make(map[string]struct{}, len(live))
-	for _, id := range live {
-		protected[id] = struct{}{}
-	}
 	selected := *scratch || *rebuildable || *orphans
 	if !selected {
 		// No category named: report-only dry run of everything. --yes with no
 		// category deletes nothing — the operator must say what goes.
 		*scratch, *rebuildable, *orphans = true, true, true
+	}
+	protected := map[string]struct{}(nil)
+	if *yes && selected {
+		lock, err := cachecoord.AcquireExclusive(cfg.DataDir)
+		if err != nil {
+			return fmt.Errorf("acquire cache maintenance lock: %w", err)
+		}
+		defer lock.Release()
+		live, err := repo.ListLiveJobAssetIDs(ctx, time.Now().UTC())
+		if err != nil {
+			return fmt.Errorf("list live job assets: %w", err)
+		}
+		protected = make(map[string]struct{}, len(live))
+		for _, id := range live {
+			protected[id] = struct{}{}
+		}
 	}
 	var orphanDirs []cache.OrphanDir
 	if *orphans {

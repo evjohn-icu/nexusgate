@@ -693,15 +693,6 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 	if err != nil {
 		return err
 	}
-	// Hold the reader lock only for stages that consume or recreate derived
-	// artifacts. Probe and queue bookkeeping do not contend with cache GC.
-	if j.Type == domain.JobDerive || j.Type == domain.JobSpeechGate || j.Type == domain.JobTranscribe || j.Type == domain.JobAlign || j.Type == domain.JobAnalyze {
-		lock, lockErr := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
-		if lockErr != nil {
-			return fmt.Errorf("acquire cache reader lock: %w", lockErr)
-		}
-		defer lock.Release()
-	}
 	// The effective disk floor for this job: the settings page's throttle
 	// value wins when the row exists (including an explicit 0 = disabled),
 	// otherwise the static config floor. One existence query per job, not per
@@ -732,6 +723,11 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 			return err
 		}
 		base := filepath.Join(p.cacheDir, j.AssetID)
+		cacheLock, lockErr := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+		if lockErr != nil {
+			return fmt.Errorf("acquire cache reader lock: %w", lockErr)
+		}
+		defer cacheLock.Release()
 		// Keep profiles in separate cache paths: a proxy created by software x264
 		// must never be relabelled as an NVENC/QSV/VideoToolbox result.
 		requestedThumb := filepath.Join(base, "thumbnail-"+p.hardware.Mode+".jpg")
@@ -853,7 +849,12 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		if metadata == nil || metadata.DurationMS <= 0 {
 			return domain.Permanent(fmt.Errorf("media duration missing for speech gate"))
 		}
+		cacheLock, lockErr := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+		if lockErr != nil {
+			return fmt.Errorf("acquire cache reader lock: %w", lockErr)
+		}
 		c, err := media.SpeechGate(ctx, a.LocalPath, metadata.DurationMS)
+		_ = cacheLock.Release()
 		if err != nil {
 			return err
 		}
@@ -875,6 +876,10 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		if a == nil {
 			return domain.Permanent(fmt.Errorf("audio artifact missing"))
 		}
+		cacheLock, lockErr := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+		if lockErr != nil {
+			return fmt.Errorf("acquire cache reader lock: %w", lockErr)
+		}
 		t, err := p.asr.Transcribe(ctx, providers.TranscribeRequest{AudioPath: a.LocalPath, Language: "zh"})
 		providerUsed := p.asr
 		if err != nil && p.asrFallback != nil {
@@ -882,6 +887,10 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 			providerUsed = p.asrFallback
 		}
 		if err != nil {
+			_ = cacheLock.Release()
+			return err
+		}
+		if err := cacheLock.Release(); err != nil {
 			return err
 		}
 		if err := p.repo.SaveTranscript(ctx, j.AssetID, providerUsed.Name(), providerUsed.Model(), j.InputHash, t, j.ID, worker); err != nil {
@@ -918,14 +927,21 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		if a == nil {
 			return domain.Permanent(fmt.Errorf("audio artifact missing"))
 		}
+		cacheLock, lockErr := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+		if lockErr != nil {
+			return fmt.Errorf("acquire cache reader lock: %w", lockErr)
+		}
 		t, err := p.repo.GetTranscript(ctx, j.AssetID)
 		if err != nil {
+			_ = cacheLock.Release()
 			return err
 		}
 		if t == nil || t.Text == "" {
+			_ = cacheLock.Release()
 			return domain.Permanent(fmt.Errorf("transcript missing"))
 		}
 		result, err := p.alignment.Align(ctx, providers.AlignRequest{AudioPath: a.LocalPath, Transcript: *t, Language: t.Language})
+		_ = cacheLock.Release()
 		if err != nil {
 			return err
 		}

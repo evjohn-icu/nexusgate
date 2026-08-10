@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/evjohn-icu/timingdex/internal/cachecoord"
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	videoanalysis "github.com/evjohn-icu/timingdex/internal/domain/video_analysis"
 	"github.com/evjohn-icu/timingdex/internal/idgen"
@@ -65,6 +66,10 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 		}
 	}
 	analyzeReq := videoanalysis.Input{VideoPath: proxy.LocalPath, Transcript: transcript, Metadata: *m}
+	cacheLock, e := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+	if e != nil {
+		return e
+	}
 	requiresPreparation := false
 	if preparation, ok := provider.(interface{ RequiresVideoPreparation() bool }); ok {
 		requiresPreparation = preparation.RequiresVideoPreparation()
@@ -91,6 +96,9 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 			}
 		}
 		analyzeReq.RemoteURI, analyzeReq.MIMEType = cachedFile.RemoteURI, cachedFile.MIMEType
+	}
+	if e := cacheLock.Release(); e != nil {
+		return e
 	}
 	result, rawResult, providerErr := p.analyzeVideo(ctx, provider, j.AssetID, analyzeReq, m.DurationMS)
 	raw = rawResult
