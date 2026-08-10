@@ -93,6 +93,37 @@ func TestConfigSaveIsAtomicAndFailClosed(t *testing.T) {
 	}
 }
 
+func TestConfigSaveRejectsInsecureExistingFileAndParent(t *testing.T) {
+	config := Config{HubURL: "https://worker", Token: "node-token"}
+	dir := filepath.Join(t.TempDir(), "config")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "worker.json")
+	original := []byte(`{"hub_url":"https://original","token":"original"}`)
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveConfig(path, config); err == nil {
+		t.Fatal("expected insecure existing file rejection")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("rejected save changed file: got %q want %q", got, original)
+	}
+
+	insecureDir := filepath.Join(t.TempDir(), "config")
+	if err := os.Mkdir(insecureDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveConfig(filepath.Join(insecureDir, "worker.json"), config); err == nil {
+		t.Fatal("expected insecure parent rejection")
+	}
+}
+
 func TestConfigResolvesMountedRootAndRejectsPathEscape(t *testing.T) {
 	root := t.TempDir()
 	config := Config{Mounts: map[string]string{"nas-main": root}}
