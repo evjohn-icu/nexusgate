@@ -321,10 +321,19 @@ func generateClip(t testing.TB, outDir, name string, opts ClipOpts) string {
 
 func fixtureSkipOrFail(t testing.TB, message string) {
 	t.Helper()
-	if os.Getenv("TIMINGDEX_MEDIA_OPTIONAL") == "1" || os.Getenv("CI") == "" {
+	if fixtureFailureShouldSkip(os.Getenv("TIMINGDEX_MEDIA_OPTIONAL"), os.Getenv("CI"), os.Getenv("GITHUB_ACTIONS")) {
 		t.Skip(message)
 	}
 	t.Fatal(message)
+}
+
+// fixtureFailureShouldSkip keeps the environment policy separate from testing.TB
+// side effects so the optional-media contract remains directly testable.
+func fixtureFailureShouldSkip(mediaOptional, ci, githubActions string) bool {
+	if mediaOptional == "1" {
+		return true
+	}
+	return ci == "" && githubActions == ""
 }
 
 func fixtureSkipOrFailf(t testing.TB, format string, args ...any) {
