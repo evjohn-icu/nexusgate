@@ -204,6 +204,10 @@ type Repository struct {
 	semanticVectorCache map[string][]float64
 }
 
+// migrationPauseAfterLock is intentionally narrow so concurrency tests can
+// hold the SQLite migration lock while another repository waits for it.
+var migrationPauseAfterLock func()
+
 func Open(path string) (*Repository, error) {
 	dsn := "file:" + filepath.ToSlash(path) + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
 	db, err := sql.Open("sqlite", dsn)
@@ -246,37 +250,50 @@ func (r *Repository) Migrate(ctx context.Context) error {
 		return err
 	}
 
+	lockConn, err := r.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer lockConn.Close()
+	if _, err := lockConn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = lockConn.ExecContext(context.Background(), `ROLLBACK`)
+		}
+	}()
+	if migrationPauseAfterLock != nil {
+		migrationPauseAfterLock()
+	}
+	applied, err := appliedMigrationVersions(ctx, lockConn)
+	if err != nil {
+		return err
+	}
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
 			continue
 		}
-		var exists int
-		if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, entry.Name()).Scan(&exists); err != nil {
-			return err
-		}
-		if exists > 0 {
+		if _, exists := applied[entry.Name()]; exists {
 			continue
 		}
 		content, err := migrationFiles.ReadFile("migrations/" + entry.Name())
 		if err != nil {
 			return err
 		}
-		tx, err := r.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, string(content)); err != nil {
-			tx.Rollback()
+		if _, err := lockConn.ExecContext(ctx, string(content)); err != nil {
 			return fmt.Errorf("apply migration %s: %w", entry.Name(), err)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)`, entry.Name(), formatTime(time.Now())); err != nil {
-			tx.Rollback()
+		if _, err := lockConn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)`, entry.Name(), formatTime(time.Now())); err != nil {
 			return err
 		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
+		applied[entry.Name()] = struct{}{}
 	}
+	if _, err := lockConn.ExecContext(ctx, `COMMIT`); err != nil {
+		return err
+	}
+	committed = true
 	return r.ensureCJKBigramFTS(ctx)
 }
 
@@ -332,27 +349,53 @@ func (r *Repository) pendingMigrationCount(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	embedded := 0
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
-			embedded++
-		}
-	}
 	var exists int
 	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_migrations'`).Scan(&exists); err != nil {
 		return 0, err
 	}
 	if exists == 0 {
-		return embedded, nil
+		pending := 0
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
+				pending++
+			}
+		}
+		return pending, nil
 	}
-	var applied int
-	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil {
+	applied, err := appliedMigrationVersions(ctx, r.db)
+	if err != nil {
 		return 0, err
 	}
-	if applied >= embedded {
-		return 0, nil
+	pending := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
+			if _, ok := applied[entry.Name()]; !ok {
+				pending++
+			}
+		}
 	}
-	return embedded - applied, nil
+	return pending, nil
+}
+
+type migrationQuerier interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func appliedMigrationVersions(ctx context.Context, q migrationQuerier) (map[string]struct{}, error) {
+	rows, err := q.QueryContext(ctx, `SELECT version FROM schema_migrations`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	applied := make(map[string]struct{})
+	for rows.Next() {
+		var version string
+		if err := rows.Scan(&version); err != nil {
+			return nil, err
+		}
+		applied[version] = struct{}{}
+	}
+	return applied, rows.Err()
 }
 
 // migrationFreeSpaceRequired is the disk headroom demanded before an upgrade
