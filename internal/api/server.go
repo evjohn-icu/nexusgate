@@ -984,6 +984,8 @@ func (s *Server) hardwareReport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) agentCapabilities(w http.ResponseWriter, r *http.Request) {
+	// Confidence describes the persisted capture-time observation, not GPS
+	// location confidence; location certainty is represented by precision.
 	writeJSON(w, http.StatusOK, map[string]any{
 		// version is the agent contract version, not the product version. The
 		// skills/timingdex package — its SKILL.md and
@@ -2135,12 +2137,12 @@ func (s *Server) assetCaptureLocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"available":  true,
-		"latitude":   *detail.Metadata.Latitude,
-		"longitude":  *detail.Metadata.Longitude,
-		"precision":  detail.Metadata.LocationPrecision,
-		"source":     detail.Metadata.LocationSource,
-		"confidence": detail.Metadata.CaptureTimeConfidence,
+		"available":               true,
+		"latitude":                *detail.Metadata.Latitude,
+		"longitude":               *detail.Metadata.Longitude,
+		"precision":               detail.Metadata.LocationPrecision,
+		"source":                  detail.Metadata.LocationSource,
+		"capture_time_confidence": detail.Metadata.CaptureTimeConfidence,
 	})
 }
 

@@ -3,6 +3,8 @@ package sqlite
 import (
 	"context"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -298,7 +300,7 @@ func TestSaveMediaMetadataMergesCaptureProvenance(t *testing.T) {
 	if err := repo.SaveMediaMetadata(ctx, "asset-merge", domain.MediaMetadata{
 		CapturedAt: &strongTime, CaptureTimeSource: "embedded_exif", CaptureTimeConfidence: .95,
 		Latitude: &strongLat, Longitude: &strongLon, LocationSource: "embedded_exif", LocationPrecision: "exact",
-		CameraModel: "preserved-camera", DurationMS: 42,
+		CameraModel: "preserved-camera", DurationMS: 42, FFProbeRaw: "strong-probe", ExifToolRaw: "strong-exif",
 	}, "strong"); err != nil {
 		t.Fatal(err)
 	}
@@ -326,6 +328,16 @@ func TestSaveMediaMetadataMergesCaptureProvenance(t *testing.T) {
 	if err != nil || *got.Latitude != strongLat || *got.Longitude != strongLon {
 		t.Fatalf("partial coordinate pair was not ignored: %+v err=%v", got, err)
 	}
+	equalLat, equalLon := 40.0, 141.0
+	if err := repo.SaveMediaMetadata(ctx, "asset-merge", domain.MediaMetadata{
+		Latitude: &equalLat, Longitude: &equalLon, LocationSource: "embedded_exif", LocationPrecision: "exact",
+	}, "location-equal"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = repo.GetMediaMetadata(ctx, "asset-merge")
+	if err != nil || *got.Latitude != equalLat || *got.Longitude != equalLon {
+		t.Fatalf("equal-rank location observation was not accepted: %+v err=%v", got, err)
+	}
 	equalTime := now.Add(2 * time.Hour)
 	if err := repo.SaveMediaMetadata(ctx, "asset-merge", domain.MediaMetadata{CapturedAt: &equalTime, CaptureTimeSource: "embedded_exif", CaptureTimeConfidence: .95}, "equal"); err != nil {
 		t.Fatal(err)
@@ -340,6 +352,30 @@ func TestSaveMediaMetadataMergesCaptureProvenance(t *testing.T) {
 	got, err = repo.GetMediaMetadata(ctx, "asset-merge")
 	if err != nil || got.LocationPrecision != "exact" {
 		t.Fatalf("legacy precision was not normalized: %+v err=%v", got, err)
+	}
+	var mediaProbe, mediaExif, mediaNorm, captureSource, locationSource, capturePrecision, captureNorm string
+	var captureConfidence float64
+	if err := repo.db.QueryRowContext(ctx, `SELECT ffprobe_json,exiftool_json,normalized_json FROM media_metadata WHERE asset_id='asset-merge'`).Scan(&mediaProbe, &mediaExif, &mediaNorm); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.db.QueryRowContext(ctx, `SELECT capture_time_source,capture_time_confidence,location_source,location_precision,normalized_json FROM capture_metadata WHERE asset_id='asset-merge'`).Scan(&captureSource, &captureConfidence, &locationSource, &capturePrecision, &captureNorm); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"media probe": mediaProbe, "media exif": mediaExif, "media normalized": mediaNorm, "capture normalized": captureNorm} {
+		if value == "" {
+			t.Fatalf("%s column was not persisted", name)
+		}
+	}
+	if captureSource != "embedded_exif" || captureConfidence != .95 || locationSource != "embedded_exif" || capturePrecision != "exact" || !strings.Contains(mediaNorm, `"camera_model":"preserved-camera"`) || !strings.Contains(captureNorm, `"capture_time_source":"embedded_exif"`) {
+		t.Fatalf("merged projection mismatch: time=%q confidence=%v location=%q precision=%q media=%s capture=%s", captureSource, captureConfidence, locationSource, capturePrecision, mediaNorm, captureNorm)
+	}
+	unknownTime := now.Add(-3 * time.Hour)
+	if err := repo.SaveMediaMetadata(ctx, "asset-merge", domain.MediaMetadata{CapturedAt: &unknownTime, CaptureTimeSource: "unknown"}, "unknown"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = repo.GetMediaMetadata(ctx, "asset-merge")
+	if err != nil || !got.CapturedAt.Equal(equalTime) {
+		t.Fatalf("unknown source replaced known time: %+v err=%v", got, err)
 	}
 }
 
@@ -367,7 +403,7 @@ func TestRebuildAutomaticShootSessionsGroupsSameCameraWithinThirtyMinutes(t *tes
 		}
 	}
 	for id, capturedAt := range map[string]time.Time{"session-a": now, "session-b": now.Add(20 * time.Minute), "session-c": now.Add(55 * time.Minute)} {
-		if err := repo.SaveMediaMetadata(ctx, id, domain.MediaMetadata{CapturedAt: &capturedAt, CameraMake: "Sony", CameraModel: "FX3", CameraSerial: "serial-1", DurationMS: 5000}, "session-fixture"); err != nil {
+		if err := repo.SaveMediaMetadata(ctx, id, domain.MediaMetadata{CapturedAt: &capturedAt, CaptureTimeSource: "embedded_exif", CaptureTimeConfidence: .95, CameraMake: "Sony", CameraModel: "FX3", CameraSerial: "serial-1", DurationMS: 5000}, "session-fixture"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -383,6 +419,43 @@ func TestRebuildAutomaticShootSessionsGroupsSameCameraWithinThirtyMinutes(t *tes
 	}
 	if sessions != 2 || mappings != 3 {
 		t.Fatalf("sessions=%d mappings=%d, want 2/3", sessions, mappings)
+	}
+	snapshotMembership := func() []string {
+		rows, err := repo.db.QueryContext(ctx, `SELECT ass.session_id,ass.asset_id FROM asset_shoot_sessions ass JOIN shoot_sessions ss ON ss.id=ass.session_id WHERE ss.root_id='root-session' AND ss.state='automatic' ORDER BY ass.session_id,ass.asset_id`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		groups := map[string][]string{}
+		for rows.Next() {
+			var sessionID, assetID string
+			if err := rows.Scan(&sessionID, &assetID); err != nil {
+				t.Fatal(err)
+			}
+			groups[sessionID] = append(groups[sessionID], assetID)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		membership := make([]string, 0, len(groups))
+		for _, assets := range groups {
+			sort.Strings(assets)
+			membership = append(membership, strings.Join(assets, ","))
+		}
+		sort.Strings(membership)
+		return membership
+	}
+	before := snapshotMembership()
+	weak := now.Add(24 * time.Hour)
+	if err := repo.SaveMediaMetadata(ctx, "session-a", domain.MediaMetadata{CapturedAt: &weak, CaptureTimeSource: "filesystem", CaptureTimeConfidence: .25, CameraMake: "Sony", CameraModel: "FX3", CameraSerial: "serial-1", DurationMS: 5000}, "weak-reprobe"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RebuildAutomaticShootSessions(ctx, "root-session"); err != nil {
+		t.Fatal(err)
+	}
+	after := snapshotMembership()
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("weak re-probe changed session membership: before=%v after=%v", before, after)
 	}
 }
 

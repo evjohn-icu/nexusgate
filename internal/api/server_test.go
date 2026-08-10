@@ -1462,7 +1462,7 @@ func TestPublicAssetDetailHidesPreciseLocationAndAbsolutePath(t *testing.T) {
 	request := lanRequest(http.MethodGet, "/api/v1/admin/assets/"+assets[0].ID+"/capture-location", nil)
 	request.Header.Set("Authorization", "Bearer "+service.AdminToken())
 	handler.ServeHTTP(admin, request)
-	if admin.Code != http.StatusOK || !strings.Contains(admin.Body.String(), "22.543096") || !strings.Contains(admin.Body.String(), "114.057865") || !strings.Contains(admin.Body.String(), `"precision":"exact"`) || !strings.Contains(admin.Body.String(), `"source":"embedded_exif"`) || !strings.Contains(admin.Body.String(), `"confidence":0.95`) {
+	if admin.Code != http.StatusOK || !strings.Contains(admin.Body.String(), "22.543096") || !strings.Contains(admin.Body.String(), "114.057865") || !strings.Contains(admin.Body.String(), `"precision":"exact"`) || !strings.Contains(admin.Body.String(), `"source":"embedded_exif"`) || !strings.Contains(admin.Body.String(), `"capture_time_confidence":0.95`) {
 		t.Fatalf("admin precise location status=%d body=%s", admin.Code, admin.Body.String())
 	}
 }
