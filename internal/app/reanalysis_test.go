@@ -81,7 +81,7 @@ func seedAnalyzeReadyAsset(t *testing.T, repo *sqlite.Repository, root domain.Li
 	if err := repo.CompleteJob(ctx, job.ID, "seed", domain.JobSucceeded, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SaveTranscript(ctx, assetID, "qwen", "qwen3-asr-flash", "thash-"+id, domain.Transcript{Language: "zh", Text: "text " + id}); err != nil {
+	if err := repo.SaveTranscript(ctx, assetID, "qwen", "qwen3-asr-flash", "thash-"+id, domain.Transcript{Language: "zh", Text: "text " + id}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	return assetID
@@ -200,14 +200,14 @@ func TestCachedAnalysisStillEnqueuesIndex(t *testing.T) {
 	}
 	assetID := seedAnalyzeReadyAsset(t, repo, root, "cached")
 	analyzeHash := hashStrings("cached", "analyze")
-	runID, cached, err := repo.CreateModelRun(ctx, assetID, "vision", "fixture-video", "fixture-v", analyzeHash, "footage-analysis-v4", "asset-analysis/v2", `{}`)
+	runID, cached, err := repo.CreateModelRun(ctx, assetID, "vision", "fixture-video", "fixture-v", analyzeHash, "footage-analysis-v4", "asset-analysis/v2", `{}`, "", "")
 	if err != nil || cached {
 		t.Fatalf("seed run id=%q cached=%v err=%v", runID, cached, err)
 	}
-	if err := repo.StageModelRun(ctx, runID, `{}`, `{"summary":"cached"}`); err != nil {
+	if err := repo.StageModelRun(ctx, runID, `{}`, `{"summary":"cached"}`, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.CommitAnalysisWithShots(ctx, assetID, runID, "asset-analysis/v2", domain.StructuredAnalysis{Summary: "cached"}, []domain.AssetShot{{StartMS: 0, EndMS: 1000, Description: "cached shot"}}); err != nil {
+	if err := repo.CommitAnalysisWithShots(ctx, assetID, runID, "asset-analysis/v2", domain.StructuredAnalysis{Summary: "cached"}, []domain.AssetShot{{StartMS: 0, EndMS: 1000, Description: "cached shot"}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.EnqueueJob(ctx, assetID, domain.JobAnalyze, analyzeHash, 30); err != nil {

@@ -635,7 +635,7 @@ func TestRebuildSearchKeepsRowidMappingConsistentAcrossRebuilds(t *testing.T) {
 		if err := repo.ReplaceAssetShots(ctx, id, "", []domain.AssetShot{
 			{StartMS: 0, EndMS: 1000, Description: "first shot for " + id},
 			{StartMS: 1000, EndMS: 2000, Description: "second shot for " + id},
-		}); err != nil {
+		}, "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -649,7 +649,7 @@ func TestRebuildSearchKeepsRowidMappingConsistentAcrossRebuilds(t *testing.T) {
 		}
 		if err := repo.ReplaceAssetShots(ctx, "rowid-asset-1", "", []domain.AssetShot{
 			{StartMS: 0, EndMS: 500, Description: "reprocessed shot"},
-		}); err != nil {
+		}, "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}

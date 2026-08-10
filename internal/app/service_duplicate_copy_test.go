@@ -60,14 +60,14 @@ func TestServiceDuplicateCopyDoesNotCreateProbeOrModelRun(t *testing.T) {
 	}
 	probeHash := ingest.StableAssetKey(loc.QuickFingerprint, loc.FileSize, loc.ProbeModifiedNS)
 	// Commit one analysis through the real model-run boundary before rescanning.
-	runID, _, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "fixture", "fixture-model", "analysis-input", "prompt", "schema", "{}")
+	runID, _, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "fixture", "fixture-model", "analysis-input", "prompt", "schema", "{}", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.StageModelRun(ctx, runID, "{}", `{}`); err != nil {
+	if err := repo.StageModelRun(ctx, runID, "{}", `{}`, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.CommitAnalysis(ctx, assetID, runID, "schema", domain.StructuredAnalysis{AssetType: "b_roll", ShotSize: "wide", Summary: "fixture"}); err != nil {
+	if err := repo.CommitAnalysis(ctx, assetID, runID, "schema", domain.StructuredAnalysis{AssetType: "b_roll", ShotSize: "wide", Summary: "fixture"}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 

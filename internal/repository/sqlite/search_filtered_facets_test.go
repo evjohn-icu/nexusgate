@@ -49,15 +49,15 @@ func seedSearchFacetFixtures(t *testing.T, repo *Repository, n int, token string
 			"loc-"+id, id, id+".mp4", "/footage/"+id+".mp4", now); err != nil {
 			t.Fatal(err)
 		}
-		runID, _, err := repo.CreateModelRun(ctx, id, "vision", "fixture", "fixture-model", "hash-"+id, "facet-prompt-v1", "asset-analysis/v1", "{}")
+		runID, _, err := repo.CreateModelRun(ctx, id, "vision", "fixture", "fixture-model", "hash-"+id, "facet-prompt-v1", "asset-analysis/v1", "{}", "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
 		analysis := domain.StructuredAnalysis{Summary: token + " common phrase " + id}
-		if err := repo.StageModelRun(ctx, runID, "{}", "{}"); err != nil {
+		if err := repo.StageModelRun(ctx, runID, "{}", "{}", "", ""); err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.CommitAnalysis(ctx, id, runID, "asset-analysis/v1", analysis); err != nil {
+		if err := repo.CommitAnalysis(ctx, id, runID, "asset-analysis/v1", analysis, "", ""); err != nil {
 			t.Fatal(err)
 		}
 		if err := repo.RebuildSearch(ctx, id); err != nil {
@@ -230,15 +230,15 @@ func TestSearchFilteredFTSOrderedByRelevance(t *testing.T) {
 			"loc-"+id, id, id+".mp4", "/footage/"+id+".mp4", now); err != nil {
 			t.Fatal(err)
 		}
-		runID, _, err := repo.CreateModelRun(ctx, id, "vision", "fixture", "fixture-model", "hash-"+id, "facet-prompt-v1", "asset-analysis/v1", "{}")
+		runID, _, err := repo.CreateModelRun(ctx, id, "vision", "fixture", "fixture-model", "hash-"+id, "facet-prompt-v1", "asset-analysis/v1", "{}", "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
 		analysis := domain.StructuredAnalysis{Summary: summary}
-		if err := repo.StageModelRun(ctx, runID, "{}", "{}"); err != nil {
+		if err := repo.StageModelRun(ctx, runID, "{}", "{}", "", ""); err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.CommitAnalysis(ctx, id, runID, "asset-analysis/v1", analysis); err != nil {
+		if err := repo.CommitAnalysis(ctx, id, runID, "asset-analysis/v1", analysis, "", ""); err != nil {
 			t.Fatal(err)
 		}
 		if err := repo.RebuildSearch(ctx, id); err != nil {

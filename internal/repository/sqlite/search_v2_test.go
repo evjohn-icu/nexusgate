@@ -295,7 +295,7 @@ func TestSearchV2MetadataChannelLargeCorpus(t *testing.T) {
 		if _, err := repo.db.ExecContext(ctx, `INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,exists_now,is_primary,last_seen_at) VALUES(?,?,?,?,?,0,1,1,?)`, "loc-"+id, id, "large-root", id+"-car.mov", "/large/"+id+"-car.mov", now); err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.ReplaceAssetShots(ctx, id, "", []domain.AssetShot{{ID: "shot-" + id, AssetID: id, Ordinal: 0, EndMS: 1, Description: "test"}}); err != nil {
+		if err := repo.ReplaceAssetShots(ctx, id, "", []domain.AssetShot{{ID: "shot-" + id, AssetID: id, Ordinal: 0, EndMS: 1, Description: "test"}}, "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -484,12 +484,12 @@ func seedOneAsset(t *testing.T, repo *Repository, ids map[string]string, asset g
 	if _, err := repo.db.ExecContext(ctx, `INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,last_seen_at) VALUES(?,?,?,?,?,0,?)`, "loc-"+asset.id, asset.id, root.ID, "clips/"+asset.id+".MOV", "clips/"+asset.id+".MOV", now); err != nil {
 		t.Fatal(err)
 	}
-	runID, _, err := repo.CreateModelRun(ctx, asset.id, "vision", "fixture", "fixture-model", "golden-"+asset.id, "footage-analysis-v4", "asset-analysis/v2", "{}")
+	runID, _, err := repo.CreateModelRun(ctx, asset.id, "vision", "fixture", "fixture-model", "golden-"+asset.id, "footage-analysis-v4", "asset-analysis/v2", "{}", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	parsed, _ := jsonMarshal(asset.analysis)
-	if err := repo.StageModelRun(ctx, runID, `{"golden":true}`, string(parsed)); err != nil {
+	if err := repo.StageModelRun(ctx, runID, `{"golden":true}`, string(parsed), "", ""); err != nil {
 		t.Fatal(err)
 	}
 	shots := make([]domain.AssetShot, 0, len(asset.shots))
@@ -500,7 +500,7 @@ func seedOneAsset(t *testing.T, repo *Repository, ids map[string]string, asset g
 			Tags: spec.tags, Objects: spec.objects, Actions: spec.actions, Mood: spec.mood,
 		})
 	}
-	if err := repo.CommitAnalysisWithShots(ctx, asset.id, runID, "asset-analysis/v2", asset.analysis, shots); err != nil {
+	if err := repo.CommitAnalysisWithShots(ctx, asset.id, runID, "asset-analysis/v2", asset.analysis, shots, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if len(asset.transcriptWords) > 0 {
@@ -511,7 +511,7 @@ func seedOneAsset(t *testing.T, repo *Repository, ids map[string]string, asset g
 			words = append(words, domain.AlignmentWord{StartMS: w.startMS, EndMS: w.endMS, Text: w.text, Confidence: &confidence})
 			joined += w.text + " "
 		}
-		if err := repo.SaveTranscript(ctx, asset.id, "fixture", "fixture-model", "golden-transcript-"+asset.id, domain.Transcript{Language: "zh", Text: joined}); err != nil {
+		if err := repo.SaveTranscript(ctx, asset.id, "fixture", "fixture-model", "golden-transcript-"+asset.id, domain.Transcript{Language: "zh", Text: joined}, "", ""); err != nil {
 			t.Fatal(err)
 		}
 		if err := repo.SaveAlignment(ctx, asset.id, "fixture", "fixture-model", "golden-align-"+asset.id, "{}", domain.AlignmentResult{Words: words}); err != nil {

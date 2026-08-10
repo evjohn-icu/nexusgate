@@ -58,7 +58,7 @@ func newShotBasketFixture(t *testing.T) (*app.Service, string, map[string]domain
 		{ID: "shot-2", StartMS: 4000, EndMS: 9000, Description: "街道人流"},
 		{ID: "shot-3", StartMS: 9000, EndMS: 12000, Description: "地铁站台"},
 	}
-	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", shots); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", shots, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})

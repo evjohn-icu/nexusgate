@@ -96,14 +96,14 @@ func TestModelRunMigration0031UpgradeAndForeignKeys(t *testing.T) {
 	if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES('migration-asset','fingerprint',1,'discovered',?,?)`, now, now); err != nil {
 		t.Fatal(err)
 	}
-	runID, _, err := repo.CreateModelRun(ctx, "migration-asset", "vision", "provider", "model", "migration-hash", "p1", "s1", `{}`)
+	runID, _, err := repo.CreateModelRun(ctx, "migration-asset", "vision", "provider", "model", "migration-hash", "p1", "s1", `{}`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.StageModelRun(ctx, runID, `{}`, `{}`); err != nil {
+	if err := repo.StageModelRun(ctx, runID, `{}`, `{}`, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.CommitAnalysis(ctx, "migration-asset", runID, "s1", domain.StructuredAnalysis{AssetType: "b-roll", Summary: "migration"}); err != nil {
+	if err := repo.CommitAnalysis(ctx, "migration-asset", runID, "s1", domain.StructuredAnalysis{AssetType: "b-roll", Summary: "migration"}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repo.db.ExecContext(ctx, `DELETE FROM model_runs WHERE id=?`, runID); err != nil {
@@ -117,17 +117,17 @@ func TestModelRunMigration0031UpgradeAndForeignKeys(t *testing.T) {
 		t.Fatalf("asset_analysis source_run_id = %q, want NULL", *sourceRunID)
 	}
 
-	secondRun, _, err := repo.CreateModelRun(ctx, "migration-asset", "vision", "provider", "model", "migration-hash", "p1", "s1", `{}`)
+	secondRun, _, err := repo.CreateModelRun(ctx, "migration-asset", "vision", "provider", "model", "migration-hash", "p1", "s1", `{}`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if secondRun == runID {
 		t.Fatal("retry after failed/deleted run reused the old ID")
 	}
-	if err := repo.FailModelRun(ctx, secondRun, "retry", "failed", `{}`); err != nil {
+	if err := repo.FailModelRun(ctx, secondRun, "retry", "failed", `{}`, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	thirdRun, _, err := repo.CreateModelRun(ctx, "migration-asset", "vision", "provider", "model", "migration-hash", "p1", "s1", `{}`)
+	thirdRun, _, err := repo.CreateModelRun(ctx, "migration-asset", "vision", "provider", "model", "migration-hash", "p1", "s1", `{}`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

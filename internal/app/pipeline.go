@@ -70,16 +70,16 @@ type PipelineRepository interface {
 	JobSummary(context.Context) (domain.JobSummary, error)
 	RebuildSearch(context.Context, string) error
 	Search(context.Context, string, int) ([]string, error)
-	CreateModelRun(context.Context, string, string, string, string, string, string, string, string, ...string) (string, bool, error)
-	FailModelRun(context.Context, string, string, string, string, ...string) error
-	StageModelRun(context.Context, string, string, string, ...string) error
-	CommitAnalysis(context.Context, string, string, string, domain.StructuredAnalysis, ...string) error
-	CommitAnalysisWithShots(context.Context, string, string, string, domain.StructuredAnalysis, []domain.AssetShot, ...string) error
+	CreateModelRun(context.Context, string, string, string, string, string, string, string, string, string, string) (string, bool, error)
+	FailModelRun(context.Context, string, string, string, string, string, string) error
+	StageModelRun(context.Context, string, string, string, string, string) error
+	CommitAnalysis(context.Context, string, string, string, domain.StructuredAnalysis, string, string) error
+	CommitAnalysisWithShots(context.Context, string, string, string, domain.StructuredAnalysis, []domain.AssetShot, string, string) error
 	SyncAnalysisTags(context.Context, string, string, domain.StructuredAnalysis) error
-	ReplaceAssetShots(context.Context, string, string, []domain.AssetShot, ...string) error
-	CommitShotRefinement(context.Context, string, string, []domain.AssetShot, ...string) error
+	ReplaceAssetShots(context.Context, string, string, []domain.AssetShot, string, string) error
+	CommitShotRefinement(context.Context, string, string, []domain.AssetShot, string, string) error
 	GetSpeechClassification(context.Context, string) (*domain.SpeechClassification, error)
-	SaveTranscript(context.Context, string, string, string, string, domain.Transcript, ...string) error
+	SaveTranscript(context.Context, string, string, string, string, domain.Transcript, string, string) error
 	GetTranscript(context.Context, string) (*domain.Transcript, error)
 	GetAlignmentWords(context.Context, string) ([]domain.AlignmentWord, error)
 	GetProviderFile(context.Context, string, string, string, string) (*domain.ProviderFile, error)
@@ -93,7 +93,7 @@ type PipelineRepository interface {
 	// rebuild, never a new model run.
 	HasCommittedAnalysis(context.Context, string) (bool, error)
 	ListAssetShots(context.Context, string) ([]domain.AssetShot, error)
-	MarkModelRunCommitted(context.Context, string, ...string) error
+	MarkModelRunCommitted(context.Context, string, string, string) error
 }
 
 type Pipeline struct {

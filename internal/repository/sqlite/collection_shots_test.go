@@ -327,7 +327,7 @@ func TestShotDeletionCascadesPinnedShots(t *testing.T) {
 	}
 	// The re-analysis shape: ReplaceAssetShots deletes the old row and inserts a
 	// fresh id in one transaction, so the old pin must cascade away.
-	if err := repo.ReplaceAssetShots(ctx, "asset-d", "", []domain.AssetShot{{ID: "shot-d-new", StartMS: 0, EndMS: 1200, Description: "new shot"}}); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, "asset-d", "", []domain.AssetShot{{ID: "shot-d-new", StartMS: 0, EndMS: 1200, Description: "new shot"}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	var count int

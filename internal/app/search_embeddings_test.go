@@ -79,7 +79,7 @@ func openEmbeddingTestRepo(t *testing.T) (*sqlite.Repository, []domain.ShotSearc
 		{ID: "shot-1", AssetID: "asset-1", Ordinal: 0, StartMS: 0, EndMS: 5000, Description: "red car crossing"},
 		{ID: "shot-2", AssetID: "asset-1", Ordinal: 1, StartMS: 5000, EndMS: 10_000, Description: "empty parking lot"},
 	}
-	if err := repo.ReplaceAssetShots(ctx, "asset-1", "", shots); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, "asset-1", "", shots, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	committed, err := repo.ListAssetShots(ctx, "asset-1")
@@ -129,7 +129,7 @@ func TestEnsureShotTextEmbeddingsWritesChangedShots(t *testing.T) {
 	// A changed shot (reanalysis wrote a new description) gets re-embedded.
 	changed := committed[0].AssetShot
 	changed.Description = "blue van crossing"
-	if err := repo.ReplaceAssetShots(ctx, "asset-1", "", []domain.AssetShot{changed, committed[1].AssetShot}); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, "asset-1", "", []domain.AssetShot{changed, committed[1].AssetShot}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	svc.ensureShotTextEmbeddings(ctx, "asset-1")

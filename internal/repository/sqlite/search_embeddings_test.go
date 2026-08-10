@@ -67,7 +67,7 @@ func TestListShotTextEmbeddingsPropagatesMalformedBlob(t *testing.T) {
 	if _, err := repo.DB().ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES('a','fp',1,'discovered','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.ReplaceAssetShots(ctx, "a", "", []domain.AssetShot{{ID: "s", AssetID: "a", EndMS: 1, Description: "test"}}); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, "a", "", []domain.AssetShot{{ID: "s", AssetID: "a", EndMS: 1, Description: "test"}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repo.DB().ExecContext(ctx, `INSERT INTO shot_text_embeddings(shot_id,model,vector_blob,source_text_hash,created_at) VALUES('s','m',X'01','h','2026-01-01T00:00:00Z')`); err != nil {
@@ -156,7 +156,7 @@ func TestTextEmbeddingRoundtrip(t *testing.T) {
 	if err := repo.ReplaceAssetShots(ctx, "asset-1", "", []domain.AssetShot{
 		{ID: "shot-1", AssetID: "asset-1", Ordinal: 0, StartMS: 0, EndMS: 5000, Description: "red car crossing"},
 		{ID: "shot-2", AssetID: "asset-1", Ordinal: 1, StartMS: 5000, EndMS: 10_000, Description: "dog in a park"},
-	}); err != nil {
+	}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 

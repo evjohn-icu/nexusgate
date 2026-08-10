@@ -25,7 +25,7 @@ func seedReanalysisAsset(t *testing.T, repo *Repository, suffix string) string {
 	if _, err := repo.db.ExecContext(ctx, `INSERT INTO media_metadata(asset_id,ffprobe_json,exiftool_json,normalized_json,probe_version,updated_at) VALUES(?,'{}','{}',?,'test',?)`, assetID, `{"duration_ms":600000}`, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SaveTranscript(ctx, assetID, "qwen", "qwen3-asr-flash", "thash-"+suffix, domain.Transcript{Language: "zh", Text: "text " + suffix}); err != nil {
+	if err := repo.SaveTranscript(ctx, assetID, "qwen", "qwen3-asr-flash", "thash-"+suffix, domain.Transcript{Language: "zh", Text: "text " + suffix}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	return assetID
@@ -142,17 +142,17 @@ func TestReanalysisKeepsOldModelRunAuditable(t *testing.T) {
 
 	commitRun := func(inputHash, summary string) string {
 		t.Helper()
-		runID, _, err := repo.CreateModelRun(ctx, assetID, "vision", "fixture", "fixture-model", inputHash, "footage-analysis-v4", "asset-analysis/v2", `{"asset_id":"`+assetID+`"}`)
+		runID, _, err := repo.CreateModelRun(ctx, assetID, "vision", "fixture", "fixture-model", inputHash, "footage-analysis-v4", "asset-analysis/v2", `{"asset_id":"`+assetID+`"}`, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
 		analysis := domain.StructuredAnalysis{Summary: summary, AssetType: "b_roll", Quality: "usable"}
 		parsed, _ := json.Marshal(analysis)
-		if err := repo.StageModelRun(ctx, runID, `{"raw":true}`, string(parsed)); err != nil {
+		if err := repo.StageModelRun(ctx, runID, `{"raw":true}`, string(parsed), "", ""); err != nil {
 			t.Fatal(err)
 		}
 		shots := []domain.AssetShot{{AssetID: assetID, SourceRunID: runID, Ordinal: 0, StartMS: 0, EndMS: 5_000, Description: summary}}
-		if err := repo.CommitAnalysisWithShots(ctx, assetID, runID, "asset-analysis/v2", analysis, shots); err != nil {
+		if err := repo.CommitAnalysisWithShots(ctx, assetID, runID, "asset-analysis/v2", analysis, shots, "", ""); err != nil {
 			t.Fatal(err)
 		}
 		return runID

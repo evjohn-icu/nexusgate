@@ -47,7 +47,7 @@ func TestFailModelRunStateIsFailed(t *testing.T) {
 	ctx := context.Background()
 	repo, assetID := setupModelRunsTest(t)
 
-	runID, alreadyCommitted, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-fail-1", "v1", "v1", `{"test":true}`)
+	runID, alreadyCommitted, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-fail-1", "v1", "v1", `{"test":true}`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestFailModelRunStateIsFailed(t *testing.T) {
 
 	// Fail the run.
 	raw := `{"error":"upstream timeout"}`
-	if err := repo.FailModelRun(ctx, runID, "PROVIDER_TIMEOUT", "request timed out after 30s", raw); err != nil {
+	if err := repo.FailModelRun(ctx, runID, "PROVIDER_TIMEOUT", "request timed out after 30s", raw, "", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -102,13 +102,13 @@ func TestFailureFieldsCanStoreOnlyBoundedKeyFreeProviderText(t *testing.T) {
 	ctx := context.Background()
 	repo, assetID := setupModelRunsTest(t)
 	const secret = "sk-should-not-be-persisted"
-	runID, _, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-key-free", "v1", "v1", `{}`)
+	runID, _, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-key-free", "v1", "v1", `{}`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	message := common.RedactString(strings.Repeat("provider returned ", 200)+secret, secret)
 	raw := common.BoundedString(strings.Repeat("raw ", 1000))
-	if err := repo.FailModelRun(ctx, runID, "PROVIDER_ERROR", common.BoundedString(message), raw); err != nil {
+	if err := repo.FailModelRun(ctx, runID, "PROVIDER_ERROR", common.BoundedString(message), raw, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	var storedMessage, storedRaw string
@@ -130,11 +130,11 @@ func TestFailModelRunDoesNotLeakToCanonicalTables(t *testing.T) {
 	ctx := context.Background()
 	repo, assetID := setupModelRunsTest(t)
 
-	runID, _, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-fail-2", "v1", "v1", `{"test":true}`)
+	runID, _, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-fail-2", "v1", "v1", `{"test":true}`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.FailModelRun(ctx, runID, "MODEL_ERROR", "invalid json in response", `{"raw":"bad"}`); err != nil {
+	if err := repo.FailModelRun(ctx, runID, "MODEL_ERROR", "invalid json in response", `{"raw":"bad"}`, "", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -184,16 +184,16 @@ func TestCommitAnalysisWithShotsSucceedsAfterFailedRun(t *testing.T) {
 	repo, assetID := setupModelRunsTest(t)
 
 	// Run 1: fail.
-	run1ID, _, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-run-1", "v1", "v1", `{}`)
+	run1ID, _, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-run-1", "v1", "v1", `{}`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.FailModelRun(ctx, run1ID, "TRANSIENT", "first attempt failed", `{}`); err != nil {
+	if err := repo.FailModelRun(ctx, run1ID, "TRANSIENT", "first attempt failed", `{}`, "", ""); err != nil {
 		t.Fatal(err)
 	}
 
 	// Run 2: success path (different input hash so it does not collide).
-	run2ID, alreadyCommitted, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-run-2", "v1", "v1", `{}`)
+	run2ID, alreadyCommitted, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-run-2", "v1", "v1", `{}`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestCommitAnalysisWithShotsSucceedsAfterFailedRun(t *testing.T) {
 		ShotSize:  "wide",
 	}
 	parsed := `{"asset_type":"b-roll","scene_tags":["forest","daylight"],"shot_size":"wide"}`
-	if err := repo.StageModelRun(ctx, run2ID, `{"response":"ok"}`, parsed); err != nil {
+	if err := repo.StageModelRun(ctx, run2ID, `{"response":"ok"}`, parsed, "", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -215,7 +215,7 @@ func TestCommitAnalysisWithShotsSucceedsAfterFailedRun(t *testing.T) {
 		{StartMS: 0, EndMS: 3000, Ordinal: 0, Description: "wide forest pan"},
 		{StartMS: 3000, EndMS: 6000, Ordinal: 1, Description: "sunlight through trees"},
 	}
-	if err := repo.CommitAnalysisWithShots(ctx, assetID, run2ID, "v1", analysis, shots); err != nil {
+	if err := repo.CommitAnalysisWithShots(ctx, assetID, run2ID, "v1", analysis, shots, "", ""); err != nil {
 		t.Fatalf("CommitAnalysisWithShots after a failed run must succeed: %v", err)
 	}
 
@@ -272,7 +272,7 @@ func TestCreateModelRunRetryAfterFailureAllocatesNewRun(t *testing.T) {
 	repo, assetID := setupModelRunsTest(t)
 
 	// First call creates a run.
-	run1ID, alreadyCommitted, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-dedup", "v1", "v1", `{}`)
+	run1ID, alreadyCommitted, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-dedup", "v1", "v1", `{}`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,12 +280,12 @@ func TestCreateModelRunRetryAfterFailureAllocatesNewRun(t *testing.T) {
 		t.Fatal("first create must not be already committed")
 	}
 	// Fail it.
-	if err := repo.FailModelRun(ctx, run1ID, "ERROR", "fail", `{}`); err != nil {
+	if err := repo.FailModelRun(ctx, run1ID, "ERROR", "fail", `{}`, "", ""); err != nil {
 		t.Fatal(err)
 	}
 
 	// A failed attempt is retryable, so the same key allocates a new run.
-	run2ID, alreadyCommitted, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-dedup", "v1", "v1", `{}`)
+	run2ID, alreadyCommitted, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-dedup", "v1", "v1", `{}`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,17 +300,17 @@ func TestCreateModelRunRetryAfterFailureAllocatesNewRun(t *testing.T) {
 func TestModelRunTransitionsAreStrictAndPreservePayload(t *testing.T) {
 	ctx := context.Background()
 	repo, assetID := setupModelRunsTest(t)
-	runID, _, err := repo.CreateModelRun(ctx, assetID, "vision", "provider", "model", "matrix", "p1", "s1", `{"request":"original"}`)
+	runID, _, err := repo.CreateModelRun(ctx, assetID, "vision", "provider", "model", "matrix", "p1", "s1", `{"request":"original"}`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.StageModelRun(ctx, runID, `{"raw":"stage"}`, `{"parsed":true}`); err != nil {
+	if err := repo.StageModelRun(ctx, runID, `{"raw":"stage"}`, `{"parsed":true}`, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.StageModelRun(ctx, runID, `{"raw":"overwrite"}`, `{"parsed":false}`); err == nil || !errors.Is(err, domain.ErrModelRunNotRunning) || !errors.Is(err, domain.ErrPermanentFailure) {
+	if err := repo.StageModelRun(ctx, runID, `{"raw":"overwrite"}`, `{"parsed":false}`, "", ""); err == nil || !errors.Is(err, domain.ErrModelRunNotRunning) || !errors.Is(err, domain.ErrPermanentFailure) {
 		t.Fatalf("double stage error = %v", err)
 	}
-	if err := repo.FailModelRun(ctx, runID, "late", "late", `{"raw":"late"}`); err == nil || !errors.Is(err, domain.ErrModelRunNotRunning) {
+	if err := repo.FailModelRun(ctx, runID, "late", "late", `{"raw":"late"}`, "", ""); err == nil || !errors.Is(err, domain.ErrModelRunNotRunning) {
 		t.Fatalf("late fail error = %v", err)
 	}
 	var raw, parsed, state string
@@ -320,10 +320,10 @@ func TestModelRunTransitionsAreStrictAndPreservePayload(t *testing.T) {
 	if state != "validated" || raw != `{"raw":"stage"}` || parsed != `{"parsed":true}` {
 		t.Fatalf("payload changed: state=%s raw=%s parsed=%s", state, raw, parsed)
 	}
-	if err := repo.MarkModelRunCommitted(ctx, runID); err != nil {
+	if err := repo.MarkModelRunCommitted(ctx, runID, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.MarkModelRunCommitted(ctx, runID); err == nil || !errors.Is(err, domain.ErrCommitRunNotValidated) || !errors.Is(err, domain.ErrPermanentFailure) {
+	if err := repo.MarkModelRunCommitted(ctx, runID, "", ""); err == nil || !errors.Is(err, domain.ErrCommitRunNotValidated) || !errors.Is(err, domain.ErrPermanentFailure) {
 		t.Fatalf("double commit error = %v", err)
 	}
 }
@@ -331,15 +331,18 @@ func TestModelRunTransitionsAreStrictAndPreservePayload(t *testing.T) {
 func TestModelRunStageAndFailConcurrentOneWinner(t *testing.T) {
 	ctx := context.Background()
 	repo, assetID := setupModelRunsTest(t)
-	runID, _, err := repo.CreateModelRun(ctx, assetID, "vision", "provider", "model", "race", "p1", "s1", `{}`)
+	runID, _, err := repo.CreateModelRun(ctx, assetID, "vision", "provider", "model", "race", "p1", "s1", `{}`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
 	results := make(chan error, 2)
 	wg.Add(2)
-	go func() { defer wg.Done(); results <- repo.StageModelRun(ctx, runID, `{"winner":"stage"}`, `{}`) }()
-	go func() { defer wg.Done(); results <- repo.FailModelRun(ctx, runID, "race", "race", `{"winner":"fail"}`) }()
+	go func() { defer wg.Done(); results <- repo.StageModelRun(ctx, runID, `{"winner":"stage"}`, `{}`, "", "") }()
+	go func() {
+		defer wg.Done()
+		results <- repo.FailModelRun(ctx, runID, "race", "race", `{"winner":"fail"}`, "", "")
+	}()
 	wg.Wait()
 	close(results)
 	var success, failure int
@@ -360,27 +363,27 @@ func TestModelRunStageAndFailConcurrentOneWinner(t *testing.T) {
 func TestCommitShotRefinementRollsBackOnStaleRun(t *testing.T) {
 	ctx := context.Background()
 	repo, assetID := setupModelRunsTest(t)
-	oldRun, _, err := repo.CreateModelRun(ctx, assetID, "vision", "provider", "model", "old", "p1", "s1", `{}`)
+	oldRun, _, err := repo.CreateModelRun(ctx, assetID, "vision", "provider", "model", "old", "p1", "s1", `{}`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.StageModelRun(ctx, oldRun, `{}`, `{}`); err != nil {
+	if err := repo.StageModelRun(ctx, oldRun, `{}`, `{}`, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.CommitShotRefinement(ctx, assetID, oldRun, []domain.AssetShot{{StartMS: 0, EndMS: 1000, Description: "trusted"}}); err != nil {
+	if err := repo.CommitShotRefinement(ctx, assetID, oldRun, []domain.AssetShot{{StartMS: 0, EndMS: 1000, Description: "trusted"}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	newRun, _, err := repo.CreateModelRun(ctx, assetID, "vision", "provider", "model", "new", "p1", "s1", `{}`)
+	newRun, _, err := repo.CreateModelRun(ctx, assetID, "vision", "provider", "model", "new", "p1", "s1", `{}`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.StageModelRun(ctx, newRun, `{}`, `{}`); err != nil {
+	if err := repo.StageModelRun(ctx, newRun, `{}`, `{}`, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.MarkModelRunCommitted(ctx, newRun); err != nil {
+	if err := repo.MarkModelRunCommitted(ctx, newRun, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	err = repo.CommitShotRefinement(ctx, assetID, newRun, []domain.AssetShot{{StartMS: 0, EndMS: 1000, Description: "stale"}})
+	err = repo.CommitShotRefinement(ctx, assetID, newRun, []domain.AssetShot{{StartMS: 0, EndMS: 1000, Description: "stale"}}, "", "")
 	if err == nil || !errors.Is(err, domain.ErrCommitRunNotValidated) {
 		t.Fatalf("stale refinement error = %v", err)
 	}

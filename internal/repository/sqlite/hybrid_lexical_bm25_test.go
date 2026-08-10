@@ -100,15 +100,15 @@ func newBeaconCorpus(t *testing.T) *Repository {
 			t.Fatal(err)
 		}
 	}
-	if err := repo.ReplaceAssetShots(ctx, "asset-weak", "", []domain.AssetShot{{ID: "shot-weak", StartMS: 0, EndMS: 1000, Description: "beacon on the coast"}}); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, "asset-weak", "", []domain.AssetShot{{ID: "shot-weak", StartMS: 0, EndMS: 1000, Description: "beacon on the coast"}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.ReplaceAssetShots(ctx, "asset-strong", "", []domain.AssetShot{{ID: "shot-strong", StartMS: 0, EndMS: 1000, Description: "beacon beacon beacon signal beacon tower"}}); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, "asset-strong", "", []domain.AssetShot{{ID: "shot-strong", StartMS: 0, EndMS: 1000, Description: "beacon beacon beacon signal beacon tower"}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 8; i++ {
 		id := fmt.Sprintf("shot-neutral-%d", i)
-		if err := repo.ReplaceAssetShots(ctx, fmt.Sprintf("asset-neutral-%d", i), "", []domain.AssetShot{{ID: id, StartMS: 0, EndMS: 1000, Description: "unrelated content about weather"}}); err != nil {
+		if err := repo.ReplaceAssetShots(ctx, fmt.Sprintf("asset-neutral-%d", i), "", []domain.AssetShot{{ID: id, StartMS: 0, EndMS: 1000, Description: "unrelated content about weather"}}, "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}

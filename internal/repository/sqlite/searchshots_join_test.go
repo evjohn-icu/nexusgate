@@ -42,14 +42,14 @@ func seedShotWithoutAnalysis(t *testing.T, repo *Repository) (assetID, shotID st
 		t.Fatal(err)
 	}
 	// Create a model run and use ReplaceAssetShots to populate everything.
-	runID, _, err := repo.CreateModelRun(ctx, assetID, "vision", "fixture", "fixture-model", "hash-"+assetID, "shot-prompt-v1", "video-analysis/v1", "{}")
+	runID, _, err := repo.CreateModelRun(ctx, assetID, "vision", "fixture", "fixture-model", "hash-"+assetID, "shot-prompt-v1", "video-analysis/v1", "{}", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	shots := []domain.AssetShot{
 		{AssetID: assetID, Ordinal: 0, StartMS: 0, EndMS: 5000, Description: "测试无分析镜头", Tags: []string{}, Objects: []string{}, Actions: []string{}, Mood: []string{}, Confidence: 0.9},
 	}
-	if err := repo.ReplaceAssetShots(ctx, assetID, runID, shots); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, assetID, runID, shots, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	// Get the shot ID that ReplaceAssetShots assigned.
@@ -89,7 +89,7 @@ func seedShotWithAnalysisFixtures(t *testing.T, repo *Repository) {
 			"loc-"+fx.assetID, fx.assetID, fx.assetID+".mov", "/footage/"+fx.assetID+".mov", now); err != nil {
 			t.Fatal(err)
 		}
-		runID, _, err := repo.CreateModelRun(ctx, fx.assetID, "vision", "fixture", "fixture-model", "hash-"+fx.assetID, "facet-prompt-v1", "asset-analysis/v1", "{}")
+		runID, _, err := repo.CreateModelRun(ctx, fx.assetID, "vision", "fixture", "fixture-model", "hash-"+fx.assetID, "facet-prompt-v1", "asset-analysis/v1", "{}", "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -98,10 +98,10 @@ func seedShotWithAnalysisFixtures(t *testing.T, repo *Repository) {
 			AudioType: fx.audioType, Quality: fx.quality, Summary: "shot facet fixture " + fx.assetID,
 		}
 		shots := []domain.AssetShot{{AssetID: fx.assetID, Ordinal: 0, StartMS: fx.startMS, EndMS: fx.endMS, Description: fx.description}}
-		if err := repo.StageModelRun(ctx, runID, "{}", "{}"); err != nil {
+		if err := repo.StageModelRun(ctx, runID, "{}", "{}", "", ""); err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.CommitAnalysisWithShots(ctx, fx.assetID, runID, "asset-analysis/v1", analysis, shots); err != nil {
+		if err := repo.CommitAnalysisWithShots(ctx, fx.assetID, runID, "asset-analysis/v1", analysis, shots, "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}

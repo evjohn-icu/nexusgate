@@ -63,7 +63,7 @@ func TestHandlerServesHybridShotSearch(t *testing.T) {
 	if err != nil || len(assets) != 1 {
 		t.Fatalf("assets=%+v err=%v", assets, err)
 	}
-	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{{ID: "shot-1", StartMS: 0, EndMS: 5000, Description: "雨夜城市街道", Tags: []string{"rain", "urban_night", "street"}}}); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{{ID: "shot-1", StartMS: 0, EndMS: 5000, Description: "雨夜城市街道", Tags: []string{"rain", "urban_night", "street"}}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
@@ -118,7 +118,7 @@ func TestSearchShotsV2StructuredEndpoint(t *testing.T) {
 	if err != nil || len(assets) != 1 {
 		t.Fatalf("assets=%+v err=%v", assets, err)
 	}
-	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{{ID: "shot-1", StartMS: 0, EndMS: 5000, Description: "雨夜城市街道", Tags: []string{"rain", "urban_night", "street"}, Objects: []string{"person", "umbrella"}}}); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{{ID: "shot-1", StartMS: 0, EndMS: 5000, Description: "雨夜城市街道", Tags: []string{"rain", "urban_night", "street"}, Objects: []string{"person", "umbrella"}}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
@@ -181,7 +181,7 @@ func TestSearchShotsV2StructuredEndpoint(t *testing.T) {
 
 	// A structured person observation does not override an explicit shot
 	// description saying that there are no people.
-	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{{ID: "shot-1", StartMS: 0, EndMS: 5000, Description: "no people", Tags: []string{"rain", "urban_night", "street"}, Objects: []string{"person", "umbrella"}}}); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{{ID: "shot-1", StartMS: 0, EndMS: 5000, Description: "no people", Tags: []string{"rain", "urban_night", "street"}, Objects: []string{"person", "umbrella"}}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	response, err = send(`{"query":"person","mode":"semantic","limit":10,"include_evidence":true}`)
@@ -212,7 +212,7 @@ func TestSearchShotsV2StructuredEndpoint(t *testing.T) {
 		t.Fatalf("conflict evidence missing: %+v", conflict.Results[0].Evidence)
 	}
 
-	if err := repo.SaveTranscript(ctx, assets[0].ID, "fixture", "fixture-model", "api-speech", domain.Transcript{Language: "zh", Text: "明天见"}); err != nil {
+	if err := repo.SaveTranscript(ctx, assets[0].ID, "fixture", "fixture-model", "api-speech", domain.Transcript{Language: "zh", Text: "明天见"}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.SaveAlignment(ctx, assets[0].ID, "fixture", "fixture-model", "api-speech-align", "{}", domain.AlignmentResult{Words: []domain.AlignmentWord{{StartMS: 100, EndMS: 200, Text: "明天"}, {StartMS: 200, EndMS: 300, Text: "见"}}}); err != nil {
@@ -306,7 +306,7 @@ func TestSearchShotsV2AcceptsOffset(t *testing.T) {
 	if err != nil || len(assets) != 1 {
 		t.Fatalf("assets=%+v err=%v", assets, err)
 	}
-	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{{ID: "shot-1", StartMS: 0, EndMS: 5000, Description: "雨夜城市街道", Objects: []string{"person"}}}); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{{ID: "shot-1", StartMS: 0, EndMS: 5000, Description: "雨夜城市街道", Objects: []string{"person"}}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
@@ -961,7 +961,7 @@ func TestHandlerRequiresExplicitUnlockBeforeReplacingLockedPlanSelection(t *test
 	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{
 		{ID: "opening-a", StartMS: 0, EndMS: 5000, Description: "城市夜景开场"},
 		{ID: "opening-b", StartMS: 5000, EndMS: 10000, Description: "城市街道人流"},
-	}); err != nil {
+	}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
@@ -1041,7 +1041,7 @@ func TestHandlerRejectsRepurposeRevisionExcludingSelectedShot(t *testing.T) {
 	if err != nil || len(assets) != 1 {
 		t.Fatalf("assets=%+v err=%v", assets, err)
 	}
-	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{{ID: "opening-a", StartMS: 0, EndMS: 5000, Description: "城市夜景开场"}}); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{{ID: "opening-a", StartMS: 0, EndMS: 5000, Description: "城市夜景开场"}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
@@ -1101,7 +1101,7 @@ func TestHandlerRejectsApprovalWhenRequiredSectionHasCandidateButNoSelection(t *
 	if err != nil || len(assets) != 1 {
 		t.Fatalf("assets=%+v err=%v", assets, err)
 	}
-	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{{ID: "opening-a", StartMS: 0, EndMS: 5000, Description: "城市夜景开场"}}); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{{ID: "opening-a", StartMS: 0, EndMS: 5000, Description: "城市夜景开场"}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
@@ -1190,7 +1190,7 @@ func TestAgentTokenScope(t *testing.T) {
 	if err != nil || len(assets) != 1 {
 		t.Fatalf("assets=%+v err=%v", assets, err)
 	}
-	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{{ID: "opening-a", StartMS: 0, EndMS: 5000, Description: "城市夜景开场"}}); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{{ID: "opening-a", StartMS: 0, EndMS: 5000, Description: "城市夜景开场"}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{DataDir: secureTestDataDir(t), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})

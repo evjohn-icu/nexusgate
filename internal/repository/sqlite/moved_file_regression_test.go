@@ -252,14 +252,14 @@ func TestByteIdenticalCopyAfterCommittedAnalysisKeepsProbeIdentity(t *testing.T)
 	if err := repo.EnqueueJob(ctx, assetID, domain.JobProbe, probeHash, 100); err != nil {
 		t.Fatal(err)
 	}
-	runID, _, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "fixture", "model", "analysis-input", "prompt", "schema", "{}")
+	runID, _, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "fixture", "model", "analysis-input", "prompt", "schema", "{}", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.StageModelRun(ctx, runID, "{}", `{}`); err != nil {
+	if err := repo.StageModelRun(ctx, runID, "{}", `{}`, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.CommitAnalysis(ctx, assetID, runID, "schema", domain.StructuredAnalysis{AssetType: "b_roll", ShotSize: "wide", Summary: "fixture"}); err != nil {
+	if err := repo.CommitAnalysis(ctx, assetID, runID, "schema", domain.StructuredAnalysis{AssetType: "b_roll", ShotSize: "wide", Summary: "fixture"}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	var runs int

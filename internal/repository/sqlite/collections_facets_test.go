@@ -140,14 +140,14 @@ func TestProcessingSummaryCountsUnanalysedAssets(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	runID, _, err := repo.CreateModelRun(ctx, "analysed-1", "vision", "fixture", "fixture-model", "hash-analysed-1", "facet-prompt-v1", "asset-analysis/v1", "{}")
+	runID, _, err := repo.CreateModelRun(ctx, "analysed-1", "vision", "fixture", "fixture-model", "hash-analysed-1", "facet-prompt-v1", "asset-analysis/v1", "{}", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.StageModelRun(ctx, runID, "{}", "{}"); err != nil {
+	if err := repo.StageModelRun(ctx, runID, "{}", "{}", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.CommitAnalysisWithShots(ctx, "analysed-1", runID, "asset-analysis/v1", domain.StructuredAnalysis{AssetType: "b_roll", Summary: "analysed only"}, nil); err != nil {
+	if err := repo.CommitAnalysisWithShots(ctx, "analysed-1", runID, "asset-analysis/v1", domain.StructuredAnalysis{AssetType: "b_roll", Summary: "analysed only"}, nil, "", ""); err != nil {
 		t.Fatal(err)
 	}
 

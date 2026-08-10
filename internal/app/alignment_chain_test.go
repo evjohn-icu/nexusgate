@@ -110,7 +110,7 @@ func TestAnalyzeConsumesAlignedTimelineWhenAlignmentSucceeded(t *testing.T) {
 		Text:     "整段视频的完整语音内容",
 		Segments: []domain.TranscriptSegment{{StartMS: 0, EndMS: 0, Text: "整段视频的完整语音内容"}},
 	}
-	if err := repo.SaveTranscript(ctx, assetID, "qwen", "qwen3-asr-flash", "thash", untimed); err != nil {
+	if err := repo.SaveTranscript(ctx, assetID, "qwen", "qwen3-asr-flash", "thash", untimed, "", ""); err != nil {
 		t.Fatal(err)
 	}
 

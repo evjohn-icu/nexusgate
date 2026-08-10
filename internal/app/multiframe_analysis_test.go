@@ -168,7 +168,7 @@ func seedMultiframeAsset(t *testing.T, repo *sqlite.Repository, root domain.Libr
 	if err := repo.CompleteJob(ctx, job.ID, "seed", domain.JobSucceeded, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SaveTranscript(ctx, assetID, "qwen", "qwen3-asr-flash", "thash-"+id, domain.Transcript{Language: "zh", Text: "text " + id, Segments: []domain.TranscriptSegment{{StartMS: 500, EndMS: 1500, Text: "text " + id}}}); err != nil {
+	if err := repo.SaveTranscript(ctx, assetID, "qwen", "qwen3-asr-flash", "thash-"+id, domain.Transcript{Language: "zh", Text: "text " + id, Segments: []domain.TranscriptSegment{{StartMS: 500, EndMS: 1500, Text: "text " + id}}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	return assetID

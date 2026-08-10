@@ -88,7 +88,7 @@ func TestStaleLeaseCommitShotRefinementRollsBack(t *testing.T) {
 	if err := repo.StageModelRun(ctx, runID, "raw", "{}", jobID, "owner-a"); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.ReplaceAssetShots(ctx, assetID, "", []domain.AssetShot{{StartMS: 0, EndMS: 1000, Description: "trusted"}}); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, assetID, "", []domain.AssetShot{{StartMS: 0, EndMS: 1000, Description: "trusted"}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	before, err := repo.ListAssetShots(ctx, assetID)
