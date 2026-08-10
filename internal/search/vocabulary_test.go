@@ -129,10 +129,39 @@ func TestNegationAbsentDescriptorOnlyNegatesObjects(t *testing.T) {
 	if found {
 		t.Fatal("empty must not negate beach (scene)")
 	}
+	// An empty car contains a car: absence descriptors describe content, not
+	// existence, so they never negate the object they modify.
 	for _, span := range spans {
-		if !Negates(span, ConstraintObject, 6) {
-			t.Fatal("empty must negate an object at the same position")
+		if Negates(span, ConstraintObject, 6) {
+			t.Fatal("empty must not negate an object it modifies")
 		}
+	}
+}
+
+func TestNegationPhraseWindowCJK(t *testing.T) {
+	// 空无一人的街道: 无 [3,6) — the window runs to the clause boundary 的 at
+	// byte 12, so 人 (9) is negated while 街道 (15) is not. A fixed byte radius
+	// left 人 outside and a no-person query kept the very shot that says no
+	// person is present.
+	spans := NegationSpans("空无一人的街道")
+	negated := false
+	for _, span := range spans {
+		if Negates(span, ConstraintObject, 9) {
+			negated = true
+		}
+	}
+	if !negated {
+		t.Fatal("人 must be negated in 空无一人的街道")
+	}
+	for _, span := range spans {
+		if Negates(span, ConstraintScene, 15) {
+			t.Fatal("街道 must not be negated by 空无一人的")
+		}
+	}
+	// 无一人 (no clause boundary): the window reaches the end of the text.
+	spans = NegationSpans("无一人")
+	if !Negates(spans[0], ConstraintObject, 6) {
+		t.Fatal("人 must be negated in 无一人")
 	}
 }
 

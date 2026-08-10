@@ -3,6 +3,7 @@ package search
 import (
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // The controlled vocabulary is the offline bridge between raw query text and
@@ -330,7 +331,17 @@ type NegationSpan struct {
 	End   int
 	Class negationWordClass
 	CJK   bool
+	// Text is the full lowercased source string, used by the evidence gate to
+	// bound a CJK negation window at a clause boundary.
+	Text string
 }
+
+// cjkClauseBoundaries end a CJK negation window: the negation applies to the
+// noun phrase between the negation word and the first clause boundary (的 and
+// clause markers), not to everything after it. Without this, "空无一人的街道"
+// would leave 人 outside a fixed byte radius and a no-person query would keep
+// the very shot whose text says there is no person.
+var cjkClauseBoundaries = []rune{'的', '在', '于', '是', '了', '也', '就', '都', '还', '很', '更', '但', '而', '则', '且', '或', '与', '和', '及', '又', '再', '，', '。', '、', '；', '：', '！', '？', '…'}
 
 // NegationSpans finds every negation word occurrence in the text (CJK as
 // substring, ASCII as whole word). The compiler uses these for positional
@@ -347,7 +358,7 @@ func NegationSpans(text string) []NegationSpan {
 		if cjk {
 			idx := strings.Index(text, n.word)
 			for idx >= 0 {
-				out = append(out, NegationSpan{Start: idx, End: idx + len(n.word), Class: n.class, CJK: true})
+				out = append(out, NegationSpan{Start: idx, End: idx + len(n.word), Class: n.class, CJK: true, Text: text})
 				next := strings.Index(text[idx+len(n.word):], n.word)
 				if next < 0 {
 					break
@@ -361,7 +372,7 @@ func NegationSpans(text string) []NegationSpan {
 		}
 		pos := wordPosition(text, n.word)
 		if pos >= 0 {
-			out = append(out, NegationSpan{Start: pos, End: pos + len(n.word), Class: n.class})
+			out = append(out, NegationSpan{Start: pos, End: pos + len(n.word), Class: n.class, Text: text})
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Start < out[j].Start })
@@ -376,22 +387,41 @@ func HasNegation(text string) bool {
 }
 
 // Negates reports whether a canonical constraint at the given surface byte
-// position is negated by a negation span. The window covers the negation word
-// plus one following rune (3 bytes for CJK, 2 for ASCII — enough for the
-// space in "no person" but not far enough to catch a scene word after a
-// separator like 的). Absence descriptors (empty/abandoned/空) only negate
-// object-family constraints, so "empty beach" keeps beach positive while
-// "empty street" still negates nothing the compiler put in the window.
+// position is negated by a negation span. For CJK the window runs from the
+// negation word to the next clause boundary, so 无 in "空无一人的街道" covers 人
+// but not 街道, and 没有 in "没有人的海边" covers 人 but not 海边 — a negated
+// noun phrase is denied, a later scene phrase is not. ASCII windows cover the
+// negation word plus one following rune (2 bytes: enough for the space in "no
+// person" but not far enough to reach a scene word). Absence descriptors
+// (empty/abandoned/空) negate nothing: "an empty car" contains a car, so the
+// descriptor describes content, not the object's existence.
 func Negates(span NegationSpan, constraintType ConstraintType, position int) bool {
+	if span.Class == negationAbsentDescriptor {
+		return false
+	}
 	window := span.End + 2
 	if span.CJK {
-		window = span.End + 3
+		window = cjkNegationWindow(span)
 	}
 	if position < span.Start || position >= window {
 		return false
 	}
-	if span.Class == negationAbsentDescriptor && constraintType != ConstraintObject {
-		return false
-	}
 	return true
+}
+
+// cjkNegationWindow is the byte position where a CJK negation word's effect
+// ends: at the next clause boundary rune, or at the end of the text. Byte
+// positions are used because constraint positions are byte offsets into the
+// same description string.
+func cjkNegationWindow(span NegationSpan) int {
+	for i := span.End; i < len(span.Text); i++ {
+		r, size := utf8.DecodeRuneInString(span.Text[i:])
+		for _, boundary := range cjkClauseBoundaries {
+			if r == boundary {
+				return i
+			}
+		}
+		_ = size
+	}
+	return len(span.Text)
 }
