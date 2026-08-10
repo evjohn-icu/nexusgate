@@ -211,6 +211,71 @@ func TestSearchV2TranscriptExactPhraseOnlyScores(t *testing.T) {
 	}
 }
 
+func TestSearchV2TranscriptPhrasePrefilterSurvivesPartialSaturation(t *testing.T) {
+	repo, _ := seedSearchV2Corpus(t)
+	defer repo.Close()
+	ids := map[string]string{}
+	for i := 0; i < 101; i++ {
+		id := fmt.Sprintf("asset-partial-%03d", i)
+		ids = seedOneAsset(t, repo, ids, goldenAssetSpec{
+			id: id, analysis: domain.StructuredAnalysis{Summary: "partial"},
+			shots: []goldenShotSpec{{startMS: 0, endMS: 10_000, description: "partial"}},
+			transcriptWords: []goldenTranscriptWord{
+				{startMS: 100, endMS: 200, text: "我们", confidence: 1},
+				{startMS: 300, endMS: 400, text: "我们", confidence: 1},
+				{startMS: 500, endMS: 600, text: "我们", confidence: 1},
+				{startMS: 700, endMS: 800, text: "我们", confidence: 1},
+				{startMS: 900, endMS: 1000, text: "我们", confidence: 1},
+			},
+		})
+	}
+	ids = seedOneAsset(t, repo, ids, goldenAssetSpec{
+		id: "asset-exact-after-partials", analysis: domain.StructuredAnalysis{Summary: "exact"},
+		shots: []goldenShotSpec{{startMS: 0, endMS: 10_000, description: "exact"}},
+		transcriptWords: []goldenTranscriptWord{
+			{startMS: 100, endMS: 200, text: "我们", confidence: 1},
+			{startMS: 300, endMS: 400, text: "明天", confidence: 1},
+			{startMS: 500, endMS: 600, text: "出发", confidence: 1},
+		},
+	})
+	hits, err := repo.TranscriptRankedShots(context.Background(), "我们明天出发", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].ID != ids["asset-exact-after-partials:0"] {
+		t.Fatalf("exact phrase must survive partial-token saturation, got %+v", hits)
+	}
+}
+
+func TestSearchV2TranscriptTieOrderingIsDeterministic(t *testing.T) {
+	repo, _ := seedSearchV2Corpus(t)
+	defer repo.Close()
+	ids := map[string]string{}
+	for _, id := range []string{"asset-tie-b", "asset-tie-a"} {
+		ids = seedOneAsset(t, repo, ids, goldenAssetSpec{
+			id: id, analysis: domain.StructuredAnalysis{Summary: "tie"},
+			shots:           []goldenShotSpec{{startMS: 0, endMS: 10_000, description: "tie"}},
+			transcriptWords: []goldenTranscriptWord{{startMS: 100, endMS: 200, text: "唯一", confidence: 1}},
+		})
+	}
+	var want []string
+	for run := 0; run < 5; run++ {
+		hits, err := repo.TranscriptRankedShots(context.Background(), "唯一", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(hits) < 2 {
+			t.Fatalf("run %d returned nondeterministic order: %+v", run, hits)
+		}
+		got := []string{hits[0].ID, hits[1].ID}
+		if run == 0 {
+			want = got
+		} else if got[0] != want[0] || got[1] != want[1] {
+			t.Fatalf("run %d returned nondeterministic order: %+v", run, hits)
+		}
+	}
+}
+
 func TestSearchV2EvidenceConflictThroughService(t *testing.T) {
 	repo, _ := seedSearchV2Corpus(t)
 	defer repo.Close()

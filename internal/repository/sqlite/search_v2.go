@@ -78,7 +78,7 @@ func (r *Repository) TranscriptRankedShots(ctx context.Context, q string, limit 
 	if limit <= 0 || strings.TrimSpace(q) == "" {
 		return []domain.ShotSearchResult{}, nil
 	}
-	patterns := transcriptPatterns(q)
+	patterns := transcriptPrefilterPatterns(q)
 	if len(patterns) == 0 {
 		return []domain.ShotSearchResult{}, nil
 	}
@@ -88,12 +88,30 @@ func (r *Repository) TranscriptRankedShots(ctx context.Context, q string, limit 
 		where = append(where, `w.text LIKE ? ESCAPE '\'`)
 		args = append(args, p)
 	}
-	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),''),MIN(SUM(COALESCE(w.confidence,1)),5.0)/5.0 AS tscore FROM transcript_words w JOIN asset_shots s ON s.asset_id=w.asset_id AND s.start_ms < w.end_ms AND s.end_ms > w.start_ms WHERE ` + strings.Join(where, ` OR `) + ` GROUP BY s.id ORDER BY tscore DESC LIMIT ?`
-	// SQL only narrows the candidate set. Exact phrase validation below must
-	// see enough candidates that partial token hits cannot consume the limit.
-	candidateLimit := limit * 10
-	if candidateLimit < 100 {
-		candidateLimit = 100
+	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),''),MIN(SUM(COALESCE(w.confidence,1)),5.0)/5.0 AS tscore FROM transcript_words w JOIN asset_shots s ON s.asset_id=w.asset_id AND s.start_ms < w.end_ms AND s.end_ms > w.start_ms WHERE ` + strings.Join(where, ` OR `)
+	if len(patterns) > 1 {
+		// Every phrase component must be present in the shot before the
+		// bounded pool is formed. The Go pass still owns order, reuse, and
+		// timing; this indexed pass only prevents partial-token saturation.
+		allPatterns := make([]string, 0, len(patterns))
+		for range patterns {
+			allPatterns = append(allPatterns, `EXISTS (SELECT 1 FROM transcript_words wp WHERE wp.asset_id=s.asset_id AND s.start_ms < wp.end_ms AND s.end_ms > wp.start_ms AND wp.text LIKE ? ESCAPE '\')`)
+		}
+		query += ` GROUP BY s.id HAVING ` + strings.Join(allPatterns, ` AND `)
+		args = append(args, args[:len(patterns)]...)
+	} else {
+		query += ` GROUP BY s.id`
+	}
+	query += ` ORDER BY tscore DESC, s.id ASC LIMIT ?`
+	// Phrase validation performs one bounded span lookup per candidate. The
+	// indexed all-components pass makes this pool recall-safe against partial
+	// token saturation while keeping per-request work capped at 10,000 shots.
+	candidateLimit := limit * 50
+	if candidateLimit < 1000 {
+		candidateLimit = 1000
+	}
+	if candidateLimit > 10000 {
+		candidateLimit = 10000
 	}
 	args = append(args, candidateLimit)
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -144,6 +162,35 @@ func transcriptPatterns(q string) []string {
 			patterns = append(patterns, `%`+escapeLike(token)+`%`)
 		} else {
 			patterns = append(patterns, token)
+		}
+	}
+	return patterns
+}
+
+// transcriptPrefilterPatterns keeps the SQL candidate pass compatible with
+// ASR systems that emit one CJK word per aligned row. The exact phrase
+// validator remains responsible for joining those rows in order.
+func transcriptPrefilterPatterns(q string) []string {
+	seen := map[string]bool{}
+	var patterns []string
+	for _, chunk := range textindex.Chunks(q) {
+		if chunk.CJK {
+			for _, token := range chunk.Tokens {
+				for _, r := range token {
+					value := string(r)
+					if !seen[value] {
+						seen[value] = true
+						patterns = append(patterns, `%`+escapeLike(value)+`%`)
+					}
+				}
+			}
+			continue
+		}
+		for _, token := range chunk.Tokens {
+			if token != "" && !seen[token] {
+				seen[token] = true
+				patterns = append(patterns, token)
+			}
 		}
 	}
 	return patterns
