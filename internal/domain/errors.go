@@ -239,6 +239,9 @@ var ErrCollectionExists = errors.New("collection name already exists")
 // to 404 Not Found.
 var ErrShotNotFound = errors.New("shot not found")
 
+// ErrCollectionNotFound reports that a collection id names nothing.
+var ErrCollectionNotFound = errors.New("collection not found")
+
 // ErrReorderInvalid reports that a collection shot reorder cannot be applied
 // because the submitted list does not match the collection's current pins:
 // a length mismatch, a duplicate id, or a shot that is not in the collection.

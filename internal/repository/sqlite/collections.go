@@ -203,25 +203,86 @@ func scanCollectionSummary(scanner collectionScanner) (domain.CollectionSummary,
 // shot that is already in the collection is a no-op (the primary key absorbs
 // it) and returns nil.
 func (r *Repository) AddShotToCollection(ctx context.Context, collectionID, shotID string) error {
+	conn, err := r.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		}
+	}()
+	var collectionExists int
+	if err := conn.QueryRowContext(ctx, `SELECT 1 FROM asset_collections WHERE id=?`, collectionID).Scan(&collectionExists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: collection %s does not exist", domain.ErrCollectionNotFound, collectionID)
+		}
+		return err
+	}
 	var exists int
-	if err := r.db.QueryRowContext(ctx, `SELECT 1 FROM asset_shots WHERE id=?`, shotID).Scan(&exists); err != nil {
+	if err := conn.QueryRowContext(ctx, `SELECT 1 FROM asset_shots WHERE id=?`, shotID).Scan(&exists); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("%w: shot %s does not exist", domain.ErrShotNotFound, shotID)
 		}
 		return err
 	}
-	// INSERT OR IGNORE keeps the call idempotent: re-adding an already pinned
-	// shot is absorbed by the primary key, and the MAX(position) select over a
-	// collection with no rows yields NULL, which COALESCE turns into position 0.
-	_, err := r.db.ExecContext(ctx, `INSERT OR IGNORE INTO collection_shots(collection_id,shot_id,position,created_at)
+	var pinned int
+	if err := conn.QueryRowContext(ctx, `SELECT 1 FROM collection_shots WHERE collection_id=? AND shot_id=?`, collectionID, shotID).Scan(&pinned); err == nil {
+		if _, err = conn.ExecContext(ctx, `COMMIT`); err != nil {
+			return err
+		}
+		committed = true
+		return nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	_, err = conn.ExecContext(ctx, `INSERT INTO collection_shots(collection_id,shot_id,position,created_at)
 SELECT ?,?,COALESCE(MAX(position),-1)+1,?
 FROM collection_shots WHERE collection_id=?`, collectionID, shotID, formatTime(time.Now().UTC()), collectionID)
-	return err
+	if err != nil {
+		return err
+	}
+	if _, err = conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func (r *Repository) RemoveShotFromCollection(ctx context.Context, collectionID, shotID string) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM collection_shots WHERE collection_id=? AND shot_id=?`, collectionID, shotID)
-	return err
+	conn, err := r.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err = conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		}
+	}()
+	var exists int
+	if err = conn.QueryRowContext(ctx, `SELECT 1 FROM asset_collections WHERE id=?`, collectionID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: collection %s does not exist", domain.ErrCollectionNotFound, collectionID)
+	} else if err != nil {
+		return err
+	}
+	if _, err = conn.ExecContext(ctx, `DELETE FROM collection_shots WHERE collection_id=? AND shot_id=?`, collectionID, shotID); err != nil {
+		return err
+	}
+	if _, err = conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 // ListCollectionShots returns the pinned shots in display order, joined with
@@ -254,12 +315,27 @@ WHERE cs.collection_id=? ORDER BY cs.position,cs.shot_id`, collectionID)
 // mismatch or an id that is not in the collection rejects the whole reorder,
 // so a stale client can never silently drop or inject shots.
 func (r *Repository) ReorderCollectionShots(ctx context.Context, collectionID string, shotIDs []string) error {
-	tx, err := r.db.BeginTx(ctx, nil)
+	conn, err := r.db.Conn(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT shot_id FROM collection_shots WHERE collection_id=?`, collectionID)
+	defer conn.Close()
+	if _, err = conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		}
+	}()
+	var collectionExists int
+	if err = conn.QueryRowContext(ctx, `SELECT 1 FROM asset_collections WHERE id=?`, collectionID).Scan(&collectionExists); errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: collection %s does not exist", domain.ErrCollectionNotFound, collectionID)
+	} else if err != nil {
+		return err
+	}
+	rows, err := conn.QueryContext(ctx, `SELECT shot_id FROM collection_shots WHERE collection_id=?`, collectionID)
 	if err != nil {
 		return err
 	}
@@ -290,13 +366,22 @@ func (r *Repository) ReorderCollectionShots(ctx context.Context, collectionID st
 	if len(distinct) != len(shotIDs) {
 		return fmt.Errorf("%w: reorder list contains duplicates", domain.ErrReorderInvalid)
 	}
-	for i, shotID := range shotIDs {
+	for _, shotID := range shotIDs {
 		if _, ok := current[shotID]; !ok {
 			return fmt.Errorf("%w: shot %s is not in collection %s", domain.ErrReorderInvalid, shotID, collectionID)
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE collection_shots SET position=? WHERE collection_id=? AND shot_id=?`, i, collectionID, shotID); err != nil {
+		if _, err := conn.ExecContext(ctx, `UPDATE collection_shots SET position=position+? WHERE collection_id=? AND shot_id=?`, len(current), collectionID, shotID); err != nil {
 			return err
 		}
 	}
-	return tx.Commit()
+	for i, shotID := range shotIDs {
+		if _, err := conn.ExecContext(ctx, `UPDATE collection_shots SET position=? WHERE collection_id=? AND shot_id=?`, i, collectionID, shotID); err != nil {
+			return err
+		}
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }

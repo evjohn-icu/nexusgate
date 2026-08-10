@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -199,6 +200,35 @@ func TestCollectionShotBasketAPI(t *testing.T) {
 	}
 	if envelope.Error.Code != "not_found" {
 		t.Fatalf("missing collection envelope=%+v, want code not_found", envelope)
+	}
+	for _, tc := range []struct {
+		method string
+		target string
+		body   string
+	}{
+		{http.MethodGet, "/api/v1/collections/does-not-exist/shots", ""},
+		{http.MethodDelete, "/api/v1/collections/does-not-exist/shots/shot-1", ""},
+		{http.MethodPost, "/api/v1/collections/does-not-exist/shots/reorder", `{"shot_ids":[]}`},
+	} {
+		var body io.Reader = http.NoBody
+		if tc.body != "" {
+			body = bytes.NewBufferString(tc.body)
+		}
+		response := httptest.NewRecorder()
+		request := hubAdminRequest(service, tc.method, tc.target, body)
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("missing collection %s %s status=%d body=%s, want 404", tc.method, tc.target, response.Code, response.Body.String())
+		}
+	}
+
+	invalid := httptest.NewRecorder()
+	handler.ServeHTTP(invalid, hubAdminRequest(service, http.MethodPost, "/api/v1/collections/"+collectionID+"/shots/reorder", bytes.NewBufferString(`{"shot_ids":["shot-3","shot-3","shot-2"]}`)))
+	if invalid.Code != http.StatusConflict {
+		t.Fatalf("invalid reorder status=%d body=%s, want 409", invalid.Code, invalid.Body.String())
+	}
+	if !bytes.Contains(invalid.Body.Bytes(), []byte(`"retryable":true`)) {
+		t.Fatalf("invalid reorder body=%s, want retryable conflict", invalid.Body.String())
 	}
 }
 
