@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
 )
@@ -101,6 +102,25 @@ func (r *Repository) ListDerivedArtifacts(ctx context.Context) ([]domain.Derived
 		artifacts = append(artifacts, a)
 	}
 	return artifacts, rows.Err()
+}
+
+// ListLiveJobAssetIDs returns assets whose non-terminal running job still has
+// a valid lease. Cache maintenance protects all of their derived files.
+func (r *Repository) ListLiveJobAssetIDs(ctx context.Context, now time.Time) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT DISTINCT asset_id FROM jobs WHERE asset_id IS NOT NULL AND state='running' AND terminal=0 AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`, formatTime(now))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // ListAllAssetIDs returns every asset id in the assets table. It backs

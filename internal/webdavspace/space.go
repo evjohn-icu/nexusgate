@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/evjohn-icu/timingdex/internal/cachecoord"
 	"golang.org/x/net/webdav"
 )
 
@@ -41,11 +42,16 @@ type Space struct {
 	mu      sync.RWMutex
 	entries map[string]string // virtual path ("/assets/<id>/original.mov") -> kind
 	linker  Linker
+	dataDir string
 }
 
 // NewSpace creates an empty space whose entries resolve via linker.
-func NewSpace(id string, linker Linker) *Space {
-	return &Space{ID: id, CreatedAt: time.Now().UTC(), entries: map[string]string{}, linker: linker}
+func NewSpace(id string, linker Linker, dataDir ...string) *Space {
+	dir := ""
+	if len(dataDir) > 0 {
+		dir = dataDir[0]
+	}
+	return &Space{ID: id, CreatedAt: time.Now().UTC(), entries: map[string]string{}, linker: linker, dataDir: dir}
 }
 
 // assetVirtualName returns the virtual filename for an original asset,
@@ -177,6 +183,11 @@ func (fs *spaceFS) Stat(ctx context.Context, name string) (os.FileInfo, error) {
 	if real == "" {
 		return nil, os.ErrNotExist
 	}
+	lock, err := fs.sharedLock()
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Release()
 	return os.Stat(real)
 }
 
@@ -214,7 +225,36 @@ func (fs *spaceFS) OpenFile(ctx context.Context, name string, flag int, perm os.
 	if real == "" {
 		return nil, os.ErrNotExist
 	}
-	return os.Open(real)
+	lock, err := fs.sharedLock()
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.Open(real)
+	if err != nil {
+		_ = lock.Release()
+		return nil, err
+	}
+	return &lockedFile{File: file, lock: lock}, nil
+}
+
+func (fs *spaceFS) sharedLock() (*cachecoord.Lock, error) {
+	if fs.space.dataDir == "" {
+		return nil, nil
+	}
+	return cachecoord.AcquireShared(fs.space.dataDir)
+}
+
+type lockedFile struct {
+	*os.File
+	lock *cachecoord.Lock
+}
+
+func (f *lockedFile) Close() error {
+	err := f.File.Close()
+	if lockErr := f.lock.Release(); err == nil {
+		err = lockErr
+	}
+	return err
 }
 
 func (fs *spaceFS) toVirtual(name string) string {

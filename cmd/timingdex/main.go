@@ -133,7 +133,7 @@ func run() error {
 			fmt.Printf("Library supervisor: rescanning every root every %s\n", (time.Duration(status.IntervalSeconds) * time.Second).String())
 		}
 		server := api.NewTLSServer(*addr, service, certificate, key)
-		setupWebDAVDelivery(service, server, repo)
+		setupWebDAVDelivery(service, server, repo, cfg.DataDir)
 		serveErr := server.Run(ctx)
 		// Joined, not abandoned: the supervisor may be mid-pass, and the point
 		// of running the pipeline inline in it is that this wait is what makes
@@ -320,10 +320,10 @@ func runSecretsCommand(cfg config.Config) error {
 // hashes), the space manager whose linker resolves assets through the
 // service, and the /spaces/ route on the API server. The feature is always
 // compiled in; the admin endpoints gate creation of accounts and spaces.
-func setupWebDAVDelivery(service *app.Service, server *api.Server, repo *sqliterepo.Repository) {
+func setupWebDAVDelivery(service *app.Service, server *api.Server, repo *sqliterepo.Repository, dataDir string) {
 	accounts := sqliterepo.WebDAVAccountStore{Repo: repo}
 	linker := app.WebDAVLinker{Service: service}
-	manager := webdavspace.NewManager(linker, accounts)
+	manager := webdavspace.NewManager(linker, accounts, dataDir)
 	service.SetWebDAVSpaceManager(manager, accounts)
 	server.SetWebDAVSpaceManager(manager)
 }

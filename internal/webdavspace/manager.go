@@ -16,6 +16,7 @@ import (
 type Manager struct {
 	linker   Linker
 	accounts AccountStore
+	dataDir  string
 
 	mu         sync.RWMutex
 	spaces     map[string]*Space
@@ -24,13 +25,17 @@ type Manager struct {
 
 // NewManager creates a space manager whose assets resolve via linker and
 // whose HTTP Basic Auth checks accounts.
-func NewManager(linker Linker, accounts AccountStore) *Manager {
-	return &Manager{linker: linker, accounts: accounts, spaces: map[string]*Space{}, lockSystem: webdav.NewMemLS()}
+func NewManager(linker Linker, accounts AccountStore, dataDir ...string) *Manager {
+	dir := ""
+	if len(dataDir) > 0 {
+		dir = dataDir[0]
+	}
+	return &Manager{linker: linker, accounts: accounts, dataDir: dir, spaces: map[string]*Space{}, lockSystem: webdav.NewMemLS()}
 }
 
 // CreateSpace registers a new empty space and returns it.
 func (m *Manager) CreateSpace(id string) *Space {
-	s := NewSpace(id, m.linker)
+	s := NewSpace(id, m.linker, m.dataDir)
 	m.mu.Lock()
 	m.spaces[id] = s
 	m.mu.Unlock()

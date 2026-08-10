@@ -6,11 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path"
-	"path/filepath"
-	"strings"
+	"time"
 
 	"github.com/evjohn-icu/timingdex/internal/cache"
+	"github.com/evjohn-icu/timingdex/internal/cachecoord"
 	"github.com/evjohn-icu/timingdex/internal/config"
 	sqliterepo "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 )
@@ -202,6 +201,19 @@ func runCacheGC(ctx context.Context, repo *sqliterepo.Repository, cfg config.Con
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	lock, err := cachecoord.AcquireExclusive(cfg.DataDir)
+	if err != nil {
+		return fmt.Errorf("acquire cache maintenance lock: %w", err)
+	}
+	defer lock.Release()
+	live, err := repo.ListLiveJobAssetIDs(ctx, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("list live job assets: %w", err)
+	}
+	protected := make(map[string]struct{}, len(live))
+	for _, id := range live {
+		protected[id] = struct{}{}
+	}
 	selected := *scratch || *rebuildable || *orphans
 	if !selected {
 		// No category named: report-only dry run of everything. --yes with no
@@ -221,6 +233,7 @@ func runCacheGC(ctx context.Context, repo *sqliterepo.Repository, cfg config.Con
 		RemoveScratch:     *scratch,
 		RemoveRebuildable: *rebuildable,
 		RemoveOrphans:     orphanDirs,
+		ProtectedAssetIDs: protected,
 	})
 	if err != nil {
 		return err
@@ -233,7 +246,7 @@ func runCacheGC(ctx context.Context, repo *sqliterepo.Repository, cfg config.Con
 	// committed analysis are left to their own in-flight chain.
 	var enqueued, skipped int
 	if *rebuildable && *yes && selected {
-		for _, assetID := range removedRebuildableAssetIDs(result.Removed) {
+		for _, assetID := range result.RemovedRebuildableAssetIDs {
 			enqueuedJob, enqueueErr := repo.EnqueueRederive(ctx, assetID)
 			if enqueueErr != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("enqueue re-derive %s: %v", assetID, enqueueErr))
@@ -258,6 +271,15 @@ func runCacheGC(ctx context.Context, repo *sqliterepo.Repository, cfg config.Con
 		for _, rel := range result.Removed {
 			fmt.Printf("  %s\n", rel)
 		}
+		if result.RemovedTruncated {
+			fmt.Printf("  showing first 20 of %d\n", result.RemovedFiles)
+		}
+	}
+	if result.SkippedActiveFiles > 0 {
+		fmt.Printf("skipped active: %d file(s), %s\n", result.SkippedActiveFiles, humanBytes(result.SkippedActiveBytes))
+	}
+	if result.SkippedYoungFiles > 0 {
+		fmt.Printf("skipped young: %d file(s), %s\n", result.SkippedYoungFiles, humanBytes(result.SkippedYoungBytes))
 	}
 	if !*yes || !selected {
 		fmt.Println("dry run: nothing deleted; re-run with --yes to delete")
@@ -272,37 +294,6 @@ func runCacheGC(ctx context.Context, repo *sqliterepo.Repository, cfg config.Con
 	}
 	fmt.Println("安全提示：可重建内容可安全删除；数据库/密钥/原片不受影响。")
 	return nil
-}
-
-// removedRebuildableAssetIDs extracts the distinct per-asset ids from a GC
-// result's removed paths, in first-seen order. A rebuildable artifact lives
-// at <assetID>/thumbnail-*.jpg, <assetID>/proxy-*.mp4 or <assetID>/audio*.m4a
-// — exactly two path segments whose basename the cache package classifies as
-// rebuildable. Anything else (scratch dirs, orphan dirs, unclassified files)
-// is not a rebuildable artifact and contributes no asset.
-func removedRebuildableAssetIDs(removed []string) []string {
-	seen := make(map[string]struct{}, len(removed))
-	var ids []string
-	for _, rel := range removed {
-		rel = filepath.ToSlash(rel)
-		dir, name := path.Split(rel)
-		if dir == "" || strings.Contains(dir, "/") {
-			continue // not a single-level per-asset directory
-		}
-		if !cache.IsRebuildableArtifactName(name) {
-			continue
-		}
-		assetID := strings.TrimSuffix(dir, "/")
-		if assetID == "" {
-			continue
-		}
-		if _, ok := seen[assetID]; ok {
-			continue
-		}
-		seen[assetID] = struct{}{}
-		ids = append(ids, assetID)
-	}
-	return ids
 }
 
 // runCacheVerify reports DB-row-versus-file consistency: derived_artifacts

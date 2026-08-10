@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/evjohn-icu/timingdex/internal/cachecoord"
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	"github.com/evjohn-icu/timingdex/internal/idgen"
 	"github.com/evjohn-icu/timingdex/internal/ingest"
@@ -691,6 +692,15 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 	sourcePath, err := p.sourcePathForJob(ctx, j.Type, loc)
 	if err != nil {
 		return err
+	}
+	// Hold the reader lock only for stages that consume or recreate derived
+	// artifacts. Probe and queue bookkeeping do not contend with cache GC.
+	if j.Type == domain.JobDerive || j.Type == domain.JobSpeechGate || j.Type == domain.JobTranscribe || j.Type == domain.JobAlign || j.Type == domain.JobAnalyze {
+		lock, lockErr := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+		if lockErr != nil {
+			return fmt.Errorf("acquire cache reader lock: %w", lockErr)
+		}
+		defer lock.Release()
 	}
 	// The effective disk floor for this job: the settings page's throttle
 	// value wins when the row exists (including an explicit 0 = disabled),
