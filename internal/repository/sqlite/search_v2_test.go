@@ -247,6 +247,46 @@ func TestSearchV2TranscriptPhrasePrefilterSurvivesPartialSaturation(t *testing.T
 	}
 }
 
+func TestSearchV2TranscriptPhraseSurvivesTenThousandPartialSaturation(t *testing.T) {
+	repo, _ := seedSearchV2Corpus(t)
+	defer repo.Close()
+	ids := map[string]string{}
+	// 10,001 partial shots, each holding every phrase character scattered and
+	// five matched words (tscore saturates at 1.0 with five), but missing 出 so
+	// the (明天→出发) window fails: they must not occupy the bounded pool at
+	// all, let alone starve the exact shot ahead of the 10,000 cap.
+	for i := 0; i < 10_001; i++ {
+		id := fmt.Sprintf("asset-sat-%05d", i)
+		ids = seedOneAsset(t, repo, ids, goldenAssetSpec{
+			id: id, analysis: domain.StructuredAnalysis{Summary: "partial"},
+			shots: []goldenShotSpec{{startMS: 0, endMS: 10_000, description: "partial"}},
+			transcriptWords: []goldenTranscriptWord{
+				{startMS: 100, endMS: 200, text: "我", confidence: 1},
+				{startMS: 300, endMS: 400, text: "们", confidence: 1},
+				{startMS: 500, endMS: 600, text: "明", confidence: 1},
+				{startMS: 700, endMS: 800, text: "天", confidence: 1},
+				{startMS: 900, endMS: 1000, text: "发", confidence: 1},
+			},
+		})
+	}
+	ids = seedOneAsset(t, repo, ids, goldenAssetSpec{
+		id: "asset-exact-after-saturation", analysis: domain.StructuredAnalysis{Summary: "exact"},
+		shots: []goldenShotSpec{{startMS: 0, endMS: 10_000, description: "exact"}},
+		transcriptWords: []goldenTranscriptWord{
+			{startMS: 100, endMS: 200, text: "我们", confidence: 1},
+			{startMS: 300, endMS: 400, text: "明天", confidence: 1},
+			{startMS: 500, endMS: 600, text: "出发", confidence: 1},
+		},
+	})
+	hits, err := repo.TranscriptRankedShots(context.Background(), "我们明天出发", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].ID != ids["asset-exact-after-saturation:0"] {
+		t.Fatalf("exact phrase must survive >10k partial saturation, got %+v", hits)
+	}
+}
+
 func TestSearchV2TranscriptTieOrderingIsDeterministic(t *testing.T) {
 	repo, _ := seedSearchV2Corpus(t)
 	defer repo.Close()

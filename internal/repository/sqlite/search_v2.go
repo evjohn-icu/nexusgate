@@ -82,6 +82,20 @@ func (r *Repository) TranscriptRankedShots(ctx context.Context, q string, limit 
 	if len(patterns) == 0 {
 		return []domain.ShotSearchResult{}, nil
 	}
+	// Phrase-first pool: for a multi-component phrase, a shot must contain
+	// every adjacent component pair inside a 1500ms window (the same bound the
+	// validator enforces) before it may occupy a candidate slot. Scattered
+	// partial-token shots therefore cannot starve the exact-phrase shot: the
+	// exact shot always satisfies the windows, so it always lands inside the
+	// bounded pool regardless of how many partials are ahead of it.
+	components := search.SpeechComponents(strings.ToLower(strings.TrimSpace(q)))
+	if len(components) > 1 {
+		out, err := r.transcriptPhraseFirst(ctx, q, limit, components)
+		if err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
 	where := make([]string, 0, len(patterns))
 	args := make([]any, 0, len(patterns))
 	for _, p := range patterns {
@@ -142,6 +156,73 @@ func (r *Repository) TranscriptRankedShots(ctx context.Context, q string, limit 
 		}
 	}
 	return out, rows.Err()
+}
+
+// transcriptPhraseFirst is the phrase-first pool for multi-component phrases.
+// For every adjacent component pair (ci, ci+1) it requires a word matching the
+// tail of ci and a word matching the head of ci+1 in the same shot within the
+// validator's 1500ms gap bound. The exact-phrase shot satisfies every pair by
+// construction, so it can never be crowded out of the candidate pool; shots
+// that merely contain the phrase's characters scattered across time fail at
+// least one window and never occupy a slot. Go-side validation still decides
+// the final verdict; this pass only decides who enters the bounded pool.
+func (r *Repository) transcriptPhraseFirst(ctx context.Context, q string, limit int, components []search.SpeechComponent) ([]domain.ShotSearchResult, error) {
+	windows := make([]string, 0, len(components)-1)
+	args := make([]any, 0, 2*(len(components)-1))
+	for i := 0; i+1 < len(components); i++ {
+		ciTail, _ := headTail(components[i])
+		_, ci1Head := headTail(components[i+1])
+		window := `EXISTS (SELECT 1 FROM transcript_words wa JOIN transcript_words wb ON wb.asset_id=wa.asset_id AND wb.ordinal > wa.ordinal AND wb.start_ms - wa.end_ms <= 1500 WHERE wa.asset_id=s.asset_id AND s.start_ms < wa.end_ms AND s.end_ms > wa.start_ms AND wa.text LIKE ? ESCAPE '\' AND wb.asset_id=s.asset_id AND s.start_ms < wb.end_ms AND s.end_ms > wb.start_ms AND wb.text LIKE ? ESCAPE '\')`
+		windows = append(windows, window)
+		args = append(args, `%`+escapeLike(ciTail)+`%`, `%`+escapeLike(ci1Head)+`%`)
+	}
+
+	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),''),0.0 AS tscore FROM asset_shots s WHERE ` + strings.Join(windows, ` AND `) + ` ORDER BY s.id ASC LIMIT ?`
+	candidateLimit := limit * 50
+	if candidateLimit < 1000 {
+		candidateLimit = 1000
+	}
+	if candidateLimit > 10000 {
+		candidateLimit = 10000
+	}
+	args = append(args, candidateLimit)
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.ShotSearchResult
+	for rows.Next() {
+		result, err := scanShotRowWithFilename(rows, "tscore")
+		if err != nil {
+			return nil, err
+		}
+		spans, err := r.ShotTranscriptSpans(ctx, result.AssetID, result.StartMS, result.EndMS)
+		if err != nil {
+			return nil, err
+		}
+		if !search.MatchAlignedSpeechPhrase(q, spans) {
+			continue
+		}
+		result.TranscriptScore = 1.0
+		result.LexicalScore = 0
+		out = append(out, result)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, rows.Err()
+}
+
+// headTail returns the last and first rune of a phrase component for the
+// window conditions. ASCII components must match their whole word, so the
+// head is the word itself and the tail is the word itself.
+func headTail(c search.SpeechComponent) (string, string) {
+	if !c.IsCJK() {
+		return c.Text(), c.Text()
+	}
+	r := []rune(c.Text())
+	return string(r[len(r)-1]), string(r[0])
 }
 
 // transcriptPatterns builds LIKE patterns for the query's tokens. CJK tokens

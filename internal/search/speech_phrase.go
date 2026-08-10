@@ -12,7 +12,7 @@ const maxSpeechPhraseGapMS int64 = 1500
 // matchAlignedSpeechPhrase requires the complete phrase, rather than a token
 // hit, so retrieval cannot become speech evidence for a different utterance.
 func matchAlignedSpeechPhrase(phrase string, spans []domain.AlignmentWord) bool {
-	components := speechComponents(strings.TrimSpace(strings.ToLower(phrase)))
+	components := SpeechComponents(strings.TrimSpace(strings.ToLower(phrase)))
 	if len(components) == 0 {
 		return false
 	}
@@ -24,21 +24,34 @@ func matchAlignedSpeechPhrase(phrase string, spans []domain.AlignmentWord) bool 
 	return false
 }
 
-type speechComponent struct {
+// SpeechComponent is one ordered unit of a speech phrase: a contiguous CJK run
+// or an ASCII word run, as the validation pass consumes them.
+type SpeechComponent struct {
 	text string
 	cjk  bool
 }
 
-func speechComponents(text string) []speechComponent {
+// Text returns the component surface text.
+func (c SpeechComponent) Text() string { return c.text }
+
+// IsCJK reports whether the component is a contiguous CJK run (matched by
+// boundary runes) or an ASCII word (matched whole-word).
+func (c SpeechComponent) IsCJK() bool { return c.cjk }
+
+// SpeechComponents splits a lowercased speech phrase into ordered components:
+// contiguous CJK runs and ASCII word runs. Exported so the repository layer
+// can build phrase-first SQL prefilter conditions from the same component
+// boundary the validation pass uses.
+func SpeechComponents(text string) []SpeechComponent {
 	r := []rune(text)
-	var out []speechComponent
+	var out []SpeechComponent
 	for i := 0; i < len(r); {
 		if isSpeechCJK(r[i]) {
 			j := i + 1
 			for j < len(r) && isSpeechCJK(r[j]) {
 				j++
 			}
-			out = append(out, speechComponent{string(r[i:j]), true})
+			out = append(out, SpeechComponent{string(r[i:j]), true})
 			i = j
 			continue
 		}
@@ -47,7 +60,7 @@ func speechComponents(text string) []speechComponent {
 			for j < len(r) && (unicode.IsLetter(r[j]) || unicode.IsDigit(r[j]) || r[j] == '_') && !isSpeechCJK(r[j]) {
 				j++
 			}
-			out = append(out, speechComponent{string(r[i:j]), false})
+			out = append(out, SpeechComponent{string(r[i:j]), false})
 			i = j
 			continue
 		}
@@ -56,7 +69,7 @@ func speechComponents(text string) []speechComponent {
 	return out
 }
 
-func matchSpeechComponents(cs []speechComponent, spans []domain.AlignmentWord, pos int) bool {
+func matchSpeechComponents(cs []SpeechComponent, spans []domain.AlignmentWord, pos int) bool {
 	var previous *domain.AlignmentWord
 	for _, component := range cs {
 		if component.cjk {
