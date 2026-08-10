@@ -128,7 +128,7 @@ func TestWorkerHeartbeatCannotEscalateProviderOperations(t *testing.T) {
 	}
 
 	service, err := app.NewService(repo, config.Config{
-		DataDir:     t.TempDir(),
+		DataDir:     secureTestDataDir(t),
 		HubSecurity: config.HubSecurityConfig{AllowWorkerProviderCredentials: true},
 		Providers: config.ProvidersConfig{VisionPrimary: "volcengine_video", VolcVideo: config.ProviderConfig{
 			Enabled: true, BaseURL: upstream.URL, Path: "/v1/chat/completions", APIKey: "secret", Model: "vision-v1",

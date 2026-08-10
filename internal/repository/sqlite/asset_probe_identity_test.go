@@ -50,7 +50,7 @@ func TestMigration0033BackfillsEarliestLiveLocation(t *testing.T) {
 	if _, err := repo.db.Exec(`INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,exists_now,is_primary,last_seen_at) VALUES('loc-old','asset-m33','root-m33','old.mp4','/tmp/old',111,0,1,?)`, old); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.db.Exec(`INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,exists_now,is_primary,last_seen_at) VALUES('loc-live','asset-m33','root-m33','live.mp4','/tmp/live',222,1,1,?)`, newer); err != nil {
+	if _, err := repo.db.Exec(`INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,exists_now,is_primary,last_seen_at) VALUES('loc-live','asset-m33','root-m33','live.mp4','/tmp/live',222,1,0,?)`, newer); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.Migrate(ctx); err != nil {

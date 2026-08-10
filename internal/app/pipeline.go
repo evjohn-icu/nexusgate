@@ -75,8 +75,6 @@ type PipelineRepository interface {
 	CommitAnalysis(context.Context, string, string, string, domain.StructuredAnalysis, ...string) error
 	CommitAnalysisWithShots(context.Context, string, string, string, domain.StructuredAnalysis, []domain.AssetShot, ...string) error
 	SyncAnalysisTags(context.Context, string, string, domain.StructuredAnalysis) error
-	ReplaceAssetShots(context.Context, string, string, []domain.AssetShot) error
-	CommitShotRefinement(context.Context, string, string, []domain.AssetShot) error
 	ReplaceAssetShots(context.Context, string, string, []domain.AssetShot, ...string) error
 	CommitShotRefinement(context.Context, string, string, []domain.AssetShot, ...string) error
 	GetSpeechClassification(context.Context, string) (*domain.SpeechClassification, error)

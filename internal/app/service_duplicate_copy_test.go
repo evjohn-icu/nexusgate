@@ -19,6 +19,9 @@ import (
 func TestServiceDuplicateCopyDoesNotCreateProbeOrModelRun(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	repo, err := sqlite.Open(filepath.Join(dir, "duplicate.db"))
 	if err != nil {
 		t.Fatal(err)

@@ -272,6 +272,11 @@ func (r *Repository) Migrate(ctx context.Context) error {
 	if _, err := r.preMigrationSnapshotWith(ctx, lockConn); err != nil {
 		return err
 	}
+	// SQLite ignores PRAGMA foreign_keys changes inside a transaction. Disable
+	// enforcement on this dedicated connection before the migration transaction.
+	if _, err := lockConn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		return err
+	}
 	if _, err := lockConn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
 		return err
 	}
@@ -288,14 +293,8 @@ func (r *Repository) Migrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// SQLite ignores PRAGMA foreign_keys changes inside a transaction.  The
-	// model_runs rebuild drops a table referenced by canonical rows, so disable
-	// enforcement on the dedicated migration connection before starting the
-	// batch. The check after re-enabling enforcement catches damaged
-	// relationships before startup continues.
-	if _, err := lockConn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
-		return err
-	}
+	// The model_runs rebuild drops a table referenced by canonical rows. The
+	// check after re-enabling enforcement catches damaged relationships.
 	foreignKeysRestored := false
 	defer func() {
 		if !foreignKeysRestored {
@@ -688,11 +687,11 @@ func (r *Repository) UpsertScannedFile(ctx context.Context, root domain.LibraryR
 			return result, err
 		}
 	}
-		if locationExists && existingModifiedNS != info.ModTime().UnixNano() {
-			if _, err = tx.ExecContext(ctx, `UPDATE assets SET probe_modified_ns = ? WHERE id = ?`, info.ModTime().UnixNano(), assetID); err != nil {
-				return result, err
-			}
+	if locationExists && existingModifiedNS != info.ModTime().UnixNano() {
+		if _, err = tx.ExecContext(ctx, `UPDATE assets SET probe_modified_ns = ? WHERE id = ?`, info.ModTime().UnixNano(), assetID); err != nil {
+			return result, err
 		}
+	}
 	// A location that did not exist was inserted — a known asset appearing at
 	// a new path, or a brand-new asset — so it counts as changed. An existing
 	// one counts only when the mtime the probe job's input hash is derived
@@ -2801,7 +2800,7 @@ func (r *Repository) FailModelRun(ctx context.Context, runID, code, message, raw
 	if err := r.db.QueryRowContext(ctx, `SELECT asset_id FROM model_runs WHERE id=?`, runID).Scan(&assetID); err != nil {
 		return err
 	}
-	res, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='failed',raw_response=?,error_code=?,error_message=?,finished_at=? WHERE id=? AND (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?))`, raw, code, message, formatTime(time.Now()), runID, jobID, jobID, assetID, owner, formatTime(time.Now().UTC()))
+	res, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='failed',raw_response=?,error_code=?,error_message=?,finished_at=? WHERE id=? AND state='running' AND (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?))`, raw, code, message, formatTime(time.Now()), runID, jobID, jobID, assetID, owner, formatTime(time.Now().UTC()))
 	if err != nil {
 		return err
 	}
@@ -2852,7 +2851,7 @@ func (r *Repository) StageModelRun(ctx context.Context, runID, raw, parsed strin
 	if err := r.db.QueryRowContext(ctx, `SELECT asset_id FROM model_runs WHERE id=?`, runID).Scan(&assetID); err != nil {
 		return err
 	}
-	res, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='validated',raw_response=?,parsed_json=?,validation_errors=NULL,finished_at=? WHERE id=? AND (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?))`, raw, parsed, formatTime(time.Now()), runID, jobID, jobID, assetID, owner, formatTime(time.Now().UTC()))
+	res, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='validated',raw_response=?,parsed_json=?,validation_errors=NULL,finished_at=? WHERE id=? AND state='running' AND (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?))`, raw, parsed, formatTime(time.Now()), runID, jobID, jobID, assetID, owner, formatTime(time.Now().UTC()))
 	if err != nil {
 		return err
 	}
