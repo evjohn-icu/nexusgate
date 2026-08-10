@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -88,6 +89,82 @@ func TestWorkerProviderProxyRequiresLeaseAndKeepsKeysServerSide(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), "[REDACTED]") {
 		t.Fatalf("proxy response did not redact echoed secret: %s", response.Body.String())
+	}
+}
+
+func TestWorkerHeartbeatCannotEscalateProviderOperations(t *testing.T) {
+	ctx := context.Background()
+	var upstreamRequests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamRequests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "provider-escalation.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	seedRemoteAnalyzeJob(t, ctx, repo)
+	pairing, err := repo.CreateWorkerPairing(ctx, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, token, err := repo.EnrollWorker(ctx, pairing.Token, remote.WorkerRegistration{
+		Name: "untrusted-provider-worker", Platform: "linux-amd64",
+		Capabilities: remote.WorkerCapabilities{Proxy: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := repo.LeaseNextJob(ctx, worker.ID, nil, domain.LeaseFilter{})
+	if err != nil || job == nil {
+		t.Fatalf("lease=%+v err=%v", job, err)
+	}
+
+	service, err := app.NewService(repo, config.Config{
+		DataDir:     t.TempDir(),
+		HubSecurity: config.HubSecurityConfig{AllowWorkerProviderCredentials: true},
+		Providers: config.ProvidersConfig{VisionPrimary: "volcengine_video", VolcVideo: config.ProviderConfig{
+			Enabled: true, BaseURL: upstream.URL, Path: "/v1/chat/completions", APIKey: "secret", Model: "vision-v1",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+	heartbeat := httptest.NewRequest(http.MethodPost, "/api/v1/worker/heartbeat", strings.NewReader(`{"capabilities":{"provider_operations":["video_analysis"]}}`))
+	heartbeat.Header.Set("Authorization", "Bearer "+token)
+	heartbeat.Header.Set("Content-Type", "application/json")
+	heartbeatResponse := httptest.NewRecorder()
+	handler.ServeHTTP(heartbeatResponse, heartbeat)
+	if heartbeatResponse.Code != http.StatusNoContent {
+		t.Fatalf("heartbeat status=%d body=%s", heartbeatResponse.Code, heartbeatResponse.Body.String())
+	}
+
+	credential := httptest.NewRequest(http.MethodPost, "/api/v1/worker/jobs/"+job.ID+"/credentials/video_analysis", nil)
+	credential.Header.Set("Authorization", "Bearer "+token)
+	credentialResponse := httptest.NewRecorder()
+	handler.ServeHTTP(credentialResponse, credential)
+	if credentialResponse.Code != http.StatusBadRequest {
+		t.Fatalf("escalated credential status=%d body=%s", credentialResponse.Code, credentialResponse.Body.String())
+	}
+
+	proxy := httptest.NewRequest(http.MethodPost, "/api/v1/worker/jobs/"+job.ID+"/provider/video_analysis", strings.NewReader(`{"input":"should not reach provider"}`))
+	proxy.Header.Set("Authorization", "Bearer "+token)
+	proxy.Header.Set("Content-Type", "application/json")
+	proxyResponse := httptest.NewRecorder()
+	handler.ServeHTTP(proxyResponse, proxy)
+	if proxyResponse.Code != http.StatusBadRequest {
+		t.Fatalf("escalated proxy status=%d body=%s", proxyResponse.Code, proxyResponse.Body.String())
+	}
+	if requests := upstreamRequests.Load(); requests != 0 {
+		t.Fatalf("upstream received %d requests after heartbeat escalation", requests)
 	}
 }
 

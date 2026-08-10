@@ -103,3 +103,56 @@ func TestHeartbeatWorkerPersistsVersion(t *testing.T) {
 		t.Fatalf("authenticated worker version=%q, want v0.30.0", authenticated.Version)
 	}
 }
+
+func TestHeartbeatWorkerPreservesEnrolledProviderOperations(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "workers-capabilities.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pairing, err := repo.CreateWorkerPairing(ctx, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrolled, _, err := repo.EnrollWorker(ctx, pairing.Token, remote.WorkerRegistration{
+		Name: "worker", Platform: "linux-amd64",
+		Capabilities: remote.WorkerCapabilities{ProviderOperations: []string{"video_analysis"}, LibraryRoots: []string{"root-a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	heartbeat := remote.WorkerCapabilities{Proxy: true, Thumbnail: true, AudioExtract: true, Hardware: []string{"nvenc"}, MaxParallelProxyJobs: 3, LibraryRoots: []string{"root-b"}}
+	if err := repo.HeartbeatWorker(ctx, enrolled.ID, "", heartbeat); err != nil {
+		t.Fatal(err)
+	}
+	workers, err := repo.ListWorkers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workers) != 1 {
+		t.Fatalf("workers=%+v", workers)
+	}
+	got := workers[0].Capabilities
+	if len(got.ProviderOperations) != 1 || got.ProviderOperations[0] != "video_analysis" {
+		t.Fatalf("nil heartbeat operations changed enrollment trust: %v", got.ProviderOperations)
+	}
+	if !got.Proxy || !got.Thumbnail || !got.AudioExtract || got.MaxParallelProxyJobs != 3 || len(got.Hardware) != 1 || got.Hardware[0] != "nvenc" || len(got.LibraryRoots) != 1 || got.LibraryRoots[0] != "root-b" {
+		t.Fatalf("heartbeat fields were not accepted: %+v", got)
+	}
+
+	if err := repo.HeartbeatWorker(ctx, enrolled.ID, "", remote.WorkerCapabilities{ProviderOperations: []string{"asr"}}); err != nil {
+		t.Fatal(err)
+	}
+	workers, err = repo.ListWorkers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got = workers[0].Capabilities; len(got.ProviderOperations) != 1 || got.ProviderOperations[0] != "video_analysis" {
+		t.Fatalf("heartbeat escalated provider operations: %v", got.ProviderOperations)
+	}
+}

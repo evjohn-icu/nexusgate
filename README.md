@@ -651,6 +651,9 @@ timingdex worker enroll --hub https://nas:8787 --fingerprint <fingerprint> \
 timingdex worker run
 ```
 
+`provider_operations` is enrollment-time trust; heartbeats cannot grant provider
+access. Re-enroll to change it.
+
 ### Windows: tray icon
 
 ```bash

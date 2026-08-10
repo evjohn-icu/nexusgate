@@ -112,6 +112,26 @@ func (r *Repository) AuthenticateWorker(ctx context.Context, token string) (remo
 }
 
 func (r *Repository) HeartbeatWorker(ctx context.Context, workerID, version string, capabilities remote.WorkerCapabilities) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var storedRaw, status string
+	err = tx.QueryRowContext(ctx, `SELECT capabilities_json,status FROM workers WHERE id=?`, workerID).Scan(&storedRaw, &status)
+	if errors.Is(err, sql.ErrNoRows) || status == string(remote.WorkerRevoked) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var stored remote.WorkerCapabilities
+	if err := json.Unmarshal([]byte(storedRaw), &stored); err != nil {
+		return err
+	}
+	// Provider operations are the operator's enrollment-time trust decision;
+	// a heartbeat may report capabilities but cannot grant provider access.
+	capabilities.ProviderOperations = stored.ProviderOperations
 	raw, err := json.Marshal(capabilities)
 	if err != nil {
 		return err
@@ -125,8 +145,10 @@ func (r *Repository) HeartbeatWorker(ctx context.Context, workerID, version stri
 		query = `UPDATE workers SET status='online',capabilities_json=?,version=?,last_seen_at=? WHERE id=? AND status!='revoked'`
 		args = []any{string(raw), version, formatTime(time.Now().UTC()), workerID}
 	}
-	_, err = r.db.ExecContext(ctx, query, args...)
-	return err
+	if _, err = tx.ExecContext(ctx, query, args...); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // workerOfflineAfter bounds how stale a worker's last heartbeat may be before

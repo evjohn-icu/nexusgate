@@ -224,6 +224,7 @@ These invariants are the point of several packages — preserve them when editin
   distinct answer from `ErrWorkerProviderNotConfigured` (503), because telling an operator
   their provider is "not configured" when they configured it in the browser blames them for
   something they did not do.
+  `provider_operations` is enrollment-time trust; heartbeats cannot grant provider access.
 - **Capture coordinates** are exposed as a region label; source precision is admin-only
   (`GET /api/v1/admin/assets/{id}/capture-location`).
 - Original media is read-only. Nothing is ever written next to source files; NAS mode
