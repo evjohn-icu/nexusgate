@@ -18,6 +18,7 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/credentials"
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	"github.com/evjohn-icu/timingdex/internal/remote"
+	"github.com/evjohn-icu/timingdex/internal/secretredact"
 )
 
 // ProviderChannelMemberUpdate is the write-only shape used by the admin API.
@@ -573,7 +574,11 @@ func (s *Service) ProxyWorkerProviderJSON(ctx context.Context, worker remote.Wor
 	if err != nil || int64(len(responseBody)) > maxProviderProxyBytes || !jsonBody(responseBody) {
 		return ProviderProxyResult{}, ErrProviderProxyRequest
 	}
-	responseBody = bytes.ReplaceAll(responseBody, []byte(lease.Credential.APIKey), []byte("[REDACTED]"))
+	redactor := secretredact.New(secretredact.Material{APIKey: lease.Credential.APIKey, ExtraHeaders: lease.Credential.ExtraHeaders, BaseURL: lease.Credential.BaseURL})
+	responseBody, err = redactor.JSON(responseBody)
+	if err != nil {
+		return ProviderProxyResult{}, ErrProviderProxyRequest
+	}
 	return ProviderProxyResult{Provider: lease.Provider, StatusCode: response.StatusCode, Body: responseBody}, nil
 }
 

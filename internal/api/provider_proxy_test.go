@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,15 +23,24 @@ import (
 func TestWorkerProviderProxyRequiresLeaseAndKeepsKeysServerSide(t *testing.T) {
 	ctx := context.Background()
 	const providerSecret = "proxy-provider-secret"
+	const extraSecret = "proxy-extra-header-secret"
+	const urlUser = "proxy-url-user"
+	const urlPassword = "proxy-url-password"
 	var receivedBody []byte
 	var receivedAuth string
+	var receivedExtra string
+	var receivedURLQuery string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedAuth = r.Header.Get("Authorization")
+		receivedExtra = r.Header.Get("X-Provider-Secret")
+		receivedURLQuery = r.URL.Query().Get("user_key")
 		receivedBody, _ = io.ReadAll(io.LimitReader(r.Body, 2<<20))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"summary":"` + providerSecret + `","ok":true}`))
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"summary":"` + providerSecret + `","extra":"` + extraSecret + `","url_user":"` + urlUser + `","url_password":"` + urlPassword + `","ordinary":"ordinary-value","nested":"{\"token\":\"` + providerSecret + `\"}"}`))
 	}))
 	defer upstream.Close()
+	providerURL := strings.Replace(upstream.URL, "http://", "http://"+urlUser+":"+urlPassword+"@", 1) + "?user_key=url-query-secret"
 
 	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "provider-proxy.db"))
 	if err != nil {
@@ -56,7 +66,7 @@ func TestWorkerProviderProxyRequiresLeaseAndKeepsKeysServerSide(t *testing.T) {
 
 	service, err := app.NewService(repo, config.Config{DataDir: secureTestDataDir(t), Providers: config.ProvidersConfig{
 		VisionPrimary: "volcengine_video",
-		VolcVideo:     config.ProviderConfig{Enabled: true, BaseURL: upstream.URL, Path: "/v1/chat/completions", APIKey: providerSecret, Model: "vision-v1", AuthHeader: "Authorization", AuthScheme: "Bearer"},
+		VolcVideo:     config.ProviderConfig{Enabled: true, BaseURL: providerURL, Path: "/v1/chat/completions", APIKey: providerSecret, Model: "vision-v1", AuthHeader: "Authorization", AuthScheme: "Bearer", ExtraHeaders: map[string]string{"X-Provider-Secret": extraSecret}},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -75,11 +85,17 @@ func TestWorkerProviderProxyRequiresLeaseAndKeepsKeysServerSide(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
+	if response.Code != http.StatusCreated {
 		t.Fatalf("proxy status=%d body=%s", response.Code, response.Body.String())
 	}
 	if receivedAuth != "Bearer "+providerSecret {
 		t.Fatalf("upstream did not receive configured auth header: %q", receivedAuth)
+	}
+	if receivedExtra != extraSecret {
+		t.Fatalf("upstream did not receive extra header credential: %q", receivedExtra)
+	}
+	if receivedURLQuery != "url-query-secret" {
+		t.Fatalf("upstream did not receive URL query credential: %q", receivedURLQuery)
 	}
 	if string(receivedBody) != string(payload) {
 		t.Fatalf("upstream body=%s want=%s", receivedBody, payload)
@@ -89,6 +105,15 @@ func TestWorkerProviderProxyRequiresLeaseAndKeepsKeysServerSide(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), "[REDACTED]") {
 		t.Fatalf("proxy response did not redact echoed secret: %s", response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), extraSecret) || strings.Contains(response.Body.String(), urlUser) || strings.Contains(response.Body.String(), urlPassword) || strings.Contains(response.Body.String(), "url-query-secret") {
+		t.Fatalf("proxy response leaked a non-API credential: %s", response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "ordinary-value") {
+		t.Fatalf("proxy response changed ordinary value: %s", response.Body.String())
+	}
+	if !json.Valid(response.Body.Bytes()) {
+		t.Fatalf("proxy response is not valid JSON: %s", response.Body.String())
 	}
 }
 
