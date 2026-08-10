@@ -124,13 +124,6 @@ func (p *Pipeline) analyzeWithDetector(ctx context.Context, j *domain.Job, m *do
 		if failErr := p.failModelRun(ctx, runID, "validation_error", err.Error(), joinRaw(raws), j, worker); failErr != nil {
 			return failErr
 		}
-=======
-		_ = p.repo.FailModelRun(ctx, runID, "provider_error", persistedErrorMessage(err), persistedRaw(joinRaw(raws)))
-		return err
-	}
-	if err := validateAnalysisShots(shots, m.DurationMS); err != nil {
-		_ = p.repo.FailModelRun(ctx, runID, "validation_error", persistedErrorMessage(err), persistedRaw(joinRaw(raws)))
->>>>>>> 91e2436 (fix(providers): bounded redacted errors preserve classification (task 10))
 		return err
 	}
 	foldShotMetadata(&a, metas)

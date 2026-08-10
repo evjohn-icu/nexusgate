@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"math"
 	"strings"
 )
@@ -54,6 +55,9 @@ func (r *TextEmbeddingRetriever) Retrieve(ctx context.Context, q SearchQuery, li
 		return nil, nil
 	}
 	queryVector := vectors[0]
+	if err := validateQueryEmbedding(queryVector); err != nil {
+		return []Candidate{}, err
+	}
 	rows, err := r.store.ListShotTextEmbeddings(ctx, r.embedder.Model())
 	if err != nil {
 		return nil, err
@@ -69,6 +73,9 @@ func (r *TextEmbeddingRetriever) Retrieve(ctx context.Context, q SearchQuery, li
 			continue
 		}
 		similarity := embeddingCosine(queryVector, row.Vector)
+		if similarity <= 0 || math.IsNaN(similarity) || math.IsInf(similarity, 0) {
+			continue
+		}
 		if similarity > maxSimilarity {
 			maxSimilarity = similarity
 		}
@@ -91,6 +98,23 @@ func (r *TextEmbeddingRetriever) Retrieve(ctx context.Context, q SearchQuery, li
 		scored = scored[:limit]
 	}
 	return scored, nil
+}
+
+func validateQueryEmbedding(vector []float64) error {
+	if len(vector) == 0 {
+		return fmt.Errorf("invalid query embedding: empty vector")
+	}
+	var norm float64
+	for _, value := range vector {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("invalid query embedding: non-finite component")
+		}
+		norm += value * value
+	}
+	if math.IsNaN(norm) || math.IsInf(norm, 0) || norm == 0 {
+		return fmt.Errorf("invalid query embedding: zero or non-finite norm")
+	}
+	return nil
 }
 
 // ShotTextSource builds the embedding source text from a shot document —
@@ -132,6 +156,9 @@ func embeddingCosine(query []float64, vector []float32) float64 {
 	var dot, queryNorm, vectorNorm float64
 	for i := 0; i < n; i++ {
 		value := float64(vector[i])
+		if math.IsNaN(query[i]) || math.IsInf(query[i], 0) || math.IsNaN(value) || math.IsInf(value, 0) {
+			return 0
+		}
 		dot += query[i] * value
 		queryNorm += query[i] * query[i]
 		vectorNorm += value * value
@@ -139,5 +166,9 @@ func embeddingCosine(query []float64, vector []float32) float64 {
 	if queryNorm == 0 || vectorNorm == 0 {
 		return 0
 	}
-	return dot / math.Sqrt(queryNorm*vectorNorm)
+	result := dot / math.Sqrt(queryNorm*vectorNorm)
+	if math.IsNaN(result) || math.IsInf(result, 0) {
+		return 0
+	}
+	return result
 }

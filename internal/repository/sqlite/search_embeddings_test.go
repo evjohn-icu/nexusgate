@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -14,6 +15,85 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/providers/embedding"
 	"github.com/evjohn-icu/timingdex/internal/search"
 )
+
+func TestUpsertShotTextEmbeddingsRollsBackInvalidBatch(t *testing.T) {
+	repo, err := Open(filepath.Join(t.TempDir(), "rollback.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	rows := []search.ShotEmbeddingRow{
+		{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "missing-shot"}}, Model: "m", Vector: []float32{1, 0}},
+		{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: ""}}, Model: "m", Vector: []float32{1, 0}},
+	}
+	if err := repo.UpsertShotTextEmbeddings(ctx, rows); err == nil {
+		t.Fatal("invalid batch must fail")
+	}
+	var count int
+	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM shot_text_embeddings`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("failed batch must roll back, got %d rows", count)
+	}
+}
+
+func TestDecodeVectorBlobRejectsMalformedData(t *testing.T) {
+	for _, blob := range [][]byte{{1}, func() []byte {
+		b := make([]byte, 4)
+		binary.LittleEndian.PutUint32(b, math.Float32bits(float32(math.NaN())))
+		return b
+	}(), func() []byte { b := make([]byte, 4); binary.LittleEndian.PutUint32(b, math.Float32bits(0)); return b }()} {
+		if _, err := decodeVectorBlob(blob); err == nil {
+			t.Fatalf("blob %v must be rejected", blob)
+		}
+	}
+}
+
+func TestListShotTextEmbeddingsPropagatesMalformedBlob(t *testing.T) {
+	repo, err := Open(filepath.Join(t.TempDir(), "malformed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := repo.DB().ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES('a','fp',1,'discovered','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ReplaceAssetShots(ctx, "a", "", []domain.AssetShot{{ID: "s", AssetID: "a", EndMS: 1, Description: "test"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.DB().ExecContext(ctx, `INSERT INTO shot_text_embeddings(shot_id,model,vector_blob,source_text_hash,created_at) VALUES('s','m',X'01','h','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ListShotTextEmbeddings(ctx, "m"); err == nil {
+		t.Fatal("malformed blob must propagate")
+	}
+}
+
+func TestUpsertShotTextEmbeddingsRejectsInvalidVector(t *testing.T) {
+	repo, err := Open(filepath.Join(t.TempDir(), "invalid.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, vector := range [][]float32{nil, {0, 0}, {float32(math.NaN()), 1}, {float32(math.Inf(1)), 1}} {
+		err := repo.UpsertShotTextEmbeddings(context.Background(), []search.ShotEmbeddingRow{{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "s"}}, Model: "m", Vector: vector}})
+		if err == nil {
+			t.Fatalf("vector %v must be rejected", vector)
+		}
+	}
+}
 
 // TestTextEmbeddingRoundtrip exercises the REAL embedding provider adapter
 // (OpenAI-compatible protocol) against an httptest endpoint, then the full

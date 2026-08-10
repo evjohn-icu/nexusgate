@@ -35,7 +35,7 @@ func (r *Repository) UpsertShotTextEmbeddings(ctx context.Context, rows []search
 	}
 	defer stmt.Close()
 	for _, row := range rows {
-		if row.Shot.ID == "" || row.Model == "" {
+		if row.Shot.ID == "" || row.Model == "" || !validVector(row.Vector) {
 			return fmt.Errorf("embedding row needs shot_id and model")
 		}
 		if _, err := stmt.ExecContext(ctx, row.Shot.ID, row.Model, encodeVectorBlob(row.Vector), row.SourceTextHash, now); err != nil {
@@ -71,7 +71,10 @@ func (r *Repository) ListShotTextEmbeddings(ctx context.Context, model string) (
 		if filename != "" {
 			row.Shot.Filename = filepath.Base(filename)
 		}
-		row.Vector = decodeVectorBlob(blob)
+		row.Vector, err = decodeVectorBlob(blob)
+		if err != nil {
+			return nil, fmt.Errorf("decode embedding for shot %s: %w", row.Shot.ID, err)
+		}
 		out = append(out, row)
 	}
 	return out, rows.Err()
@@ -157,10 +160,31 @@ func encodeVectorBlob(vector []float32) []byte {
 	return blob
 }
 
-func decodeVectorBlob(blob []byte) []float32 {
+func decodeVectorBlob(blob []byte) ([]float32, error) {
+	if len(blob)%4 != 0 {
+		return nil, fmt.Errorf("vector blob length %d is not divisible by 4", len(blob))
+	}
 	vector := make([]float32, len(blob)/4)
 	for i := range vector {
 		vector[i] = math.Float32frombits(binary.LittleEndian.Uint32(blob[4*i:]))
 	}
-	return vector
+	if !validVector(vector) {
+		return nil, fmt.Errorf("vector blob contains non-finite or zero-norm values")
+	}
+	return vector, nil
+}
+
+func validVector(vector []float32) bool {
+	if len(vector) == 0 {
+		return false
+	}
+	var norm float64
+	for _, value := range vector {
+		v := float64(value)
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return false
+		}
+		norm += v * v
+	}
+	return !math.IsNaN(norm) && !math.IsInf(norm, 0) && norm > 0
 }

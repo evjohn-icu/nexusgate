@@ -220,6 +220,33 @@ func TestEmbeddingRetrieverSkipsMismatchedRows(t *testing.T) {
 	}
 }
 
+func TestEmbeddingRetrieverExcludesInvalidScoresAndIsDeterministic(t *testing.T) {
+	rows := []ShotEmbeddingRow{
+		{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "z"}}, Vector: []float32{1, 0}},
+		{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "a"}}, Vector: []float32{1, 0}},
+		{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "negative"}}, Vector: []float32{-1, 0}},
+		{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "zero"}}, Vector: []float32{0, 0}},
+		{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "nan"}}, Vector: []float32{float32(math.NaN()), 1}},
+		{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "inf"}}, Vector: []float32{float32(math.Inf(1)), 1}},
+	}
+	store := &fakeEmbeddingStore{embeddingRows: map[string][]ShotEmbeddingRow{"fake-embed-v1": rows}}
+	got, err := NewTextEmbeddingRetriever(store, fixedEmbedder{vector: []float64{1, 0}}).Retrieve(context.Background(), Compile("x"), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ShotID != "a" || got[1].ShotID != "z" {
+		t.Fatalf("invalid or nondeterministic results: %+v", got)
+	}
+}
+
+type fixedEmbedder struct{ vector []float64 }
+
+func (f fixedEmbedder) Name() string  { return "fixed" }
+func (f fixedEmbedder) Model() string { return "fake-embed-v1" }
+func (f fixedEmbedder) Embed(context.Context, []string) ([][]float64, error) {
+	return [][]float64{f.vector}, nil
+}
+
 func TestEmbeddingRetrieverRanksByCosine(t *testing.T) {
 	store := &fakeStore{
 		embeddingRows: map[string][]ShotEmbeddingRow{

@@ -221,6 +221,39 @@ func TestRebuildShotTextEmbeddingsIncremental(t *testing.T) {
 	_ = committed
 }
 
+type zeroVectorEmbedder struct{}
+
+func (zeroVectorEmbedder) Name() string  { return "zero" }
+func (zeroVectorEmbedder) Model() string { return "zero-v1" }
+func (zeroVectorEmbedder) Embed(_ context.Context, texts []string) ([][]float64, error) {
+	return make([][]float64, len(texts)), nil
+}
+
+func TestRebuildShotTextEmbeddingsReportsPersistedCount(t *testing.T) {
+	repo, _ := openEmbeddingTestRepo(t)
+	svc := &Service{repo: repo, embedder: testEmbedder{}}
+	count, err := svc.RebuildShotTextEmbeddings(context.Background())
+	if err != nil || count != 2 {
+		t.Fatalf("rebuild count = %d, err=%v; want persisted count 2", count, err)
+	}
+}
+
+func TestRebuildShotTextEmbeddingsZeroVectorIsNoOp(t *testing.T) {
+	repo, _ := openEmbeddingTestRepo(t)
+	svc := &Service{repo: repo, embedder: zeroVectorEmbedder{}}
+	count, err := svc.RebuildShotTextEmbeddings(context.Background())
+	if err != nil || count != 0 {
+		t.Fatalf("zero-vector rebuild = %d, err=%v; want 0, nil", count, err)
+	}
+	rows, err := repo.ListShotTextEmbeddings(context.Background(), "zero-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("zero-vector provider must persist nothing, got %d", len(rows))
+	}
+}
+
 type switchedModelEmbedder struct{ testEmbedder }
 
 func (switchedModelEmbedder) Model() string { return "test-embed-v2" }

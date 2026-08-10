@@ -185,11 +185,7 @@ func (r *Repository) MetadataRankedShots(ctx context.Context, q string, limit in
 	if err != nil {
 		return nil, err
 	}
-	type scoredAsset struct {
-		id    string
-		score float64
-	}
-	assetScores := make([]scoredAsset, 0, 64)
+	assetIDs := make([]string, 0, 64)
 	for rows.Next() {
 		var id, path string
 		if err := rows.Scan(&id, &path); err != nil {
@@ -197,7 +193,7 @@ func (r *Repository) MetadataRankedShots(ctx context.Context, q string, limit in
 			return nil, err
 		}
 		if path != "" && filenameMatches(strings.ToLower(filepath.Base(path)), ascii, cjk) {
-			assetScores = append(assetScores, scoredAsset{id: id, score: 1.0})
+			assetIDs = append(assetIDs, id)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -205,35 +201,36 @@ func (r *Repository) MetadataRankedShots(ctx context.Context, q string, limit in
 		return nil, err
 	}
 	rows.Close()
-	if len(assetScores) == 0 {
+	if len(assetIDs) == 0 {
 		return []domain.ShotSearchResult{}, nil
 	}
-	ids := make([]string, 0, len(assetScores))
-	byID := make(map[string]float64, len(assetScores))
-	for _, a := range assetScores {
-		ids = append(ids, a.id)
-		byID[a.id] = a.score
-	}
-	placeholders := strings.TrimSuffix(strings.Repeat(`?,`, len(ids)), `,`)
-	shotRows, err := r.db.QueryContext(ctx, `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),'') FROM asset_shots s WHERE s.asset_id IN (`+placeholders+`) ORDER BY s.asset_id,s.ordinal`, strSliceToAny(ids)...)
-	if err != nil {
-		return nil, err
-	}
-	defer shotRows.Close()
 	var out []domain.ShotSearchResult
-	for shotRows.Next() {
-		result, err := scanShotRowWithFilename(shotRows, "")
+	const chunkSize = 500
+	for start := 0; start < len(assetIDs) && len(out) < limit; start += chunkSize {
+		end := start + chunkSize
+		if end > len(assetIDs) {
+			end = len(assetIDs)
+		}
+		chunk := assetIDs[start:end]
+		placeholders := strings.TrimSuffix(strings.Repeat(`?,`, len(chunk)), `,`)
+		shotRows, err := r.db.QueryContext(ctx, `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),'') FROM asset_shots s WHERE s.asset_id IN (`+placeholders+`) ORDER BY s.asset_id,s.ordinal`, strSliceToAny(chunk)...)
 		if err != nil {
 			return nil, err
 		}
-		result.MetadataScore = byID[result.AssetID]
-		out = append(out, result)
-	}
-	if err := shotRows.Err(); err != nil {
-		return nil, err
-	}
-	if len(out) > limit {
-		out = out[:limit]
+		for shotRows.Next() && len(out) < limit {
+			result, err := scanShotRowWithFilename(shotRows, "")
+			if err != nil {
+				shotRows.Close()
+				return nil, err
+			}
+			result.MetadataScore = 1.0
+			out = append(out, result)
+		}
+		if err := shotRows.Err(); err != nil {
+			shotRows.Close()
+			return nil, err
+		}
+		shotRows.Close()
 	}
 	return out, nil
 }
