@@ -1,7 +1,6 @@
 package webdavspace
 
 import (
-	"context"
 	"encoding/base64"
 	"errors"
 	"net/http"
@@ -18,14 +17,15 @@ type Manager struct {
 	linker   Linker
 	accounts AccountStore
 
-	mu     sync.RWMutex
-	spaces map[string]*Space
+	mu         sync.RWMutex
+	spaces     map[string]*Space
+	lockSystem webdav.LockSystem
 }
 
 // NewManager creates a space manager whose assets resolve via linker and
 // whose HTTP Basic Auth checks accounts.
 func NewManager(linker Linker, accounts AccountStore) *Manager {
-	return &Manager{linker: linker, accounts: accounts, spaces: map[string]*Space{}}
+	return &Manager{linker: linker, accounts: accounts, spaces: map[string]*Space{}, lockSystem: webdav.NewMemLS()}
 }
 
 // CreateSpace registers a new empty space and returns it.
@@ -68,15 +68,12 @@ func (m *Manager) SpaceIDs() []string {
 // from the URL path, so each space is only reachable by the account that owns
 // the shared credential (space-level sharing is a future refinement).
 func (m *Manager) Handler() http.Handler {
-	dav := &webdav.Handler{
-		LockSystem: webdav.NewMemLS(),
-		Logger: func(_ *http.Request, err error) {
-			if err != nil && !errors.Is(err, webdav.ErrNotImplemented) {
-				// Failures here are operational noise (a client probing a
-				// method); the space itself reports 4xx/5xx to the client.
-				_ = err
-			}
-		},
+	logger := func(_ *http.Request, err error) {
+		if err != nil && !errors.Is(err, webdav.ErrNotImplemented) {
+			// Failures here are operational noise (a client probing a
+			// method); the space itself reports 4xx/5xx to the client.
+			_ = err
+		}
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Extract space id from path: /spaces/<id>/...
@@ -113,8 +110,7 @@ func (m *Manager) Handler() http.Handler {
 
 		// Serve the space under its prefix.
 		prefix := "/spaces/" + spaceID
-		dav.Prefix = prefix
-		dav.FileSystem = space.NewHandlerFS(prefix)
+		dav := &webdav.Handler{Prefix: prefix, FileSystem: space.NewHandlerFS(prefix), LockSystem: m.lockSystem, Logger: logger}
 		dav.ServeHTTP(w, r)
 	})
 }
@@ -135,5 +131,3 @@ func parseBasicAuth(header string) (username, password string, ok bool) {
 	}
 	return user, pass, true
 }
-
-var _ = context.Background // keep context import
