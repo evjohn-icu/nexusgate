@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -102,10 +104,107 @@ func (e *StatusError) Error() string {
 func (e *StatusError) HTTPStatusCode() int { return e.StatusCode }
 
 func ReadError(resp *http.Response) error {
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	body := strings.TrimSpace(string(b))
-	if len(body) > maxErrorBodyBytes {
-		body = body[:maxErrorBodyBytes] + "…(truncated)"
-	}
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes+1))
+	body := BoundedString(strings.TrimSpace(string(b)))
 	return &StatusError{StatusCode: resp.StatusCode, Body: body}
+}
+
+// ReadErrorWithSecret keeps provider response text useful without allowing an
+// echoed request credential to cross into logs or persisted job messages.
+func ReadErrorWithSecret(resp *http.Response, secret string) error {
+	return RedactError(ReadError(resp), secret)
+}
+
+// BoundedString is the persistence bound shared by provider and pipeline errors.
+func BoundedString(value string) string {
+	if len(value) > maxErrorBodyBytes {
+		return value[:maxErrorBodyBytes] + "…(truncated)"
+	}
+	return value
+}
+
+func RedactString(value, secret string) string {
+	return BoundedString(redactString(value, secret))
+}
+
+func redactString(value, secret string) string {
+	if secret == "" {
+		return value
+	}
+	return strings.ReplaceAll(value, secret, "[REDACTED]")
+}
+
+// Errorf constructs an error whose text is safe to persist and display.
+func Errorf(secret, format string, args ...any) error {
+	return RedactError(fmt.Errorf(format, args...), secret)
+}
+
+// RedactedError deliberately does not expose the original error through
+// Unwrap. Classification is copied through the narrow Is/As surface instead.
+type RedactedError struct {
+	message string
+	cause   error
+	status  *StatusError
+	netErr  net.Error
+}
+
+func (e *RedactedError) Error() string { return e.message }
+
+func (e *RedactedError) Is(target error) bool {
+	if e.cause == nil {
+		return false
+	}
+	return errors.Is(e.cause, target)
+}
+
+func (e *RedactedError) As(target any) bool {
+	if status, ok := target.(**StatusError); ok && e.status != nil {
+		*status = e.status
+		return true
+	}
+	if status, ok := target.(*interface{ HTTPStatusCode() int }); ok && e.status != nil {
+		*status = e.status
+		return true
+	}
+	if status, ok := target.(*interface{ StatusCode() int }); ok && e.status != nil {
+		*status = statusCodeAdapter{code: e.status.StatusCode}
+		return true
+	}
+	if network, ok := target.(*net.Error); ok && e.netErr != nil {
+		*network = e.netErr
+		return true
+	}
+	return false
+}
+
+type statusCodeAdapter struct{ code int }
+
+func (e statusCodeAdapter) Error() string   { return fmt.Sprintf("provider returned HTTP %d", e.code) }
+func (e statusCodeAdapter) StatusCode() int { return e.code }
+
+type redactedNetError struct {
+	message string
+	cause   net.Error
+}
+
+func (e *redactedNetError) Error() string   { return e.message }
+func (e *redactedNetError) Timeout() bool   { return e.cause.Timeout() }
+func (e *redactedNetError) Temporary() bool { return e.cause.Temporary() }
+
+func (e *RedactedError) Unwrap() error { return nil }
+
+func RedactError(err error, secret string) error {
+	if err == nil {
+		return nil
+	}
+	out := &RedactedError{message: RedactString(err.Error(), secret), cause: err}
+	var status *StatusError
+	if errors.As(err, &status) {
+		out.status = &StatusError{StatusCode: status.StatusCode, Body: RedactString(status.Body, secret)}
+	}
+	var network net.Error
+	if errors.As(err, &network) {
+		out.netErr = &redactedNetError{message: RedactString(network.Error(), secret), cause: network}
+	}
+	return out
 }

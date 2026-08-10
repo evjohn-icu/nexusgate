@@ -1237,52 +1237,7 @@ func supportedChannelProvider(capability providerchannels.Capability, name strin
 // of a *common.StatusError found in the original chain. The provider key must
 // not survive anywhere in the returned chain, including inside a wrapped
 // *common.StatusError whose Body is the upstream response -- a relay may echo
-// the request back, and that text reaches jobs.last_error_message. So the
-// status is rebuilt from redacted parts rather than the original being
-// wrapped: errors.As still finds a status to classify, but there is no
-// unredacted value left for a caller to print.
-type redactedError struct {
-	message string              // already redacted; the only thing Error() returns
-	status  *common.StatusError // nil unless the chain carried one; its Body is already redacted
-}
-
-func (e *redactedError) Error() string { return e.message }
-
-// Unwrap returns nil when the chain carried no status, which errors.As
-// handles as the end of the chain.
-func (e *redactedError) Unwrap() error {
-	if e.status == nil {
-		return nil
-	}
-	return e.status
-}
-
-func redactError(err error, secret string) error {
-	if err == nil {
-		return nil
-	}
-	redacted := &redactedError{message: redactString(err.Error(), secret)}
-	var status *common.StatusError
-	if errors.As(err, &status) {
-		redacted.status = &common.StatusError{
-			StatusCode: status.StatusCode,
-			Body:       redactString(status.Body, secret),
-		}
-	}
-	// Rebuilding the chain is what makes redaction total, and it is also what
-	// drops everything the original chain carried. The status is carried over
-	// above because isRetryableJobError classifies on it; the permanence
-	// marker is carried over here for the same reason. Nothing marked reaches
-	// this function today — the config-shaped failures are returned to the
-	// executor unredacted, since they never held a key — but a redacted error
-	// silently losing its verdict would be a retry ladder against a paid
-	// provider, and that is too quiet a failure for a boundary to depend on
-	// nobody ever wiring the two together.
-	if errors.Is(err, domain.ErrPermanentFailure) {
-		return domain.Permanent(redacted)
-	}
-	return redacted
-}
+func redactError(err error, secret string) error { return common.RedactError(err, secret) }
 
 func redactString(value, secret string) string {
 	if secret == "" {

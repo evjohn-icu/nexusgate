@@ -395,6 +395,15 @@ func isLeaseLostErr(err error) bool {
 	return errors.Is(err, domain.ErrJobLeaseLost)
 }
 
+func persistedErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	return common.BoundedString(err.Error())
+}
+
+func persistedRaw(raw string) string { return common.BoundedString(raw) }
+
 // sleepContext waits without outliving a cancelled run. A plain time.Sleep here
 // would make Ctrl-C on a throttled pipeline take up to a full cooldown to be
 // noticed.
@@ -469,7 +478,7 @@ func isNoSpaceErr(err error) bool {
 func (p *Pipeline) deferJobForDisk(ctx context.Context, job domain.Job, worker string, cause error) error {
 	msg := "disk space low"
 	if cause != nil {
-		msg = cause.Error()
+		msg = persistedErrorMessage(cause)
 	}
 	return p.repo.DeferJob(ctx, job.ID, worker, time.Now().Add(diskSpaceRetryDelay), domain.JobDeferDiskSpaceLow, msg)
 }

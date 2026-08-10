@@ -58,7 +58,7 @@ func (a *ASR) Transcribe(ctx context.Context, req common.TranscribeRequest) (dom
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return domain.Transcript{}, common.ReadError(resp)
+		return domain.Transcript{}, common.ReadErrorWithSecret(resp, a.Endpoint.APIKey)
 	}
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -100,7 +100,7 @@ func (a *ASR) Transcribe(ctx context.Context, req common.TranscribeRequest) (dom
 			if event.Message == "" {
 				event.Message = "unknown provider error"
 			}
-			return domain.Transcript{}, fmt.Errorf("stepfun SSE error: %s", event.Message)
+			return domain.Transcript{}, common.Errorf(a.Endpoint.APIKey, "stepfun SSE error: %s", event.Message)
 		default:
 			var value any
 			if json.Unmarshal([]byte(payload), &value) == nil {
@@ -124,7 +124,7 @@ func (a *ASR) Transcribe(ctx context.Context, req common.TranscribeRequest) (dom
 	if len(segments) == 0 {
 		segments = []domain.TranscriptSegment{{Text: text}}
 	}
-	return domain.Transcript{Language: req.Language, Text: text, Segments: segments, RawResponse: strings.Join(rawLines, "\n")}, nil
+	return domain.Transcript{Language: req.Language, Text: text, Segments: segments, RawResponse: common.RedactString(strings.Join(rawLines, "\n"), a.Endpoint.APIKey)}, nil
 }
 func collectText(v any, out *[]string) {
 	switch x := v.(type) {
