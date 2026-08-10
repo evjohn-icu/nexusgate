@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
+	"github.com/evjohn-icu/timingdex/internal/cachecoord"
 	"golang.org/x/net/webdav"
 )
 
@@ -129,6 +131,71 @@ func TestOpenFileStreamsBytes(t *testing.T) {
 	}
 }
 
+func TestOpenFileSharedLockProtectsGCExclusiveDeletionUntilClose(t *testing.T) {
+	dataDir := t.TempDir()
+	cacheDir := filepath.Join(dataDir, "cache")
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(cacheDir, "asset-a", "proxy-sw.mp4")
+	writeFixtureFile(t, filepath.Dir(path), filepath.Base(path), "cache bytes")
+	l := &testLinker{dir: filepath.Dir(path), originals: map[string]string{"asset-a": filepath.Base(path)}}
+	s := NewSpace("space-1", l, dataDir)
+	vp, err := s.LinkOriginal(context.Background(), "asset-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := s.NewHandlerFS("/spaces/space-1")
+	file, err := fs.OpenFile(context.Background(), vp, os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A nonblocking kernel lock attempt is the barrier: it proves the shared
+	// lock acquired by OpenFile is held, without relying on scheduler timing.
+	lockPath := filepath.Join(dataDir, ".cache-maintenance.lock")
+	lockFile, err := os.OpenFile(lockPath, os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+		t.Fatal("GC exclusive lock acquired while WebDAV file was open")
+	}
+	if err := lockFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	acquired := make(chan *cachecoord.Lock, 1)
+	go func() {
+		lock, lockErr := cachecoord.AcquireExclusive(dataDir)
+		if lockErr != nil {
+			return
+		}
+		acquired <- lock
+	}()
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case lock := <-acquired:
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := lock.Release(); err != nil {
+			t.Fatal(err)
+		}
+	case lock := <-acquired:
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := lock.Release(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestListingShowsOnlyLinked(t *testing.T) {
 	_, s := setup(t)
 	ctx := context.Background()
@@ -182,6 +249,9 @@ func TestSpaceCreatedAtSet(t *testing.T) {
 
 func writeFixtureFile(t *testing.T, dir, name, content string) {
 	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
