@@ -1809,30 +1809,70 @@ func (r *Repository) RebuildSearch(ctx context.Context, assetID string) error {
 // successful transcript rows. It deliberately continues after an individual
 // asset failure so one stale location cannot hide the rest of the repair.
 func (r *Repository) RebuildAllSearch(ctx context.Context) (int, []string, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT a.id FROM assets a WHERE EXISTS (SELECT 1 FROM asset_analysis an WHERE an.asset_id=a.id) OR EXISTS (SELECT 1 FROM transcripts t WHERE t.asset_id=a.id AND t.status='succeeded') ORDER BY a.id`)
+	rows, err := r.db.QueryContext(ctx, `SELECT a.id,
+        CASE WHEN an.asset_id IS NOT NULL THEN 1 ELSE 0 END,
+        CASE WHEN t.asset_id IS NOT NULL THEN 1 ELSE 0 END,
+        COALESCE(an.summary,''),COALESCE(an.scene_tags_json,''),COALESCE(an.subjects_json,''),
+        COALESCE(an.mood_tags_json,''),COALESCE(an.extra_tags_json,''),COALESCE(an.editorial_reason,''),
+        COALESCE(t.full_text,''),
+		COALESCE(
+			(SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id
+			 WHERE l.asset_id=a.id AND l.exists_now=1 AND lr.health_state<>'unavailable'
+			 ORDER BY l.is_primary DESC,l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),
+			(SELECT l.relative_path FROM asset_locations l WHERE l.asset_id=a.id
+			 ORDER BY l.last_seen_at DESC,l.id LIMIT 1), '')
+        FROM assets a
+        LEFT JOIN asset_analysis an ON an.asset_id=a.id
+        LEFT JOIN transcripts t ON t.id=(SELECT t2.id FROM transcripts t2 WHERE t2.asset_id=a.id AND t2.status='succeeded' ORDER BY t2.created_at DESC,t2.id DESC LIMIT 1)
+        ORDER BY a.id`)
 	if err != nil {
 		return 0, nil, err
 	}
 	defer rows.Close()
-	var ids []string
+	type assetSearchRecord struct {
+		id, filename, summary, transcript, tags, subjects, moods, extra, reason string
+		hasAnalysis, hasTranscript                                              int
+	}
+	var records []assetSearchRecord
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var record assetSearchRecord
+		if err := rows.Scan(&record.id, &record.hasAnalysis, &record.hasTranscript, &record.summary, &record.tags, &record.subjects, &record.moods, &record.extra, &record.reason, &record.transcript, &record.filename); err != nil {
 			return 0, nil, err
 		}
-		ids = append(ids, id)
+		records = append(records, record)
 	}
 	if err := rows.Err(); err != nil {
 		return 0, nil, err
 	}
 	rebuilt := 0
 	var failures []string
-	for _, id := range ids {
-		if err := r.RebuildSearch(ctx, id); err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", id, err))
+	for _, record := range records {
+		tx, err := r.db.BeginTx(ctx, nil)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", record.id, err))
 			continue
 		}
-		rebuilt++
+		if record.hasAnalysis == 1 || record.hasTranscript == 1 {
+			filename := ""
+			if record.filename != "" {
+				filename = filepath.Base(record.filename)
+			}
+			err = r.rebuildSearchTx(ctx, tx, record.id, filename, record.summary, record.transcript, record.tags, record.subjects, record.moods, record.extra, record.reason)
+		} else {
+			err = r.deleteFromSearchIndexTx(ctx, tx, record.id)
+		}
+		if err == nil {
+			err = tx.Commit()
+		} else {
+			_ = tx.Rollback()
+		}
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", record.id, err))
+			continue
+		}
+		if record.hasAnalysis == 1 || record.hasTranscript == 1 {
+			rebuilt++
+		}
 	}
 	return rebuilt, failures, nil
 }

@@ -291,7 +291,7 @@ func TestRebuildAllSearchRepairsMissingStaleRowsAndIsIdempotent(t *testing.T) {
 func TestRebuildAllSearchContinuesAfterBrokenAsset(t *testing.T) {
 	ctx := context.Background()
 	repo := openTestRepo(t)
-	good := seedCommittedAsset(t, repo, "rebuild-good")
+	seedCommittedAsset(t, repo, "rebuild-good")
 	broken := seedCommittedAsset(t, repo, "rebuild-broken")
 	if _, err := repo.db.ExecContext(ctx, `DELETE FROM asset_locations WHERE asset_id=?`, broken); err != nil {
 		t.Fatal(err)
@@ -300,11 +300,59 @@ func TestRebuildAllSearchContinuesAfterBrokenAsset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rebuilt != 1 || len(failures) != 1 || failures[0] == "" {
-		t.Fatalf("rebuild result = %d, %v; want one success and one per-asset failure", rebuilt, failures)
+	if rebuilt != 2 || len(failures) != 0 {
+		t.Fatalf("rebuild result = %d, %v; want two successes and no failures", rebuilt, failures)
 	}
-	if hits, err := repo.Search(ctx, "summary", 10); err != nil || len(hits) != 1 || hits[0] != good {
-		t.Fatalf("good asset was not rebuilt after broken asset: hits=%v err=%v", hits, err)
+	if hits, err := repo.Search(ctx, "summary", 10); err != nil || len(hits) != 2 {
+		t.Fatalf("assets were not rebuilt after missing locations: hits=%v err=%v", hits, err)
+	}
+}
+
+func TestRebuildAllSearchRemovesRowsWithoutCanonicalEvidence(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepo(t)
+	assetID := seedCommittedAsset(t, repo, "rebuild-orphan")
+	if err := repo.RebuildSearch(ctx, assetID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `DELETE FROM asset_analysis WHERE asset_id=?; DELETE FROM transcripts WHERE asset_id=?`, assetID, assetID); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt, failures, err := repo.RebuildAllSearch(ctx)
+	if err != nil || rebuilt != 0 || len(failures) != 0 {
+		t.Fatalf("rebuild result = %d, %v, err=%v; want cleanup only", rebuilt, failures, err)
+	}
+	var rows int
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM asset_search WHERE asset_id=?`, assetID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("stale asset search rows remain: %d", rows)
+	}
+	var mappings int
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM asset_search_rowids WHERE asset_id=?`, assetID).Scan(&mappings); err != nil {
+		t.Fatal(err)
+	}
+	if mappings != 0 {
+		t.Fatalf("stale asset search mappings remain: %d", mappings)
+	}
+}
+
+func TestRebuildAllSearchUsesLastKnownFilenameWithoutLocation(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepo(t)
+	assetID := seedCommittedAsset(t, repo, "rebuild-no-location")
+	if _, err := repo.db.ExecContext(ctx, `DELETE FROM asset_locations WHERE asset_id=?`, assetID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RebuildSearch(ctx, assetID); err == nil {
+		t.Fatal("RebuildSearch should still require a live primary location")
+	}
+	if rebuilt, failures, err := repo.RebuildAllSearch(ctx); err != nil || rebuilt != 1 || len(failures) != 0 {
+		t.Fatalf("rebuild result = %d, %v, err=%v; want one fallback rebuild", rebuilt, failures, err)
+	}
+	if hits, err := repo.Search(ctx, "summary", 10); err != nil || len(hits) != 1 || hits[0] != assetID {
+		t.Fatalf("canonical analysis is not searchable without location: hits=%v err=%v", hits, err)
 	}
 }
 
