@@ -5,10 +5,12 @@ import (
 	"errors"
 	"path/filepath"
 	"sync"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/providers/common"
 )
 
 // setupModelRunsTest creates a fresh repository with a library root, asset,
@@ -93,6 +95,31 @@ func TestFailModelRunStateIsFailed(t *testing.T) {
 	}
 	if failedFinished == nil {
 		t.Fatal("expected finished_at to be set")
+	}
+}
+
+func TestFailureFieldsCanStoreOnlyBoundedKeyFreeProviderText(t *testing.T) {
+	ctx := context.Background()
+	repo, assetID := setupModelRunsTest(t)
+	const secret = "sk-should-not-be-persisted"
+	runID, _, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-key-free", "v1", "v1", `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := common.RedactString(strings.Repeat("provider returned ", 200)+secret, secret)
+	raw := common.BoundedString(strings.Repeat("raw ", 1000))
+	if err := repo.FailModelRun(ctx, runID, "PROVIDER_ERROR", common.BoundedString(message), raw); err != nil {
+		t.Fatal(err)
+	}
+	var storedMessage, storedRaw string
+	if err := repo.db.QueryRowContext(ctx, `SELECT error_message, raw_response FROM model_runs WHERE id=?`, runID).Scan(&storedMessage, &storedRaw); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(storedMessage, secret) || strings.Contains(storedRaw, secret) {
+		t.Fatal("provider secret reached model_runs")
+	}
+	if len(storedMessage) > 2048+len("…(truncated)") || len(storedRaw) > 2048+len("…(truncated)") {
+		t.Fatalf("failure fields were not bounded: message=%d raw=%d", len(storedMessage), len(storedRaw))
 	}
 }
 
