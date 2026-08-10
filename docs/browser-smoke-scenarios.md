@@ -15,4 +15,8 @@ The Playwright smoke suite runs against the offline SQLite fixture server. It ne
 | Progress counts and escaped failure text without token | yes | yes |
 | Worker setup steps and pairing-token disappearance after reload | yes | yes |
 
+## Token Memory Assertions
+
+Every page assertion verifies that the admin token is absent from both `localStorage` and `sessionStorage`. After a reload, the token input and any generated pairing token must be gone from page state; the suite does not accept a token restored from browser storage. The token must not appear in rendered HTML, DOM text, URLs, request URLs, request bodies, or provider-channel responses. Provider requests are inspected to ensure the key value is never sent or exposed by the browser; only the in-memory admin authorization header is permitted for admin API calls.
+
 Run the temporary server with `/tmp/timingdex-playwright/run-fixture.sh`, then run the scenarios with Playwright at both viewports. The scenario source is intentionally not committed.
