@@ -1,10 +1,46 @@
 package search
 
 import (
+	"context"
 	"testing"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
 )
+
+func TestEvidenceMixedPolarityKeepsBothAndGateExcludesObserved(t *testing.T) {
+	q := SearchQuery{
+		Intent:  IntentFact,
+		Must:    []Constraint{{Type: ConstraintObject, Value: "person"}},
+		MustNot: []Constraint{{Type: ConstraintObject, Value: "person"}},
+	}
+	observed := Candidate{ShotID: "observed", Objects: []string{"person"}, Signals: map[string]float64{}}
+
+	evidence := evaluateConstraints(q, observed, nil)
+	if len(evidence) != 2 {
+		t.Fatalf("mixed-polarity query must retain both evidence entries, got %+v", evidence)
+	}
+	if evidence[0].Negated || !evidence[1].Negated {
+		t.Fatalf("evidence order must remain positive then negated, got %+v", evidence)
+	}
+	if evidence[0].Constraint != ConstraintObject || evidence[1].Constraint != ConstraintObject {
+		t.Fatalf("evidence constraints = %+v, want object for both polarities", evidence)
+	}
+
+	survivors, _, err := NewEvidenceGate(DefaultOptions()).Gate(
+		context.Background(), &fakeStore{}, q, []Candidate{observed}, true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(survivors) != 0 {
+		t.Fatalf("gate must exclude the forbidden-object shot, got %+v", survivors)
+	}
+
+	verdict := evidenceForGate(q, evidence)
+	if !verdict.observedMustNot {
+		t.Fatalf("negated evidence must mark the observed forbidden object: %+v", verdict)
+	}
+}
 
 func TestEvidenceConfirmedFromStructuredFields(t *testing.T) {
 	q := Compile("汽车经过街道")

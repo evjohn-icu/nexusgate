@@ -25,12 +25,18 @@ import (
 // Must, Should, MustNot order.
 func evaluateConstraints(q SearchQuery, c Candidate, transcriptSpans []domain.AlignmentWord) []Evidence {
 	out := make([]Evidence, 0, len(q.Must)+len(q.Should)+len(q.MustNot))
-	seen := map[string]bool{}
+	type evidenceKey struct {
+		constraintType ConstraintType
+		value          string
+		negated        bool
+	}
+	seen := map[evidenceKey]bool{}
 	appendEvidence := func(constraint Constraint, negated bool) {
-		if seen[constraint.Value] {
+		key := evidenceKey{constraintType: constraint.Type, value: constraint.Value, negated: negated}
+		if seen[key] {
 			return
 		}
-		seen[constraint.Value] = true
+		seen[key] = true
 		out = append(out, evaluateConstraint(constraint, negated, c, transcriptSpans))
 	}
 	for _, constraint := range q.Must {
