@@ -226,35 +226,30 @@ func Open(path string) (*Repository, error) {
 func (r *Repository) Close() error { return r.db.Close() }
 
 func (r *Repository) Migrate(ctx context.Context) error {
-	// Preflight before any migration DDL: never let an upgrade run against a
-	// corrupt database (it would bury the corruption under fresh schema) or one
-	// that could die mid-upgrade with ENOSPC. No-op when nothing is pending.
-	if err := r.checkPreMigrationConditions(ctx); err != nil {
-		return err
-	}
-
-	if _, err := r.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
-		return err
-	}
-
-	entries, err := fs.ReadDir(migrationFiles, "migrations")
-	if err != nil {
-		return err
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-
-	// L1b: snapshot the pre-migration database before the first pending
-	// migration is applied. The L1a integrity/free-space gate (above) runs
-	// first; this guard is a no-op when the schema is already up to date.
-	if err := r.preMigrationSnapshotGuard(ctx); err != nil {
-		return err
-	}
-
 	lockConn, err := r.db.Conn(ctx)
 	if err != nil {
 		return err
 	}
 	defer lockConn.Close()
+	if _, err := lockConn.ExecContext(ctx, `PRAGMA busy_timeout=30000`); err != nil {
+		return err
+	}
+	if _, err := lockConn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
+		return err
+	}
+	// Preflight and VACUUM INTO run outside a transaction because VACUUM cannot
+	// run inside one. The snapshot is a consistent SQLite image of this conn.
+	if err := r.checkPreMigrationConditionsWith(ctx, lockConn); err != nil {
+		return err
+	}
+	entries, err := fs.ReadDir(migrationFiles, "migrations")
+	if err != nil {
+		return err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	if _, err := r.preMigrationSnapshotWith(ctx, lockConn); err != nil {
+		return err
+	}
 	if _, err := lockConn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
 		return err
 	}
@@ -313,14 +308,18 @@ var statfsFreeBytes func(path string) (uint64, error)
 // with ENOSPC. A fully migrated database skips both checks entirely so
 // everyday startup pays nothing.
 func (r *Repository) checkPreMigrationConditions(ctx context.Context) error {
-	pending, err := r.pendingMigrationCount(ctx)
+	return r.checkPreMigrationConditionsWith(ctx, r.db)
+}
+
+func (r *Repository) checkPreMigrationConditionsWith(ctx context.Context, q migrationQuerier) error {
+	pending, err := r.pendingMigrationCountWith(ctx, q)
 	if err != nil {
 		return fmt.Errorf("migration preflight: cannot determine pending migrations: %w", err)
 	}
 	if pending == 0 {
 		return nil
 	}
-	if err := r.IntegrityCheck(ctx); err != nil {
+	if err := integrityCheck(ctx, q); err != nil {
 		return fmt.Errorf("migration preflight: refusing to migrate a corrupt database: %w (the operator must restore the library from backup first; this upgrade will not run until the database passes integrity_check)", err)
 	}
 	dbSize, err := os.Stat(r.dbPath)
@@ -345,12 +344,16 @@ func (r *Repository) checkPreMigrationConditions(ctx context.Context) error {
 // never been migrated reports the full embedded count; a fully migrated one
 // reports zero, and the preflight then returns without touching the disk.
 func (r *Repository) pendingMigrationCount(ctx context.Context) (int, error) {
+	return r.pendingMigrationCountWith(ctx, r.db)
+}
+
+func (r *Repository) pendingMigrationCountWith(ctx context.Context, q migrationQuerier) (int, error) {
 	entries, err := fs.ReadDir(migrationFiles, "migrations")
 	if err != nil {
 		return 0, err
 	}
 	var exists int
-	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_migrations'`).Scan(&exists); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_migrations'`).Scan(&exists); err != nil {
 		return 0, err
 	}
 	if exists == 0 {
@@ -362,7 +365,7 @@ func (r *Repository) pendingMigrationCount(ctx context.Context) (int, error) {
 		}
 		return pending, nil
 	}
-	applied, err := appliedMigrationVersions(ctx, r.db)
+	applied, err := appliedMigrationVersions(ctx, q)
 	if err != nil {
 		return 0, err
 	}
@@ -378,7 +381,19 @@ func (r *Repository) pendingMigrationCount(ctx context.Context) (int, error) {
 }
 
 type migrationQuerier interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func integrityCheck(ctx context.Context, q migrationQuerier) error {
+	var result string
+	if err := q.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&result); err != nil {
+		return err
+	}
+	if result != "ok" {
+		return fmt.Errorf("SQLite integrity_check reported: %s", result)
+	}
+	return nil
 }
 
 func appliedMigrationVersions(ctx context.Context, q migrationQuerier) (map[string]struct{}, error) {

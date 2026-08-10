@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io/fs"
 	"os"
@@ -46,12 +47,16 @@ func (r *Repository) preMigrationSnapshotGuard(ctx context.Context) error {
 // "0027_root_health.sql") of the first migration file not yet recorded in
 // schema_migrations, or "" when every migration has been applied.
 func (r *Repository) firstPendingMigration(ctx context.Context) (string, error) {
+	return r.firstPendingMigrationWith(ctx, r.db)
+}
+
+func (r *Repository) firstPendingMigrationWith(ctx context.Context, q migrationQuerier) (string, error) {
 	entries, err := fs.ReadDir(migrationFiles, "migrations")
 	if err != nil {
 		return "", err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-	applied, err := appliedMigrationVersions(ctx, r.db)
+	applied, err := appliedMigrationVersions(ctx, q)
 	if err != nil {
 		return "", err
 	}
@@ -96,14 +101,23 @@ func migrationVersionToken(name string) string {
 // cannot be trusted to upgrade. The error names the snapshot path so the
 // operator can restore it if the database is already damaged.
 func (r *Repository) preMigrationSnapshot(ctx context.Context) (string, error) {
-	first, err := r.firstPendingMigration(ctx)
+	conn, err := r.db.Conn(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	return r.preMigrationSnapshotWith(ctx, conn)
+}
+
+func (r *Repository) preMigrationSnapshotWith(ctx context.Context, conn *sql.Conn) (string, error) {
+	first, err := r.firstPendingMigrationWith(ctx, conn)
 	if err != nil {
 		return "", err
 	}
 	if first == "" {
 		return "", nil
 	}
-	dbPath, err := r.mainDatabasePath(ctx)
+	dbPath, err := r.mainDatabasePathWith(ctx, conn)
 	if err != nil {
 		return "", err
 	}
@@ -117,12 +131,6 @@ func (r *Repository) preMigrationSnapshot(ctx context.Context) (string, error) {
 			return "", fmt.Errorf("pre-migration snapshot failed (restore from %s if the database is damaged): remove invalid snapshot: %w", snapshotPath, err)
 		}
 	}
-
-	conn, err := r.db.Conn(ctx)
-	if err != nil {
-		return "", fmt.Errorf("pre-migration snapshot failed (restore from %s if the database is damaged): %w", snapshotPath, err)
-	}
-	defer conn.Close()
 
 	tempPath := filepath.Join(filepath.Dir(snapshotPath), fmt.Sprintf(".%s.tmp-%d", filepath.Base(snapshotPath), time.Now().UnixNano()))
 	defer os.Remove(tempPath)
@@ -174,9 +182,13 @@ func validateSnapshot(path string) error {
 // connection pool, so the snapshot lands beside the real file without the
 // Repository having to carry the DSN it was opened with.
 func (r *Repository) mainDatabasePath(ctx context.Context) (string, error) {
+	return r.mainDatabasePathWith(ctx, r.db)
+}
+
+func (r *Repository) mainDatabasePathWith(ctx context.Context, q migrationQuerier) (string, error) {
 	var seq int
 	var name, file string
-	if err := r.db.QueryRowContext(ctx, `PRAGMA database_list`).Scan(&seq, &name, &file); err != nil {
+	if err := q.QueryRowContext(ctx, `PRAGMA database_list`).Scan(&seq, &name, &file); err != nil {
 		return "", err
 	}
 	if name != "main" {
