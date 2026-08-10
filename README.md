@@ -223,6 +223,9 @@ export TIMINGDEX_DATA_DIR="$PWD/.timingdex-dev"
 ./timingdex root scan <root-id>           # enqueues idempotent jobs
 ./timingdex search rebuild                # rebuild asset-level FTS from canonical rows
 ./timingdex search rebuild-embeddings     # re-embed all shots (after a model switch)
+./timingdex cache inspect                 # report cache categories and rebuildable space
+./timingdex cache verify                  # compare derived-artifact rows with cache files
+./timingdex cache gc --rebuildable --yes  # delete rebuildable artifacts and enqueue re-derive
 ./timingdex serve                         # HTTPS by default; prints the Worker fingerprint
 ```
 
@@ -235,15 +238,39 @@ Deleting that directory is how you reset.
 
 On first start the Hub generates and persists the raw `admin-token` (exact mode
 `0600`) so the same bearer credential can be recovered after a Hub restart. The
-data directory is exact mode `0700`; the Hub fails closed rather than repairing
-an unsafe directory or token file. Use the token only for Hub management calls;
-never put it in Worker configuration or browser storage.
+data directory is exact mode `0700`; the token must be a regular, non-symlink
+file with exact mode `0600`. The Hub fails closed rather than repairing an unsafe
+directory or token file. Use the token only for Hub management calls; never put
+it in Worker configuration or browser storage.
 
 If jobs failed because a provider was not configured yet, configure it and then:
 
 ```bash
 ./timingdex pipeline retry-failed
 ```
+
+### Maintenance commands
+
+`timingdex search rebuild` repairs all asset-level FTS rows from canonical data.
+It is separate from `search rebuild-embeddings`, which rebuilds the shot text
+embedding rows after an embedding-model change and never reruns VLM analysis.
+
+Cache maintenance is intentionally explicit:
+
+- `timingdex cache inspect` reports artifact classes, orphan directories and
+  rebuildable space.
+- `timingdex cache verify` reports missing derived files and cache files without
+  database rows. Source staging under `cache/sources/` is excluded by design.
+- `timingdex cache gc [--scratch] [--rebuildable] [--orphans] [--yes]` removes
+  only the named disposable categories. Without `--yes` it is a dry run; with
+  `--rebuildable --yes`, completed assets are queued for re-derive.
+- `timingdex cache repair-derived --invalidate-hardware-profiles [--yes]`
+  removes hardware-derived thumbnail/proxy rows and files and, with `--yes`,
+  queues re-derive jobs. Without `--yes` it only reports what would change.
+- `timingdex secrets rekey` rotates the encrypted provider-secret store's data
+  key, re-encrypts all secrets and keeps the previous key at
+  `provider-secrets/store.key.pre-rekey`. The operation is journaled and
+  recovers interrupted file replacement on the next open.
 
 Neither an exhausted attempt budget nor a permanent failure is undone by
 re-scanning, so this is the way back.
