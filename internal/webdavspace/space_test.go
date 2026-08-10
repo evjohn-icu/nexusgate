@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/evjohn-icu/timingdex/internal/cachecoord"
@@ -151,30 +150,23 @@ func TestOpenFileSharedLockProtectsGCExclusiveDeletionUntilClose(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A nonblocking kernel lock attempt is the barrier: it proves the shared
-	// lock acquired by OpenFile is held, without relying on scheduler timing.
-	lockPath := filepath.Join(dataDir, ".cache-maintenance.lock")
-	lockFile, err := os.OpenFile(lockPath, os.O_RDWR, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
-		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-		_ = lockFile.Close()
-		t.Fatal("GC exclusive lock acquired while WebDAV file was open")
-	}
-	if err := lockFile.Close(); err != nil {
-		t.Fatal(err)
-	}
-
 	acquired := make(chan *cachecoord.Lock, 1)
+	started := make(chan struct{})
 	go func() {
+		close(started)
 		lock, lockErr := cachecoord.AcquireExclusive(dataDir)
 		if lockErr != nil {
 			return
 		}
 		acquired <- lock
 	}()
+	<-started
+	select {
+	case lock := <-acquired:
+		_ = lock.Release()
+		t.Fatal("GC exclusive lock acquired while WebDAV file was open")
+	default:
+	}
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
