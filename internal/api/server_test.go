@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -251,6 +253,24 @@ func TestSearchShotsV2AcceptsOffset(t *testing.T) {
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, tc := range []struct {
+		body string
+		want int
+	}{
+		{`{"query":"夜晚下雨","offset":-1,"limit":1}`, http.StatusBadRequest},
+		{`{"query":"夜晚下雨","offset":199,"limit":1}`, http.StatusOK},
+		{`{"query":"夜晚下雨","offset":199,"limit":2}`, http.StatusBadRequest},
+		{fmt.Sprintf(`{"query":"夜晚下雨","offset":%d,"limit":1}`, math.MaxInt), http.StatusBadRequest},
+		{`{"query":"夜晚下雨","offset":0,"limit":500}`, http.StatusOK},
+	} {
+		request := lanRequest(http.MethodPost, "/api/v1/search/shots", bytes.NewBufferString(tc.body))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		if response.Code != tc.want {
+			t.Fatalf("body=%s status=%d want %d response=%s", tc.body, response.Code, tc.want, response.Body.String())
+		}
 	}
 }
 

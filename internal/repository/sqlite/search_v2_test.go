@@ -46,6 +46,50 @@ func TestSearchV2LexicalFlatEqualsLegacy(t *testing.T) {
 	}
 }
 
+func TestSearchV2OffsetPaginationAgainstSQLite(t *testing.T) {
+	repo, ids := seedGoldenCorpus(t)
+	ctx := context.Background()
+	for i := 0; i < 6; i++ {
+		ids = seedOneAsset(t, repo, ids, goldenAssetSpec{
+			id:       fmt.Sprintf("asset-pagination-%d", i),
+			analysis: domain.StructuredAnalysis{Summary: "pagination match"},
+			shots:    []goldenShotSpec{{startMS: int64(i) * 1000, endMS: int64(i+1) * 1000, description: "pagination match footage"}},
+		})
+	}
+	svc := search.NewService(repo, search.DefaultOptions())
+	page := func(limit, offset int, diversity float64) []string {
+		t.Helper()
+		response, err := svc.Search(ctx, search.SearchRequest{Query: "pagination match", Limit: limit, Offset: offset, Diversity: diversity})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make([]string, 0, len(response.Results))
+		for _, result := range response.Results {
+			out = append(out, result.ShotID)
+		}
+		return out
+	}
+	for _, diversity := range []float64{0, 0.6} {
+		all := page(4, 0, diversity)
+		second := page(2, 2, diversity)
+		if len(all) < 4 || len(second) != 2 {
+			t.Fatalf("diversity=%v all=%v second=%v", diversity, all, second)
+		}
+		if all[2] != second[0] || all[3] != second[1] {
+			t.Fatalf("diversity=%v page2=%v, want ranks 3-4 of %v", diversity, second, all)
+		}
+		seen := map[string]bool{}
+		for _, id := range all {
+			seen[id] = true
+		}
+		for _, id := range second {
+			if seen[id] && (id == all[0] || id == all[1]) {
+				t.Fatalf("diversity=%v pages overlap before page2: all=%v second=%v", diversity, all, second)
+			}
+		}
+	}
+}
+
 func TestSearchV2LexicalFieldWeightSelectivity(t *testing.T) {
 	repo, _ := seedGoldenCorpus(t)
 	ctx := context.Background()

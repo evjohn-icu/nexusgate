@@ -1713,6 +1713,14 @@ func (s *Server) searchShotsV2(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "unknown mode: " + req.Mode})
 		return
 	}
+	if req.Offset < 0 {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "offset must not be negative"})
+		return
+	}
+	if err := search.ValidatePagination(req.Limit, req.Offset); err != nil {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
+		return
+	}
 	if err := validateFacetFilter(&req.Facets); err != nil {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 		return

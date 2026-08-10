@@ -2,10 +2,64 @@ package search
 
 import (
 	"context"
+	"errors"
+	"math"
 	"testing"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
 )
+
+func TestNormalizePagination(t *testing.T) {
+	tests := []struct {
+		name       string
+		limit      int
+		offset     int
+		effective  int
+		target     int
+		wantWindow bool
+	}{
+		{"defaults", 0, 0, DefaultLimit, DefaultLimit, false},
+		{"negative direct offset", 2, -4, 2, 2, false},
+		{"clamps limit", 500, 0, MaxSearchLimit, MaxSearchLimit, false},
+		{"last valid window", 1, 199, 1, 200, false},
+		{"window exceeded", 2, 199, 0, 0, true},
+		{"max int overflow", 1, math.MaxInt, 0, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			effective, target, err := normalizePagination(tt.limit, tt.offset)
+			if tt.wantWindow {
+				if !errors.Is(err, ErrSearchPaginationWindow) {
+					t.Fatalf("error=%v, want ErrSearchPaginationWindow", err)
+				}
+				return
+			}
+			if err != nil || effective != tt.effective || target != tt.target {
+				t.Fatalf("got (%d, %d, %v), want (%d, %d, nil)", effective, target, err, tt.effective, tt.target)
+			}
+			if err := ValidatePagination(tt.limit, tt.offset); err != nil {
+				t.Fatalf("ValidatePagination: %v", err)
+			}
+		})
+	}
+}
+
+func TestSearchV2SimilarOffsetPagination(t *testing.T) {
+	store := &fakeStore{candidates: []domain.ShotSearchResult{
+		shot("s1", "a1", 0, 1000, nil, "car one"), shot("s2", "a2", 0, 1000, nil, "car two"),
+		shot("s3", "a3", 0, 1000, nil, "car three"), shot("s4", "a4", 0, 1000, nil, "car four"),
+	}}
+	for i := range store.candidates {
+		store.candidates[i].SemanticScore = float64(4 - i)
+	}
+	response, err := NewService(store, DefaultOptions()).Search(context.Background(), SearchRequest{Query: "car", Mode: "similar", Limit: 2, Offset: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 2 || response.Results[0].ShotID != "s3" || response.Results[1].ShotID != "s4" {
+		t.Fatalf("similar offset results=%v, want s3,s4", response.Results)
+	}
+}
 
 // fakeStore is a scripted ShotStore for pipeline tests. It holds the legacy
 // candidate universe plus per-channel results; every method is deterministic.
@@ -257,12 +311,8 @@ func TestSearchV2NegativeQueryExcludesObserved(t *testing.T) {
 	}
 }
 
-// TestSearchV2OffsetPagination pins the offset rule: the offset pages the
-// FINAL selected list (after selection/diversity), so a page's reach is
-// bounded by Limit — offset=2 can only produce [s3,s4] when Limit reaches
-// rank 4. An offset at or beyond the selected list length is an empty page,
-// never a wrapped one. With diversity disabled (SelectionOptions.Diversity
-// 0) selection is a pure truncation, so offset preserves the fused order.
+// TestSearchV2OffsetPagination pins that selection runs over offset+limit and
+// pagination is applied only after the complete target list is selected.
 func TestSearchV2OffsetPagination(t *testing.T) {
 	store := &fakeStore{
 		candidates: []domain.ShotSearchResult{
@@ -307,11 +357,9 @@ func TestSearchV2OffsetPagination(t *testing.T) {
 	}
 
 	assertIDs([]string{"s1", "s2"}, search(SearchRequest{Limit: 2, Offset: 0}))
-	assertIDs([]string{"s3", "s4"}, search(SearchRequest{Limit: 4, Offset: 2}))
-	assertIDs([]string{"s5"}, search(SearchRequest{Limit: 5, Offset: 4}))
-	assertIDs(nil, search(SearchRequest{Limit: 5, Offset: 5}))
-	// Offset equal to the selected length is also an empty page.
-	assertIDs(nil, search(SearchRequest{Limit: 2, Offset: 2}))
+	assertIDs([]string{"s3", "s4"}, search(SearchRequest{Limit: 2, Offset: 2}))
+	assertIDs([]string{"s5"}, search(SearchRequest{Limit: 2, Offset: 4}))
+	assertIDs(nil, search(SearchRequest{Limit: 2, Offset: 5}))
 	// A negative offset means no offset.
 	assertIDs([]string{"s1", "s2", "s3"}, search(SearchRequest{Limit: 3, Offset: -1}))
 
@@ -320,7 +368,7 @@ func TestSearchV2OffsetPagination(t *testing.T) {
 	noDiversity := DefaultOptions()
 	noDiversity.Selection.Diversity = 0
 	svc = NewService(store, noDiversity)
-	assertIDs([]string{"s3", "s4", "s5"}, search(SearchRequest{Limit: 5, Offset: 2, Diversity: 0}))
+	assertIDs([]string{"s3", "s4"}, search(SearchRequest{Limit: 2, Offset: 2, Diversity: 0}))
 }
 
 func TestLegacySearchMatchesContract(t *testing.T) {

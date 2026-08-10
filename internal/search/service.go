@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -36,8 +38,14 @@ func NewService(store ShotStore, opts Options) *Service {
 	}
 }
 
-// maxSearchLimit bounds the API-facing limit; a request above it is clamped.
-const maxSearchLimit = 100
+// MaxSearchLimit bounds the API-facing limit; a request above it is clamped.
+const MaxSearchLimit = 100
+
+// MaxSearchWindow bounds the ranked list that one request may traverse.
+const MaxSearchWindow = 200
+
+// ErrSearchPaginationWindow means offset+limit would exceed the search window.
+var ErrSearchPaginationWindow = errors.New("search: pagination window exceeded")
 
 // recallMultiplier sizes the per-channel recall pool relative to the result
 // limit: recall top 3x (at least 30, at most 200) so fusion, the gate and
@@ -62,12 +70,9 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 	if !ok {
 		return nil, errors.New("search: unknown mode " + req.Mode)
 	}
-	limit := req.Limit
-	if limit <= 0 {
-		limit = DefaultLimit
-	}
-	if limit > maxSearchLimit {
-		limit = maxSearchLimit
+	limit, target, err := normalizePagination(req.Limit, req.Offset)
+	if err != nil {
+		return nil, err
 	}
 
 	q := Compile(raw)
@@ -84,9 +89,9 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 	// not applied here — nearest-neighbour is a similarity browse, and the
 	// legacy similar endpoint never filtered by facet either.
 	if q.Intent == IntentSimilar {
-		candidates, err := s.SimilarByText(ctx, q.Raw, limit)
+		candidates, err := s.SimilarByText(ctx, q.Raw, target)
 		if errors.Is(err, ErrNoEmbeddingSearch) {
-			candidates, err = s.SimilarByHeuristic(ctx, q.Raw, limit)
+			candidates, err = s.SimilarByHeuristic(ctx, q.Raw, target)
 		}
 		if err != nil {
 			return nil, err
@@ -120,7 +125,7 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 	}
 
 	profile := Profiles()[q.Intent]
-	recallLimit := limit * recallMultiplier
+	recallLimit := target * recallMultiplier
 	if recallLimit < minRecallPool {
 		recallLimit = minRecallPool
 	}
@@ -240,7 +245,7 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 		NearTimePenalty:    s.opts.Selection.NearTimePenalty,
 		NearTimeWindowMS:   s.opts.Selection.NearTimeWindowMS,
 	})
-	selected := sel.Select(reranked, limit)
+	selected := sel.Select(reranked, target)
 	// Offset pages the FINAL ranked list — after selection/diversity, so the
 	// recall pool and the diversity choices are never re-run or re-trimmed.
 	// An offset at or beyond the list length yields empty results, not a
@@ -283,6 +288,32 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 		response.Results = append(response.Results, item)
 	}
 	return response, nil
+}
+
+// normalizePagination applies defaults and validates the reachable ranked
+// window before adding offset and limit, preventing integer overflow.
+func normalizePagination(limit, offset int) (effectiveLimit, target int, err error) {
+	if limit <= 0 {
+		effectiveLimit = DefaultLimit
+	} else if limit > MaxSearchLimit {
+		effectiveLimit = MaxSearchLimit
+	} else {
+		effectiveLimit = limit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > MaxSearchWindow-effectiveLimit || offset > math.MaxInt-effectiveLimit {
+		return 0, 0, fmt.Errorf("%w: offset %d and limit %d exceed %d", ErrSearchPaginationWindow, offset, effectiveLimit, MaxSearchWindow)
+	}
+	return effectiveLimit, offset + effectiveLimit, nil
+}
+
+// ValidatePagination validates API pagination. Limits above MaxSearchLimit are
+// valid because the service clamps them.
+func ValidatePagination(limit, offset int) error {
+	_, _, err := normalizePagination(limit, offset)
+	return err
 }
 
 // reranker returns the configured reranker (none this round).
