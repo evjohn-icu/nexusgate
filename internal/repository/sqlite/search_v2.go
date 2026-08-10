@@ -342,6 +342,49 @@ func (r *Repository) ShotSession(ctx context.Context, assetID string) (string, e
 	return sessionID, nil
 }
 
+// ShotSessions is the batch form of ShotSession: it returns the
+// asset_id -> session_id mapping for the given asset IDs in one query per
+// chunk, so session diversity never performs per-result lookups. Assets
+// without a shoot session are absent from the map. Empty input returns an
+// empty map.
+//
+// Multiple sessions per asset resolve exactly like ShotSession (primary
+// first, then most recent); the ORDER BY and first-wins scan keep the two
+// answers consistent. Inputs are chunked at 500 because SQLite's default
+// max variable limit is 999, mirroring the provider-channel chunking.
+func (r *Repository) ShotSessions(ctx context.Context, assetIDs []string) (map[string]string, error) {
+	sessions := make(map[string]string, len(assetIDs))
+	const chunkSize = 500
+	for start := 0; start < len(assetIDs); start += chunkSize {
+		end := start + chunkSize
+		if end > len(assetIDs) {
+			end = len(assetIDs)
+		}
+		chunk := assetIDs[start:end]
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
+		rows, err := r.db.QueryContext(ctx, `SELECT asset_id, session_id FROM asset_shoot_sessions WHERE asset_id IN (`+placeholders+`) ORDER BY asset_id, is_primary DESC, created_at DESC`, strSliceToAny(chunk)...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var assetID, sessionID string
+			if err := rows.Scan(&assetID, &sessionID); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if _, seen := sessions[assetID]; !seen {
+				sessions[assetID] = sessionID
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return sessions, nil
+}
+
 // scanShotRowWithFilename scans a shot row that ends with the primary
 // location's relative_path and (optionally) one extra float64 value in the
 // last column. The extra float is returned inside LexicalScore as a slot —

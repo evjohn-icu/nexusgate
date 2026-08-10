@@ -326,3 +326,74 @@ func seedOneAsset(t *testing.T, repo *Repository, ids map[string]string, asset g
 func jsonMarshal(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
+
+// TestSearchV2ShotSessionsBatch covers the batch session lookup the
+// diversity pass consumes. The corpus seeds two session-bearing assets
+// (session-beach, session-lonely) through SaveShootSession; a third asset
+// is seeded without one. ShotSessions must return the two mappings, never
+// mention the sessionless or unknown assets, and agree with the single-shot
+// ShotSession for the same asset.
+func TestSearchV2ShotSessionsBatch(t *testing.T) {
+	repo, _ := seedSearchV2Corpus(t)
+	ctx := context.Background()
+	seedOneAsset(t, repo, map[string]string{}, goldenAssetSpec{
+		id:       "asset-no-session",
+		analysis: domain.StructuredAnalysis{Summary: "plain clip"},
+		shots: []goldenShotSpec{
+			{startMS: 0, endMS: 10_000, description: "plain clip"},
+		},
+	})
+
+	got, err := repo.ShotSessions(ctx, []string{
+		"asset-no-person-beach", "asset-lonely-night", "asset-no-session",
+		"asset-does-not-exist",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"asset-no-person-beach": "session-beach",
+		"asset-lonely-night":    "session-lonely",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ShotSessions returned %d mappings, want %d: %+v", len(got), len(want), got)
+	}
+	for assetID, sessionID := range want {
+		if got[assetID] != sessionID {
+			t.Fatalf("ShotSessions[%s]=%q, want %q (full: %+v)", assetID, got[assetID], sessionID, got)
+		}
+	}
+	for _, assetID := range []string{"asset-no-session", "asset-does-not-exist"} {
+		if _, present := got[assetID]; present {
+			t.Fatalf("ShotSessions must not map %s, got %+v", assetID, got)
+		}
+	}
+	single, err := repo.ShotSession(ctx, "asset-no-person-beach")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if single != "session-beach" {
+		t.Fatalf("ShotSession=%q, want session-beach (batch must agree with single-shot)", single)
+	}
+	singleNone, err := repo.ShotSession(ctx, "asset-no-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if singleNone != "" {
+		t.Fatalf("ShotSession for sessionless asset=%q, want \"\"", singleNone)
+	}
+}
+
+func TestSearchV2ShotSessionsEmptyInput(t *testing.T) {
+	repo, _ := seedSearchV2Corpus(t)
+	ctx := context.Background()
+	for _, ids := range [][]string{nil, {}} {
+		got, err := repo.ShotSessions(ctx, ids)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == nil || len(got) != 0 {
+			t.Fatalf("ShotSessions(%v) must return an empty map, got %+v", ids, got)
+		}
+	}
+}

@@ -38,6 +38,7 @@ var pageRoutes = []struct {
 	{"/repurpose", "repurpose workspace"},
 	{"/tags", "tag curator"},
 	{"/providers", "provider channels"},
+	{"/collections", "collections basket"},
 	{"/settings", "throttle settings"},
 	{"/worker-setup", "worker setup wizard"},
 }
@@ -63,6 +64,11 @@ func TestPageScriptsParseWithNode(t *testing.T) {
 	}
 	defer repo.Close()
 	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Fresh-install routing redirects a rootless hub's / to /setup; the route
+	// table below includes /, so the hub needs a root for the page to serve.
+	if _, err := repo.CreateLibraryRoot(ctx, t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})

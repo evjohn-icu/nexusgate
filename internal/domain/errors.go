@@ -225,3 +225,19 @@ var ErrInvalidAssignment = errors.New("invalid worker assignment")
 // violation with this sentinel so the API can map it to 409 Conflict rather
 // than a generic 500.
 var ErrCollectionExists = errors.New("collection name already exists")
+
+// ErrShotNotFound reports that a shot id names nothing in asset_shots. The
+// shot basket's AddShotToCollection (internal/repository/sqlite/collections.go)
+// checks existence before the insert; without the sentinel the plain string
+// error would fall through the API classifier's default branch and answer 500
+// for what is a caller mistake (a stale or mistyped shot id). The API maps it
+// to 404 Not Found.
+var ErrShotNotFound = errors.New("shot not found")
+
+// ErrReorderInvalid reports that a collection shot reorder cannot be applied
+// because the submitted list does not match the collection's current pins:
+// a length mismatch, a duplicate id, or a shot that is not in the collection.
+// All three are a stale client racing the basket's current state (or a
+// client-side bug), never a server fault, so the API maps it to 409 Conflict
+// and the caller refreshes the basket.
+var ErrReorderInvalid = errors.New("collection shot reorder does not match the current pins")

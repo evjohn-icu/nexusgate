@@ -2,7 +2,10 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -553,4 +556,185 @@ func TestWorkerProviderCredentialErrorsDistinguishChannelOnlyFromNotConfigured(t
 			t.Fatalf("issueProviderCredentialForProxy err=%v; must not match ErrWorkerProviderConfiguredAsChannelOnly", err)
 		}
 	})
+}
+
+// probeTestChannel builds the channel shape the TestProviderChannel probe
+// tests share: one enabled member whose secret lives in the store, an
+// OpenAI-compatible provider name (so the /models probe applies), and an
+// endpoint pointing at the given fixture server.
+func probeTestChannel(t *testing.T, server *httptest.Server) (*Service, string, string) {
+	t.Helper()
+	channelID := "channel-probe"
+	member := domain.ProviderChannelMember{
+		ID: "member-1", ChannelID: channelID, Label: "probe",
+		SecretRef: "provider-channel/" + channelID + "/member-1",
+		Enabled:   true, Weight: 1, MaxInflight: 1,
+	}
+	channel := providerChannelFixture(channelID, []domain.ProviderChannelMember{member})
+	channel.ProviderName = "openai_chat"
+	channel.Endpoint = server.URL
+	service, secrets := testServiceWithChannel(t, channel, nil)
+	if err := secrets.Put(member.SecretRef, "probe-secret-key"); err != nil {
+		t.Fatal(err)
+	}
+	return service, channelID, "probe-secret-key"
+}
+
+// TestProviderChannelTestProbesModelsEndpoint pins the C2 upgrade: after the
+// reachability GET, an OpenAI-compatible channel gets one non-billed GET
+// {endpoint}/models carrying its resolved key, and a non-empty listing
+// reports the first model id. The key must ride in the Authorization header
+// and nowhere in the result.
+func TestProviderChannelTestProbesModelsEndpoint(t *testing.T) {
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"probe-model-a"},{"id":"probe-model-b"}]}`))
+	}))
+	defer server.Close()
+
+	service, channelID, key := probeTestChannel(t, server)
+	result, err := service.TestProviderChannel(context.Background(), channelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.SecretReady || !result.Reachable {
+		t.Fatalf("secret_ready=%v reachable=%v; want both true: %+v", result.SecretReady, result.Reachable, result)
+	}
+	if !result.ModelResponded || !result.SchemaOK {
+		t.Fatalf("model_responded=%v schema_ok=%v; want both true: %+v", result.ModelResponded, result.SchemaOK, result)
+	}
+	if result.ModelName != "probe-model-a" {
+		t.Fatalf("model_name=%q; want probe-model-a", result.ModelName)
+	}
+	if result.Status != "reachable" {
+		t.Fatalf("status=%q; want reachable", result.Status)
+	}
+	if gotAuth != "Bearer "+key {
+		t.Fatalf("probe Authorization=%q; want Bearer %s", gotAuth, key)
+	}
+	assertTestResultHasNoKey(t, result, key)
+}
+
+// TestProviderChannelTestReportsRejectedKey pins the 401/403 verdict: the
+// endpoint is reachable, but the stored key is rejected, and the message says
+// so without ever echoing the key or the upstream body.
+func TestProviderChannelTestReportsRejectedKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"invalid api key"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	service, channelID, key := probeTestChannel(t, server)
+	result, err := service.TestProviderChannel(context.Background(), channelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reachable {
+		t.Fatalf("reachable=%v; want true: %+v", result.Reachable, result)
+	}
+	if result.ModelResponded || result.SchemaOK {
+		t.Fatalf("model_responded=%v schema_ok=%v; want both false: %+v", result.ModelResponded, result.SchemaOK, result)
+	}
+	if !strings.Contains(result.Message, "API Key 无效") {
+		t.Fatalf("message=%q; want key-rejection wording", result.Message)
+	}
+	if !strings.Contains(result.Message, "401") {
+		t.Fatalf("message=%q; want the HTTP status named", result.Message)
+	}
+	assertTestResultHasNoKey(t, result, key)
+}
+
+// TestProviderChannelTestReportsSchemaUnknownOn404 pins that a missing /models
+// endpoint is a schema note, not a failure: the channel is still marked
+// reachable and the message says no billed call was made.
+func TestProviderChannelTestReportsSchemaUnknownOn404(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	service, channelID, key := probeTestChannel(t, server)
+	result, err := service.TestProviderChannel(context.Background(), channelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reachable {
+		t.Fatalf("reachable=%v; want true: %+v", result.Reachable, result)
+	}
+	if result.ModelResponded || result.SchemaOK {
+		t.Fatalf("model_responded=%v schema_ok=%v; want both false: %+v", result.ModelResponded, result.SchemaOK, result)
+	}
+	if !strings.Contains(result.Message, "schema 未知") || !strings.Contains(result.Message, "未执行计费模型调用") {
+		t.Fatalf("message=%q; want schema-unknown + no-billed-call wording", result.Message)
+	}
+	assertTestResultHasNoKey(t, result, key)
+}
+
+// TestProviderChannelTestSkipsModelsProbeForGemini pins the no-probe
+// providers: a Gemini channel must never hit /models — its key rides in a
+// query parameter and its model list lives under a different shape — and the
+// result says no billed call was made.
+func TestProviderChannelTestSkipsModelsProbeForGemini(t *testing.T) {
+	modelsHits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			modelsHits++
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	channelID := "channel-gemini"
+	member := domain.ProviderChannelMember{
+		ID: "member-1", ChannelID: channelID, Label: "probe",
+		SecretRef: "provider-channel/" + channelID + "/member-1",
+		Enabled:   true, Weight: 1, MaxInflight: 1,
+	}
+	channel := providerChannelFixture(channelID, []domain.ProviderChannelMember{member})
+	channel.ProviderName = "gemini"
+	channel.Endpoint = server.URL
+	service, secrets := testServiceWithChannel(t, channel, nil)
+	if err := secrets.Put(member.SecretRef, "gemini-secret-key"); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.TestProviderChannel(context.Background(), channelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modelsHits != 0 {
+		t.Fatalf("gemini channel hit /models %d times; want 0", modelsHits)
+	}
+	if !result.Reachable || result.ModelResponded || result.SchemaOK {
+		t.Fatalf("reachable=%v model_responded=%v schema_ok=%v; want reachable only: %+v", result.Reachable, result.ModelResponded, result.SchemaOK, result)
+	}
+	if !strings.Contains(result.Message, "未执行计费模型调用") {
+		t.Fatalf("message=%q; want no-billed-call wording", result.Message)
+	}
+	assertTestResultHasNoKey(t, result, "gemini-secret-key")
+}
+
+func assertTestResultHasNoKey(t *testing.T, result ProviderChannelTestResult, key string) {
+	t.Helper()
+	if strings.Contains(result.Message, key) || strings.Contains(result.ModelName, key) {
+		t.Fatalf("test result leaked the key: %+v", result)
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), key) {
+		t.Fatalf("marshaled test result leaked the key: %s", raw)
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/evjohn-icu/timingdex/internal/buildinfo"
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	"github.com/evjohn-icu/timingdex/internal/media"
 	"github.com/evjohn-icu/timingdex/internal/remote"
@@ -15,7 +16,7 @@ import (
 )
 
 type RuntimeClient interface {
-	Heartbeat(context.Context, string, remote.WorkerCapabilities) error
+	Heartbeat(context.Context, string, string, remote.WorkerCapabilities) error
 	Lease(context.Context, string) (*remote.WorkerJob, error)
 	UploadArtifact(context.Context, string, string, ArtifactUpload) error
 	Complete(context.Context, string, string, domain.JobState, string) error
@@ -79,7 +80,7 @@ func (r *Runtime) RunOnce(ctx context.Context) (bool, error) {
 	if r == nil || r.client == nil || r.deriver == nil {
 		return false, fmt.Errorf("worker runtime is not configured")
 	}
-	if err := r.client.Heartbeat(ctx, r.config.Token, r.capabilities); err != nil {
+	if err := r.client.Heartbeat(ctx, r.config.Token, buildinfo.VersionString(), r.capabilities); err != nil {
 		return false, err
 	}
 	job, err := r.client.Lease(ctx, r.config.Token)
@@ -134,7 +135,7 @@ func (r *Runtime) Run(ctx context.Context, options RunOptions) error {
 			// the process anyway, so nothing here would ever observe a change;
 			// re-probing on every 30s heartbeat would only tax the GPU with a
 			// throwaway encode for no new information.
-			if err := r.client.Heartbeat(ctx, r.config.Token, r.capabilities); err != nil {
+			if err := r.client.Heartbeat(ctx, r.config.Token, buildinfo.VersionString(), r.capabilities); err != nil {
 				return err
 			}
 			lastHeartbeat = time.Now()

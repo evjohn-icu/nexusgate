@@ -1,6 +1,6 @@
 # v0.26.0-alpha 检索基准报告（Retrieval Golden Set before/after）
 
-本轮把检索回归基准从 8 个 fixture asset / 12 条 query 扩到 **40 asset / 62
+本轮把检索回归基准从 8 个 fixture asset / 12 条 query 扩到 **41 asset / 65
 query**（`internal/repository/sqlite/retrieval_golden_corpus_test.go`），并把
 权重扫描从 4 个 blend 扩到 5 个（加入 RRF）。同时修掉了一个被测出来的真问题：
 **启发式语义向量的"无证据断言"**。
@@ -26,15 +26,15 @@ query**（`internal/repository/sqlite/retrieval_golden_corpus_test.go`），并�
 | 70l-30h | 0.200 | 0.100 | 1.000 | 0 |
 | 80l-20h | 0.200 | 0.100 | 1.000 | 0 |
 
-## After（40 asset / 62 query，新语料 + RRF）
+## After（41 asset / 65 query，新语料 + RRF）
 
 | blend | P@5 | P@10 | R@10 | FP | FP 归因 |
 | --- | --- | --- | --- | --- | --- |
-| lexical-only | 0.177 | 0.089 | 0.871 | 0 | — |
-| current 70s-30l | 0.203 | 0.102 | 0.984 | 0 | — |
-| 70l-30h | 0.203 | 0.102 | 0.984 | 0 | — |
-| 80l-20h | 0.203 | 0.102 | 0.984 | 0 | — |
-| rrf-k60 | 0.203 | 0.102 | 0.984 | 0 | — |
+| lexical-only | 0.175 | 0.088 | 0.862 | 0 | — |
+| current 70s-30l | 0.203 | 0.102 | 0.985 | 0 | — |
+| 70l-30h | 0.203 | 0.102 | 0.985 | 0 | — |
+| 80l-20h | 0.203 | 0.102 | 0.985 | 0 | — |
+| rrf-k60 | 0.203 | 0.102 | 0.985 | 0 | — |
 
 运行：`go test ./internal/repository/sqlite -run TestRetrievalGolden -v`。
 
@@ -60,8 +60,8 @@ notRelevant shot 进入了**所有含语义权重的 blend**（含 RRF）的 top
 
 ## 结论与决策
 
-1. **默认 blend 不变**：0.70/0.30 在新语料上 R@10=0.984、FP=0，与
-   70l-30h / 80l-20h / RRF 持平；lexical-only 明显更差（0.871，丢 8/63
+1. **默认 blend 不变**：0.70/0.30 在新语料上 R@10=0.985、FP=0，与
+   70l-30h / 80l-20h / RRF 持平；lexical-only 明显更差（0.862，丢 9/66
    relevant），说明启发式语义仍有真实价值。
 2. **RRF 不替代加权融合**：两者打平；加权融合实现更简单且现有代码路径
    已稳定，故不切换默认。`HybridSearchShotsRRF` 保留为测量/后续选项。

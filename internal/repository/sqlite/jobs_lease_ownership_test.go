@@ -123,10 +123,10 @@ func TestStaleLeaseHolderCannotWriteAJobReclaimedByAnotherOwner(t *testing.T) {
 		assertUnaffectedByA(t, "CompleteJob", repo.CompleteJob(ctx, original.ID, "owner-a", domain.JobSucceeded, "stale success"))
 	})
 	t.Run("FailJobTerminally", func(t *testing.T) {
-		assertUnaffectedByA(t, "FailJobTerminally", repo.FailJobTerminally(ctx, original.ID, "owner-a", "stale permanent failure"))
+		assertUnaffectedByA(t, "FailJobTerminally", repo.FailJobTerminally(ctx, original.ID, "owner-a", domain.JobFailureCategoryUnknown, "stale permanent failure"))
 	})
 	t.Run("RetryJob", func(t *testing.T) {
-		assertUnaffectedByA(t, "RetryJob", repo.RetryJob(ctx, original.ID, "owner-a", "stale retry", time.Second))
+		assertUnaffectedByA(t, "RetryJob", repo.RetryJob(ctx, original.ID, "owner-a", domain.JobFailureCategoryUnknown, "stale retry", time.Second))
 	})
 	t.Run("DeferJob", func(t *testing.T) {
 		assertUnaffectedByA(t, "DeferJob", repo.DeferJob(ctx, original.ID, "owner-a", time.Now().Add(time.Hour), domain.JobDeferProviderRouteExhausted, "stale defer"))

@@ -106,6 +106,15 @@ type WorkerRegistration struct {
 	Capabilities WorkerCapabilities `json:"capabilities"`
 }
 
+// WorkerHeartbeat is the POST /api/v1/worker/heartbeat body. Version is
+// optional so a Hub that predates the field still accepts heartbeats, and a
+// Hub that understands it can refresh a stale enroll-time version when the
+// Worker binary is upgraded without re-enrolling.
+type WorkerHeartbeat struct {
+	Version      string             `json:"version,omitempty"`
+	Capabilities WorkerCapabilities `json:"capabilities"`
+}
+
 type Worker struct {
 	ID           string             `json:"id"`
 	Name         string             `json:"name"`

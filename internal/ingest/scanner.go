@@ -12,7 +12,6 @@ import (
 
 type ScanRepository interface {
 	UpsertScannedFile(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error)
-	MarkUnseenLocationsMissing(ctx context.Context, rootID string, seenRelativePaths []string) (int, error)
 }
 
 type Scanner struct {
@@ -84,11 +83,12 @@ func (s *Scanner) Scan(ctx context.Context, root domain.LibraryRoot) (domain.Sca
 		return result, err
 	}
 
-	missing, err := s.repo.MarkUnseenLocationsMissing(ctx, root.ID, seen)
-	if err != nil {
-		return result, err
-	}
-	result.Missing = missing
+	// The walk's seen list is handed back rather than applied here: marking
+	// unseen files missing must not happen until the app-layer gate has
+	// decided the root was actually reachable, or an unmounted NAS root would
+	// have every asset in it marked missing by the walk of an empty
+	// directory. The scanner reports; the service reconciles.
+	result.SeenRelativePaths = seen
 	return result, nil
 }
 

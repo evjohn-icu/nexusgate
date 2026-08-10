@@ -49,6 +49,11 @@ type LibrarySupervisor struct {
 
 	mu     sync.Mutex
 	status LibrarySupervisorStatus
+
+	// unavailablePasses counts consecutive passes an unavailable root has been
+	// skipped, so a remounted share is re-attempted without a manual scan.
+	// Guarded by mu; reset to zero whenever the root is actually attempted.
+	unavailablePasses map[string]int
 }
 
 // Outcomes of one supervisor pass, as reported to /progress. They are stable
@@ -68,6 +73,13 @@ const defaultLibrarySupervisorInterval = 15 * time.Minute
 // root in full, so a value of 0 or 1 read as "as fast as possible" would keep a
 // network share permanently busy for no benefit.
 const minLibrarySupervisorInterval = time.Minute
+
+// unavailableRetryEveryPasses is how many consecutive passes an unavailable
+// root is skipped before the supervisor attempts it anyway. At the default
+// 15-minute interval that is one re-attempt per hour — frequent enough that an
+// overnight outage self-recovers the same morning, rare enough that a dead
+// mount is not walked every pass.
+const unavailableRetryEveryPasses = 4
 
 // LibrarySupervisorStatus is what an operator who turned this on needs in order
 // to tell a live loop from one that quietly died: whether it is running, when
@@ -104,7 +116,7 @@ func newLibrarySupervisor(service *Service, cfg config.LibrarySupervisorConfig) 
 	if interval < minLibrarySupervisorInterval {
 		interval = minLibrarySupervisorInterval
 	}
-	supervisor := &LibrarySupervisor{service: service, enabled: cfg.Enabled, interval: interval}
+	supervisor := &LibrarySupervisor{service: service, enabled: cfg.Enabled, interval: interval, unavailablePasses: map[string]int{}}
 	supervisor.pass = supervisor.scanAndRun
 	supervisor.status = LibrarySupervisorStatus{Enabled: cfg.Enabled, IntervalSeconds: int(interval / time.Second)}
 	return supervisor
@@ -183,12 +195,13 @@ func (s *LibrarySupervisor) scanAndRun(ctx context.Context) {
 // passResult is what one pass reports to the status; it exists so the pass
 // itself has a single exit shape rather than mutating status from six places.
 type passResult struct {
-	outcome         string
-	heldUntil       *time.Time
-	roots           int
-	discovered      int
-	pipelineStarted bool
-	err             error
+	outcome          string
+	heldUntil        *time.Time
+	roots            int
+	skippedUnhealthy int
+	discovered       int
+	pipelineStarted  bool
+	err              error
 }
 
 func (s *LibrarySupervisor) onePass(ctx context.Context) passResult {
@@ -226,6 +239,44 @@ func (s *LibrarySupervisor) onePass(ctx context.Context) passResult {
 		if ctx.Err() != nil {
 			return result
 		}
+		// A root the last scan found unavailable is not walked at all, not
+		// merely gated at the reconciliation step: walking a dead mount is
+		// load that can hang for the length of a protocol timeout, and the
+		// scan that would succeed in reaching it is exactly the one that
+		// re-triggers the missing-asset reconciliation the persisted verdict
+		// is pausing. The skip reads only the persisted verdict, so it can
+		// never go stale in the retry direction: an unhealthy root that was
+		// remounted flips back to healthy on its next attempt, and healthy or
+		// unknown roots — including the zero-value state, which predates
+		// health tracking — are always scanned. A never-scanned root after a
+		// restore must get its chance, or the first verdict after the data
+		// dir was rebuilt would have to come from somewhere other than the
+		// scan that only runs while the state is unknown.
+		if root.HealthState == domain.RootHealthUnavailable {
+			// A share that drops overnight and remounts at 09:00 must not stay
+			// paused until a human notices: every unavailableRetryEveryPasses
+			// passes the root is attempted anyway. The attempt is safe because
+			// ScanLibraryRoot's own gate re-verifies health — a root that is
+			// still down is marked unavailable again (no reconciliation), one
+			// that came back flips to healthy and reconciles normally.
+			s.mu.Lock()
+			s.unavailablePasses[root.ID]++
+			passes := s.unavailablePasses[root.ID]
+			s.mu.Unlock()
+			if passes < unavailableRetryEveryPasses {
+				result.skippedUnhealthy++
+				if root.LastHealthyAt != nil {
+					slog.Info("library supervisor: root unhealthy; skipping scan", "root", root.ID, "last_healthy_at", root.LastHealthyAt.Format(time.RFC3339))
+				} else {
+					slog.Info("library supervisor: root unhealthy; skipping scan", "root", root.ID)
+				}
+				continue
+			}
+			s.mu.Lock()
+			s.unavailablePasses[root.ID] = 0
+			s.mu.Unlock()
+			slog.Info("library supervisor: re-attempting previously unavailable root", "root", root.ID)
+		}
 		scan, scanErr := s.service.ScanLibraryRoot(ctx, root.ID)
 		if scanErr != nil {
 			// One unreachable root must not stop the others. A share vanishing
@@ -236,6 +287,9 @@ func (s *LibrarySupervisor) onePass(ctx context.Context) passResult {
 			result.err = scanErr
 			continue
 		}
+		s.mu.Lock()
+		s.unavailablePasses[root.ID] = 0
+		s.mu.Unlock()
 		result.roots++
 		result.discovered += scan.Discovered
 	}

@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/evjohn-icu/timingdex/internal/credentials"
 	"github.com/evjohn-icu/timingdex/internal/domain"
@@ -30,14 +32,17 @@ type ProviderChannelMemberUpdate struct {
 }
 
 type ProviderChannelUpdate struct {
-	Label        *string                        `json:"label,omitempty"`
-	ProviderName *string                        `json:"provider_name,omitempty"`
-	Protocol     *string                        `json:"protocol,omitempty"`
-	Endpoint     *string                        `json:"endpoint,omitempty"`
-	Model        *string                        `json:"model,omitempty"`
-	Enabled      *bool                          `json:"enabled,omitempty"`
-	RouteOrder   *int                           `json:"route_order,omitempty"`
-	Members      *[]ProviderChannelMemberUpdate `json:"members,omitempty"`
+	Label              *string                        `json:"label,omitempty"`
+	ProviderName       *string                        `json:"provider_name,omitempty"`
+	Protocol           *string                        `json:"protocol,omitempty"`
+	Endpoint           *string                        `json:"endpoint,omitempty"`
+	Model              *string                        `json:"model,omitempty"`
+	Enabled            *bool                          `json:"enabled,omitempty"`
+	RouteOrder         *int                           `json:"route_order,omitempty"`
+	CostPerRequest     *float64                       `json:"cost_per_request,omitempty"`
+	CostPerVideoMinute *float64                       `json:"cost_per_video_minute,omitempty"`
+	CostPerAudioMinute *float64                       `json:"cost_per_audio_minute,omitempty"`
+	Members            *[]ProviderChannelMemberUpdate `json:"members,omitempty"`
 }
 
 // ErrProviderChannelValidation is wrapped by a provider-channel write failure
@@ -71,6 +76,28 @@ func validateDistinctProviderChannelMemberLabels(members []domain.ProviderChanne
 	return nil
 }
 
+// validateProviderChannelCosts rejects a channel whose optional cost metadata
+// is negative (or NaN, which JSON cannot carry but a direct caller could).
+// The unit is unspecified and the estimate is a guide, so there is no upper
+// bound — only the sign can be a mistake. It wraps ErrProviderChannelValidation
+// so the API layer shows the message to the operator, like the duplicate-label
+// check.
+func validateProviderChannelCosts(channel domain.ProviderChannel) error {
+	for _, field := range []struct {
+		name  string
+		value float64
+	}{
+		{"cost_per_request", channel.CostPerRequest},
+		{"cost_per_video_minute", channel.CostPerVideoMinute},
+		{"cost_per_audio_minute", channel.CostPerAudioMinute},
+	} {
+		if field.value < 0 || math.IsNaN(field.value) {
+			return fmt.Errorf("%w: provider channel %s must not be negative", ErrProviderChannelValidation, field.name)
+		}
+	}
+	return nil
+}
+
 type ProviderChannelTestResult struct {
 	ChannelID    string `json:"channel_id"`
 	ProviderName string `json:"provider_name"`
@@ -80,6 +107,15 @@ type ProviderChannelTestResult struct {
 	HTTPStatus   int    `json:"http_status,omitempty"`
 	LatencyMS    int64  `json:"latency_ms,omitempty"`
 	Message      string `json:"message,omitempty"`
+	// ModelResponded and SchemaOK are the capability-probe verdicts: whether
+	// the endpoint answered a non-billed model-listing request and whether
+	// that listing had the expected shape. SchemaOK=false covers both "no
+	// /models here" (404) and "the response was not a model list"; it is a
+	// schema note, not a hard failure — the channel may still work for its
+	// capability.
+	ModelResponded bool   `json:"model_responded"`
+	ModelName      string `json:"model_name,omitempty"`
+	SchemaOK       bool   `json:"schema_ok"`
 }
 
 // UpdateProviderChannel merges an admin patch with the persisted channel.
@@ -109,6 +145,15 @@ func (s *Service) UpdateProviderChannel(ctx context.Context, id string, patch Pr
 	}
 	if patch.RouteOrder != nil {
 		channel.RouteOrder = *patch.RouteOrder
+	}
+	if patch.CostPerRequest != nil {
+		channel.CostPerRequest = *patch.CostPerRequest
+	}
+	if patch.CostPerVideoMinute != nil {
+		channel.CostPerVideoMinute = *patch.CostPerVideoMinute
+	}
+	if patch.CostPerAudioMinute != nil {
+		channel.CostPerAudioMinute = *patch.CostPerAudioMinute
 	}
 	if patch.Members != nil {
 		members := make([]domain.ProviderChannelMember, 0, len(*patch.Members))
@@ -276,12 +321,103 @@ func (s *Service) providerChannelByID(ctx context.Context, id string) (domain.Pr
 	return domain.ProviderChannel{}, fmt.Errorf("provider channel not found")
 }
 
+// providerChannelTestBudget bounds the whole endpoint test. The reachability
+// GET and the capability probe share one deadline, so a slow first hop can
+// never stretch the total past the operator-facing promise of one click.
+const providerChannelTestBudget = 8 * time.Second
+
+// channelProbeableModels reports whether the channel's provider speaks an
+// OpenAI-compatible wire protocol with a cheap, non-billed GET /models
+// listing. The Gemini family and Volcengine ASR do not: Gemini's key rides in
+// a query parameter and its model list lives under a different shape, and ASR
+// endpoints expose no model list at all. For those the test keeps the
+// reachability verdict and says explicitly that no billed call was made.
+func channelProbeableModels(channel domain.ProviderChannel) bool {
+	switch strings.TrimSpace(channel.ProviderName) {
+	case "gemini", "gemini_embed_content", "volcengine_asr":
+		return false
+	}
+	return true
+}
+
+func providerChannelModelsURL(endpoint string) string {
+	return strings.TrimRight(strings.TrimSpace(endpoint), "/") + "/models"
+}
+
+// maxProbeModelNameBytes bounds the model id copied into the result. A model
+// listing is upstream-controlled text and the result reaches the browser
+// page, so it gets the same truncation discipline common.ReadError applies to
+// error bodies.
+const maxProbeModelNameBytes = 128
+
+// probeProviderModels is the non-billed capability probe for OpenAI-
+// compatible channels: GET {endpoint}/models with the channel key. It never
+// logs or returns the key, and it never copies an upstream body into the
+// message — a relay that echoes the request back must not be able to persist
+// a key through the result. 404 is a schema mismatch (the endpoint is
+// reachable, it just exposes no model list), not a failure; 401/403 name the
+// key as the problem.
+func probeProviderModels(ctx context.Context, client *http.Client, endpoint, key string) (modelResponded bool, modelName string, schemaOK bool, message string, httpStatus int, latencyMS int64) {
+	started := time.Now()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, providerChannelModelsURL(endpoint), nil)
+	if err != nil {
+		return false, "", false, "Endpoint 可达；模型探测请求无效", 0, time.Since(started).Milliseconds()
+	}
+	request.Header.Set("Authorization", "Bearer "+key)
+	response, err := client.Do(request)
+	latency := time.Since(started).Milliseconds()
+	if err != nil {
+		return false, "", false, "Endpoint 可达；模型探测失败", 0, latency
+	}
+	defer response.Body.Close()
+	switch response.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return false, "", false, fmt.Sprintf("Endpoint 可达；API Key 无效或已被拒绝 (HTTP %d)", response.StatusCode), response.StatusCode, latency
+	case http.StatusNotFound:
+		return false, "", false, "Endpoint 可达；未发现模型列表端点（schema 未知），未执行计费模型调用", response.StatusCode, latency
+	}
+	if response.StatusCode != http.StatusOK {
+		return false, "", false, fmt.Sprintf("Endpoint 可达；模型列表请求失败 (HTTP %d)", response.StatusCode), response.StatusCode, latency
+	}
+	var listing struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&listing); err != nil {
+		return false, "", false, "Endpoint 可达；模型列表返回无法解析（schema 未知）", response.StatusCode, latency
+	}
+	for _, m := range listing.Data {
+		name := redactString(strings.TrimSpace(m.ID), key)
+		if name == "" {
+			continue
+		}
+		return true, clipProbeText(name, maxProbeModelNameBytes), true, "模型已响应", response.StatusCode, latency
+	}
+	return false, "", true, "Endpoint 可达；模型列表为空", response.StatusCode, latency
+}
+
+// clipProbeText truncates s to at most n bytes without splitting a UTF-8
+// rune, marking the cut like the API envelope's clipText. Model ids are
+// normally short ASCII, but the bound exists for the endpoint that is not.
+func clipProbeText(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	s = s[:n]
+	for !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s + "…"
+}
+
 func (s *Service) TestProviderChannel(ctx context.Context, id string) (ProviderChannelTestResult, error) {
 	channel, err := s.providerChannelByID(ctx, id)
 	if err != nil {
 		return ProviderChannelTestResult{}, err
 	}
 	result := ProviderChannelTestResult{ChannelID: channel.ID, ProviderName: channel.ProviderName, Status: "not_ready"}
+	secretRef := ""
 	for _, member := range channel.Members {
 		if member.Enabled && member.SecretRef != "" {
 			ready, resolveErr := s.secrets.Has(ctx, member.SecretRef)
@@ -290,11 +426,20 @@ func (s *Service) TestProviderChannel(ctx context.Context, id string) (ProviderC
 			}
 			if ready {
 				result.SecretReady = true
+				secretRef = member.SecretRef
 				break
 			}
 		}
 	}
 	if !result.SecretReady {
+		result.Message = "没有可用的 Provider Key"
+		return result, nil
+	}
+	key, keyOK, resolveErr := s.secrets.Resolve(secretRef)
+	if resolveErr != nil {
+		return ProviderChannelTestResult{}, errors.New("provider channel secret store unavailable")
+	}
+	if !keyOK {
 		result.Message = "没有可用的 Provider Key"
 		return result, nil
 	}
@@ -304,14 +449,16 @@ func (s *Service) TestProviderChannel(ctx context.Context, id string) (ProviderC
 		result.Message = "Provider Endpoint 无效"
 		return result, nil
 	}
+	probeCtx, cancel := context.WithTimeout(ctx, providerChannelTestBudget)
+	defer cancel()
+	client := &http.Client{Timeout: providerChannelTestBudget}
 	started := time.Now()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
 		result.Status = "invalid_endpoint"
 		result.Message = "Provider Endpoint 无效"
 		return result, nil
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
 	response, err := client.Do(request)
 	result.LatencyMS = time.Since(started).Milliseconds()
 	if err != nil {
@@ -319,11 +466,24 @@ func (s *Service) TestProviderChannel(ctx context.Context, id string) (ProviderC
 		result.Message = "Provider Endpoint 不可达"
 		return result, nil
 	}
-	defer response.Body.Close()
+	response.Body.Close()
 	result.Reachable = true
 	result.HTTPStatus = response.StatusCode
 	result.Status = "reachable"
-	result.Message = "Endpoint 可达；未执行计费模型调用"
+	if !channelProbeableModels(channel) {
+		result.Message = "Endpoint 可达；未执行计费模型调用"
+		return result, nil
+	}
+	modelResponded, modelName, schemaOK, message, probeStatus, probeLatency := probeProviderModels(probeCtx, client, channel.Endpoint, key)
+	result.ModelResponded, result.ModelName, result.SchemaOK, result.Message = modelResponded, modelName, schemaOK, message
+	// A transport failure inside the model probe returns HTTP 0 — it never
+	// reached the endpoint — so it must not erase the reachability probe's
+	// real status above: the page would show "可达" with HTTP 0. Only a
+	// completed model-probe request carries a status worth reporting.
+	if probeStatus != 0 {
+		result.HTTPStatus = probeStatus
+		result.LatencyMS = probeLatency
+	}
 	return result, nil
 }
 

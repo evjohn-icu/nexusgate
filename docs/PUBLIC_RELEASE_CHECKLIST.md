@@ -16,13 +16,15 @@ a yes/no with the evidence where it lives.
       `.mcp.json` (non-example) tracked
 - [ ] No `admin-token` / `agent-token` / `provider-secrets/` / `store.key`
       anywhere in the tree or history
-- [ ] No real API credentials in history (see secret scan; masked report only)
+- [ ] No real API credentials in history (automated by the CI secret scan,
+      which runs with `--redact`; masked report only)
 - [ ] No private endpoints, personal footage, local databases or eval corpora
       with private media tracked (fixtures are lavfi-synthetic)
 - [ ] No stray build artifacts tracked (`timingdex-mcp` removed; source
       tarballs gitignored)
-- [ ] Git history secret scan clean (gitleaks/trufflehog or the manual
-      pattern scan in the release prep round)
+- [ ] Git history secret scan clean (automated: the `secret scan (full
+      history)` step in `.github/workflows/ci.yml` runs gitleaks over the
+      whole history; no manual scan needed)
 
 ## Gates (must be run, not assumed)
 

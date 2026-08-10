@@ -11,12 +11,12 @@ import (
 // styling (every page's shell then depended on the legacy header{} rules by
 // accident).
 func TestShellCSSLandsInsideStyleBlock(t *testing.T) {
-	pages := []string{libraryIndexHTML, progressHTML, providersHTML, settingsHTML, workersPageHTML, tagsHTML, repurposeWorkspaceHTML, libraryRootsHTML, setupHTML, workerSetupPageHTML}
+	pages := []string{libraryIndexHTML, progressHTML, providersHTML, settingsHTML, workersPageHTML, tagsHTML, repurposeWorkspaceHTML, libraryRootsHTML, setupHTML, workerSetupPageHTML, collectionsHTML}
 	for _, page := range pages {
 		served := brandedPage(shelledPage(page))
 		styleOpen := strings.Index(served, "<style>")
 		styleClose := strings.Index(served, "</style>")
-		shellAt := strings.Index(served, ".shell-header{")
+		shellAt := strings.Index(served, ".shell-sidebar{")
 		if styleOpen < 0 || styleClose < 0 {
 			t.Fatal("page has no style block")
 		}

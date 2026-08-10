@@ -88,8 +88,8 @@ func (c *Client) Enroll(ctx context.Context, pairingToken string, registration r
 	return out, nil
 }
 
-func (c *Client) Heartbeat(ctx context.Context, token string, capabilities remote.WorkerCapabilities) error {
-	return c.postJSON(ctx, "/api/v1/worker/heartbeat", token, map[string]any{"capabilities": capabilities}, nil, http.StatusNoContent)
+func (c *Client) Heartbeat(ctx context.Context, token, version string, capabilities remote.WorkerCapabilities) error {
+	return c.postJSON(ctx, "/api/v1/worker/heartbeat", token, remote.WorkerHeartbeat{Version: version, Capabilities: capabilities}, nil, http.StatusNoContent)
 }
 
 func (c *Client) Lease(ctx context.Context, token string) (*remote.WorkerJob, error) {

@@ -21,20 +21,18 @@ import (
 // LegacySearch reproduces repository.HybridSearchShots exactly (the golden
 // set's equality test pins it); Search is the v2 pipeline.
 type Service struct {
-	store   ShotStore
-	opts    Options
-	gate    *EvidenceGate
-	select_ *Selection
+	store ShotStore
+	opts  Options
+	gate  *EvidenceGate
 }
 
 // NewService wires the engine. A nil store is tolerated: searching methods
 // return an error while nothing else on the Service touches the store.
 func NewService(store ShotStore, opts Options) *Service {
 	return &Service{
-		store:   store,
-		opts:    opts,
-		gate:    NewEvidenceGate(opts),
-		select_: NewSelection(opts.Selection),
+		store: store,
+		opts:  opts,
+		gate:  NewEvidenceGate(opts),
 	}
 }
 
@@ -79,6 +77,48 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 	q.Limit = limit
 	q.Filters = SearchFilters{Facets: req.Facets}
 
+	// Similar intent is a real nearest-neighbour search, not a generic text
+	// pass: embed the query text and cosine-scan the text embeddings, falling
+	// back to the heuristic semantic vectors when no embeddings exist. The
+	// response shape matches Search so every consumer is agnostic. Facets are
+	// not applied here — nearest-neighbour is a similarity browse, and the
+	// legacy similar endpoint never filtered by facet either.
+	if q.Intent == IntentSimilar {
+		candidates, err := s.SimilarByText(ctx, q.Raw, limit)
+		if errors.Is(err, ErrNoEmbeddingSearch) {
+			candidates, err = s.SimilarByHeuristic(ctx, q.Raw, limit)
+		}
+		if err != nil {
+			return nil, err
+		}
+		candidates = pageResults(candidates, req.Offset)
+		response.Query.Intent = q.Intent
+		response.SearchID = randomHex(8)
+		response.QueryHash = queryHash(q, req.Mode, s.opts.ProfileVersion)
+		for i, candidate := range candidates {
+			item := ResultItem{
+				ShotID:      candidate.ShotID,
+				AssetID:     candidate.AssetID,
+				Filename:    candidate.Filename,
+				StartMS:     candidate.StartMS,
+				EndMS:       candidate.EndMS,
+				Description: candidate.Description,
+				Tags:        candidate.Tags,
+				Objects:     candidate.Objects,
+				Actions:     candidate.Actions,
+				Mood:        candidate.Mood,
+				Score:       candidate.Score,
+				Rank:        i + 1,
+				Scores:      map[string]float64{},
+			}
+			for signal, value := range candidate.Signals {
+				item.Scores[signal] = value
+			}
+			response.Results = append(response.Results, item)
+		}
+		return response, nil
+	}
+
 	profile := Profiles()[q.Intent]
 	recallLimit := limit * recallMultiplier
 	if recallLimit < minRecallPool {
@@ -88,24 +128,34 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 		recallLimit = maxRecallPool
 	}
 
-	channels := []CandidateRetriever{
-		NewLexicalRetriever(s.store, profile.FieldWeights),
-		NewHeuristicSemanticRetriever(s.store),
-		NewTranscriptRetriever(s.store),
-		NewMetadataRetriever(s.store),
+	// Channel construction is intent-aware: a channel whose profile weight is
+	// zero (or absent) is not executed at all — no DB query, no embedding call,
+	// no candidate noise. The transcript channel belongs to speech intent; the
+	// embedding channel needs a configured provider AND a positive profile
+	// weight. Auto/fact keep the full silent-channel set so the default path
+	// ranks exactly as v0.27's plain RRF did.
+	channels := []CandidateRetriever{}
+	if profile.ChannelWeights[SignalLexical] > 0 {
+		channels = append(channels, NewLexicalRetriever(s.store, profile.FieldWeights))
 	}
-	// The embedding channel joins when the provider is configured AND the
-	// intent's profile assigns it weight. Speech queries keep embedding out
-	// (the transcript channel owns speech); semantic/fact queries let the
-	// real vectors contribute. Without an embedder, the channel is never
-	// constructed and the pipeline is byte-identical to v0.27.
+	if profile.ChannelWeights[SignalHeuristicSemantic] > 0 {
+		channels = append(channels, NewHeuristicSemanticRetriever(s.store))
+	}
+	if profile.ChannelWeights[SignalTranscript] > 0 {
+		channels = append(channels, NewTranscriptRetriever(s.store))
+	}
+	if profile.ChannelWeights[SignalMetadata] > 0 {
+		channels = append(channels, NewMetadataRetriever(s.store))
+	}
 	if s.opts.Embedder != nil && profile.ChannelWeights[SignalTextEmbedding] > 0 {
 		channels = append(channels, NewTextEmbeddingRetriever(s.store, s.opts.Embedder))
 	}
 	results := make([]ChannelResult, 0, len(channels))
 	// When facets are set, the semantic channel (the full-library scorer)
 	// defines the candidate universe: other channels' candidates outside it
-	// are dropped rather than bypassing the facet constraint.
+	// are dropped rather than bypassing the facet constraint. The semantic
+	// retriever retains facet-matched semantic-0 shots, so an exact lexical
+	// match under a facet survives the universe gate.
 	var universe map[string]bool
 	for _, channel := range channels {
 		candidates, err := channel.Retrieve(ctx, q, recallLimit)
@@ -121,9 +171,14 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 		results = append(results, ChannelResult{Signal: channel.Name(), Candidates: candidates})
 	}
 
+	// Fusion is per-intent: auto/fact keep the plain RRF (k=60) so the default
+	// path is byte-identical to the pre-weights engine; the differentiated
+	// intents (speech/semantic/creative/similar) use WeightedRRF so the
+	// profile's ChannelWeights actually rank. An explicit Fusion (the
+	// benchmark, the legacy endpoints) always wins.
 	fusion := s.opts.Fusion
 	if fusion == nil {
-		fusion = &RRF{K: DefaultRRFK}
+		fusion = defaultFusion(q.Intent)
 	}
 	fused := fusion.Fuse(results)
 	if universe != nil {
@@ -156,11 +211,26 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 		return nil, err
 	}
 
+	// Session diversity needs the shoot-session id per surviving candidate,
+	// but only when selection will actually penalize sessions. One batched
+	// fetch (post-gate, pre-selection) keeps the query count at exactly one
+	// per search instead of one per result.
 	diversity := req.Diversity
 	if diversity <= 0 {
 		diversity = s.opts.Selection.Diversity
 		if q.Intent == IntentCreative {
 			diversity = 0.6
+		}
+	}
+	if diversity > 0 && s.opts.Selection.SameSessionPenalty > 0 {
+		if ids := assetIDs(reranked); len(ids) > 0 {
+			sessions, err := s.store.ShotSessions(ctx, ids)
+			if err != nil {
+				return nil, err
+			}
+			for i := range reranked {
+				reranked[i].SessionID = sessions[reranked[i].AssetID]
+			}
 		}
 	}
 	sel := NewSelection(SelectionOptions{
@@ -171,6 +241,11 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 		NearTimeWindowMS:   s.opts.Selection.NearTimeWindowMS,
 	})
 	selected := sel.Select(reranked, limit)
+	// Offset pages the FINAL ranked list — after selection/diversity, so the
+	// recall pool and the diversity choices are never re-run or re-trimmed.
+	// An offset at or beyond the list length yields empty results, not a
+	// wrapped page.
+	selected = pageResults(selected, req.Offset)
 
 	response.Query.Intent = q.Intent
 	response.SearchID = randomHex(8)
@@ -237,6 +312,60 @@ func hasAnyFacet(f domain.FacetFilter) bool {
 	return len(f.AssetTypes) > 0 || len(f.ShotSizes) > 0 || len(f.CameraMotions) > 0 ||
 		len(f.AudioTypes) > 0 || len(f.Qualities) > 0 || len(f.UsableAs) > 0 ||
 		f.MinDurationMS != nil || f.MaxDurationMS != nil
+}
+
+// defaultFusion picks the fusion strategy for the default (unset) options
+// path. Auto/fact rank on plain RRF — byte-identical to the pre-weights
+// engine, which is what the golden/benchmark floor assumes. The differentiated
+// intents apply their profile ChannelWeights through WeightedRRF so the
+// weights are effective in production, not decorative.
+func defaultFusion(intent SearchIntent) FusionStrategy {
+	weights, ok := fusionWeights[intent]
+	if !ok {
+		return &RRF{K: DefaultRRFK}
+	}
+	return &WeightedRRF{Weights: weights, K: DefaultRRFK}
+}
+
+// fusionWeights maps the intents whose profile weights actually rank the
+// default path. Auto and fact are deliberately absent: their default path is
+// plain RRF, the lease that keeps the golden set byte-identical (their
+// ChannelWeights still gate channel construction and apply under an explicit
+// WeightedBlend fusion — see profile.go).
+var fusionWeights = map[SearchIntent]map[string]float64{
+	IntentSpeech:   {SignalTranscript: 0.60, SignalLexical: 0.25, SignalHeuristicSemantic: 0.15},
+	IntentSemantic: {SignalHeuristicSemantic: 0.45, SignalTextEmbedding: 0.35, SignalLexical: 0.20},
+	IntentCreative: {SignalLexical: 0.30, SignalHeuristicSemantic: 0.45, SignalTranscript: 0.05, SignalMetadata: 0.20},
+	IntentSimilar:  {SignalHeuristicSemantic: 0.45, SignalTextEmbedding: 0.35, SignalLexical: 0.20},
+}
+
+// pageResults applies offset pagination to a final ranked list: offset <= 0
+// returns it unchanged, offset >= len yields empty results (a page beyond the
+// end is empty, never wrapped). Slicing shrinks the list; the caller's
+// rank/score fields stay intact, so a response is re-numbered by its own loop.
+func pageResults(results []Candidate, offset int) []Candidate {
+	if offset <= 0 || len(results) == 0 {
+		return results
+	}
+	if offset >= len(results) {
+		return nil
+	}
+	return results[offset:]
+}
+
+// assetIDs collects the distinct asset ids of a candidate list, in first-seen
+// order, for the batched session lookup.
+func assetIDs(candidates []Candidate) []string {
+	seen := make(map[string]struct{}, len(candidates))
+	out := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		if _, ok := seen[c.AssetID]; ok {
+			continue
+		}
+		seen[c.AssetID] = struct{}{}
+		out = append(out, c.AssetID)
+	}
+	return out
 }
 
 // queryHash is a deterministic fingerprint of how the query was understood,

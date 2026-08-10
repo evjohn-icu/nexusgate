@@ -166,6 +166,15 @@ type PipelineConfig struct {
 	// Zero or negative is treated as a typo and floored at the point of use,
 	// where the busy-retry loop it would cause is actually prevented.
 	ProviderRouteDeferralMinutes int `json:"provider_route_deferral_minutes"`
+	// MinimumFreeSpaceBytes is the floor of free bytes the pipeline requires
+	// on the cache volume before it runs a heavy stage (derive/transcribe/
+	// analyze). A full disk makes ffmpeg fail mid-encode with an ordinary
+	// retryable error — burning the job's attempts — and cache/sources
+	// staging copies can silently fill the volume, so below the floor the job
+	// is deferred (reason disk_space_low) instead of running, and no attempt
+	// is spent. Zero (the default) disables the preflight entirely: a fresh
+	// install must not suddenly start deferring jobs it ran fine yesterday.
+	MinimumFreeSpaceBytes int64 `json:"minimum_free_space_bytes"`
 }
 
 // defaultProviderRouteDeferralMinutes is the five-hour wait, in the units the
@@ -301,6 +310,11 @@ func Load() (Config, error) {
 	if v := strings.TrimSpace(os.Getenv("TIMINGDEX_PIPELINE_PROVIDER_ROUTE_DEFERRAL_MINUTES")); v != "" {
 		if minutes, err := strconv.Atoi(v); err == nil {
 			cfg.Pipeline.ProviderRouteDeferralMinutes = minutes
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("TIMINGDEX_MINIMUM_FREE_SPACE_BYTES")); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.Pipeline.MinimumFreeSpaceBytes = n
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv("TIMINGDEX_TRUSTED_READ_NETWORKS")); v != "" {

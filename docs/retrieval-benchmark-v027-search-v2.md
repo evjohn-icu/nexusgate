@@ -1,8 +1,8 @@
 # v0.27.0-alpha 检索基准报告（Search v2：Gate + Selection Before/After）
 
-`TestSearchV2Benchmark`：legacy golden 语料（22 asset / 65 query）+
+`TestSearchV2Benchmark`：legacy golden 语料（41 asset / 65 query）+
 v2 语料（6 家族 hard negatives）共 **72 条 query**，同一数据库、同一
-relevant/notRelevant 标注，5 条 pipeline 对比。router 一致率：45/72。
+relevant/notRelevant 标注，6 条 pipeline 对比。router 一致率：45/72。
 
 ## Before / After
 
@@ -13,6 +13,7 @@ relevant/notRelevant 标注，5 条 pipeline 对比。router 一致率：45/72�
 | v2 RRF（无 gate） | 0.200 | 0.101 | 0.972 | 3 | 56 |
 | **v2 RRF + evidence gate** | **0.206** | **0.103** | **0.986** | **0** | **0** |
 | v2 RRF + gate + diversity | 0.203 | 0.101 | 0.979 | 0 | 0 |
+| v2 RRF + gate + text embedding | 0.200 | 0.103 | 0.986 | 0 | 0 |
 
 - **RetrievalFP 3→0**：gate 排除了没有证据支撑的 must 的 shot
   （"搜汽车命中没有汽车的时间段"类错误清零）。

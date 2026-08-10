@@ -15,12 +15,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # Full history is fetched (default checkout is shallow depth 1) so the
+      # secret scan below actually sees every commit, not just the tip.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
+
+      # Full-history secret scan; fails the build on any leak. The CLI is
+      # used rather than gitleaks-action because this repo is private and the
+      # action requires a license (gitleaks itself is MIT). .gitleaks.toml
+      # keeps every default rule and allowlists redaction-test fixtures.
+      - name: secret scan (full history)
+        run: |
+          go install github.com/zricethezav/gitleaks/v8@latest
+          gitleaks git --no-banner --redact --exit-code 1 .
 
       - name: gofmt
         run: |
@@ -52,6 +65,15 @@ jobs:
       # httptest fixtures, so nothing below reaches a real provider API.
       - name: install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      # The e2e suite (internal/e2e) needs ffmpeg on PATH and runs the real
+      # SQLite + pipeline chain with scripted providers; -count=1 defeats the
+      # test cache so every CI run exercises it. It also runs inside the
+      # coverage gate and test -race steps below, but an explicit step makes
+      # a regression in the harness itself visible before the whole-suite
+      # numbers are computed.
+      - name: e2e suite
+        run: go test ./internal/e2e/ -count=1
 
       # Any doc that cites a Go source line must still point to the right
       # place; a reference silently drifting 175 lines is wrong docs.

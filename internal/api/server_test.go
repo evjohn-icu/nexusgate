@@ -203,6 +203,57 @@ func TestSearchShotsV2StructuredEndpoint(t *testing.T) {
 	}
 }
 
+// TestSearchShotsV2AcceptsOffset posts the pagination field alongside the
+// query: the handler decodes the whole SearchRequest, so an unknown-to-the
+// handler offset must not change the response contract. Status 200 is the
+// assertion; results may be empty with a seeded repo.
+func TestSearchShotsV2AcceptsOffset(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "search-v2-offset.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := t.TempDir()
+	videoPath := filepath.Join(rootPath, "fixture.mp4")
+	if err := os.WriteFile(videoPath, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := repo.CreateLibraryRoot(ctx, rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(videoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.UpsertScannedFile(ctx, root, "fixture.mp4", videoPath, info, "fixture-fingerprint"); err != nil {
+		t.Fatal(err)
+	}
+	assets, err := repo.ListAssets(ctx, 10, 0)
+	if err != nil || len(assets) != 1 {
+		t.Fatalf("assets=%+v err=%v", assets, err)
+	}
+	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{{ID: "shot-1", StartMS: 0, EndMS: 5000, Description: "雨夜城市街道", Objects: []string{"person"}}}); err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer("", service)
+	request := lanRequest(http.MethodPost, "/api/v1/search/shots", bytes.NewBufferString(`{"query":"夜晚下雨","offset":2,"limit":2}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestHomePageUsesLibraryFirstShotTimeline(t *testing.T) {
 	ctx := context.Background()
 	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "library-browser.db"))
@@ -211,6 +262,9 @@ func TestHomePageUsesLibraryFirstShotTimeline(t *testing.T) {
 	}
 	defer repo.Close()
 	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateLibraryRoot(ctx, t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
@@ -284,6 +338,65 @@ func TestWorkerCanPairAndHeartbeatThroughHubAPI(t *testing.T) {
 	handler.ServeHTTP(heartbeat, req)
 	if heartbeat.Code != http.StatusNoContent {
 		t.Fatalf("heartbeat status=%d body=%s", heartbeat.Code, heartbeat.Body.String())
+	}
+}
+
+// The version a Worker binary reports on heartbeat must survive the whole
+// HTTP path and land in the persisted workers row, so the Hub's fleet view
+// shows what binary is actually running after an upgrade.
+func TestWorkerHeartbeatPersistsVersionThroughAPI(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "worker-api-version.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+
+	pair := httptest.NewRecorder()
+	pairRequest := httptest.NewRequest(http.MethodPost, "/api/v1/hub/worker-pairings", nil)
+	pairRequest.Header.Set("Authorization", "Bearer "+service.AdminToken())
+	handler.ServeHTTP(pair, pairRequest)
+	if pair.Code != http.StatusCreated {
+		t.Fatalf("pair status=%d body=%s", pair.Code, pair.Body.String())
+	}
+	var pairing struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(pair.Body).Decode(&pairing); err != nil {
+		t.Fatal(err)
+	}
+	enroll := httptest.NewRecorder()
+	handler.ServeHTTP(enroll, httptest.NewRequest(http.MethodPost, "/api/v1/worker/enroll", strings.NewReader(`{"pairing_token":"`+pairing.Token+`","name":"windows-gpu","platform":"windows-amd64","capabilities":{"proxy":true}}`)))
+	if enroll.Code != http.StatusCreated {
+		t.Fatalf("enroll status=%d body=%s", enroll.Code, enroll.Body.String())
+	}
+	var enrolled struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(enroll.Body).Decode(&enrolled); err != nil {
+		t.Fatal(err)
+	}
+	heartbeat := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/worker/heartbeat", strings.NewReader(`{"version":"v0.30.0","capabilities":{"proxy":true}}`))
+	req.Header.Set("Authorization", "Bearer "+enrolled.Token)
+	handler.ServeHTTP(heartbeat, req)
+	if heartbeat.Code != http.StatusNoContent {
+		t.Fatalf("heartbeat status=%d body=%s", heartbeat.Code, heartbeat.Body.String())
+	}
+	workers, err := repo.ListWorkers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workers) != 1 || workers[0].Version != "v0.30.0" {
+		t.Fatalf("heartbeat version must be persisted, workers=%+v", workers)
 	}
 }
 
@@ -1089,6 +1202,11 @@ func TestHandlerServesLocalWorkspacePages(t *testing.T) {
 	if err := repo.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// The route table includes /, which fresh-install routing redirects to
+	// /setup on a rootless hub — give the hub one so the page actually serves.
+	if _, err := repo.CreateLibraryRoot(ctx, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
 	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
 	if err != nil {
 		t.Fatal(err)
@@ -1148,7 +1266,7 @@ func TestProvidersPageShowsCapabilityGroupsAndEphemeralAdminToken(t *testing.T) 
 		"能力与服务",
 		"Video analysis",
 		"ASR",
-		"Embedding",
+		"语义检索",
 		"Tag curation",
 		"Repurpose",
 		`id="admin-token"`,
@@ -1255,6 +1373,9 @@ func TestLibraryPageLinksToProviders(t *testing.T) {
 	}
 	defer repo.Close()
 	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateLibraryRoot(ctx, t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
@@ -1810,6 +1931,11 @@ func TestTrustedNetworkGuardOnUnauthenticatedReads(t *testing.T) {
 	if err := repo.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// The UI-shell check at the bottom loads /, which fresh-install routing
+	// redirects to /setup when no library root exists — give the hub one.
+	if _, err := repo.CreateLibraryRoot(ctx, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
 	service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
 	if err != nil {
 		t.Fatal(err)
@@ -1875,6 +2001,11 @@ func TestTrustedReadNetworksConfigReplacesDefaults(t *testing.T) {
 	}
 	defer repo.Close()
 	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The UI-shell check at the bottom loads /, which fresh-install routing
+	// redirects to /setup when no library root exists — give the hub one.
+	if _, err := repo.CreateLibraryRoot(ctx, t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	cfg := config.Config{DataDir: t.TempDir(), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}}

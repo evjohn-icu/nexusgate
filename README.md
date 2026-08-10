@@ -7,11 +7,44 @@ existing folders, works out what is actually inside each clip, and makes that
 searchable down to the individual shot.
 
 ```text
-Import → Understand → Search → Select
+NAS / Footage
+    ↓
+Understand
+    ↓
+Search
+    ↓
+Exact shot → export / reuse
 ```
 
 `Re:Footage` is the product name; `timingdex` remains the binary and the
 configuration namespace, so existing libraries and Workers keep working.
+
+## 30 seconds: 这是什么? 为什么有用? 长什么样? 怎么跑起来?
+
+**这是什么** — a local-first intelligence layer for your footage library:
+indexed, searchable down to the individual shot.
+
+**为什么有用** — 在大量旧素材里找到某样东西真正出现的那几秒.
+
+**长什么样** — three pages cover the whole loop:
+
+![Library — the footage library with the shot semantic timeline and filters](docs/images/library.png)
+
+![Search — shot-first search results with per-shot evidence](docs/images/search.png)
+
+![Processing — the pipeline queue and per-job progress](docs/images/processing.png)
+
+**怎么跑起来** — three steps, detailed in [Quick start](#quick-start):
+
+1. `./timingdex doctor` — check ffmpeg, the hardware profile and paths.
+2. `./timingdex root add /path/to/footage && ./timingdex root scan <root-id>` — point it at footage, enqueue jobs.
+3. `./timingdex serve` — open the browser UI and run the queue from `/progress`.
+
+### The loop in 30 seconds
+
+装好 → 加素材目录 → 配置模型 → 处理几个片段 → 搜索 → 播放/收藏镜头.
+Install, add a footage folder, configure a model, process a few clips, search,
+play or favourite the shot.
 
 ## Project status
 
@@ -47,6 +80,9 @@ Two more deliberate non-claims:
   additionally use a configured embedding provider (SQLite-stored float32
   vectors, cosine scan in Go — no vector database), but shot similarity itself
   is not a learned visual embedding.
+
+Timingdex is independently usable and is also being developed as part of the
+underlying footage intelligence layer for ChatCut.
 
 ## How it works
 
@@ -781,6 +817,27 @@ GOOS=windows GOARCH=amd64 go vet ./...   # the tray is Win32 code CI cannot run
 `internal/media/process_integration_test.go` skips itself unless `ffmpeg` and
 `ffprobe` are on PATH. **No test ever calls a real provider API.**
 
+### Offline eval corpus（评估语料）
+
+`timingdex-corpusgen` generates the offline eval corpus: deterministic
+synthetic clips (lavfi test sources, reproducible and licence-free) plus
+`ground_truth.json`, mirroring the retrieval golden set's adversarial assets
+in `internal/repository/sqlite/retrieval_golden_corpus_test.go`. `timingdex-eval`
+then runs a provider configuration against that corpus exactly the way a Hub
+would and scores the results with the product's hybrid retrieval; `score`
+attributes false positives per signal (`semantic_false_positives` /
+`lexical_false_positives`, the same attribution the golden set uses). Each
+run's data dir holds its own `config.json` (the same file a real Hub uses) and
+database, so comparing models is comparing data dirs. Not part of CI — it is
+the manual, offline benchmark.
+
+```bash
+timingdex-corpusgen --out ./corpus
+timingdex-eval run  --corpus ./corpus --data-dir ./eval/qwen   --label qwen3vl-4b
+timingdex-eval run  --corpus ./corpus --data-dir ./eval/gemini --label gemini-flash
+timingdex-eval score --corpus ./corpus --data-dir ./eval --labels qwen3vl-4b,gemini-flash
+```
+
 ## Documentation
 
 `CHANGELOG.md` records what changed and, more usefully, which boundary each change
@@ -805,9 +862,10 @@ privately — [SECURITY.md](SECURITY.md).
 
 ## Screenshots
 
-The UI is a work in progress; screenshots will land in `docs/images/` as the
-product stabilizes. Planned slots: the library with the shot semantic
-timeline, shot-first search results, and the shot preview drawer.
+Real captures from a running Hub are in the [30 seconds](#30-seconds-这是什么-为什么有用-长什么样-怎么跑起来)
+section at the top: the library with the shot semantic timeline, shot-first
+search results, and the processing/providers view. They are captures of a live
+instance — never mockups.
 
 ## License
 

@@ -47,6 +47,12 @@ type ShotEmbeddingRow struct {
 //     ordinals may be non-contiguous, so look up by < and > with ORDER BY
 //     ... LIMIT 1, not by arithmetic.
 //   - ShotSession returns the shoot-session id of an asset, "" when none.
+//   - ShotSessions is the batch form of ShotSession: it returns the
+//     asset_id -> session_id mapping for a whole candidate set in one
+//     query. Session diversity must consume this and never loop per
+//     result, so selection pays one round trip per search, not one per
+//     candidate. Assets with no shoot session are simply absent from the
+//     map.
 type ShotStore interface {
 	ScoreCandidates(ctx context.Context, q string, facets domain.FacetFilter) ([]domain.ShotSearchResult, error)
 	LexicalRankedShots(ctx context.Context, q string, weights [5]float64, limit int) ([]domain.ShotSearchResult, error)
@@ -55,6 +61,7 @@ type ShotStore interface {
 	ShotTranscriptSpans(ctx context.Context, assetID string, startMS, endMS int64) ([]domain.AlignmentWord, error)
 	NeighborShots(ctx context.Context, assetID string, ordinal int) (*domain.AssetShot, *domain.AssetShot, error)
 	ShotSession(ctx context.Context, assetID string) (string, error)
+	ShotSessions(ctx context.Context, assetIDs []string) (map[string]string, error)
 	// Text embedding storage (derived, rebuildable representations — see
 	// docs/search-architecture.md "retrieval_generation").
 	//

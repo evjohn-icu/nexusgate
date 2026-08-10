@@ -16,7 +16,7 @@ import (
 )
 
 func TestClientEnrollsThenSendsHeartbeat(t *testing.T) {
-	var token string
+	var token, version string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/worker/enroll":
@@ -24,6 +24,11 @@ func TestClientEnrollsThenSendsHeartbeat(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"worker": remote.Worker{ID: "worker-1"}, "token": "worker-token"})
 		case "/api/v1/worker/heartbeat":
 			token = r.Header.Get("Authorization")
+			var body remote.WorkerHeartbeat
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			version = body.Version
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			http.NotFound(w, r)
@@ -36,11 +41,41 @@ func TestClientEnrollsThenSendsHeartbeat(t *testing.T) {
 	if err != nil || registered.Token != "worker-token" {
 		t.Fatalf("registration=%+v err=%v", registered, err)
 	}
-	if err := client.Heartbeat(context.Background(), registered.Token, remote.WorkerCapabilities{Proxy: true}); err != nil {
+	if err := client.Heartbeat(context.Background(), registered.Token, "v0.30.0", remote.WorkerCapabilities{Proxy: true}); err != nil {
 		t.Fatal(err)
 	}
 	if token != "Bearer worker-token" {
 		t.Fatalf("authorization=%q", token)
+	}
+	if version != "v0.30.0" {
+		t.Fatalf("heartbeat version=%q, want v0.30.0", version)
+	}
+}
+
+// The heartbeat wire body is the typed remote.WorkerHeartbeat, so a Hub that
+// decodes it strictly accepts it: version next to capabilities, nothing else.
+func TestClientHeartbeatSendsTypedBodyWithVersion(t *testing.T) {
+	var rawBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/worker/heartbeat" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		rawBody = string(body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	err := NewClient(server.URL, "").Heartbeat(context.Background(), "worker-token", "v0.30.0", remote.WorkerCapabilities{Proxy: true, MaxParallelProxyJobs: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded remote.WorkerHeartbeat
+	if err := json.Unmarshal([]byte(rawBody), &decoded); err != nil {
+		t.Fatalf("heartbeat body is not valid JSON: %q: %v", rawBody, err)
+	}
+	if decoded.Version != "v0.30.0" || !decoded.Capabilities.Proxy || decoded.Capabilities.MaxParallelProxyJobs != 2 {
+		t.Fatalf("heartbeat body=%s", rawBody)
 	}
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/evjohn-icu/timingdex/internal/api"
 	"github.com/evjohn-icu/timingdex/internal/app"
+	"github.com/evjohn-icu/timingdex/internal/buildinfo"
 	"github.com/evjohn-icu/timingdex/internal/config"
 	"github.com/evjohn-icu/timingdex/internal/hubauth"
 	"github.com/evjohn-icu/timingdex/internal/hubtls"
@@ -102,6 +104,12 @@ func run() error {
 		if err := fs.Parse(os.Args[2:]); err != nil {
 			return err
 		}
+		// A previous Hub crash can leave jobs at state='running' with dead
+		// leases; release them before anything can be looking at the queue, or
+		// they sit on /progress forever while nobody runs the pipeline.
+		if err := service.HealOnStartup(context.Background()); err != nil {
+			slog.Warn("self-heal sweep failed; stale running jobs will be reclaimed on the next lease attempt", "error", err)
+		}
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
 		certificate, key, err := hubTLSFiles(cfg)
@@ -147,6 +155,11 @@ func run() error {
 		}
 		switch os.Args[2] {
 		case "run":
+			// Same startup sweep as `serve`: release stale running jobs from
+			// a crashed process before the pipeline can lease or reclaim.
+			if err := service.HealOnStartup(context.Background()); err != nil {
+				slog.Warn("self-heal sweep failed; stale running jobs will be reclaimed on the next lease attempt", "error", err)
+			}
 			return service.RunPipeline(context.Background())
 		case "retry-failed":
 			requeued, err := service.RequeueFailedJobs(context.Background())
@@ -179,13 +192,49 @@ func run() error {
 		}
 
 	case "doctor":
-		fmt.Printf("database: %s\n", cfg.DatabasePath)
-		fmt.Printf("cache:    %s\n", cfg.CacheDir)
-		fmt.Printf("listen:   %s\n", cfg.ListenAddress)
-		return service.Doctor(context.Background(), os.Stdout)
+		fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+		jsonOut := fs.Bool("json", false, "print the report as JSON")
+		if err := fs.Parse(os.Args[2:]); err != nil {
+			return err
+		}
+		if !*jsonOut {
+			fmt.Printf("database: %s\n", cfg.DatabasePath)
+			fmt.Printf("cache:    %s\n", cfg.CacheDir)
+			fmt.Printf("listen:   %s\n", cfg.ListenAddress)
+			return service.Doctor(context.Background(), os.Stdout)
+		}
+		report, err := service.DoctorReport(context.Background())
+		if err != nil {
+			return fmt.Errorf("doctor report: %w", err)
+		}
+		encoded, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encode doctor report: %w", err)
+		}
+		fmt.Println(string(encoded))
+		// The JSON path reports integrity as a field, but the process exit
+		// must agree with the text path: a broken database is a failed
+		// diagnostic, not a healthy one. This mirrors Service.Doctor's
+		// non-zero exit on a failed integrity check.
+		if !report.DB.IntegrityOK {
+			return fmt.Errorf("doctor: database integrity check failed")
+		}
+		return nil
 
 	case "secrets":
 		return runSecretsCommand(cfg)
+
+	case "cache":
+		if len(os.Args) < 3 {
+			return errors.New("usage: timingdex cache inspect|gc|verify")
+		}
+		return runCacheCommand(context.Background(), repo, cfg, os.Args[2:])
+
+	case "support":
+		if len(os.Args) < 3 || os.Args[2] != "bundle" {
+			return errors.New("usage: timingdex support bundle [-out path]")
+		}
+		return runSupportBundleCommand(service, cfg, os.Args[3:])
 
 	default:
 		return usage()
@@ -335,11 +384,15 @@ Usage:
   timingdex root scan <root-id>
   timingdex pipeline run
   timingdex pipeline retry-failed
+  timingdex reanalyze [-asset <asset-id> | -root <root-id> | -all] [-reason <text>]
+  timingdex search rebuild-embeddings
+  timingdex cache inspect|gc|verify
+  timingdex doctor [-json]
+  timingdex secrets rekey
+  timingdex support bundle [-out path]
   timingdex worker enroll --hub https://nas:8787 --pairing <token> [--name worker] [--mount root-id=/mounted/path] [--provider-operation video_analysis]
   timingdex worker run [--config path] [--tray]
-  timingdex worker doctor [--config path]
-  timingdex search rebuild-embeddings
-  timingdex doctor`)
+  timingdex worker doctor [--config path]`)
 	return errors.New("invalid command")
 }
 
@@ -398,7 +451,7 @@ func runWorkerCommand() error {
 		}
 		sort.Strings(capabilities.LibraryRoots)
 		sort.Strings(capabilities.ProviderOperations)
-		registration := remote.WorkerRegistration{Name: *name, Platform: runtime.GOOS + "-" + runtime.GOARCH, Capabilities: capabilities}
+		registration := remote.WorkerRegistration{Name: *name, Platform: runtime.GOOS + "-" + runtime.GOARCH, Version: buildinfo.VersionString(), Capabilities: capabilities}
 		client := worker.NewClient(*hub, *fingerprint)
 		enrollment, err := client.Enroll(context.Background(), *pairing, registration)
 		if err != nil {

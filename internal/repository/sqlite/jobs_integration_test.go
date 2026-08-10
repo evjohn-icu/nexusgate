@@ -32,7 +32,7 @@ func TestRetryJobReschedulesLeasedWorkWithBackoff(t *testing.T) {
 		t.Fatalf("lease job=%+v err=%v", job, err)
 	}
 	before := time.Now()
-	if err := repo.RetryJob(ctx, job.ID, "worker", "temporary provider outage", 2*time.Second); err != nil {
+	if err := repo.RetryJob(ctx, job.ID, "worker", domain.JobFailureCategoryProviderUnavailable, "temporary provider outage", 2*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	jobs, err := repo.ListJobs(ctx, 10)
@@ -75,7 +75,7 @@ func TestFailJobTerminallyStopsFurtherLeasing(t *testing.T) {
 	if job.AttemptCount >= job.MaxAttempts {
 		t.Fatalf("attempts must remain so the test is meaningful: %+v", job)
 	}
-	if err := repo.FailJobTerminally(ctx, job.ID, "worker", "video provider channel \"x\" is disabled"); err != nil {
+	if err := repo.FailJobTerminally(ctx, job.ID, "worker", domain.JobFailureCategoryConfiguration, "video provider channel \"x\" is disabled"); err != nil {
 		t.Fatal(err)
 	}
 	if next, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{}); err != nil || next != nil {
@@ -168,6 +168,80 @@ func TestRequeueFailedJobsRevivesTerminalAndExhaustedWork(t *testing.T) {
 				t.Fatalf("stale failure text would misreport a job that is running again: %+v", job)
 			}
 		}
+	}
+}
+
+// A category-scoped requeue must revive only the jobs that actually carry
+// that code — the issues view's per-row retry depends on it. The 'unknown'
+// bucket is the NULL/empty fallback JobIssues reports, so it must match rows
+// without a code, and an empty-string category matches nothing at all: the
+// API keeps "" meaning "everything" and this method's WHERE clause is what
+// narrows.
+func TestRequeueFailedJobsByCategoryRevivesOnlyThatCategory(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "jobs-requeue-category.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := formatTime(time.Now())
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES('asset-cat','cat-fp',1,'discovered',?,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	quota := string(domain.JobFailureCategoryProviderQuota)
+	auth := string(domain.JobFailureCategoryProviderAuth)
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO jobs(id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,last_error_message,last_error_code,terminal,created_at,updated_at) VALUES
+		('j-quota','asset-cat','analyze','failed',0,3,3,?,'h-quota','monthly quota exhausted',?,1,?,?),
+		('j-auth','asset-cat','analyze','failed',0,3,3,?,'h-auth','key rejected',?,0,?,?),
+		('j-uncoded','asset-cat','probe','failed',0,3,3,?,'h-uncoded','predates classification',NULL,0,?,?),
+		('j-done','asset-cat','probe','succeeded',0,1,3,?,'h-done',NULL,NULL,0,?,?)`,
+		now, quota, now, now, now, auth, now, now, now, now, now, now, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty-string category narrows to nothing: requeueing everything is the
+	// API's job when the body is absent, never the repository's default.
+	if n, err := repo.RequeueFailedJobsByCategory(ctx, ""); err != nil || n != 0 {
+		t.Fatalf("empty category requeued=%d err=%v, want 0", n, err)
+	}
+
+	if n, err := repo.RequeueFailedJobsByCategory(ctx, quota); err != nil || n != 1 {
+		t.Fatalf("provider_quota requeued=%d err=%v, want 1", n, err)
+	}
+
+	// Only the quota job may have moved: its terminal flag and attempt budget
+	// must be reset the same way the all-failed requeue does.
+	var state, code string
+	var terminal int
+	var attempts int
+	if err := repo.db.QueryRowContext(ctx, `SELECT state,COALESCE(last_error_code,''),terminal,attempt_count FROM jobs WHERE id='j-quota'`).Scan(&state, &code, &terminal, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(domain.JobPending) || code != "" || terminal != 0 || attempts != 0 {
+		t.Fatalf("requeued job state=%q code=%q terminal=%d attempts=%d, want pending / no code / 0 / 0", state, code, terminal, attempts)
+	}
+	for _, id := range []string{"j-auth", "j-uncoded"} {
+		if err := repo.db.QueryRowContext(ctx, `SELECT state FROM jobs WHERE id=?`, id).Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		if state != string(domain.JobFailed) {
+			t.Fatalf("job %s was disturbed by another category's requeue: state=%q", id, state)
+		}
+	}
+
+	// The unknown bucket matches the NULL-code row, and re-running a category
+	// that is now empty returns 0 rather than erroring.
+	if n, err := repo.RequeueFailedJobsByCategory(ctx, string(domain.JobFailureCategoryUnknown)); err != nil || n != 1 {
+		t.Fatalf("unknown requeued=%d err=%v, want 1", n, err)
+	}
+	if n, err := repo.RequeueFailedJobsByCategory(ctx, quota); err != nil || n != 0 {
+		t.Fatalf("re-running provider_quota requeued=%d err=%v, want 0", n, err)
+	}
+	if n, err := repo.RequeueFailedJobsByCategory(ctx, auth); err != nil || n != 1 {
+		t.Fatalf("provider_auth requeued=%d err=%v, want 1", n, err)
 	}
 }
 
@@ -277,7 +351,7 @@ func TestDeferJobOnTheLastAttemptStillLeavesTheJobLeasable(t *testing.T) {
 			t.Fatalf("attempt %d: leased job reports %d attempts", attempt, job.AttemptCount)
 		}
 		if attempt < 3 {
-			if err := repo.RetryJob(ctx, job.ID, "worker", "transient", 0); err != nil {
+			if err := repo.RetryJob(ctx, job.ID, "worker", domain.JobFailureCategoryUnknown, "transient", 0); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -288,7 +362,7 @@ func TestDeferJobOnTheLastAttemptStillLeavesTheJobLeasable(t *testing.T) {
 
 	// RetryJob is the method that cannot help here, and saying so out loud is
 	// the point: it matches no row, so the job would be left running.
-	if err := repo.RetryJob(ctx, job.ID, "worker", "transient", 0); err != nil {
+	if err := repo.RetryJob(ctx, job.ID, "worker", domain.JobFailureCategoryUnknown, "transient", 0); err != nil {
 		t.Fatal(err)
 	}
 	stuck, err := repo.ListJobs(ctx, 10)
@@ -499,7 +573,7 @@ func TestResumeDeferredJobsReleasesOnlyQuotaWaitsAndLeasesImmediately(t *testing
 	if err != nil || backoff == nil {
 		t.Fatalf("lease backoff job: %+v %v", backoff, err)
 	}
-	if err := repo.RetryJob(ctx, backoff.ID, "worker", "transient", time.Hour); err != nil {
+	if err := repo.RetryJob(ctx, backoff.ID, "worker", domain.JobFailureCategoryProviderUnavailable, "transient", time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	if job, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{}); err != nil || job != nil {

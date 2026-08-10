@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -117,6 +118,9 @@ func TestThrottleValidationRejectionsLeaveStoredValueIntact(t *testing.T) {
 		"malformed clock":              `{"off_peak_enabled":true,"off_peak_start":"25:99","off_peak_end":"07:00"}`,
 		"not json":                     `{`,
 		"negative deferral":            `{"defer_above_bytes":-5}`,
+		"negative free space floor":    `{"minimum_free_space_bytes":-5}`,
+		"negative daily budget":        `{"daily_budget":-5}`,
+		"negative monthly budget":      `{"monthly_budget":-5}`,
 	} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, hubAdminRequest(service, http.MethodPut, "/api/v1/pipeline/throttle", strings.NewReader(payload)))
@@ -135,6 +139,109 @@ func TestThrottleValidationRejectionsLeaveStoredValueIntact(t *testing.T) {
 	}
 	if stored.Throttle.ReadRate != 2 || stored.Throttle.CooldownSeconds != 10 {
 		t.Fatalf("a rejected write changed the stored throttle: %+v", stored.Throttle)
+	}
+}
+
+// The disk-space panel shares the throttle's save/load endpoints, so its
+// value must survive an admin write and a tokenless read exactly like the
+// load levers — and the page must render it back in GB.
+func TestSettingsDiskSpaceProtectionRoundTripsInGB(t *testing.T) {
+	service := throttleTestService(t, "settings-disk.db")
+	handler := NewServer("", service).Handler()
+
+	// 5 GB in bytes; the page converts with GB=1073741824 before sending.
+	const fiveGB = int64(5) * 1073741824
+	body := `{"minimum_free_space_bytes":` + fmt.Sprint(fiveGB) + `}`
+	saved := httptest.NewRecorder()
+	handler.ServeHTTP(saved, hubAdminRequest(service, http.MethodPut, "/api/v1/pipeline/throttle", strings.NewReader(body)))
+	if saved.Code != http.StatusOK {
+		t.Fatalf("save status=%d body=%s", saved.Code, saved.Body.String())
+	}
+	var stored struct {
+		Throttle domain.PipelineThrottle `json:"throttle"`
+	}
+	if err := json.Unmarshal(saved.Body.Bytes(), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Throttle.MinimumFreeSpaceBytes != fiveGB {
+		t.Fatalf("save did not round-trip minimum_free_space_bytes: %+v", stored.Throttle)
+	}
+
+	read := httptest.NewRecorder()
+	handler.ServeHTTP(read, lanRequest(http.MethodGet, "/api/v1/pipeline/throttle", nil))
+	if read.Code != http.StatusOK {
+		t.Fatalf("read status=%d body=%s", read.Code, read.Body.String())
+	}
+	if err := json.Unmarshal(read.Body.Bytes(), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Throttle.MinimumFreeSpaceBytes != fiveGB {
+		t.Fatalf("the LAN read must show the persisted floor: %+v", stored.Throttle)
+	}
+
+	page := httptest.NewRecorder()
+	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/settings", nil))
+	for _, marker := range []string{
+		"磁盘空间保护", // the panel itself
+		"min-free-space",
+		"minimum_free_space_bytes", // the field both directions carry
+		"GB=1073741824",            // and the bytes conversion the page promises
+	} {
+		if !strings.Contains(page.Body.String(), marker) {
+			t.Fatalf("settings page is missing %q", marker)
+		}
+	}
+}
+
+// The cost-budget panel shares the throttle's save/load endpoints, so its
+// values must survive an admin write and a tokenless read exactly like the
+// disk panel's — and the page must render both fields.
+func TestSettingsBudgetPanelRoundTrips(t *testing.T) {
+	service := throttleTestService(t, "settings-budget.db")
+	handler := NewServer("", service).Handler()
+
+	const daily, monthly = 25.5, 300
+	body := fmt.Sprintf(`{"daily_budget":%v,"monthly_budget":%v}`, daily, monthly)
+	saved := httptest.NewRecorder()
+	handler.ServeHTTP(saved, hubAdminRequest(service, http.MethodPut, "/api/v1/pipeline/throttle", strings.NewReader(body)))
+	if saved.Code != http.StatusOK {
+		t.Fatalf("save status=%d body=%s", saved.Code, saved.Body.String())
+	}
+	var stored struct {
+		Throttle domain.PipelineThrottle `json:"throttle"`
+	}
+	if err := json.Unmarshal(saved.Body.Bytes(), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Throttle.DailyBudget != daily || stored.Throttle.MonthlyBudget != monthly {
+		t.Fatalf("save did not round-trip the budgets: %+v", stored.Throttle)
+	}
+
+	read := httptest.NewRecorder()
+	handler.ServeHTTP(read, lanRequest(http.MethodGet, "/api/v1/pipeline/throttle", nil))
+	if read.Code != http.StatusOK {
+		t.Fatalf("read status=%d body=%s", read.Code, read.Body.String())
+	}
+	if err := json.Unmarshal(read.Body.Bytes(), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Throttle.DailyBudget != daily || stored.Throttle.MonthlyBudget != monthly {
+		t.Fatalf("the LAN read must show the persisted budgets: %+v", stored.Throttle)
+	}
+
+	page := httptest.NewRecorder()
+	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/settings", nil))
+	for _, marker := range []string{
+		"成本预算", // the panel itself
+		"daily-budget",
+		"monthly-budget",
+		"daily_budget", // the field both directions carry
+		"monthly_budget",
+		"00:05 UTC", // the reset moment the note promises
+	} {
+		if !strings.Contains(page.Body.String(), marker) {
+			t.Fatalf("settings page is missing %q", marker)
+		}
 	}
 }
 

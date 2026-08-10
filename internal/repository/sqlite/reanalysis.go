@@ -66,3 +66,64 @@ func reanalysisHash(assetID, reason string) string {
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
+
+// HasCommittedAnalysis reports whether the asset's canonical analysis is
+// committed — an asset_analysis row or any committed shot row. It is the
+// "already paid for" signal the re-derive path uses to stop a JobDerive from
+// re-enqueueing the paid chain after `cache gc --rebuildable` deleted the
+// derived files: the files are what the clean-up asked to rebuild, never a
+// second model run. Either row existing is enough: modern analysis commits
+// both together (CommitAnalysisWithShots), and an asset with only the legacy
+// asset_analysis row is still analyzed.
+func (r *Repository) HasCommittedAnalysis(ctx context.Context, assetID string) (bool, error) {
+	var exists int
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM (
+		SELECT 1 FROM asset_analysis WHERE asset_id=?
+		UNION ALL
+		SELECT 1 FROM asset_shots WHERE asset_id=?
+	)`, assetID, assetID).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists > 0, nil
+}
+
+// EnqueueRederive enqueues a JobDerive that re-creates an asset's rebuildable
+// artifacts after `cache gc --rebuildable` deleted the files but kept the
+// derived_artifacts rows. Only assets whose canonical analysis is committed
+// are re-derived: the derive stage skips the paid chain for them (see
+// Pipeline's committed check), so a cache clean-up can never re-bill a model
+// run. Assets without committed analysis are left alone — their chain is
+// still in flight, and a rescan/retry/reanalysis is the operator's path.
+//
+// The input hash is nonced the same way EnqueueReanalysis nonces, so the job
+// can never collide with the succeeded original derive (INSERT OR IGNORE
+// dedup would otherwise swallow it), and a repeat GC enqueues a fresh job
+// that re-creates whatever is missing. Returns whether a job was enqueued.
+func (r *Repository) EnqueueRederive(ctx context.Context, assetID string) (bool, error) {
+	committed, err := r.HasCommittedAnalysis(ctx, assetID)
+	if err != nil {
+		return false, err
+	}
+	if !committed {
+		return false, nil
+	}
+	metadata, err := r.GetMediaMetadata(ctx, assetID)
+	if err != nil {
+		return false, err
+	}
+	if metadata == nil {
+		return false, nil
+	}
+	if _, err := r.GetPrimaryLocation(ctx, assetID); err != nil {
+		return false, err
+	}
+	hash := reanalysisHash(assetID, "re-derive")
+	now := formatTime(time.Now().UTC())
+	_, err = r.db.ExecContext(ctx, `INSERT OR IGNORE INTO jobs(id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,created_at,updated_at) VALUES(?,?,?,'pending',90,0,3,?,?,?,?)`,
+		idgen.New(), assetID, string(domain.JobDerive), formatTime(time.Now()), hash, now, now)
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}

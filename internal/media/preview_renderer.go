@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
@@ -174,11 +175,23 @@ func (r *PreviewRenderer) RenderThumbnail(ctx context.Context, src, dst string, 
 	if err != nil {
 		return err
 	}
+	// The thumbnail seeks into the clip for a frame that represents it; a
+	// hardcoded 1-second seek produces "no packets" on sub-second sources
+	// (the e2e short-clip fixture hit this with an ffmpeg-version-dependent
+	// exit), so the seek is clamped to the probed duration: the midpoint for
+	// clips under a second, the first second otherwise. The probe is cheap
+	// (ffprobe on a local cache file) and only runs on the thumbnail path.
+	seek := "00:00:01"
+	if probe, probeErr := Probe(ctx, src); probeErr == nil {
+		if duration, parseErr := time.ParseDuration(probe.Format.Duration + "s"); parseErr == nil && duration < time.Second {
+			seek = "0"
+		}
+	}
 	return atomicFFmpegOutput(dst, func(out string) error {
-		args := append([]string{"-hide_banner", "-loglevel", "error", "-y", "-ss", "00:00:01"}, hardware.DecoderArgs...)
+		args := append([]string{"-hide_banner", "-loglevel", "error", "-y", "-ss", seek}, hardware.DecoderArgs...)
 		args = append(args, "-i", src, "-frames:v", "1", "-vf", filter, out)
 		return runWithFallback(ctx, "thumbnail", args, hardware, func() []string {
-			return []string{"-hide_banner", "-loglevel", "error", "-y", "-ss", "00:00:01", "-i", src, "-frames:v", "1", "-vf", filter, out}
+			return []string{"-hide_banner", "-loglevel", "error", "-y", "-ss", seek, "-i", src, "-frames:v", "1", "-vf", filter, out}
 		})
 	})
 }

@@ -10,6 +10,16 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
+// PipelineThrottleConfigured reports whether a pipeline_throttle settings row
+// exists. The pipeline uses it to distinguish "0 = the default" from "0 = the
+// operator explicitly disabled the disk preflight in the settings page"; only
+// an existing row can carry an intentional zero.
+func (r *Repository) PipelineThrottleConfigured(ctx context.Context) (bool, error) {
+	var exists bool
+	err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM settings WHERE key='pipeline_throttle')`).Scan(&exists)
+	return exists, err
+}
+
 // GetPipelineThrottle reads the throttle from the settings table. When the row
 // is absent (fresh install) it returns the default with a nil error. When the
 // stored JSON is corrupt it still returns the default so the caller can

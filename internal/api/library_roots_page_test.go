@@ -72,6 +72,27 @@ func TestLibraryRootsPageRendersWithStepMarkers(t *testing.T) {
 	}
 }
 
+// The wizard now opens with a status table for the roots that already exist:
+// an operator coming to add a NAS share should first see whether the mounted
+// roots are still mounted. The unavailable verdict carries the exact Chinese
+// copy about the reconciliation pause — the scan service's gate, echoed here —
+// and the preserved "last healthy" time MarkRootUnavailable never clears.
+func TestLibraryRootsPageShowsRootHealthSection(t *testing.T) {
+	body := brandedPage(shelledPage(libraryRootsHTML))
+	for _, marker := range []string{
+		"素材目录状态",
+		"/api/v1/roots/health",
+		"loadRootHealth()",
+		"Last healthy",
+		"health-table",
+		"暂停缺失文件对账（不会把素材标记为缺失）",
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("library roots page missing marker %q", marker)
+		}
+	}
+}
+
 // CLAUDE.md requires product/UI copy to be Chinese while internal/mount
 // stays English -- it is also the CLI's doctor output. This wizard bridges
 // that by translating mount.Step/mount.Note by their stable Key in a table
@@ -401,13 +422,13 @@ func TestCreateRootWithUnmountedShareReturnsShareSpecificResponse(t *testing.T) 
 		t.Fatalf("status=%d body=%s, want 422 — an unmounted share must not look like the same generic failure as a bad local path", response.Code, response.Body.String())
 	}
 	var payload struct {
-		Error      string             `json:"error"`
+		Error      APIError           `json:"error"`
 		Inspection app.RootInspection `json:"inspection"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Error == "" {
+	if payload.Error.Message == "" {
 		t.Fatal("response must carry an error message")
 	}
 	if !payload.Inspection.IsShare || payload.Inspection.Guidance == nil {

@@ -25,7 +25,7 @@ func TestNewPipelineFloorsAUsableProviderRouteDeferral(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			p := NewPipeline(nil, "", nil, nil, nil, nil, nil, media.HardwarePlan{}, nil, tc.given)
+			p := NewPipeline(nil, "", nil, nil, nil, nil, nil, media.HardwarePlan{}, nil, tc.given, 0)
 			if p.routeDeferral != tc.want {
 				t.Fatalf("routeDeferral=%s, want %s", p.routeDeferral, tc.want)
 			}

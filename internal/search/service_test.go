@@ -70,6 +70,16 @@ func (f *fakeStore) ShotSession(_ context.Context, assetID string) (string, erro
 	return f.sessions[assetID], nil
 }
 
+func (f *fakeStore) ShotSessions(_ context.Context, assetIDs []string) (map[string]string, error) {
+	out := make(map[string]string, len(assetIDs))
+	for _, assetID := range assetIDs {
+		if sessionID, ok := f.sessions[assetID]; ok {
+			out[assetID] = sessionID
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeStore) UpsertShotTextEmbeddings(_ context.Context, _ []ShotEmbeddingRow) error {
 	return nil
 }
@@ -245,6 +255,72 @@ func TestSearchV2NegativeQueryExcludesObserved(t *testing.T) {
 			t.Fatalf("kept shot must report person as unknown, got %s", e.State)
 		}
 	}
+}
+
+// TestSearchV2OffsetPagination pins the offset rule: the offset pages the
+// FINAL selected list (after selection/diversity), so a page's reach is
+// bounded by Limit — offset=2 can only produce [s3,s4] when Limit reaches
+// rank 4. An offset at or beyond the selected list length is an empty page,
+// never a wrapped one. With diversity disabled (SelectionOptions.Diversity
+// 0) selection is a pure truncation, so offset preserves the fused order.
+func TestSearchV2OffsetPagination(t *testing.T) {
+	store := &fakeStore{
+		candidates: []domain.ShotSearchResult{
+			shot("s1", "a1", 0, 10_000, []string{"car"}, "red car crossing one"),
+			shot("s2", "a2", 0, 10_000, []string{"car"}, "red car crossing two"),
+			shot("s3", "a3", 0, 10_000, []string{"car"}, "red car crossing three"),
+			shot("s4", "a4", 0, 10_000, []string{"car"}, "red car crossing four"),
+			shot("s5", "a5", 0, 10_000, []string{"car"}, "red car crossing five"),
+		},
+		lexical: []domain.ShotSearchResult{
+			shot("s1", "a1", 0, 10_000, []string{"car"}, "red car crossing one"),
+			shot("s2", "a2", 0, 10_000, []string{"car"}, "red car crossing two"),
+			shot("s3", "a3", 0, 10_000, []string{"car"}, "red car crossing three"),
+			shot("s4", "a4", 0, 10_000, []string{"car"}, "red car crossing four"),
+			shot("s5", "a5", 0, 10_000, []string{"car"}, "red car crossing five"),
+		},
+	}
+	svc := NewService(store, DefaultOptions())
+	search := func(req SearchRequest) []string {
+		t.Helper()
+		req.Query = "汽车经过街道"
+		response, err := svc.Search(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]string, 0, len(response.Results))
+		for _, item := range response.Results {
+			ids = append(ids, item.ShotID)
+		}
+		return ids
+	}
+	assertIDs := func(want []string, got []string) {
+		t.Helper()
+		if len(want) != len(got) {
+			t.Fatalf("want %v, got %v", want, got)
+		}
+		for i := range want {
+			if want[i] != got[i] {
+				t.Fatalf("want %v, got %v", want, got)
+			}
+		}
+	}
+
+	assertIDs([]string{"s1", "s2"}, search(SearchRequest{Limit: 2, Offset: 0}))
+	assertIDs([]string{"s3", "s4"}, search(SearchRequest{Limit: 4, Offset: 2}))
+	assertIDs([]string{"s5"}, search(SearchRequest{Limit: 5, Offset: 4}))
+	assertIDs(nil, search(SearchRequest{Limit: 5, Offset: 5}))
+	// Offset equal to the selected length is also an empty page.
+	assertIDs(nil, search(SearchRequest{Limit: 2, Offset: 2}))
+	// A negative offset means no offset.
+	assertIDs([]string{"s1", "s2", "s3"}, search(SearchRequest{Limit: 3, Offset: -1}))
+
+	// Diversity disabled: selection truncates in fused order, offset pages
+	// that same order.
+	noDiversity := DefaultOptions()
+	noDiversity.Selection.Diversity = 0
+	svc = NewService(store, noDiversity)
+	assertIDs([]string{"s3", "s4", "s5"}, search(SearchRequest{Limit: 5, Offset: 2, Diversity: 0}))
 }
 
 func TestLegacySearchMatchesContract(t *testing.T) {

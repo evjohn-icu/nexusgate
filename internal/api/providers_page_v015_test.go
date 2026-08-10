@@ -79,6 +79,136 @@ func TestProvidersPageOffersMultiKeyAffordancesWithoutBrowserStorage(t *testing.
 	}
 }
 
+// 权重 and 并发上限 are defaults for all but the operator tuning them, so both
+// the create form and the add-key template hide them behind a collapsed 高级配置
+// disclosure. The ids and classes the page JS reads (formMembers and
+// addChannelKey query .m-*/row .a-* by class) must survive the wrapper.
+func TestProvidersPageAdvancedConfigKeepsFieldIdsAndClasses(t *testing.T) {
+	response := httptest.NewRecorder()
+	service := providerChannelTestService(t, "providers-advanced-config-page.db")
+	NewServer("", service).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/providers", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, marker := range []string{
+		`<details class="advanced-config wide">`,
+		`<summary>高级配置</summary>`,
+		`id="weight"`,
+		`id="max-inflight"`,
+		`class="m-weight"`,
+		`class="m-inflight"`,
+		`+prefix+'weight"`,
+		`+prefix+'inflight"`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("providers page missing %q", marker)
+		}
+	}
+	if !strings.Contains(body, `row.querySelector('.m-weight')`) || !strings.Contains(body, `row.querySelector('.m-inflight')`) {
+		t.Fatalf("formMembers() must keep reading weight/max_inflight from the member rows")
+	}
+	if !strings.Contains(body, `form.querySelector('.a-weight')`) || !strings.Contains(body, `form.querySelector('.a-inflight')`) {
+		t.Fatalf("addChannelKey() must keep reading weight/max_inflight from the add form")
+	}
+}
+
+// The channels panel carries one runtime-health line fed by
+// /api/v1/admin/provider-channels/status: nothing without a token, a muted
+// 暂无运行数据 when no capability has been exercised yet, a warn pill when any
+// route's channel is unavailable, and an ok pill otherwise. It must render the
+// states verbatim so the pill semantics cannot drift from the endpoint.
+func TestProvidersPageShowsRuntimeHealthStatusLine(t *testing.T) {
+	body := providersHTML
+	for _, marker := range []string{
+		`id="provider-health"`,
+		`/api/v1/admin/provider-channels/status`,
+		`has_runtime_data`,
+		`ch.available`,
+		`暂无运行数据`,
+		`部分服务降级`,
+		`服务正常`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("providers page missing health marker %q", marker)
+		}
+	}
+	if !strings.Contains(body, `if(!r.ok){el.innerHTML='';return}`) {
+		t.Fatalf("provider health must render nothing when the status request is not authorized")
+	}
+}
+
+// The same status fetch that feeds the top health line also feeds per-member
+// state: loadProviderHealth stashes the parsed response (statusCache) plus a
+// channel-id → member lookup (channelHealth) and the render function builds
+// each member row's state pill and counter line from it. The pill states and
+// the meta-line labels must stay verbatim so the UI cannot drift from the
+// G1a MemberStatus fields.
+func TestProvidersPageRendersPerMemberHealth(t *testing.T) {
+	body := providersHTML
+	for _, marker := range []string{
+		`statusCache=[]`,
+		`channelHealth=new Map()`,
+		`anyRuntimeData`,
+		`memberHealthRow(c,m)`,
+		`memberHealth(s)`,
+		`healthMeta(s)`,
+		`last_success_at`,
+		`cooldown_until`,
+		`half_open`,
+		`last_failure_retryable`,
+		`<span class="pill bad">退休</span>`,
+		`<span class="pill warn">冷却中`,
+		`<span class="pill ok">正常</span>`,
+		`<span class="pill warn">最近失败（可重试）</span>`,
+		`<span class="pill bad">最近失败</span>`,
+		`成功 '+(Number(s.successes)||0)`,
+		`429 '+(Number(s.retryable_429)||0)`,
+		`5xx '+(Number(s.server_error_5xx)||0)`,
+		`延迟 '+(Number(s.latency_ms)||0)`,
+		`上次成功`,
+		`无记录`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("providers page missing per-member health marker %q", marker)
+		}
+	}
+	// Fresh restart: no capability has runtime data yet, so member rows render
+	// the muted line instead of any pill, and the health line agrees.
+	if !strings.Contains(body, `if(!anyRuntimeData)return'<div class="member-health muted">暂无运行数据</div>'`) {
+		t.Fatalf("member rows must show 暂无运行数据 when the status fetch has no runtime data")
+	}
+	// The health line and the member rows must not fight over one fetch: the
+	// status request is awaited before renderChannels so the first paint
+	// already has the member lookup populated.
+	if !strings.Contains(body, `await loadProviderHealth()`) {
+		t.Fatalf("loadChannels must await the status fetch before rendering member rows")
+	}
+}
+
+// Each channel card carries a 测试 button that POSTs
+// /api/v1/admin/provider-channels/{id}/test with the admin token and renders
+// the extended result inline under a channel-scoped id. The result span must
+// be per-channel (test-result-<channelId>) so two cards never fight over one
+// element, and the call must go through adminHeaders() so the in-memory token
+// is what authenticates it.
+func TestProvidersPageHasTestChannelButton(t *testing.T) {
+	body := providersHTML
+	for _, marker := range []string{
+		`data-act="test-channel"`,
+		`测试</button>`,
+		`test-result-'+esc(c.id)`,
+		`model_responded`,
+		`模型已响应`,
+		`encodeURIComponent(channel.id)+'/test'`,
+		"adminHeaders()",
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("providers page missing test marker %q", marker)
+		}
+	}
+}
+
 // The page adds a key by resending the surviving members without api_key,
 // because PATCH replaces the whole member set and retains a member's stored
 // secret only when the member is present and its key is omitted. This test

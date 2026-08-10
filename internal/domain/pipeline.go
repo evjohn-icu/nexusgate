@@ -76,6 +76,95 @@ type JobSummary struct {
 	Total int `json:"total"`
 }
 
+// JobFailureCategory is the stable machine-readable identity of why a job
+// failed, for the issues view to aggregate on. It is decided once, at failure
+// time, by the sentinel the error chain carries — never by reading the message
+// text, which is prose for operators and can be reworded without changing what
+// happened (the same reasoning domain.ErrPermanentFailure documents). The
+// value is a Hub-assigned constant, JSON-safe, and durable in
+// jobs.last_error_code — the single column the issues view reads, so a job's
+// category is the code written at the moment it stopped or parked.
+//
+// The registry is deliberately extensible: categories with no producer yet
+// (media_decode, unsupported_media, source_missing, worker_offline,
+// configuration) exist so the issues view can render a complete palette from
+// day one, and the pipeline maps a sentinel to them the day one exists. An
+// error whose chain carries no known sentinel is Unknown — never a guess from
+// its text.
+type JobFailureCategory string
+
+const (
+	// JobFailureCategoryProviderQuota answers that the provider is
+	// rate-limiting (HTTP 408/429): the call was fine, the account is
+	// momentarily capped, and the job clears on its own.
+	JobFailureCategoryProviderQuota JobFailureCategory = "provider_quota"
+	// JobFailureCategoryProviderAuth answers that the credential is the
+	// problem (HTTP 401/402/403): the next attempt would present the same
+	// dead key to the same refusal, so an operator has to act.
+	JobFailureCategoryProviderAuth JobFailureCategory = "provider_auth"
+	// JobFailureCategoryProviderUnavailable answers that the provider itself
+	// was not reachable or not well (HTTP 5xx, network failure, timeout):
+	// transient, and the job clears on its own.
+	JobFailureCategoryProviderUnavailable JobFailureCategory = "provider_unavailable"
+	// JobFailureCategoryProviderRouteExhausted answers that every provider
+	// key on the capability's route failed at once; see
+	// JobDeferProviderRouteExhausted.
+	JobFailureCategoryProviderRouteExhausted JobFailureCategory = "provider_route_exhausted"
+	// JobFailureCategoryMediaDecode answers that the media could not be
+	// decoded (an ffprobe/ffmpeg decode failure). No sentinel produces it
+	// yet; the identity is reserved for the day one exists.
+	JobFailureCategoryMediaDecode JobFailureCategory = "media_decode"
+	// JobFailureCategoryUnsupportedMedia answers that the container or codec
+	// cannot be decoded, or the asset has no audio where the chain needs one
+	// — the permanent-ish class. No sentinel produces it yet.
+	JobFailureCategoryUnsupportedMedia JobFailureCategory = "unsupported_media"
+	// JobFailureCategoryDiskSpaceLow answers that the cache volume is full;
+	// see JobDeferDiskSpaceLow.
+	JobFailureCategoryDiskSpaceLow JobFailureCategory = "disk_space_low"
+	// JobFailureCategoryBudgetExhausted answers that the configured daily or
+	// monthly provider budget is spent for the period; see
+	// JobDeferBudgetExhausted.
+	JobFailureCategoryBudgetExhausted JobFailureCategory = "budget_exhausted"
+	// JobFailureCategorySourceMissing answers that the asset's primary
+	// location is gone. No sentinel produces it yet; the identity is reserved
+	// for the day the asset-state check reports one.
+	JobFailureCategorySourceMissing JobFailureCategory = "source_missing"
+	// JobFailureCategoryWorkerOffline answers that the paired Worker the job
+	// needed was not reachable. No sentinel produces it yet.
+	JobFailureCategoryWorkerOffline JobFailureCategory = "worker_offline"
+	// JobFailureCategoryConfiguration answers that the deployment is
+	// misconfigured and only an operator can fix it. No sentinel produces it
+	// yet.
+	JobFailureCategoryConfiguration JobFailureCategory = "configuration"
+	// JobFailureCategoryUnknown is the fallback for an error whose chain
+	// carries no sentinel the classifier knows. It is not "unimportant": it
+	// means the registry has not seen this failure yet, which the issues view
+	// should say rather than paper over.
+	JobFailureCategoryUnknown JobFailureCategory = "unknown"
+)
+
+// IsRetryable reports whether the category describes a failure that heals on
+// its own — the account is uncapped, the provider comes back, the disk frees
+// — so the job is worth keeping in the queue. It is false where the next
+// attempt would present identical inputs to a deterministic decision (auth,
+// decode, unsupported media, configuration) or where only an operator can see
+// what is wrong (unknown). The verdict lives here rather than at the call site
+// so the pipeline and the issues view cannot disagree about which failures
+// self-recover.
+func (c JobFailureCategory) IsRetryable() bool {
+	switch c {
+	case JobFailureCategoryProviderQuota,
+		JobFailureCategoryProviderUnavailable,
+		JobFailureCategoryProviderRouteExhausted,
+		JobFailureCategoryDiskSpaceLow,
+		JobFailureCategoryBudgetExhausted,
+		JobFailureCategorySourceMissing,
+		JobFailureCategoryWorkerOffline:
+		return true
+	}
+	return false
+}
+
 // JobDeferProviderRouteExhausted is the DeferReason recorded when every
 // provider key on a capability's route is failing at once. The recommended
 // deployment runs on a plan with a hard monthly quota, so an exhausted account
@@ -85,7 +174,42 @@ type JobSummary struct {
 // The value is a Hub-assigned constant rather than upstream text on purpose:
 // /progress renders it to any viewer, while last_error_message — which can
 // embed a truncated provider response body — stays behind the admin token.
-const JobDeferProviderRouteExhausted = "provider_route_exhausted"
+//
+// It is spelled from the category constant rather than as a literal so the
+// defer reason and the issues-view category can never drift apart: DeferJob
+// writes the reason into jobs.last_error_code, which is the same column the
+// issues view aggregates categories from. The conversion back to an untyped
+// string constant keeps existing call sites (string parameters, SQL binding)
+// unchanged.
+const JobDeferProviderRouteExhausted = string(JobFailureCategoryProviderRouteExhausted)
+
+// JobDeferDiskSpaceLow is the DeferReason recorded when a job is parked on a
+// full disk: an ENOSPC failure surfaced mid-job, or the pre-lease guard finding
+// the cache volume below minimum_free_space_bytes. The failure is about the
+// disk, not the job — the next attempt would write to the same full volume and
+// fail the same way — so it is deferred on wall-clock time instead of retried,
+// and the attempt this lease spent is handed back. The job auto-resumes once
+// the operator frees space or run_after passes.
+//
+// Like JobDeferProviderRouteExhausted, it is the disk-space category constant
+// spelled as an untyped string, for the same reason: the reason and the
+// category must be one spelling.
+const JobDeferDiskSpaceLow = string(JobFailureCategoryDiskSpaceLow)
+
+// JobDeferBudgetExhausted is the DeferReason recorded when a job is parked
+// because the operator's configured daily or monthly provider budget is spent
+// for the period: the cost_ledger sum for the day or month is at or past the
+// throttle's DailyBudget/MonthlyBudget. The spend is about the period, not
+// about the job — the next attempt would present identical inputs to the same
+// paid call at the same spent budget — so it is deferred on wall-clock time
+// instead of retried, and the attempt this lease spent is handed back. The
+// job auto-resumes once the period rolls over (next day 00:05 UTC, or the 1st
+// of the next month).
+//
+// Like JobDeferDiskSpaceLow, it is the budget category constant spelled as an
+// untyped string, for the same reason: the reason and the category must be
+// one spelling.
+const JobDeferBudgetExhausted = string(JobFailureCategoryBudgetExhausted)
 
 type MediaMetadata struct {
 	DurationMS         int64      `json:"duration_ms"`

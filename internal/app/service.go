@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/netip"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -96,19 +95,46 @@ var ErrWorkerProviderConfiguredAsChannelOnly = errors.New("worker provider acces
 type Repository interface {
 	PipelineRepository
 	IntegrityCheck(ctx context.Context) error
+	// HealStaleRunningJobs releases 'running' jobs whose lease expired (a
+	// crash artifact, not work in flight) back to 'pending', and terminally
+	// fails the ones that exhausted their attempts. HealOnStartup is its only
+	// caller; it lives on the full interface rather than PipelineRepository
+	// because it is a startup concern, not a pipeline-run one, and the narrow
+	// interface's fakes should not have to grow it.
+	HealStaleRunningJobs(context.Context, time.Time) (int, int, error)
 	CreateLibraryRoot(ctx context.Context, path string) (domain.LibraryRoot, error)
 	ListLibraryRoots(ctx context.Context) ([]domain.LibraryRoot, error)
 	GetLibraryRoot(ctx context.Context, id string) (domain.LibraryRoot, error)
 	IsLibraryRoot(ctx context.Context, path string) (bool, error)
+	// MarkRootScanStarted, MarkRootHealthy and MarkRootUnavailable persist the
+	// scan-time health ledger. ScanLibraryRoot writes them; nothing else does,
+	// and the reconciliation gate in ScanLibraryRoot is the only consumer of
+	// what they record.
+	MarkRootScanStarted(ctx context.Context, rootID string, at time.Time) error
+	MarkRootHealthy(ctx context.Context, rootID string, at time.Time) error
+	MarkRootUnavailable(ctx context.Context, rootID string, at time.Time) error
+	// MarkUnseenLocationsMissing lives here rather than on ingest.ScanRepository
+	// because the scanner no longer reconciles: it reports the seen list and
+	// the service calls this only after the root-health gate passes.
+	MarkUnseenLocationsMissing(ctx context.Context, rootID string, seenRelativePaths []string) (int, error)
 	ingest.ScanRepository
 	AssetsWithoutProbeJob(ctx context.Context, rootID string, limit int) ([]string, error)
 	ListAssets(ctx context.Context, limit, offset int) ([]domain.Asset, error)
+	TotalSourceBytes(ctx context.Context) (int64, error)
 	ListAssetCards(ctx context.Context, limit, offset int) ([]domain.AssetCard, error)
 	ListAssetCardsFiltered(ctx context.Context, filter domain.AssetCardFilter) ([]domain.AssetCard, error)
 	SaveAssetCollection(ctx context.Context, collection domain.AssetCollection) (domain.AssetCollection, error)
-	ListAssetCollections(ctx context.Context) ([]domain.AssetCollection, error)
-	GetAssetCollection(ctx context.Context, id string) (*domain.AssetCollection, error)
+	ListAssetCollections(ctx context.Context) ([]domain.CollectionSummary, error)
+	GetAssetCollection(ctx context.Context, id string) (*domain.CollectionSummary, error)
 	DeleteAssetCollection(ctx context.Context, id string) error
+	// The shot-basket methods are deliberately on the full Repository, not on
+	// PipelineRepository: the pipeline has no reason to read or mutate a
+	// collection's pins, and the narrow interface's fakes should not have to
+	// grow them.
+	AddShotToCollection(ctx context.Context, collectionID, shotID string) error
+	RemoveShotFromCollection(ctx context.Context, collectionID, shotID string) error
+	ListCollectionShots(ctx context.Context, collectionID string) ([]domain.CollectionShotDetail, error)
+	ReorderCollectionShots(ctx context.Context, collectionID string, shotIDs []string) error
 	ListAssetCardsInCollection(ctx context.Context, collectionID string, limit, offset int) ([]domain.AssetCard, error)
 	GetAssetProcessingSummary(ctx context.Context, filter domain.AssetCollectionFilter) (domain.AssetProcessingSummary, error)
 	ListShootSessions(ctx context.Context, filter domain.ShootSessionFilter) ([]domain.ShootSession, error)
@@ -125,6 +151,7 @@ type Repository interface {
 	BuildLibrarySummaryInput(context.Context) (domain.LibrarySummaryInput, error)
 	SaveLibrarySummary(context.Context, domain.LibrarySummary) (domain.LibrarySummary, error)
 	LatestLibrarySummary(context.Context) (*domain.LibrarySummary, error)
+	JobIssues(context.Context) ([]domain.JobIssue, error)
 	ListAssetShots(context.Context, string) ([]domain.AssetShot, error)
 	ShotExists(context.Context, string) (bool, error)
 	SearchShots(context.Context, string, int) ([]domain.ShotSearchResult, error)
@@ -146,11 +173,14 @@ type Repository interface {
 	UpsertProviderChannel(context.Context, domain.ProviderChannel) (domain.ProviderChannel, error)
 	ListProviderChannels(context.Context, string) ([]domain.ProviderChannel, error)
 	SoftDeleteProviderChannel(context.Context, string) error
+	RecordCostEstimate(context.Context, domain.CostEntry) error
+	CostEstimateForDay(context.Context, string) (float64, error)
+	CostEstimateForMonth(context.Context, string) (float64, error)
 	RebuildAutomaticShootSessions(context.Context, string) error
 	CreateWorkerPairing(context.Context, time.Duration) (remote.PairingToken, error)
 	EnrollWorker(context.Context, string, remote.WorkerRegistration) (remote.Worker, string, error)
 	AuthenticateWorker(context.Context, string) (remote.Worker, error)
-	HeartbeatWorker(context.Context, string, remote.WorkerCapabilities) error
+	HeartbeatWorker(context.Context, string, string, remote.WorkerCapabilities) error
 	ListWorkers(context.Context) ([]remote.Worker, error)
 	LeaseNextWorkerDerive(context.Context, remote.Worker, time.Duration, domain.LeaseFilter) (*remote.WorkerJob, error)
 	CompleteWorkerJob(context.Context, string, string, domain.JobState, string) error
@@ -161,6 +191,11 @@ type Repository interface {
 	CommitWorkerArtifact(context.Context, string, string, domain.DerivedArtifact, bool) (domain.DerivedArtifact, bool, error)
 	RecordProviderCredentialLease(context.Context, string, string, string, string, time.Time) error
 	SavePipelineThrottle(context.Context, domain.PipelineThrottle) error
+	// SearchIndexHealth and MigrationStatus are the read-only views
+	// DoctorReport renders; they live on the full Repository (not the narrow
+	// pipeline interface) because nothing in the pipeline needs them.
+	SearchIndexHealth(ctx context.Context) (domain.SearchIndexHealth, error)
+	MigrationStatus(ctx context.Context) (domain.MigrationStatus, error)
 }
 
 type Service struct {
@@ -291,7 +326,7 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 	pipelineVideoProvider := &pipelineVideo{channel: channelRuntime.video().(*channelVideo), router: videoRouter}
 	service := &Service{
 		repo: repo, cfg: cfg, scanner: ingest.NewScanner(repo),
-		pipeline: NewPipeline(repo, cfg.CacheDir, channelRuntime.asr(), channelRuntime.asrFallback(), pipelineVideoProvider, alignment, shotDetector, plan, sourceStager, time.Duration(cfg.Pipeline.ProviderRouteDeferralMinutes)*time.Minute),
+		pipeline: NewPipeline(repo, cfg.CacheDir, channelRuntime.asr(), channelRuntime.asrFallback(), pipelineVideoProvider, alignment, shotDetector, plan, sourceStager, time.Duration(cfg.Pipeline.ProviderRouteDeferralMinutes)*time.Minute, cfg.Pipeline.MinimumFreeSpaceBytes),
 		curator:  channelRuntime.curator(), embedder: channelRuntime.embedder(), planner: channelRuntime.planner(),
 		hardware: hardware, adminToken: adminToken, agentToken: agentToken, secrets: secrets,
 		channelRuntime: channelRuntime,
@@ -320,6 +355,10 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 	// synchronously inside the job; ensureShotTextEmbeddings swallows its own
 	// errors so an embedding hiccup can never fail an analysis job.
 	service.pipeline.SetAfterShotsCommitted(service.ensureShotTextEmbeddings)
+	// The cost ledger records an estimate after every successful analysis
+	// commit; the wrapper swallows errors so a ledger hiccup can never fail
+	// an analysis job (see recordAnalysisCostEstimate).
+	service.pipeline.SetCostEstimator(service.recordAnalysisCostEstimate)
 	return service, nil
 }
 
@@ -365,6 +404,9 @@ func (s *Service) ProviderChannelRuntimeStatus(_ context.Context) []ProviderChan
 // missing tail is treated as empty.
 func (s *Service) SaveProviderChannel(ctx context.Context, channel domain.ProviderChannel, memberKeys []string) (domain.ProviderChannel, error) {
 	if err := validateDistinctProviderChannelMemberLabels(channel.Members); err != nil {
+		return domain.ProviderChannel{}, err
+	}
+	if err := validateProviderChannelCosts(channel); err != nil {
 		return domain.ProviderChannel{}, err
 	}
 	if channel.ID == "" {
@@ -751,8 +793,8 @@ func (s *Service) AuthenticateWorker(ctx context.Context, token string) (remote.
 	return s.repo.AuthenticateWorker(ctx, token)
 }
 
-func (s *Service) HeartbeatWorker(ctx context.Context, workerID string, capabilities remote.WorkerCapabilities) error {
-	return s.repo.HeartbeatWorker(ctx, workerID, capabilities)
+func (s *Service) HeartbeatWorker(ctx context.Context, workerID, version string, capabilities remote.WorkerCapabilities) error {
+	return s.repo.HeartbeatWorker(ctx, workerID, version, capabilities)
 }
 
 func (s *Service) ListWorkers(ctx context.Context) ([]remote.Worker, error) {
@@ -768,6 +810,25 @@ func (s *Service) LeaseNextWorkerDerive(ctx context.Context, worker remote.Worke
 	if err != nil {
 		slog.Warn("pipeline throttle unreadable; leasing worker derive unthrottled", "error", err)
 		throttle = domain.DefaultPipelineThrottle()
+	}
+	// The same disk preflight the local pipeline runs before a heavy stage
+	// gates worker derive leases too: the uploaded proxy lands on the Hub's
+	// own volume (DataDir/derived/worker), and a worker that keeps deriving
+	// while that volume is full fills it further — the upload then fails with
+	// ENOSPC and the job burns attempts. The floor resolution mirrors the
+	// pipeline's (settings row wins when it exists, including an explicit 0 =
+	// disabled; otherwise the static config floor), and the probe fails open:
+	// an unreadable statfs or a Windows host never blocks work.
+	configured, cfgErr := s.repo.PipelineThrottleConfigured(ctx)
+	floor := s.cfg.Pipeline.MinimumFreeSpaceBytes
+	if cfgErr == nil && configured {
+		floor = throttle.MinimumFreeSpaceBytes
+	}
+	if floor > 0 {
+		if free, freeErr := freeBytes(s.cfg.DataDir); freeErr == nil && free < floor {
+			slog.Warn("cache volume below the configured free-space floor; not leasing worker derive", "free_bytes", free, "min_free_bytes", floor)
+			return nil, nil
+		}
 	}
 	now := time.Now()
 	job, err := s.repo.LeaseNextWorkerDerive(ctx, worker, 30*time.Minute, domain.LeaseFilter{MaxAssetBytes: throttle.MaxAssetBytesAt(now)})
@@ -972,9 +1033,42 @@ func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.Sc
 	if err != nil {
 		return domain.ScanResult{}, err
 	}
+	// MarkRootScanStarted is bookkeeping, not a precondition: the gate below
+	// writes the authoritative verdict from this scan's walk, so a failed
+	// start-mark only leaves last_scan_at stale for one interval and heals on
+	// the next pass. Blocking the scan itself on it would give a bookkeeping
+	// write the power to stop discovery.
+	now := time.Now().UTC()
+	if err := s.repo.MarkRootScanStarted(ctx, rootID, now); err != nil {
+		slog.Warn("scan: failed to record scan start", "root_id", rootID, "error", err)
+	}
 	result, err := s.scanner.Scan(ctx, root)
 	if err != nil {
 		return result, err
+	}
+	// Reconciliation gate. The scanner never marks files missing itself — it
+	// returns the seen list and this is the only place a scan may reconcile,
+	// decided from the root's state AFTER the walk. An unmounted NAS root
+	// walks as an empty directory; without this gate that walk would mark
+	// every asset in the root missing. The verdict marks are best-effort for
+	// the same reason the start-mark is: every scan recomputes them from
+	// scratch, so a lost write self-heals on the next pass and can never
+	// weaken the gate (the gate never reads the persisted verdict). A failure
+	// to write the reconciliation itself stays fatal, as it was when the
+	// scanner owned it.
+	if s.rootHealthyAfterScan(root, result) {
+		if err := s.repo.MarkRootHealthy(ctx, rootID, now); err != nil {
+			slog.Warn("scan: failed to record root healthy", "root_id", rootID, "error", err)
+		}
+		missing, err := s.repo.MarkUnseenLocationsMissing(ctx, root.ID, result.SeenRelativePaths)
+		if err != nil {
+			return result, err
+		}
+		result.Missing = missing
+	} else {
+		if err := s.repo.MarkRootUnavailable(ctx, rootID, now); err != nil {
+			slog.Warn("scan: failed to record root unavailable", "root_id", rootID, "error", err)
+		}
 	}
 	// Enqueue only the assets this scan actually changed. Re-enqueuing the
 	// whole library on every 15-minute pass is 2N queries that all land on an
@@ -1082,6 +1176,66 @@ func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.Sc
 	return result, nil
 }
 
+// rootHealthyAfterScan is the reconciliation gate: whether this scan's walk
+// result may be used to mark previously-seen files missing.
+//
+// The boundary it protects: an unmounted NAS root walks exactly like an empty
+// directory, and marking every asset missing from that walk is the data loss
+// this gate exists to prevent. The rules therefore err on the side of NOT
+// reconciling —
+//
+//   - the walk itself reported the root path unreachable → not healthy
+//   - the root directory no longer exists (os.Stat fails) → not healthy
+//   - mount.LooksUnmounted: the directory is empty and the mount table says
+//     it resolves to a different filesystem (the state of a mount whose share
+//     did not come back after a reboot) → not healthy
+//   - the directory is empty: a genuinely empty root cannot be distinguished
+//     from an unmounted one, and the alternative — scanning it and recording
+//     every asset as missing — is worse than saying so, so an empty directory
+//     is never proof of health and the walk does not reconcile
+//
+// Errors about files or subdirectories inside the root do not fail the gate:
+// one unreadable clip must not stop the library from reconciling files that
+// were genuinely deleted.
+func (s *Service) rootHealthyAfterScan(root domain.LibraryRoot, result domain.ScanResult) bool {
+	// The scanner records the walker's error verbatim, which for the root
+	// itself carries the path directly after the kernel verb ("lstat
+	// /mnt/nas: no such file or directory", "open /mnt/nas: permission
+	// denied"). The check is positional — the root path must directly precede
+	// the colon — so an error about a file inside the root never matches.
+	if len(result.Errors) > 0 && rootPathUnreachableInErrors(result.Errors, root) {
+		return false
+	}
+	// The walk can also complete without errors while the root is gone if the
+	// directory vanished after WalkDir's initial lstat; stat it afresh.
+	if _, err := os.Stat(root.Path); err != nil {
+		return false
+	}
+	if mount.LooksUnmounted(root.Path, mount.ReadMountTable()) {
+		return false
+	}
+	entries, err := os.ReadDir(root.Path)
+	if err != nil {
+		return false
+	}
+	return len(entries) > 0
+}
+
+// rootPathUnreachableInErrors reports whether result.Errors contains the
+// walk's failure to reach the root directory itself. The scanner appends the
+// raw walker error for the root path, so the verbs are the ones the kernel's
+// os.Lstat/os.Open produce on any platform this runs on.
+func rootPathUnreachableInErrors(errs []string, root domain.LibraryRoot) bool {
+	for _, e := range errs {
+		for _, verb := range []string{"lstat ", "stat ", "open ", "readdir ", "readdirent "} {
+			if strings.HasPrefix(e, verb+root.Path+":") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (s *Service) ListAssets(ctx context.Context, limit, offset int) ([]domain.Asset, error) {
 	return s.repo.ListAssets(ctx, limit, offset)
 }
@@ -1183,46 +1337,37 @@ func (s *Service) ReanalyzeAssets(ctx context.Context, assetIDs []string, reason
 	return enqueued, nil
 }
 
+// Doctor renders the DoctorReport as the sectioned operator console and
+// returns an error only when a HARD check failed: a broken SQLite integrity
+// check, or a report that could not be collected (a repository error). Every
+// advisory fact — a missing helper binary, a root in an unhealthy state, low
+// disk — is a printed ⚠/✗ line, never a non-zero exit, so the exit code
+// keeps meaning "the Hub's own state is in question".
 func (s *Service) Doctor(ctx context.Context, writer io.Writer) error {
-	for _, binary := range []string{"ffmpeg", "ffprobe", "exiftool"} {
-		path, err := exec.LookPath(binary)
-		if err != nil {
-			fmt.Fprintf(writer, "%s: missing\n", binary)
-			continue
-		}
-		fmt.Fprintf(writer, "%s: %s\n", binary, path)
-	}
-	if err := s.repo.IntegrityCheck(ctx); err != nil {
-		fmt.Fprintf(writer, "sqlite: %v\n", err)
-		return err
-	}
-	fmt.Fprintf(writer, "sqlite: ok\n")
-	report := s.HardwareReport()
-	media.FormatHardwareReport(writer, report)
-
-	roots, err := s.repo.ListLibraryRoots(ctx)
+	report, err := s.DoctorReport(ctx)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(writer, "library roots: %d\n", len(roots))
-	table := mount.ReadMountTable()
-	for _, root := range roots {
-		storage := "unknown"
-		if filesystem, known := mount.FilesystemFor(root.Path, table); known {
-			storage = filesystem.Type
-			if filesystem.Network {
-				storage = filesystem.Label + " (" + filesystem.Type + ")"
-			}
-		}
-		fmt.Fprintf(writer, "  %s: %s\n", root.Path, storage)
-		for _, warning := range s.RootWarnings(root.Path, true) {
-			fmt.Fprintf(writer, "    %s\n", warning)
-		}
+	printDoctorReport(writer, report)
+	if !report.DB.IntegrityOK {
+		return fmt.Errorf("SQLite integrity check failed; restore from a backup before continuing")
 	}
 	return nil
 }
 
 func (s *Service) HardwareReport() media.HardwareReport { return s.hardware }
+
+// HealOnStartup runs the crash-recovery sweep for stale 'running' jobs once,
+// right after NewService, on the CLI paths that actually run the queue
+// (`serve`, `pipeline run`). It is deliberately not called from NewService
+// itself: tests construct a Service for nearly every test in this package,
+// and an implicit database sweep on every construction would be a surprise
+// side effect nobody asked for. Failures are logged, never fatal — a Hub can
+// serve reads while the next lease attempt reclaims a stale job anyway.
+func (s *Service) HealOnStartup(ctx context.Context) error {
+	_, _, err := s.repo.HealStaleRunningJobs(ctx, time.Now())
+	return err
+}
 
 func (s *Service) RunPipeline(ctx context.Context) error {
 	executed, err := s.pipeline.RunUntilIdle(ctx)
@@ -1635,10 +1780,10 @@ func (s *Service) ListAssetCardsFiltered(ctx context.Context, filter domain.Asse
 func (s *Service) SaveAssetCollection(ctx context.Context, collection domain.AssetCollection) (domain.AssetCollection, error) {
 	return s.repo.SaveAssetCollection(ctx, collection)
 }
-func (s *Service) ListAssetCollections(ctx context.Context) ([]domain.AssetCollection, error) {
+func (s *Service) ListAssetCollections(ctx context.Context) ([]domain.CollectionSummary, error) {
 	return s.repo.ListAssetCollections(ctx)
 }
-func (s *Service) GetAssetCollection(ctx context.Context, id string) (*domain.AssetCollection, error) {
+func (s *Service) GetAssetCollection(ctx context.Context, id string) (*domain.CollectionSummary, error) {
 	return s.repo.GetAssetCollection(ctx, id)
 }
 func (s *Service) DeleteAssetCollection(ctx context.Context, id string) error {

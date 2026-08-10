@@ -2,11 +2,35 @@ package domain
 
 import "time"
 
+// RootHealthState is the persisted health verdict of a library root. The scan
+// service decides the verdict; this type only carries it across restarts.
+type RootHealthState string
+
+const (
+	// RootHealthUnknown means the root was never scanned or the state was lost
+	// (the default for rows created before health tracking existed).
+	RootHealthUnknown RootHealthState = "unknown"
+	// RootHealthHealthy means the last scan actually walked a real, mounted root.
+	RootHealthHealthy RootHealthState = "healthy"
+	// RootHealthUnavailable means the root path or mount was unreachable, so
+	// missing-file reconciliation is paused until a scan reaches it again.
+	RootHealthUnavailable RootHealthState = "unavailable"
+)
+
 type LibraryRoot struct {
 	ID        string    `json:"id"`
 	Path      string    `json:"path"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// HealthState gates reconciliation: a scan must not mark assets missing
+	// while the root itself is unknown or unavailable.
+	HealthState RootHealthState `json:"health_state"`
+	// LastHealthyAt is the last scan that confirmed a mounted root; never
+	// cleared by an unavailable scan, so the UI can show "last healthy".
+	LastHealthyAt *time.Time `json:"last_healthy_at,omitempty"`
+	// LastScanAt is the last time any scan walk of this root finished (or
+	// failed to start because the root was unreachable).
+	LastScanAt *time.Time `json:"last_scan_at,omitempty"`
 }
 
 type AssetState string
@@ -28,16 +52,22 @@ type Asset struct {
 }
 
 type AssetLocation struct {
-	ID           string    `json:"id"`
-	AssetID      string    `json:"asset_id"`
-	RootID       string    `json:"root_id"`
-	RelativePath string    `json:"relative_path"`
-	AbsolutePath string    `json:"absolute_path"`
-	FileID       string    `json:"file_id,omitempty"`
-	ModifiedNS   int64     `json:"modified_ns"`
-	Exists       bool      `json:"exists"`
-	IsPrimary    bool      `json:"is_primary"`
-	LastSeenAt   time.Time `json:"last_seen_at"`
+	ID           string `json:"id"`
+	AssetID      string `json:"asset_id"`
+	RootID       string `json:"root_id"`
+	RelativePath string `json:"relative_path"`
+	AbsolutePath string `json:"absolute_path"`
+	FileID       string `json:"file_id,omitempty"`
+	ModifiedNS   int64  `json:"modified_ns"`
+	// QuickFingerprint and FileSize are the owning asset's identity, joined
+	// into the location by GetPrimaryLocation so the pipeline can derive a
+	// path-independent probe input hash from the primary location alone.
+	// They describe the content, never the path a file happens to sit at.
+	QuickFingerprint string    `json:"quick_fingerprint"`
+	FileSize         int64     `json:"file_size"`
+	Exists           bool      `json:"exists"`
+	IsPrimary        bool      `json:"is_primary"`
+	LastSeenAt       time.Time `json:"last_seen_at"`
 }
 
 type ScanResult struct {
@@ -45,6 +75,13 @@ type ScanResult struct {
 	Linked     int      `json:"linked"`
 	Missing    int      `json:"missing"`
 	Errors     []string `json:"errors"`
+	// SeenRelativePaths is every video path the walk reached, in walk order.
+	// The scanner only reports it; the service decides whether the list may
+	// be used as the reconciliation input for MarkUnseenLocationsMissing (the
+	// root-health gate in internal/app). Hidden from JSON for the same reason
+	// as ChangedAssetIDs: ScanResult is the response body of
+	// POST /library-roots/{id}/scan and must keep its documented shape.
+	SeenRelativePaths []string `json:"-"`
 	// ChangedAssetIDs carries the assets a scan actually changed so the caller
 	// can enqueue only those. Hidden from JSON: ScanResult is the response body
 	// of POST /library-roots/{id}/scan and must keep its documented shape.

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -17,6 +18,50 @@ func TestUsage(t *testing.T) {
 	err := usage()
 	if err == nil || err.Error() != "invalid command" {
 		t.Fatalf("usage() error = %v, want %q", err, "invalid command")
+	}
+}
+
+// captureUsageText runs usage() with stderr redirected and returns what it
+// printed. usage() doubles as the no-args error path, so the error itself is
+// asserted here too.
+func captureUsageText(t *testing.T) string {
+	t.Helper()
+	orig := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = orig })
+	usageErr := usage()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usageErr == nil || usageErr.Error() != "invalid command" {
+		t.Fatalf("usage() error = %v, want %q", usageErr, "invalid command")
+	}
+	return string(data)
+}
+
+func TestUsageListsAllCommands(t *testing.T) {
+	text := captureUsageText(t)
+	for _, command := range []string{"serve", "root", "pipeline", "reanalyze", "search", "doctor", "secrets", "worker", "cache"} {
+		if !strings.Contains(text, "timingdex "+command) {
+			t.Errorf("usage() output does not mention the %q command", command)
+		}
+	}
+}
+
+func TestUsageDocumentsReanalyzeAndSecretsRekey(t *testing.T) {
+	text := captureUsageText(t)
+	for _, want := range []string{"timingdex reanalyze", "timingdex secrets rekey"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("usage() output missing %q", want)
+		}
 	}
 }
 

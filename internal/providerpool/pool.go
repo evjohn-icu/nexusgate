@@ -238,6 +238,61 @@ func (p *Pool) EnabledState(name string) (enabled bool, known bool) {
 	return false, false
 }
 
+// MemberHealth is the observable, secret-free health state of one member for
+// one capability. A zero CooldownUntil means the member is not cooling.
+type MemberHealth struct {
+	CooldownUntil time.Time
+	HalfOpen      bool
+	Inflight      int
+}
+
+// HealthState reports the health of one member for one capability. The bool
+// reports whether the pool knows the member name at all; a known member that
+// does not serve capability yields a zero state. It exists so a status view
+// can show an operator why a key configuration still enables is not being
+// selected, without the view reaching into pool internals.
+func (p *Pool) HealthState(name string, capability Capability) (MemberHealth, bool) {
+	if p == nil {
+		return MemberHealth{}, false
+	}
+	name = strings.TrimSpace(name)
+	capability = normalizeCapability(capability)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range p.members {
+		if p.members[i].member.Name == name {
+			health := p.members[i].health[capability]
+			if health == nil {
+				return MemberHealth{}, true
+			}
+			return MemberHealth{CooldownUntil: health.cooldownUntil, HalfOpen: health.halfOpen, Inflight: health.inflight}, true
+		}
+	}
+	return MemberHealth{}, false
+}
+
+// Selectable reports whether the pool would select the member for capability
+// right now: enabled, not cooling, and not a half-open probe already in
+// flight. It is Select's eligibility rule exposed as a yes/no, so a status
+// view can distinguish "the operator enabled this key" from "the route would
+// actually accept a call on it" — the two diverge exactly while a member
+// cools, probes, or has been retired for a spent key.
+func (p *Pool) Selectable(name string, capability Capability) bool {
+	if p == nil {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	capability = normalizeCapability(capability)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range p.members {
+		if p.members[i].member.Name == name {
+			return p.members[i].member.Enabled && eligible(p.members[i].member, p.members[i].health[capability], p.options.Now())
+		}
+	}
+	return false
+}
+
 // Select acquires one member for capability and increments its inflight count.
 // The caller must complete the returned lease with Done or Release.
 func (p *Pool) Select(capability Capability) (*Lease, error) {

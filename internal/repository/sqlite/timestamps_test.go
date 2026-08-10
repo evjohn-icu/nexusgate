@@ -178,7 +178,14 @@ func TestMigration0021CoversEveryTimestampColumn(t *testing.T) {
 	// is nothing for 0021 to rewrite. Keeping this set explicit (rather than
 	// inferring from sqlite_master order) makes the exemption auditable when
 	// the next post-0021 table is added.
-	post0021Tables := map[string]bool{"webdav_accounts": true, "reanalysis_requests": true, "shot_text_embeddings": true}
+	post0021Tables := map[string]bool{"webdav_accounts": true, "reanalysis_requests": true, "shot_text_embeddings": true, "collection_shots": true, "cost_ledger": true}
+
+	// Timestamp columns added to a pre-0021 table by a later migration share
+	// the same birth-formatTime property, but land under a table 0021 must
+	// still rewrite. 0021 runs before those columns exist on fresh databases,
+	// so they can never be added to its UPDATE list -- the exemption is the
+	// only place that is both true and auditable.
+	post0021Columns := map[string]bool{"library_roots.last_healthy_at": true, "library_roots.last_scan_at": true}
 
 	var uncovered []string
 	for rows.Next() {
@@ -206,6 +213,9 @@ func TestMigration0021CoversEveryTimestampColumn(t *testing.T) {
 		}
 		cols.Close()
 		for _, name := range colNames {
+			if post0021Columns[table+"."+name] {
+				continue
+			}
 			if isTimestampColumn(name) {
 				needle := "UPDATE " + table + " SET " + name + " = CASE"
 				if !strings.Contains(string(migrationSQL), needle) {

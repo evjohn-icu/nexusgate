@@ -73,6 +73,13 @@ type SearchQuery struct {
 	Raw    string
 	Intent SearchIntent
 
+	// SpeechPhrase is the compiled, exact-match phrase for speech retrieval,
+	// extracted from quotes/markers (e.g. 他说“明天见” → "明天见"), so the
+	// transcript channel matches the phrase rather than the raw query. Empty
+	// when the query carries no speech claim; retrievers then fall back to
+	// Raw, which keeps behavior unchanged for non-speech queries.
+	SpeechPhrase string
+
 	Must    []Constraint
 	Should  []Constraint
 	MustNot []Constraint
@@ -87,9 +94,14 @@ type SearchQuery struct {
 // /api/v1/search/shots). Mode maps to SearchIntent; "" and "auto" both mean
 // "let the router decide".
 type SearchRequest struct {
-	Query           string             `json:"query"`
-	Mode            string             `json:"mode"`
-	Limit           int                `json:"limit"`
+	Query string `json:"query"`
+	Mode  string `json:"mode"`
+	Limit int    `json:"limit"`
+	// Offset pages the final ranked result list, AFTER selection/diversity —
+	// it never trims the recall pool. A request with offset+limit within the
+	// selected list pages through it; an offset beyond the list yields empty
+	// results. Negative or zero means no offset.
+	Offset          int                `json:"offset"`
 	Diversity       float64            `json:"diversity"`
 	IncludeEvidence bool               `json:"include_evidence"`
 	IncludeContext  bool               `json:"include_context"`

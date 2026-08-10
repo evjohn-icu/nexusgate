@@ -1,6 +1,9 @@
 package api
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -135,7 +138,7 @@ func TestLibraryPageRendersSemanticFacetControls(t *testing.T) {
 	// A 400 from parseFacetFilter must surface as an error, not as an empty
 	// library: the old fetch chain mapped any non-ok response to [], which is
 	// the exact failure the 400 was written to prevent.
-	if !strings.Contains(page, `if(!r.ok)throw Error(await r.text());return r.json()`) {
+	if !strings.Contains(page, `if(!r.ok)throw Error(await apiErrMsg(r));return r.json()`) {
 		t.Fatalf("load() must surface the server message on a non-ok response")
 	}
 	if strings.Contains(page, `'assets?limit=300'+filterQuery()).then(r=>r.ok?r.json():[])`) {
@@ -162,6 +165,57 @@ func TestLibraryPageRendersSemanticFacetControls(t *testing.T) {
 	// \"333.3333333333333\" from 0.333 * 1000.
 	if !strings.Contains(page, `Math.round(sec*1000)`) {
 		t.Fatalf("filterQuery() must use Math.round(sec*1000) for correct millisecond conversion")
+	}
+}
+
+// The empty library must coach rather than dead-end: 启动配置 links to the
+// setup wizard and a second line offers the roots wizard. Both anchors live in
+// the legacy constant as exact-match text — the same silent-no-op hazard as
+// the page patches — so they are pinned on the served page.
+func TestLibraryPageEmptyStateLinksToSetupAndRoots(t *testing.T) {
+	response := httptest.NewRecorder()
+	service := providerChannelTestService(t, "library-empty-state-page.db")
+	// Fresh-install routing redirects a rootless hub to /setup, so the empty
+	// state below is only reachable with at least one root registered.
+	if _, err := service.AddLibraryRoot(context.Background(), t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	NewServer("", service).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, marker := range []string{
+		`暂无素材。先在<a href="/setup"`,
+		`打开素材目录向导`,
+		`href="/library-roots"`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("library empty state missing %q", marker)
+		}
+	}
+}
+
+// The saved-view select must explain itself when empty: a muted hint sits next
+// to the select (hidden until loadCollections shows it), the 不使用 option
+// stays in place, and a fetch failure surfaces as a warning hint instead of
+// being swallowed into a silent no-op.
+func TestLibraryPageCollectionsEmptyStateHasGuidance(t *testing.T) {
+	page := libraryIndexHTML
+	if !strings.Contains(page, `<p class="muted collections-hint" id="collections-hint" hidden>`) {
+		t.Fatalf("library page must ship a hidden collections hint next to the select")
+	}
+	if !strings.Contains(page, `还没有保存的视图。在搜索结果页可以把筛选保存为视图。`) {
+		t.Fatalf("library page collections hint copy missing")
+	}
+	if !strings.Contains(page, `<option value="">不使用</option>`) {
+		t.Fatalf("the 不使用 option must stay in place when no collections exist")
+	}
+	if !strings.Contains(page, `collectionsHint(items.length?'':'还没有保存的视图。在搜索结果页可以把筛选保存为视图。',false)`) {
+		t.Fatalf("loadCollections() must show the hint when the fetched list is empty")
+	}
+	if !strings.Contains(page, `collectionsHint('无法加载保存的视图，请稍后再试。',true)`) {
+		t.Fatalf("loadCollections() must surface a fetch failure as a warning hint")
 	}
 }
 
@@ -216,21 +270,87 @@ func TestLibraryPageSearchIsShotFirst(t *testing.T) {
 // TestLibraryPageShotDrawerPinsProxySeek asserts the clickable-shot contract:
 // every timeline block carries its own row (so the drawer needs no second
 // round trip), and the drawer video seeks the proxy to the shot's exact
-// range via the HTML5 fragment, playing start → end without navigation.
+// range via the HTML5 fragment, playing start → end without navigation. The
+// end is clamped (see TestLibraryPageDrawerClampsFragment) but still
+// absolute, never a duration.
 func TestLibraryPageShotDrawerPinsProxySeek(t *testing.T) {
 	page := libraryIndexHTML
 	for _, marker := range []string{
 		`data-shot-drawer`,
 		`data-shot-video`,
-		`data-shot="'+esc(JSON.stringify(s))+'"`,
+		`data-shot="'+encodeURIComponent(JSON.stringify(s))+'"`,
 		`data-asset="'+esc(x.id)+'"`,
 		`data-drawer-close`,
-		`/proxy#t='+Math.floor(s/1000)+','+Math.ceil(e/1000)`, // absolute end, not duration
+		`/proxy#t='+Math.floor(s/1000)+','+Math.ceil(clampEnd/1000)`, // absolute end, not duration
 		`document.addEventListener('click',function(e){const block=e.target.closest('.shot')`,
 		`document.addEventListener('keydown',function(e){if(e.key==='Escape')closeShotDrawer()`,
 	} {
 		if !strings.Contains(page, marker) {
 			t.Fatalf("shot drawer missing marker %q", marker)
+		}
+	}
+}
+
+// TestLibraryPageSelectionFeatures pins the E2 selection loop: 加入收藏 on
+// both the result card (stopPropagation so it never opens the drawer) and the
+// drawer, the collections modal wired to the collections API with a
+// token hint on 401, the drawer's 复制时间码 (clipboard with execCommand
+// fallback) and 相似镜头 actions against /api/v1/shots/{id}/similar, the
+// test-drive coaching on the search-empty state, and the 保存当前筛选 view
+// builder next to the saved-view select.
+func TestLibraryPageSelectionFeatures(t *testing.T) {
+	page := libraryIndexHTML
+	for _, marker := range []string{
+		`加入收藏`,
+		`data-add-shot onclick="event.stopPropagation();addShotToCollection(this)"`,
+		`addShotToCollection(this)`,
+		`/api/v1/collections',{headers:authHeaders()}`,
+		`/api/v1/collections/'+encodeURIComponent(cid)+'/shots'`,
+		`createAndAddCollection()`,
+		`需要管理 Token：请先在左侧栏填入`,
+		`复制时间码`,
+		`copyTimecode(this)`,
+		`navigator.clipboard.writeText`,
+		`document.execCommand('copy')`,
+		`fmtTimecode(start)`,
+		`相似镜头`,
+		`loadSimilarShots()`,
+		`/api/v1/shots/'+encodeURIComponent(shotId)+'/similar'`,
+		`先分析几个片段`,
+		`testDriveStart`,
+		`'/api/v1/test-drive'`,
+		`test-drive/suggestions?assets='+ids.map(encodeURIComponent).join(',')`,
+		`试试搜索`,
+		`保存当前筛选`,
+		`saveCurrentView()`,
+		`captured_from`,
+		`Object.assign(filter,filterFacets())`,
+	} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("library page selection features missing marker %q", marker)
+		}
+	}
+	// The test-drive coaching must also reach the browse-mode timeline-empty
+	// state, not just the search-empty state.
+	if !strings.Contains(page, `<div class="timeline-empty"><span>尚未生成镜头理解；完成分析后会显示可用时间段。</span><button class="shot-add" onclick="testDriveStart(this)">`) {
+		t.Fatalf("timeline-empty state missing the test-drive coaching")
+	}
+}
+
+// TestLibraryPageDrawerClampsFragment pins the clamp rule on the drawer's
+// proxy fragment: the end is capped at start+60000ms and both bounds round to
+// whole seconds. A huge range makes some browsers preload the whole asset and
+// hang playback; sub-second precision makes seeking behave unpredictably.
+func TestLibraryPageDrawerClampsFragment(t *testing.T) {
+	page := libraryIndexHTML
+	for _, marker := range []string{
+		`Math.min(e,s+60000)`,                                  // end clamped to one minute past start
+		`Math.floor(s/1000)`,                                   // start rounds down to whole seconds
+		`Math.ceil(clampEnd/1000)`,                             // end rounds up to whole seconds
+		`#t='+Math.floor(s/1000)+','+Math.ceil(clampEnd/1000)`, // fragment keeps its #t=
+	} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("drawer fragment clamp missing marker %q", marker)
 		}
 	}
 }

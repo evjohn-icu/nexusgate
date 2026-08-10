@@ -98,7 +98,7 @@ func TestReanalysisProducesNewCanonicalRunKeepsOldAuditable(t *testing.T) {
 	assetID := seedAnalyzeReadyAsset(t, repo, root, "clip-a")
 
 	first := &reanalysisVideoProvider{label: "run-1"}
-	pipeline := NewPipeline(repo, t.TempDir(), nil, nil, first, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral)
+	pipeline := NewPipeline(repo, t.TempDir(), nil, nil, first, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
 	if err := repo.EnqueueJob(ctx, assetID, domain.JobAnalyze, hashStrings("first", "analyze"), 30); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestReanalysisProducesNewCanonicalRunKeepsOldAuditable(t *testing.T) {
 	firstRun := shots[0].SourceRunID
 
 	second := &reanalysisVideoProvider{label: "run-2"}
-	pipeline = NewPipeline(repo, t.TempDir(), nil, nil, second, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral)
+	pipeline = NewPipeline(repo, t.TempDir(), nil, nil, second, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
 	service, err := NewService(repo, config.Config{DataDir: dir, CacheDir: filepath.Join(dir, "cache"), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
 	if err != nil {
 		t.Fatal(err)

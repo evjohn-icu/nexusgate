@@ -105,7 +105,7 @@ func TestPipelineDefersWithoutSpendingAnAttemptWhenEveryProviderKeyFails(t *test
 		providerchannels.ErrRouteExhausted,
 		providerpool.HTTPError{Code: 429, Err: errors.New("monthly quota exhausted")}))
 	repo := newQueuedIndexJob(t, exhausted)
-	pipeline := NewPipeline(repo, t.TempDir(), nil, nil, nil, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral)
+	pipeline := NewPipeline(repo, t.TempDir(), nil, nil, nil, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
 
 	before := time.Now()
 	if _, err := pipeline.RunUntilIdle(context.Background()); err != nil {
@@ -137,7 +137,7 @@ func TestPipelineDefersWithoutSpendingAnAttemptWhenEveryProviderKeyFails(t *test
 // the job's own still spends its three attempts and then stops for good.
 func TestPipelineStillExhaustsThreeAttemptsOnAnOrdinaryFailure(t *testing.T) {
 	repo := newQueuedIndexJob(t, errors.New("search index write failed: temporary io timeout"))
-	pipeline := NewPipeline(repo, t.TempDir(), nil, nil, nil, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral)
+	pipeline := NewPipeline(repo, t.TempDir(), nil, nil, nil, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
 
 	job := singleJob(t, repo, pipeline, func(job domain.Job) bool { return job.Terminal })
 	if !job.Terminal || job.State != domain.JobFailed {
@@ -155,7 +155,7 @@ func TestPipelineStillExhaustsThreeAttemptsOnAnOrdinaryFailure(t *testing.T) {
 // not have made every failure look survivable.
 func TestPipelineStillFailsPermanentErrorsOnTheFirstAttempt(t *testing.T) {
 	repo := newQueuedIndexJob(t, domain.Permanent(errors.New("video analysis provider is not configured")))
-	pipeline := NewPipeline(repo, t.TempDir(), nil, nil, nil, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral)
+	pipeline := NewPipeline(repo, t.TempDir(), nil, nil, nil, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
 
 	if _, err := pipeline.RunUntilIdle(context.Background()); err != nil {
 		t.Fatal(err)

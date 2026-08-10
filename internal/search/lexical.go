@@ -45,6 +45,11 @@ func (r *LexicalRetriever) Retrieve(ctx context.Context, q SearchQuery, limit in
 // scoreShotCandidates is the full-library scorer — when facets are set it
 // defines the candidate universe and the other channels' candidates outside
 // it are dropped by the service.
+//
+// Facet-universe rule: when facets are set this channel defines the candidate
+// universe; facet-matched shots with no semantic signal are retained (Signal
+// value 0) so exact lexical matches under a facet are not dropped; without
+// facets the semantic>0 gate is unchanged.
 type HeuristicSemanticRetriever struct {
 	store ShotStore
 }
@@ -60,13 +65,22 @@ func (r *HeuristicSemanticRetriever) Retrieve(ctx context.Context, q SearchQuery
 	if err != nil {
 		return nil, err
 	}
+	faceted := hasAnyFacet(q.Filters.Facets)
 	out := make([]Candidate, 0, len(shots))
 	for _, shot := range shots {
-		if shot.SemanticScore <= 0 {
+		if shot.SemanticScore <= 0 && !faceted {
 			continue
 		}
 		c := toCandidate(shot)
-		c.Signals[SignalHeuristicSemantic] = shot.SemanticScore
+		if shot.SemanticScore <= 0 {
+			// Facet-matched but no semantic signal: stay in the candidate
+			// universe with an explicit zero so fusion does not rank the
+			// shot on a fabricated score; other channels (lexical/exact)
+			// decide its rank under the facet.
+			c.Signals[SignalHeuristicSemantic] = 0
+		} else {
+			c.Signals[SignalHeuristicSemantic] = shot.SemanticScore
+		}
 		out = append(out, c)
 	}
 	return out, nil
@@ -74,7 +88,10 @@ func (r *HeuristicSemanticRetriever) Retrieve(ctx context.Context, q SearchQuery
 
 // TranscriptRetriever is the speech channel: aligned transcript words
 // overlapping the shot's time range. A shot only scores where the words
-// actually fall, so speech evidence never leaks to the whole asset.
+// actually fall, so speech evidence never leaks to the whole asset. The
+// match string is the compiled speech phrase when present (so the marker
+// words in 他说“明天见” never pollute the token match); otherwise the raw
+// query, preserving the pre-phrase behavior.
 type TranscriptRetriever struct {
 	store ShotStore
 }
@@ -86,7 +103,11 @@ func NewTranscriptRetriever(store ShotStore) *TranscriptRetriever {
 func (r *TranscriptRetriever) Name() string { return SignalTranscript }
 
 func (r *TranscriptRetriever) Retrieve(ctx context.Context, q SearchQuery, limit int) ([]Candidate, error) {
-	shots, err := r.store.TranscriptRankedShots(ctx, q.Raw, limit)
+	match := q.Raw
+	if q.SpeechPhrase != "" {
+		match = q.SpeechPhrase
+	}
+	shots, err := r.store.TranscriptRankedShots(ctx, match, limit)
 	if err != nil {
 		return nil, err
 	}

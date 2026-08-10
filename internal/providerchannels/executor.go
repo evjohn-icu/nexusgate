@@ -81,8 +81,20 @@ type memberStats struct {
 	attempts         uint64
 	successes        uint64
 	failures         uint64
+	lastSuccessAt    time.Time
 	lastFailureAt    time.Time
 	lastFailureRetry bool
+	// latencyEWMA is the exponentially weighted moving average of successful
+	// invocation durations, alpha 0.2 (latencyEWMA = 0.2*latency +
+	// 0.8*latencyEWMA), kept in nanoseconds as a time.Duration. It is a
+	// smoothed signal for the providers page, not a precise measurement.
+	latencyEWMA time.Duration
+	// retryable429 and serverError5xx count the two retryable failures an
+	// operator can actually act on: a rate limit, and a provider server
+	// fault. Other retryable failures (408, deadline, network drop) count in
+	// failures but in neither histogram.
+	retryable429   uint64
+	serverError5xx uint64
 	// lastOutcomeDeferrable records whether the *most recent* outcome was a
 	// failure that leaves the route worth trying later — a retryable one, or a
 	// key that retired itself. lastFailureRetry cannot answer that: it stays
@@ -312,9 +324,10 @@ func (e *Executor) Execute(ctx context.Context, capability Capability, operation
 				return fmt.Errorf("providerchannels: selected unknown member %q", memberID)
 			}
 			invocation := Invocation{Capability: capability, ChannelID: channel.ID, ChannelLabel: channel.Label, Provider: channel.Provider, ProviderName: channel.ProviderName, Protocol: channel.Protocol, Endpoint: channel.Endpoint, Path: channel.Path, Model: channel.Model, AuthHeader: channel.AuthHeader, AuthScheme: channel.AuthScheme, TimeoutSeconds: channel.TimeoutSeconds, MemberID: member.ID, MemberLabel: member.Label, SecretRef: member.SecretRef}
+			started := e.now()
 			callErr := invoke(ctx, invocation, member)
 			lease.Done(callErr)
-			e.record(invocation, callErr)
+			e.record(invocation, callErr, e.now().Sub(started))
 			if callErr == nil {
 				return nil
 			}
@@ -402,6 +415,26 @@ func servesCapability(capabilities []Capability, capability Capability) bool {
 	return false
 }
 
+// memberCapabilityForStatus picks the capability whose health one member's
+// status entry should reflect. Health is tracked per capability, but MemberStatus
+// has room for one cooldown per member. A filtered snapshot examines the
+// requested capability — and a member that does not serve it cannot make the
+// route available for it, so it is reported as not selectable; an unfiltered
+// snapshot falls back to the first capability the member serves, which is the
+// only one a single-capability channel ever has.
+func memberCapabilityForStatus(member Member, filter Capability) Capability {
+	if filter != "" {
+		if !servesCapability(member.Capabilities, filter) {
+			return ""
+		}
+		return filter
+	}
+	for _, capability := range member.Capabilities {
+		return capability
+	}
+	return ""
+}
+
 // Run is an alias for Execute.
 func (e *Executor) Run(ctx context.Context, capability Capability, operation any) error {
 	return e.Execute(ctx, capability, operation)
@@ -430,7 +463,10 @@ func makeInvoker(operation any) (func(context.Context, Invocation, Member) error
 	}
 }
 
-func (e *Executor) record(invocation Invocation, err error) {
+// record folds one invocation outcome into the member's counters. latency is
+// the duration of the invoke call itself, measured through the injected clock
+// so a fake clock can drive deterministic latency in tests.
+func (e *Executor) record(invocation Invocation, err error, latency time.Duration) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	key := statsKey(invocation.ChannelID, invocation.MemberID)
@@ -438,11 +474,25 @@ func (e *Executor) record(invocation Invocation, err error) {
 	stats.attempts++
 	if err == nil {
 		stats.successes++
+		stats.lastSuccessAt = e.now().UTC()
+		stats.latencyEWMA = time.Duration(0.2*float64(latency) + 0.8*float64(stats.latencyEWMA))
 		stats.lastOutcomeDeferrable = false
 	} else {
 		stats.failures++
 		stats.lastFailureAt = e.now().UTC()
 		class := providerpool.ClassifyFailure(err)
+		// 429 and 5xx are the retryable failures with a distinct operator
+		// story — throttled, and the provider's server is down. Only status
+		// code distinguishes them; everything else about the classification
+		// (the pool cools the member either way) already happened above.
+		if class == providerpool.Retryable {
+			switch code := statusCodeOf(err); {
+			case code == 429:
+				stats.retryable429++
+			case code >= 500 && code <= 599:
+				stats.serverError5xx++
+			}
+		}
 		// A retired key is a failure the operator has to fix, not a transient
 		// one, so it must not be reported as retryable in the status view. It
 		// still leaves the route deferrable: a route with no key left is worth
@@ -451,6 +501,23 @@ func (e *Executor) record(invocation Invocation, err error) {
 		stats.lastOutcomeDeferrable = class == providerpool.Retryable || class == providerpool.MemberSpent
 	}
 	e.stats[key] = stats
+}
+
+// statusCodeOf extracts the HTTP status an error chain carries, or 0 when
+// none does. Both providerpool.HTTPError (StatusCode) and *common.StatusError
+// (HTTPStatusCode) are status-bearing; the dual probe mirrors
+// providerpool.ClassifyFailure's own classifier without importing a transport
+// package.
+func statusCodeOf(err error) int {
+	var withStatus interface{ StatusCode() int }
+	if errors.As(err, &withStatus) {
+		return withStatus.StatusCode()
+	}
+	var withHTTPStatus interface{ HTTPStatusCode() int }
+	if errors.As(err, &withHTTPStatus) {
+		return withHTTPStatus.HTTPStatusCode()
+	}
+	return 0
 }
 
 // StatusSnapshot contains operational metadata and counters only. It has no
@@ -482,7 +549,11 @@ type ChannelStatus struct {
 
 // MemberStatus is the secret-free status view of one member. Enabled is what
 // configuration says; Retired is what the pool has since decided about the key
-// behind it, which no configuration row records.
+// behind it, which no configuration row records. CooldownUntil and HalfOpen
+// are the pool's current health state for the capability this snapshot was
+// taken for: the two tell an operator that an enabled key is alive but parked
+// for a bounded wait (or waiting on a probe), which Retired alone cannot
+// express.
 type MemberStatus struct {
 	ID                   string    `json:"id"`
 	ChannelID            string    `json:"channel_id"`
@@ -491,12 +562,22 @@ type MemberStatus struct {
 	ProviderName         string    `json:"provider_name"`
 	Enabled              bool      `json:"enabled"`
 	Retired              bool      `json:"retired,omitempty"`
+	CooldownUntil        time.Time `json:"cooldown_until,omitempty"`
+	HalfOpen             bool      `json:"half_open,omitempty"`
 	SecretConfigured     bool      `json:"secret_configured"`
 	Attempts             uint64    `json:"attempts"`
 	Successes            uint64    `json:"successes"`
 	Failures             uint64    `json:"failures"`
+	LastSuccessAt        time.Time `json:"last_success_at,omitempty"`
 	LastFailureAt        time.Time `json:"last_failure_at,omitempty"`
 	LastFailureRetryable bool      `json:"last_failure_retryable,omitempty"`
+	// LatencyMS is the EWMA of successful invocation durations (alpha 0.2);
+	// zero until the first success.
+	LatencyMS float64 `json:"latency_ms,omitempty"`
+	// Retryable429 and ServerError5xx count the rate-limit and server-fault
+	// failures the member has produced.
+	Retryable429   uint64 `json:"retryable_429"`
+	ServerError5xx uint64 `json:"server_error_5xx"`
 }
 
 // Snapshot returns the current safe status for all routes. Passing a
@@ -540,12 +621,17 @@ func (e *Executor) Snapshot(capabilities ...Capability) StatusSnapshot {
 			// another try.
 			live, known := runtime.pool.EnabledState(member.ID)
 			retired := member.Enabled && known && !live
-			memberStatus := MemberStatus{ID: member.ID, ChannelID: runtime.channel.ID, Label: member.Label, Provider: runtime.channel.Provider, ProviderName: runtime.channel.ProviderName, Enabled: member.Enabled, Retired: retired, SecretConfigured: member.SecretConfigured || strings.TrimSpace(member.SecretRef) != "", Attempts: stats.attempts, Successes: stats.successes, Failures: stats.failures, LastFailureAt: stats.lastFailureAt, LastFailureRetryable: stats.lastFailureRetry}
-			// A channel every one of whose keys has retired is not available,
-			// whatever configuration still says. Reporting it as available is
-			// how an operator ends up staring at a green route while every job
-			// on it parks.
-			if member.Enabled && !retired && len(member.Capabilities) > 0 {
+			examine := memberCapabilityForStatus(member, filter)
+			poolCapability := providerpool.Capability(examine)
+			health, healthKnown := runtime.pool.HealthState(member.ID, poolCapability)
+			memberStatus := MemberStatus{ID: member.ID, ChannelID: runtime.channel.ID, Label: member.Label, Provider: runtime.channel.Provider, ProviderName: runtime.channel.ProviderName, Enabled: member.Enabled, Retired: retired, CooldownUntil: health.CooldownUntil, HalfOpen: health.HalfOpen, SecretConfigured: member.SecretConfigured || strings.TrimSpace(member.SecretRef) != "", Attempts: stats.attempts, Successes: stats.successes, Failures: stats.failures, LastSuccessAt: stats.lastSuccessAt, LastFailureAt: stats.lastFailureAt, LastFailureRetryable: stats.lastFailureRetry, LatencyMS: stats.latencyEWMA.Seconds() * 1000, Retryable429: stats.retryable429, ServerError5xx: stats.serverError5xx}
+			// A channel every one of whose keys is cooling, retired, or probing
+			// is not available, whatever configuration still says: the pool
+			// would refuse every new call, and reporting it as available is how
+			// an operator ends up staring at a green route while every job on
+			// it parks. Selectable is the pool's own eligibility rule, so this
+			// cannot drift from what a real call would find.
+			if healthKnown && examine != "" && runtime.pool.Selectable(member.ID, poolCapability) {
 				status.Available = status.Available || runtime.channel.Enabled
 			}
 			status.Members = append(status.Members, memberStatus)

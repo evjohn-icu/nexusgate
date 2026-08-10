@@ -144,7 +144,7 @@ func evalPipeline(repo *sqlite.Repository, cfg config.Config) (*app.Pipeline, st
 		return nil, "", "", err
 	}
 	deferral := time.Duration(cfg.Pipeline.ProviderRouteDeferralMinutes) * time.Minute
-	return app.NewPipeline(repo, cfg.CacheDir, nil, nil, videoProvider, nil, detector, plan, stager, deferral), providerName, modelName, nil
+	return app.NewPipeline(repo, cfg.CacheDir, nil, nil, videoProvider, nil, detector, plan, stager, deferral, cfg.Pipeline.MinimumFreeSpaceBytes), providerName, modelName, nil
 }
 
 func seedClip(ctx context.Context, repo *sqlite.Repository, root domain.LibraryRoot, clip Clip) (string, error) {

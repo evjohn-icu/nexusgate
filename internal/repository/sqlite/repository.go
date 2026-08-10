@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -110,12 +111,21 @@ func (r *Repository) AuthenticateWorker(ctx context.Context, token string) (remo
 	return worker, nil
 }
 
-func (r *Repository) HeartbeatWorker(ctx context.Context, workerID string, capabilities remote.WorkerCapabilities) error {
+func (r *Repository) HeartbeatWorker(ctx context.Context, workerID, version string, capabilities remote.WorkerCapabilities) error {
 	raw, err := json.Marshal(capabilities)
 	if err != nil {
 		return err
 	}
-	_, err = r.db.ExecContext(ctx, `UPDATE workers SET status='online',capabilities_json=?,last_seen_at=? WHERE id=? AND status!='revoked'`, string(raw), formatTime(time.Now().UTC()), workerID)
+	// Version is set only when the Worker sent one: a pre-version Hub-adjacent
+	// Worker that never reports a version must not erase what an earlier
+	// heartbeat (or enrollment) recorded.
+	query := `UPDATE workers SET status='online',capabilities_json=?,last_seen_at=? WHERE id=? AND status!='revoked'`
+	args := []any{string(raw), formatTime(time.Now().UTC()), workerID}
+	if version != "" {
+		query = `UPDATE workers SET status='online',capabilities_json=?,version=?,last_seen_at=? WHERE id=? AND status!='revoked'`
+		args = []any{string(raw), version, formatTime(time.Now().UTC()), workerID}
+	}
+	_, err = r.db.ExecContext(ctx, query, args...)
 	return err
 }
 
@@ -186,6 +196,9 @@ func randomToken() (string, error) {
 var migrationFiles embed.FS
 
 type Repository struct {
+	// dbPath is the on-disk database file path, kept so the migration preflight
+	// can stat the file and probe the filesystem that holds it.
+	dbPath              string
 	db                  *sql.DB
 	semanticVectorMu    sync.RWMutex
 	semanticVectorCache map[string][]float64
@@ -203,12 +216,19 @@ func Open(path string) (*Repository, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Repository{db: db, semanticVectorCache: make(map[string][]float64)}, nil
+	return &Repository{dbPath: path, db: db, semanticVectorCache: make(map[string][]float64)}, nil
 }
 
 func (r *Repository) Close() error { return r.db.Close() }
 
 func (r *Repository) Migrate(ctx context.Context) error {
+	// Preflight before any migration DDL: never let an upgrade run against a
+	// corrupt database (it would bury the corruption under fresh schema) or one
+	// that could die mid-upgrade with ENOSPC. No-op when nothing is pending.
+	if err := r.checkPreMigrationConditions(ctx); err != nil {
+		return err
+	}
+
 	if _, err := r.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
 		return err
 	}
@@ -218,6 +238,13 @@ func (r *Repository) Migrate(ctx context.Context) error {
 		return err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+
+	// L1b: snapshot the pre-migration database before the first pending
+	// migration is applied. The L1a integrity/free-space gate (above) runs
+	// first; this guard is a no-op when the schema is already up to date.
+	if err := r.preMigrationSnapshotGuard(ctx); err != nil {
+		return err
+	}
 
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
@@ -251,6 +278,88 @@ func (r *Repository) Migrate(ctx context.Context) error {
 		}
 	}
 	return r.ensureCJKBigramFTS(ctx)
+}
+
+// statfsFreeBytes probes the free space on the filesystem holding a path. It
+// is a variable so tests can inject a value; the build-tagged statfs_*.go
+// files install the platform implementation at init time. Windows installs a
+// probe that always errors, which the preflight treats as "measurement
+// unavailable" rather than as a blocker.
+var statfsFreeBytes func(path string) (uint64, error)
+
+// checkPreMigrationConditions refuses to start an upgrade that cannot be
+// completed safely. It runs before any migration DDL: migrating a corrupt
+// database would hide the corruption under fresh schema, so the operator must
+// restore from backup first (never auto-repair), and an upgrade that rebuilds
+// FTS tables can roughly double the database size, so a disk that cannot hold
+// that must be dealt with before the upgrade, not discovered mid-migration
+// with ENOSPC. A fully migrated database skips both checks entirely so
+// everyday startup pays nothing.
+func (r *Repository) checkPreMigrationConditions(ctx context.Context) error {
+	pending, err := r.pendingMigrationCount(ctx)
+	if err != nil {
+		return fmt.Errorf("migration preflight: cannot determine pending migrations: %w", err)
+	}
+	if pending == 0 {
+		return nil
+	}
+	if err := r.IntegrityCheck(ctx); err != nil {
+		return fmt.Errorf("migration preflight: refusing to migrate a corrupt database: %w (the operator must restore the library from backup first; this upgrade will not run until the database passes integrity_check)", err)
+	}
+	dbSize, err := os.Stat(r.dbPath)
+	if err != nil {
+		return fmt.Errorf("migration preflight: cannot stat database file %s: %w", r.dbPath, err)
+	}
+	free, err := statfsFreeBytes(r.dbPath)
+	if err != nil {
+		// statfs is unavailable (Windows) or the file vanished; a disk check we
+		// cannot take must never block an upgrade, so skip rather than guess.
+		return nil
+	}
+	required := migrationFreeSpaceRequired(dbSize.Size())
+	if free < uint64(required) {
+		return fmt.Errorf("migration preflight: not enough free disk space to upgrade %s: need %d bytes, have %d free (free space on that volume or set TIMINGDEX_DATA_DIR to a location with room)", r.dbPath, required, free)
+	}
+	return nil
+}
+
+// pendingMigrationCount is how many embedded migration files have not been
+// applied yet. schema_migrations is created by Migrate, so a library that has
+// never been migrated reports the full embedded count; a fully migrated one
+// reports zero, and the preflight then returns without touching the disk.
+func (r *Repository) pendingMigrationCount(ctx context.Context) (int, error) {
+	entries, err := fs.ReadDir(migrationFiles, "migrations")
+	if err != nil {
+		return 0, err
+	}
+	embedded := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
+			embedded++
+		}
+	}
+	var exists int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_migrations'`).Scan(&exists); err != nil {
+		return 0, err
+	}
+	if exists == 0 {
+		return embedded, nil
+	}
+	var applied int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil {
+		return 0, err
+	}
+	if applied >= embedded {
+		return 0, nil
+	}
+	return embedded - applied, nil
+}
+
+// migrationFreeSpaceRequired is the disk headroom demanded before an upgrade
+// begins: 2x the current database size (an FTS rebuild can roughly double it)
+// plus 256 MiB for WAL growth and temporary b-tree spill.
+func migrationFreeSpaceRequired(dbSize int64) int64 {
+	return dbSize*2 + 256<<20
 }
 
 // ensureCJKBigramFTS makes an interrupted upgrade recoverable: migration SQL
@@ -362,7 +471,7 @@ FROM assets a LEFT JOIN asset_analysis an ON an.asset_id=a.id`)
 
 func (r *Repository) CreateLibraryRoot(ctx context.Context, path string) (domain.LibraryRoot, error) {
 	now := time.Now().UTC()
-	root := domain.LibraryRoot{ID: idgen.New(), Path: path, CreatedAt: now, UpdatedAt: now}
+	root := domain.LibraryRoot{ID: idgen.New(), Path: path, CreatedAt: now, UpdatedAt: now, HealthState: domain.RootHealthUnknown}
 	_, err := r.db.ExecContext(ctx, `INSERT INTO library_roots(id, path, created_at, updated_at) VALUES (?, ?, ?, ?)`, root.ID, root.Path, formatTime(now), formatTime(now))
 	if err != nil {
 		return domain.LibraryRoot{}, err
@@ -371,7 +480,7 @@ func (r *Repository) CreateLibraryRoot(ctx context.Context, path string) (domain
 }
 
 func (r *Repository) ListLibraryRoots(ctx context.Context) ([]domain.LibraryRoot, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id, path, created_at, updated_at FROM library_roots ORDER BY created_at`)
+	rows, err := r.db.QueryContext(ctx, `SELECT id, path, created_at, updated_at, health_state, last_healthy_at, last_scan_at FROM library_roots ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -380,11 +489,14 @@ func (r *Repository) ListLibraryRoots(ctx context.Context) ([]domain.LibraryRoot
 	for rows.Next() {
 		var root domain.LibraryRoot
 		var created, updated string
-		if err := rows.Scan(&root.ID, &root.Path, &created, &updated); err != nil {
+		var lastHealthy, lastScan sql.NullString
+		if err := rows.Scan(&root.ID, &root.Path, &created, &updated, &root.HealthState, &lastHealthy, &lastScan); err != nil {
 			return nil, err
 		}
 		root.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 		root.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+		root.LastHealthyAt = parseNullableTime(lastHealthy)
+		root.LastScanAt = parseNullableTime(lastScan)
 		roots = append(roots, root)
 	}
 	return roots, rows.Err()
@@ -399,7 +511,8 @@ func (r *Repository) IsLibraryRoot(ctx context.Context, path string) (bool, erro
 func (r *Repository) GetLibraryRoot(ctx context.Context, id string) (domain.LibraryRoot, error) {
 	var root domain.LibraryRoot
 	var created, updated string
-	err := r.db.QueryRowContext(ctx, `SELECT id, path, created_at, updated_at FROM library_roots WHERE id = ?`, id).Scan(&root.ID, &root.Path, &created, &updated)
+	var lastHealthy, lastScan sql.NullString
+	err := r.db.QueryRowContext(ctx, `SELECT id, path, created_at, updated_at, health_state, last_healthy_at, last_scan_at FROM library_roots WHERE id = ?`, id).Scan(&root.ID, &root.Path, &created, &updated, &root.HealthState, &lastHealthy, &lastScan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.LibraryRoot{}, fmt.Errorf("library root not found: %s", id)
 	}
@@ -408,6 +521,8 @@ func (r *Repository) GetLibraryRoot(ctx context.Context, id string) (domain.Libr
 	}
 	root.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	root.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+	root.LastHealthyAt = parseNullableTime(lastHealthy)
+	root.LastScanAt = parseNullableTime(lastScan)
 	return root, nil
 }
 
@@ -433,8 +548,9 @@ func (r *Repository) UpsertScannedFile(ctx context.Context, root domain.LibraryR
 	result.AssetID = assetID
 
 	// Widen the lookup beyond the id so the scan can tell whether this revisit
-	// changed anything the pipeline keys its jobs on (path or mtime) without a
-	// second round trip. Only the id is ever written back; the rest is compared.
+	// changed anything the pipeline keys its jobs on (mtime, and a new or
+	// moved location) without a second round trip. Only the id is ever written
+	// back; the rest is compared.
 	var locationID string
 	var existingAbsolutePath string
 	var existingModifiedNS int64
@@ -452,8 +568,10 @@ func (r *Repository) UpsertScannedFile(ctx context.Context, root domain.LibraryR
 	}
 	// A location that did not exist was inserted — a known asset appearing at
 	// a new path, or a brand-new asset — so it counts as changed. An existing
-	// one counts only when the mtime or path the probe job's input hash is
-	// derived from actually moved.
+	// one counts only when the mtime the probe job's input hash is derived
+	// from moved, or the path changed (a move or remount: the asset is worth
+	// re-enqueuing, and the probe hash dedup makes that re-enqueue a no-op
+	// when content and mtime are unchanged).
 	result.Changed = result.Created || !locationExists || existingModifiedNS != info.ModTime().UnixNano() || existingAbsolutePath != absolutePath
 
 	_, err = tx.ExecContext(ctx, `UPDATE assets SET state = 'discovered', last_seen_at = ?, missing_since = NULL WHERE id = ?`, formatTime(now), assetID)
@@ -573,7 +691,11 @@ func (r *Repository) GetPrimaryLocation(ctx context.Context, assetID string) (do
 	var v domain.AssetLocation
 	var existsNow, primary int
 	var last string
-	err := r.db.QueryRowContext(ctx, `SELECT id,asset_id,root_id,relative_path,absolute_path,COALESCE(file_id,''),modified_ns,exists_now,is_primary,last_seen_at FROM asset_locations WHERE asset_id=? AND exists_now=1 ORDER BY is_primary DESC,last_seen_at DESC LIMIT 1`, assetID).Scan(&v.ID, &v.AssetID, &v.RootID, &v.RelativePath, &v.AbsolutePath, &v.FileID, &v.ModifiedNS, &existsNow, &primary, &last)
+	// The asset's quick_fingerprint and file_size ride along on the location
+	// row: the pipeline derives the probe job's input hash from them (not from
+	// the path), and asking a second time for data one join provides would be
+	// a needless round trip on the hottest pipeline path.
+	err := r.db.QueryRowContext(ctx, `SELECT l.id,l.asset_id,l.root_id,l.relative_path,l.absolute_path,COALESCE(l.file_id,''),l.modified_ns,l.exists_now,l.is_primary,l.last_seen_at,a.quick_fingerprint,a.file_size FROM asset_locations l JOIN assets a ON a.id=l.asset_id WHERE l.asset_id=? AND l.exists_now=1 ORDER BY l.is_primary DESC,l.last_seen_at DESC LIMIT 1`, assetID).Scan(&v.ID, &v.AssetID, &v.RootID, &v.RelativePath, &v.AbsolutePath, &v.FileID, &v.ModifiedNS, &existsNow, &primary, &last, &v.QuickFingerprint, &v.FileSize)
 	if err != nil {
 		return domain.AssetLocation{}, err
 	}
@@ -596,8 +718,8 @@ func (r *Repository) UpsertProviderChannel(ctx context.Context, channel domain.P
 		return domain.ProviderChannel{}, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO provider_channels(id,capability,label,provider_name,protocol,endpoint,model,enabled,route_order,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET capability=excluded.capability,label=excluded.label,provider_name=excluded.provider_name,protocol=excluded.protocol,endpoint=excluded.endpoint,model=excluded.model,enabled=excluded.enabled,route_order=excluded.route_order,deleted_at=NULL,updated_at=excluded.updated_at`, channel.ID, channel.Capability, channel.Label, channel.ProviderName, channel.Protocol, channel.Endpoint, channel.Model, boolInt(channel.Enabled), channel.RouteOrder, formatTime(now), formatTime(now)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO provider_channels(id,capability,label,provider_name,protocol,endpoint,model,enabled,route_order,cost_per_request,cost_per_video_minute,cost_per_audio_minute,created_at,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET capability=excluded.capability,label=excluded.label,provider_name=excluded.provider_name,protocol=excluded.protocol,endpoint=excluded.endpoint,model=excluded.model,enabled=excluded.enabled,route_order=excluded.route_order,cost_per_request=excluded.cost_per_request,cost_per_video_minute=excluded.cost_per_video_minute,cost_per_audio_minute=excluded.cost_per_audio_minute,deleted_at=NULL,updated_at=excluded.updated_at`, channel.ID, channel.Capability, channel.Label, channel.ProviderName, channel.Protocol, channel.Endpoint, channel.Model, boolInt(channel.Enabled), channel.RouteOrder, channel.CostPerRequest, channel.CostPerVideoMinute, channel.CostPerAudioMinute, formatTime(now), formatTime(now)); err != nil {
 		return domain.ProviderChannel{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM provider_channel_members WHERE channel_id=?`, channel.ID); err != nil {
@@ -654,7 +776,7 @@ func (r *Repository) SoftDeleteProviderChannel(ctx context.Context, id string) e
 }
 
 func (r *Repository) ListProviderChannels(ctx context.Context, capability string) ([]domain.ProviderChannel, error) {
-	query := `SELECT id,capability,label,provider_name,protocol,endpoint,model,enabled,route_order,created_at,updated_at FROM provider_channels WHERE deleted_at IS NULL`
+	query := `SELECT id,capability,label,provider_name,protocol,endpoint,model,enabled,route_order,cost_per_request,cost_per_video_minute,cost_per_audio_minute,created_at,updated_at FROM provider_channels WHERE deleted_at IS NULL`
 	args := []any{}
 	if capability = strings.TrimSpace(capability); capability != "" {
 		query += ` AND capability=?`
@@ -671,7 +793,7 @@ func (r *Repository) ListProviderChannels(ctx context.Context, capability string
 		var channel domain.ProviderChannel
 		var enabled int
 		var created, updated string
-		if err := rows.Scan(&channel.ID, &channel.Capability, &channel.Label, &channel.ProviderName, &channel.Protocol, &channel.Endpoint, &channel.Model, &enabled, &channel.RouteOrder, &created, &updated); err != nil {
+		if err := rows.Scan(&channel.ID, &channel.Capability, &channel.Label, &channel.ProviderName, &channel.Protocol, &channel.Endpoint, &channel.Model, &enabled, &channel.RouteOrder, &channel.CostPerRequest, &channel.CostPerVideoMinute, &channel.CostPerAudioMinute, &created, &updated); err != nil {
 			return nil, err
 		}
 		channel.Enabled = enabled != 0
@@ -1078,6 +1200,11 @@ func (r *Repository) CompleteJob(ctx context.Context, id, owner string, state do
 // retried anyway, immediately and without even the backoff a retryable error
 // gets. For a provider 4xx that means paying for the same rejected call again.
 //
+// category rides into jobs.last_error_code alongside the message: the column
+// already holds defer reasons (which are category values themselves), and the
+// issues view aggregates failures by reading exactly this code, so a terminal
+// failure's category must be written when the terminal verdict is.
+//
 // attempt_count is left alone on purpose. An earlier implementation exhausted it
 // to make the predicate skip the row, which worked but reported a job that ran
 // once as "3/3" on the progress page.
@@ -1086,9 +1213,9 @@ func (r *Repository) CompleteJob(ctx context.Context, id, owner string, state do
 // CompleteJob adds, and for the same reason: a stale holder must not flip a
 // job someone else has already reclaimed to terminal failure out from under
 // them.
-func (r *Repository) FailJobTerminally(ctx context.Context, id, owner, errMsg string) error {
+func (r *Repository) FailJobTerminally(ctx context.Context, id, owner string, category domain.JobFailureCategory, errMsg string) error {
 	now := time.Now()
-	res, err := r.db.ExecContext(ctx, `UPDATE jobs SET state=?,terminal=1,last_error_message=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND lease_owner=? AND state='running' AND lease_expires_at>?`, string(domain.JobFailed), nullString(errMsg), formatTime(now), id, owner, formatTime(now))
+	res, err := r.db.ExecContext(ctx, `UPDATE jobs SET state=?,terminal=1,last_error_code=?,last_error_message=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND lease_owner=? AND state='running' AND lease_expires_at>?`, string(domain.JobFailed), nullString(string(category)), nullString(errMsg), formatTime(now), id, owner, formatTime(now))
 	if err != nil {
 		return err
 	}
@@ -1117,6 +1244,30 @@ func (r *Repository) RequeueFailedJobs(ctx context.Context) (int, error) {
 	return int(affected), err
 }
 
+// RequeueFailedJobsByCategory is RequeueFailedJobs narrowed to one failure
+// category, so the operator can revive the work a single provider problem
+// stranded without touching everything else. It is the write half of the
+// issues view: the category expression here must be the same one
+// JobIssues groups by, and it is — both use
+// COALESCE(NULLIF(last_error_code,”),'unknown'), so 'unknown' matches the
+// jobs whose failure carried no code (NULL or empty), and every other value
+// matches last_error_code literally. An empty-string category therefore
+// matches nothing: the API keeps "" meaning "everything" and lets this
+// method's WHERE clause do the narrowing.
+//
+// The parked-deferral half of a category needs no new method: ResumeDeferredJobs
+// already takes the category as its reason parameter (its WHERE clause
+// compares last_error_code=?), so a category-scoped release is just
+// ResumeDeferredJobs(category).
+func (r *Repository) RequeueFailedJobsByCategory(ctx context.Context, category string) (int, error) {
+	result, err := r.db.ExecContext(ctx, `UPDATE jobs SET state='pending',terminal=0,attempt_count=0,run_after=?,last_error_message=NULL,last_error_code=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE state='failed' AND COALESCE(NULLIF(last_error_code,''),'unknown')=?`, formatTime(time.Now()), formatTime(time.Now()), category)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	return int(affected), err
+}
+
 // RetryJob returns a leased job to the pending queue after a bounded delay.
 // Leasing already increments attempt_count, so the normal lease predicate
 // enforces max_attempts without a separate mutable retry counter.
@@ -1130,12 +1281,17 @@ func (r *Repository) RequeueFailedJobs(ctx context.Context) (int, error) {
 // path back to leasable once attempts are spent). Only the first is an error
 // worth reporting -- the miss is disambiguated after the fact with
 // jobLeaseActive, which does not change what the CAS above already decided.
-func (r *Repository) RetryJob(ctx context.Context, id, owner, errMsg string, delay time.Duration) error {
+//
+// category is written into jobs.last_error_code so a retrying job still
+// carries the machine-readable reason of its last failure; the issues view
+// aggregates the column whether the job is currently retrying, parked, or
+// terminal.
+func (r *Repository) RetryJob(ctx context.Context, id, owner string, category domain.JobFailureCategory, errMsg string, delay time.Duration) error {
 	if delay < 0 {
 		delay = 0
 	}
 	now := time.Now()
-	res, err := r.db.ExecContext(ctx, `UPDATE jobs SET state='pending',run_after=?,last_error_message=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND lease_owner=? AND state='running' AND lease_expires_at>? AND attempt_count<max_attempts`, formatTime(now.Add(delay)), nullString(errMsg), formatTime(now), id, owner, formatTime(now))
+	res, err := r.db.ExecContext(ctx, `UPDATE jobs SET state='pending',run_after=?,last_error_code=?,last_error_message=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND lease_owner=? AND state='running' AND lease_expires_at>? AND attempt_count<max_attempts`, formatTime(now.Add(delay)), nullString(string(category)), nullString(errMsg), formatTime(now), id, owner, formatTime(now))
 	if err != nil {
 		return err
 	}
@@ -1215,6 +1371,14 @@ func (r *Repository) ResumeDeferredJobs(ctx context.Context, reason string) (int
 	return int(moved), nil
 }
 
+// isDeferCode reports whether a last_error_code is a parked-job deferral
+// (provider route exhausted, disk space low, or budget exhausted) rather than
+// an ordinary failure. It is the single enumeration both ListJobs and
+// JobSummary use so the two cannot disagree about which jobs are parked.
+func isDeferCode(code string) bool {
+	return code == domain.JobDeferProviderRouteExhausted || code == domain.JobDeferDiskSpaceLow || code == domain.JobDeferBudgetExhausted
+}
+
 func (r *Repository) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT j.id,COALESCE(j.asset_id,''),j.job_type,j.state,j.priority,j.attempt_count,j.max_attempts,j.run_after,j.input_hash,COALESCE(j.last_error_message,''),j.terminal,COALESCE(j.last_error_code,''),COALESCE((SELECT loc.relative_path FROM asset_locations loc WHERE loc.asset_id=j.asset_id AND loc.is_primary=1 LIMIT 1),'') FROM jobs j ORDER BY j.created_at DESC LIMIT ?`, limit)
 	if err != nil {
@@ -1239,7 +1403,7 @@ func (r *Repository) ListJobs(ctx context.Context, limit int) ([]domain.Job, err
 		// code of the last failure; state plus run_after is the actual truth
 		// about whether the job is waiting, and it is the same pair the lease
 		// predicate reads.
-		if code == domain.JobDeferProviderRouteExhausted && j.State == domain.JobPending && j.RunAfter.After(now) {
+		if isDeferCode(code) && j.State == domain.JobPending && j.RunAfter.After(now) {
 			j.DeferredReason = code
 		}
 		out = append(out, j)
@@ -1258,8 +1422,10 @@ func (r *Repository) JobSummary(ctx context.Context) (domain.JobSummary, error) 
 	// every job that has never failed, and `NULL=?` is NULL rather than false.
 	// Negating that in the pending arm below would yield NULL too, quietly
 	// dropping every never-failed pending job out of the count -- which is most
-	// of the queue.
-	deferred := `state='pending' AND COALESCE(last_error_code,'')=? AND run_after>?`
+	// of the queue. Deferred matches any defer code (provider route
+	// exhausted, disk space low, budget exhausted) so a parked job is counted
+	// exactly once under the deferred bucket.
+	deferred := `state='pending' AND COALESCE(last_error_code,'') IN (?,?,?) AND run_after>?`
 	query := `SELECT
         COALESCE(SUM(CASE WHEN state='pending' AND NOT (` + deferred + `) THEN 1 ELSE 0 END),0),
         COALESCE(SUM(CASE WHEN state='running' THEN 1 ELSE 0 END),0),
@@ -1270,7 +1436,9 @@ func (r *Repository) JobSummary(ctx context.Context) (domain.JobSummary, error) 
         COUNT(*)
     FROM jobs`
 	now := formatTime(time.Now())
-	err := r.db.QueryRowContext(ctx, query, domain.JobDeferProviderRouteExhausted, now, domain.JobDeferProviderRouteExhausted, now).
+	err := r.db.QueryRowContext(ctx, query,
+		domain.JobDeferProviderRouteExhausted, domain.JobDeferDiskSpaceLow, domain.JobDeferBudgetExhausted, now,
+		domain.JobDeferProviderRouteExhausted, domain.JobDeferDiskSpaceLow, domain.JobDeferBudgetExhausted, now).
 		Scan(&summary.Pending, &summary.Running, &summary.Succeeded, &summary.Failed, &summary.Terminal, &summary.Deferred, &summary.Total)
 	if err != nil {
 		return domain.JobSummary{}, err

@@ -156,6 +156,16 @@ func (r *Repository) LeaseNextWorkerDerive(ctx context.Context, worker remote.Wo
 	if len(worker.Capabilities.LibraryRoots) == 0 {
 		return nil, nil
 	}
+	// Version gate: a worker whose binary predates the Hub's minimum
+	// compatible version must never receive a lease. The version comes from
+	// the workers row (enrollment + heartbeat), not from the lease request,
+	// so the Worker cannot claim a fresher binary than it actually is. The
+	// verdict lives in domain (not app) because this package must not import
+	// app, and an unknown version is advisory (UpgradeRecommended), never a
+	// refusal -- see domain.WorkerCompatibility.
+	if domain.WorkerCompatibility(worker.Version).Verdict == domain.WorkerVerdictIncompatible {
+		return nil, nil
+	}
 	if lease <= 0 {
 		lease = 2 * time.Minute
 	}

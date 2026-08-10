@@ -123,6 +123,9 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 	if err := p.repo.CommitAnalysisWithShots(ctx, j.AssetID, runID, "asset-analysis/v2", a, shots); err != nil {
 		return err
 	}
+	// The run is canonical; record its estimate against the serving
+	// channel's cost metadata. No channel with cost metadata → no-op.
+	p.recordCostEstimate(ctx, "video_analysis", providerName, modelName, j.AssetID, m.DurationMS)
 	// The shots are canonical now; the embedding layer (if configured) gets
 	// its incremental rebuild. Synchronous on purpose — the pipeline's
 	// "process exited means no call in flight" invariant. Errors are the

@@ -73,6 +73,21 @@ type groundTruthSpan struct {
 
 func main() {
 	out := flag.String("out", "./corpus", "corpus output directory")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, `timingdex-corpusgen — generate the offline eval corpus for timingdex-eval
+
+Writes <out>/clips/*.mp4 (deterministic synthetic clips) and <out>/ground_truth.json
+(the queries + expected shot spans internal/eval LoadCorpus expects). The clips
+mirror the retrieval golden set's adversarial assets, so timingdex-eval scores a
+provider the way the Hub's own search would. Never part of CI.
+
+Usage:
+  timingdex-corpusgen --out <dir>
+
+Flags:
+`)
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 	if err := generate(*out); err != nil {
 		fmt.Fprintf(os.Stderr, "timingdex-corpusgen: %v\n", err)

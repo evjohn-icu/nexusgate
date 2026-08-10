@@ -22,12 +22,23 @@ type RetrievalProfile struct {
 // auto behaviour agree where they overlap.
 func Profiles() map[SearchIntent]RetrievalProfile {
 	flat := [5]float64{1, 1, 1, 1, 1}
+	// A note on how ChannelWeights apply per intent. Auto and fact run the
+	// default path through plain RRF (service.go's defaultFusion), where every
+	// constructed channel contributes one equal rank share — the lease that
+	// keeps the golden/benchmark set byte-identical to the pre-weights engine.
+	// Their ChannelWeights here therefore only (a) gate channel construction
+	// (a weight > 0 decides whether the channel runs at all) and (b) take
+	// effect when an explicit WeightedBlend fusion is supplied. The
+	// differentiated intents (speech/semantic/creative/similar) apply their
+	// weights through WeightedRRF in the default path.
 	return map[SearchIntent]RetrievalProfile{
 		IntentAuto: {
 			FieldWeights: flat,
 			ChannelWeights: map[string]float64{
 				SignalLexical:           0.30,
 				SignalHeuristicSemantic: 0.70,
+				SignalTranscript:        0.05,
+				SignalMetadata:          0.05,
 			},
 		},
 		IntentFact: {

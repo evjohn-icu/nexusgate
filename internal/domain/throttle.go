@@ -43,6 +43,29 @@ type PipelineThrottle struct {
 	// and throttling it only makes the library feel broken while adding no
 	// meaningful relief.
 	ImmediateMaxBytes int64 `json:"immediate_max_bytes"`
+
+	// MinimumFreeSpaceBytes is the free-space floor for the volume the
+	// pipeline writes its cache to. When less than this is free, jobs are
+	// deferred with JobDeferDiskSpaceLow before a lease is spent — and an
+	// actual ENOSPC failure classifies the same way — instead of writing
+	// until a disk-full error. Zero disables the guard.
+	MinimumFreeSpaceBytes int64 `json:"minimum_free_space_bytes"`
+
+	// DailyBudget caps the provider spend the pipeline lets through in one
+	// UTC day, in the same unit as the provider-channel cost metadata
+	// (cost_per_request / cost_per_video_minute / cost_per_audio_minute). The
+	// gate defers cloud jobs (analyze, transcribe) once the cost_ledger sum
+	// for the day is already at or past the budget — the comparison is >=
+	// because the job's own estimate is only recorded after the call, so the
+	// gate can see spend already in the ledger, not spend the next call will
+	// add — and the jobs re-arm at the day boundary (00:05 UTC). Zero
+	// disables the daily gate.
+	DailyBudget float64 `json:"daily_budget,omitempty"`
+	// MonthlyBudget is the same cap over one UTC month; exceeded jobs defer
+	// until the 1st of the next month at 00:05 UTC. When both budgets are
+	// spent, the monthly park wins: a daily park would only re-hit the
+	// monthly gate the next day. Zero disables the monthly gate.
+	MonthlyBudget float64 `json:"monthly_budget,omitempty"`
 }
 
 // LeaseFilter narrows what the lease predicate is willing to hand out. It is a
@@ -82,6 +105,15 @@ func (t PipelineThrottle) Validate() error {
 	}
 	if t.DeferAboveBytes < 0 || t.ImmediateMaxBytes < 0 {
 		return fmt.Errorf("size thresholds must not be negative")
+	}
+	if t.MinimumFreeSpaceBytes < 0 {
+		return fmt.Errorf("minimum_free_space_bytes must not be negative")
+	}
+	if t.DailyBudget < 0 {
+		return fmt.Errorf("daily_budget must not be negative")
+	}
+	if t.MonthlyBudget < 0 {
+		return fmt.Errorf("monthly_budget must not be negative")
 	}
 	// Otherwise a file could be both "always immediate" and "window only", and
 	// which rule won would be an implementation detail rather than a decision.

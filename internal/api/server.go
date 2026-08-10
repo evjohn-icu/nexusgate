@@ -110,6 +110,10 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("GET /api/v1/hardware", s.requireTrustedRead(s.hardwareReport))
+	// First-run environment snapshot for /setup; a trusted read like /health —
+	// the page shows it before anything is configured, and it reveals no key
+	// or path, only booleans, counts and a next-step hint.
+	mux.HandleFunc("GET /api/v1/setup/status", s.requireTrustedRead(s.setupStatus))
 	mux.HandleFunc("GET /api/v1/agent/capabilities", s.agentCapabilities)
 	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -145,6 +149,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/roots", s.requireHubAdmin(s.createRoot))
 	mux.HandleFunc("POST /api/v1/roots/{id}/scan", s.requireHubAdmin(s.scanRoot))
 	mux.HandleFunc("POST /api/v1/roots/inspect", s.requireHubAdmin(s.inspectRoot))
+	mux.HandleFunc("GET /api/v1/roots/health", s.requireHubAdmin(s.rootsHealth))
 	mux.HandleFunc("GET /{$}", s.index)
 	mux.HandleFunc("GET /setup", s.setupPage)
 	mux.HandleFunc("GET /progress", s.progressPage)
@@ -153,6 +158,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /repurpose", s.repurposePage)
 	mux.HandleFunc("GET /tags", s.tagsPage)
 	mux.HandleFunc("GET /providers", s.providersPage)
+	mux.HandleFunc("GET /collections", s.collectionsPage)
 	mux.HandleFunc("GET /api/v1/assets", s.requireTrustedRead(s.listAssetCards))
 	mux.HandleFunc("GET /api/v1/library/processing-summary", s.requireTrustedRead(s.processingSummary))
 	mux.HandleFunc("GET /api/v1/collections", s.requireTrustedRead(s.listCollections))
@@ -160,6 +166,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/collections/{id}/assets", s.requireTrustedRead(s.listCollectionAssets))
 	mux.HandleFunc("POST /api/v1/collections", s.requireHubAdmin(s.saveCollection))
 	mux.HandleFunc("DELETE /api/v1/collections/{id}", s.requireHubAdmin(s.deleteCollection))
+	// The shot basket routes: reads are trusted-network like the rest of the
+	// collection surface, mutations are administrative like the collection
+	// writes above. Reorder is a POST, not a PATCH on the collection, because
+	// it replaces the whole ordering — exactly the list the client already
+	// rendered — and POST names that intent for the route's authz the same
+	// way the other basket writes are POSTs.
+	mux.HandleFunc("GET /api/v1/collections/{id}/shots", s.requireTrustedRead(s.listCollectionShots))
+	mux.HandleFunc("POST /api/v1/collections/{id}/shots", s.requireHubAdmin(s.addCollectionShot))
+	mux.HandleFunc("DELETE /api/v1/collections/{id}/shots/{shot_id}", s.requireHubAdmin(s.removeCollectionShot))
+	mux.HandleFunc("POST /api/v1/collections/{id}/shots/reorder", s.requireHubAdmin(s.reorderCollectionShots))
 	mux.HandleFunc("GET /api/v1/shoot-sessions", s.requireTrustedRead(s.listShootSessions))
 	mux.HandleFunc("GET /api/v1/assets/{id}", s.requireTrustedRead(s.assetDetail))
 	mux.HandleFunc("GET /api/v1/assets/{id}/shots", s.requireTrustedRead(s.assetShots))
@@ -169,11 +185,22 @@ func (s *Server) Handler() http.Handler {
 	// failure text stays admin-only regardless — see jobView.
 	mux.HandleFunc("GET /api/v1/jobs", s.requireTrustedRead(s.listJobs))
 	mux.HandleFunc("GET /api/v1/jobs/summary", s.requireTrustedRead(s.jobSummary))
+	mux.HandleFunc("GET /api/v1/cost/summary", s.requireTrustedRead(s.costSummary))
+	// The issues aggregation is counts and categories only, never failure
+	// text — the same class of queue status as /api/v1/jobs/summary, and
+	// trusted-read for the same reason.
+	mux.HandleFunc("GET /api/v1/issues", s.requireTrustedRead(s.jobIssues))
 	mux.HandleFunc("GET /api/v1/admin/worker-jobs/{id}", s.requireHubAdmin(s.workerJobStatus))
 	mux.HandleFunc("POST /api/v1/admin/worker-jobs/{id}/assignment", s.requireHubAdmin(s.setWorkerJobAssignment))
 	mux.HandleFunc("POST /api/v1/pipeline/run", s.requireHubAdmin(s.runPipeline))
 	mux.HandleFunc("POST /api/v1/pipeline/retry-failed", s.requireHubAdmin(s.retryFailedJobs))
 	mux.HandleFunc("POST /api/v1/pipeline/resume-deferred", s.requireHubAdmin(s.resumeDeferredJobs))
+	// Test Drive: enqueues a small batch and processes it, so it moves the
+	// queue and spends Provider calls — administrative. The suggestions half
+	// is read-only over canonical shot rows and is served like every other
+	// trusted read.
+	mux.HandleFunc("POST /api/v1/test-drive", s.requireHubAdmin(s.runTestDrive))
+	mux.HandleFunc("GET /api/v1/test-drive/suggestions", s.requireTrustedRead(s.testDriveSuggestions))
 	// Same reasoning as /api/v1/jobs: the schedule is ordinary status the
 	// progress page polls without a token, and only the failure text is held
 	// back from unauthenticated callers.
@@ -182,6 +209,11 @@ func (s *Server) Handler() http.Handler {
 	// limits without a token; changing them is administrative.
 	mux.HandleFunc("GET /api/v1/pipeline/throttle", s.requireTrustedRead(s.getPipelineThrottle))
 	mux.HandleFunc("PUT /api/v1/pipeline/throttle", s.requireHubAdmin(s.savePipelineThrottle))
+	// The storage overview is a usage summary — byte totals and a free-disk
+	// probe, no filenames, no paths, no secrets — the same trusted-read class
+	// as /api/v1/jobs/summary, so the settings page can render it without a
+	// token.
+	mux.HandleFunc("GET /api/v1/storage/overview", s.requireTrustedRead(s.storageOverview))
 	mux.HandleFunc("GET /settings", s.settingsPage)
 	s.registerWorkerSetupRoutes(mux)
 	mux.HandleFunc("GET /api/v1/search", s.requireTrustedRead(s.search))
@@ -214,6 +246,15 @@ func (s *Server) Handler() http.Handler {
 	// artifact someone cuts with, so both sit on the human side of the line.
 	mux.HandleFunc("GET /api/v1/repurpose/plans/{id}/export.edl", s.requireHubAdmin(s.exportRepurposePlanEDL))
 	mux.HandleFunc("GET /api/v1/repurpose/plans/{id}/export.fcpxml", s.requireHubAdmin(s.exportRepurposePlanFCPXML))
+	// Unknown /api/v1/* routes answer with the JSON error envelope instead of
+	// the mux's plain-text 404: a JSON client must distinguish "empty result"
+	// from "not found" without sniffing Content-Type, while the browser pages
+	// treat 404 as an ordinary error. This catch-all never shadows a real
+	// route — a more specific pattern (method-qualified or longer path) always
+	// wins in the Go 1.22 ServeMux — and non-API paths keep the mux default.
+	mux.HandleFunc("/api/v1/", func(w http.ResponseWriter, _ *http.Request) {
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found"})
+	})
 
 	return requestLogger(mux)
 }
@@ -238,7 +279,7 @@ func (s *Server) isHubAdmin(r *http.Request) bool {
 func (s *Server) requireHubAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.isHubAdmin(r) {
-			http.Error(w, "Hub administrator authentication required", http.StatusUnauthorized)
+			writeAPIError(w, http.StatusUnauthorized, APIError{Code: "admin_authentication_required", Message: "Hub administrator authentication required", Action: "enter_the_admin_token"})
 			return
 		}
 		next(w, r)
@@ -274,7 +315,7 @@ func (s *Server) isHubAgent(r *http.Request) bool {
 func (s *Server) requireAgentOrAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.isHubAgent(r) && !s.isHubAdmin(r) {
-			http.Error(w, "Hub agent or administrator authentication required", http.StatusUnauthorized)
+			writeAPIError(w, http.StatusUnauthorized, APIError{Code: "agent_or_admin_authentication_required", Message: "Hub agent or administrator authentication required", Action: "enter_the_agent_or_admin_token"})
 			return
 		}
 		next(w, r)
@@ -308,15 +349,15 @@ func (s *Server) createWebDAVAccount(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		return
 	}
 	if err := s.service.CreateWebDAVAccount(r.Context(), req.Username, req.Password); err != nil {
 		switch {
 		case errors.Is(err, app.ErrWebDAVAccountInvalid):
-			http.Error(w, "username and password are required", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "username and password are required"})
 		case errors.Is(err, app.ErrWebDAVAccountExists):
-			http.Error(w, "account already exists", http.StatusConflict)
+			writeAPIError(w, http.StatusConflict, APIError{Code: "conflict", Message: "account already exists", Retryable: true})
 		default:
 			writeError(w, err)
 		}
@@ -364,18 +405,18 @@ func (s *Server) linkWebDAVAsset(w http.ResponseWriter, r *http.Request) {
 		Kind    string `json:"kind"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		return
 	}
 	path, err := s.service.LinkWebDAVAsset(r.Context(), r.PathValue("id"), req.AssetID, req.Kind)
 	if err != nil {
 		switch {
 		case errors.Is(err, app.ErrWebDAVSpaceNotFound):
-			http.Error(w, "unknown space", http.StatusNotFound)
+			writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "unknown space"})
 		case errors.Is(err, app.ErrWebDAVLinkKindInvalid):
-			http.Error(w, "kind must be original or proxy", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "kind must be original or proxy"})
 		case strings.TrimSpace(req.AssetID) == "":
-			http.Error(w, "asset_id is required", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "asset_id is required"})
 		default:
 			writeError(w, err)
 		}
@@ -393,7 +434,20 @@ func (s *Server) listWorkers(w http.ResponseWriter, r *http.Request) {
 	if workers == nil {
 		workers = []remote.Worker{}
 	}
-	writeJSON(w, http.StatusOK, workers)
+	// Each item carries the Hub's compatibility verdict alongside the stored
+	// version so the workers page can render the pill and the refusal note
+	// without re-deriving the semver comparison in JavaScript. The verdict is
+	// Hub-side truth, computed here (domain.WorkerCompatibility), not echoed
+	// from the worker.
+	type workerListItem struct {
+		remote.Worker
+		Compat domain.WorkerCompat `json:"compat"`
+	}
+	items := make([]workerListItem, 0, len(workers))
+	for _, w := range workers {
+		items = append(items, workerListItem{Worker: w, Compat: app.WorkerCompatibility(w.Version)})
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (s *Server) listProviderChannels(w http.ResponseWriter, r *http.Request) {
@@ -432,16 +486,19 @@ func (s *Server) providerChannelRuntimeStatus(w http.ResponseWriter, r *http.Req
 
 func (s *Server) saveProviderChannel(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		ID           string `json:"id"`
-		Capability   string `json:"capability"`
-		Label        string `json:"label"`
-		ProviderName string `json:"provider_name"`
-		Protocol     string `json:"protocol"`
-		Endpoint     string `json:"endpoint"`
-		Model        string `json:"model"`
-		Enabled      bool   `json:"enabled"`
-		RouteOrder   int    `json:"route_order"`
-		Members      []struct {
+		ID                 string  `json:"id"`
+		Capability         string  `json:"capability"`
+		Label              string  `json:"label"`
+		ProviderName       string  `json:"provider_name"`
+		Protocol           string  `json:"protocol"`
+		Endpoint           string  `json:"endpoint"`
+		Model              string  `json:"model"`
+		Enabled            bool    `json:"enabled"`
+		RouteOrder         int     `json:"route_order"`
+		CostPerRequest     float64 `json:"cost_per_request"`
+		CostPerVideoMinute float64 `json:"cost_per_video_minute"`
+		CostPerAudioMinute float64 `json:"cost_per_audio_minute"`
+		Members            []struct {
 			ID          string `json:"id"`
 			Label       string `json:"label"`
 			APIKey      string `json:"api_key"`
@@ -451,10 +508,10 @@ func (s *Server) saveProviderChannel(w http.ResponseWriter, r *http.Request) {
 		} `json:"members"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&input); err != nil {
-		http.Error(w, "invalid provider channel", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid provider channel"})
 		return
 	}
-	channel := domain.ProviderChannel{ID: input.ID, Capability: strings.TrimSpace(input.Capability), Label: strings.TrimSpace(input.Label), ProviderName: strings.TrimSpace(input.ProviderName), Protocol: strings.TrimSpace(input.Protocol), Endpoint: strings.TrimSpace(input.Endpoint), Model: strings.TrimSpace(input.Model), Enabled: input.Enabled, RouteOrder: input.RouteOrder}
+	channel := domain.ProviderChannel{ID: input.ID, Capability: strings.TrimSpace(input.Capability), Label: strings.TrimSpace(input.Label), ProviderName: strings.TrimSpace(input.ProviderName), Protocol: strings.TrimSpace(input.Protocol), Endpoint: strings.TrimSpace(input.Endpoint), Model: strings.TrimSpace(input.Model), Enabled: input.Enabled, RouteOrder: input.RouteOrder, CostPerRequest: input.CostPerRequest, CostPerVideoMinute: input.CostPerVideoMinute, CostPerAudioMinute: input.CostPerAudioMinute}
 	// keys is positional, aligned with channel.Members below. Labels are
 	// unique per channel (UNIQUE(channel_id, label), migration 0013), so
 	// keys is positional because Members itself is positional — not because
@@ -474,9 +531,9 @@ func (s *Server) saveProviderChannel(w http.ResponseWriter, r *http.Request) {
 		// duplicate label used to reach this response as a bare SQLite
 		// UNIQUE-constraint string.
 		if errors.Is(err, app.ErrProviderChannelValidation) {
-			http.Error(w, "provider channel rejected: "+err.Error(), http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText("provider channel rejected: "+err.Error(), 300)})
 		} else {
-			http.Error(w, "provider channel rejected", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "provider channel rejected"})
 		}
 		return
 	}
@@ -501,7 +558,7 @@ func (s *Server) saveProviderChannel(w http.ResponseWriter, r *http.Request) {
 func (s *Server) updateProviderChannel(w http.ResponseWriter, r *http.Request) {
 	var patch app.ProviderChannelUpdate
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&patch); err != nil {
-		http.Error(w, "invalid provider channel update", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid provider channel update"})
 		return
 	}
 	updated, err := s.service.UpdateProviderChannel(r.Context(), r.PathValue("id"), patch)
@@ -511,9 +568,9 @@ func (s *Server) updateProviderChannel(w http.ResponseWriter, r *http.Request) {
 		// can fix it; anything else keeps the generic message rather than
 		// echoing a downstream layer's error text.
 		if errors.Is(err, app.ErrProviderChannelValidation) {
-			http.Error(w, "provider channel update rejected: "+err.Error(), http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText("provider channel update rejected: "+err.Error(), 300)})
 		} else {
-			http.Error(w, "provider channel update rejected", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "provider channel update rejected"})
 		}
 		return
 	}
@@ -523,7 +580,7 @@ func (s *Server) updateProviderChannel(w http.ResponseWriter, r *http.Request) {
 func (s *Server) enableProviderChannel(w http.ResponseWriter, r *http.Request) {
 	updated, err := s.service.SetProviderChannelEnabled(r.Context(), r.PathValue("id"), true)
 	if err != nil {
-		http.Error(w, "provider channel enable rejected", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "provider channel enable rejected"})
 		return
 	}
 	s.writeProviderChannel(w, r, http.StatusOK, updated)
@@ -532,7 +589,7 @@ func (s *Server) enableProviderChannel(w http.ResponseWriter, r *http.Request) {
 func (s *Server) disableProviderChannel(w http.ResponseWriter, r *http.Request) {
 	updated, err := s.service.SetProviderChannelEnabled(r.Context(), r.PathValue("id"), false)
 	if err != nil {
-		http.Error(w, "provider channel disable rejected", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "provider channel disable rejected"})
 		return
 	}
 	s.writeProviderChannel(w, r, http.StatusOK, updated)
@@ -540,7 +597,7 @@ func (s *Server) disableProviderChannel(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) deleteProviderChannel(w http.ResponseWriter, r *http.Request) {
 	if err := s.service.DeleteProviderChannel(r.Context(), r.PathValue("id")); err != nil {
-		http.Error(w, "provider channel delete rejected", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "provider channel delete rejected"})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -549,7 +606,7 @@ func (s *Server) deleteProviderChannel(w http.ResponseWriter, r *http.Request) {
 func (s *Server) testProviderChannel(w http.ResponseWriter, r *http.Request) {
 	result, err := s.service.TestProviderChannel(r.Context(), r.PathValue("id"))
 	if err != nil {
-		http.Error(w, "provider channel test rejected", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "provider channel test rejected"})
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -582,13 +639,13 @@ func (s *Server) enrollWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.TrimSpace(request.PairingToken) == "" {
-		http.Error(w, "invalid worker enrollment", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid worker enrollment"})
 		return
 	}
 	worker, token, err := s.service.EnrollWorker(r.Context(), request.PairingToken, request.WorkerRegistration)
 	if err != nil {
 		if errors.Is(err, app.ErrPairingTokenInvalid) {
-			http.Error(w, "worker enrollment rejected", http.StatusUnauthorized)
+			writeAPIError(w, http.StatusUnauthorized, APIError{Code: "worker_enrollment_rejected", Message: "worker enrollment rejected"})
 		} else {
 			writeError(w, err)
 		}
@@ -602,14 +659,12 @@ func (s *Server) workerHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var request struct {
-		Capabilities remote.WorkerCapabilities `json:"capabilities"`
-	}
+	var request remote.WorkerHeartbeat
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if !decodeStrictJSON(w, r, &request) {
 		return
 	}
-	if err := s.service.HeartbeatWorker(r.Context(), worker.ID, request.Capabilities); err != nil {
+	if err := s.service.HeartbeatWorker(r.Context(), worker.ID, request.Version, request.Capabilities); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -626,9 +681,9 @@ func (s *Server) workerLease(w http.ResponseWriter, r *http.Request) {
 	if _, err := io.Copy(io.Discard, r.Body); err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			writeAPIError(w, http.StatusRequestEntityTooLarge, APIError{Code: "request_body_too_large", Message: "request body too large"})
 		} else {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		}
 		return
 	}
@@ -660,12 +715,13 @@ func (s *Server) workerCompleteJob(w http.ResponseWriter, r *http.Request) {
 	// Validate state before calling the service so an invalid state is a
 	// 400, not a 500 from writeError.
 	if request.State != domain.JobSucceeded && request.State != domain.JobFailed {
-		http.Error(w, "worker job state must be succeeded or failed", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "worker job state must be succeeded or failed"})
 		return
 	}
 	if err := s.service.CompleteWorkerJob(r.Context(), r.PathValue("id"), worker.ID, request.State, request.Message); err != nil {
 		if errors.Is(err, domain.ErrJobLeaseLost) {
-			http.Error(w, err.Error(), http.StatusConflict)
+			status, apiErr := apiErrorFromError(err)
+			writeAPIError(w, status, apiErr)
 			return
 		}
 		writeError(w, err)
@@ -691,10 +747,11 @@ func (s *Server) workerProgress(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.service.RecordWorkerJobProgress(r.Context(), r.PathValue("id"), worker.ID, strings.TrimSpace(request.Stage), request.Progress, strings.TrimSpace(request.Event), strings.TrimSpace(request.Message)); err != nil {
 		if errors.Is(err, domain.ErrJobLeaseLost) {
-			http.Error(w, err.Error(), http.StatusConflict)
+			status, apiErr := apiErrorFromError(err)
+			writeAPIError(w, status, apiErr)
 			return
 		}
-		http.Error(w, "worker progress rejected", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "worker progress rejected"})
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -709,11 +766,12 @@ func (s *Server) workerCredential(w http.ResponseWriter, r *http.Request) {
 	lease, err := s.service.IssueWorkerCredential(r.Context(), worker, r.PathValue("id"), operation)
 	if err != nil {
 		if errors.Is(err, app.ErrWorkerProviderCredentialDeliveryDisabled) {
-			http.Error(w, "worker provider credential delivery is disabled", http.StatusForbidden)
+			writeAPIError(w, http.StatusForbidden, APIError{Code: "forbidden", Message: "worker provider credential delivery is disabled", Action: "enable_worker_provider_credentials"})
 			return
 		}
 		if errors.Is(err, domain.ErrJobLeaseLost) {
-			http.Error(w, err.Error(), http.StatusConflict)
+			status, apiErr := apiErrorFromError(err)
+			writeAPIError(w, status, apiErr)
 			return
 		}
 		// The operation name is already the Worker's own path parameter, so
@@ -733,7 +791,7 @@ func (s *Server) workerCredential(w http.ResponseWriter, r *http.Request) {
 			// this capability via this route, the same shape as the
 			// AllowWorkerProviderCredentials-disabled 403 above, not a
 			// malformed request.
-			http.Error(w, fmt.Sprintf("worker provider credential rejected: capability %q is configured as a provider channel, which worker direct-credential access does not read; configure providers.* for this capability or use the Hub provider proxy instead", operation), http.StatusForbidden)
+			writeAPIError(w, http.StatusForbidden, APIError{Code: "forbidden", Message: clipText(fmt.Sprintf("worker provider credential rejected: capability %q is configured as a provider channel, which worker direct-credential access does not read; configure providers.* for this capability or use the Hub provider proxy instead", operation), 300), Action: "configure_providers_in_config_or_use_proxy"})
 			return
 		}
 		if errors.Is(err, app.ErrWorkerProviderNotConfigured) {
@@ -742,10 +800,10 @@ func (s *Server) workerCredential(w http.ResponseWriter, r *http.Request) {
 			// either configuration method. An operator configuring one later
 			// makes the identical request succeed, which is what 503 signals
 			// and 400 does not.
-			http.Error(w, fmt.Sprintf("worker provider credential rejected: no provider is configured for capability %q", operation), http.StatusServiceUnavailable)
+			writeAPIError(w, http.StatusServiceUnavailable, APIError{Code: "service_unavailable", Message: clipText(fmt.Sprintf("worker provider credential rejected: no provider is configured for capability %q", operation), 300)})
 			return
 		}
-		http.Error(w, "credential request rejected", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "credential request rejected"})
 		return
 	}
 	// Deliberately do not log the lease or any response fields here: it carries
@@ -783,32 +841,32 @@ func (s *Server) workerProviderProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(r.Header.Get("Content-Type")))
 	if err != nil || !strings.EqualFold(mediaType, "application/json") {
-		http.Error(w, "provider proxy accepts application/json only", http.StatusUnsupportedMediaType)
+		writeAPIError(w, http.StatusUnsupportedMediaType, APIError{Code: "unsupported_media_type", Message: "provider proxy accepts application/json only"})
 		return
 	}
 	if r.ContentLength > app.MaxProviderProxyBodyBytes() {
-		http.Error(w, "provider proxy request is too large", http.StatusRequestEntityTooLarge)
+		writeAPIError(w, http.StatusRequestEntityTooLarge, APIError{Code: "request_body_too_large", Message: "provider proxy request is too large"})
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, app.MaxProviderProxyBodyBytes()+1)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "provider proxy request is too large", http.StatusRequestEntityTooLarge)
+		writeAPIError(w, http.StatusRequestEntityTooLarge, APIError{Code: "request_body_too_large", Message: "provider proxy request is too large"})
 		return
 	}
 	if int64(len(body)) > app.MaxProviderProxyBodyBytes() || !json.Valid(body) {
-		http.Error(w, "provider proxy accepts valid JSON up to 2 MiB", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "provider proxy accepts valid JSON up to 2 MiB"})
 		return
 	}
 	operation := credentials.Operation(strings.TrimSpace(r.PathValue("operation")))
 	result, err := s.service.ProxyWorkerProviderJSON(r.Context(), worker, r.PathValue("id"), operation, body)
 	if err != nil {
 		if errors.Is(err, app.ErrProviderProxyRequest) {
-			http.Error(w, "provider proxy request failed", http.StatusBadGateway)
+			writeAPIError(w, http.StatusBadGateway, APIError{Code: "bad_gateway", Message: "provider proxy request failed"})
 			return
 		}
 		if errors.Is(err, domain.ErrJobLeaseLost) {
-			http.Error(w, "worker does not own active job for provider proxy", http.StatusConflict)
+			writeAPIError(w, http.StatusConflict, APIError{Code: "conflict", Message: "worker does not own active job for provider proxy", Retryable: true})
 			return
 		}
 		// Same split, same reasoning and same status codes as workerCredential's
@@ -817,14 +875,14 @@ func (s *Server) workerProviderProxy(w http.ResponseWriter, r *http.Request) {
 		// err.Error(), and 403/503 replace the old flat 400 because neither
 		// sentinel means the Worker's request was wrong.
 		if errors.Is(err, app.ErrWorkerProviderConfiguredAsChannelOnly) {
-			http.Error(w, fmt.Sprintf("provider proxy request rejected: capability %q is configured as a provider channel, which the worker provider proxy does not read; configure providers.* for this capability instead", operation), http.StatusForbidden)
+			writeAPIError(w, http.StatusForbidden, APIError{Code: "forbidden", Message: clipText(fmt.Sprintf("provider proxy request rejected: capability %q is configured as a provider channel, which the worker provider proxy does not read; configure providers.* for this capability instead", operation), 300), Action: "configure_providers_in_config_or_use_proxy"})
 			return
 		}
 		if errors.Is(err, app.ErrWorkerProviderNotConfigured) {
-			http.Error(w, fmt.Sprintf("provider proxy request rejected: no provider is configured for capability %q", operation), http.StatusServiceUnavailable)
+			writeAPIError(w, http.StatusServiceUnavailable, APIError{Code: "service_unavailable", Message: clipText(fmt.Sprintf("provider proxy request rejected: no provider is configured for capability %q", operation), 300)})
 			return
 		}
-		http.Error(w, "provider proxy request rejected", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "provider proxy request rejected"})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -847,14 +905,14 @@ func (s *Server) workerUploadArtifactMultipart(w http.ResponseWriter, r *http.Re
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<30+1<<20)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		http.Error(w, "invalid artifact multipart body", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid artifact multipart body"})
 		return
 	}
 	artifactType := strings.TrimSpace(r.FormValue("type"))
 	profileHash := strings.TrimSpace(r.FormValue("profile_hash"))
 	file, header, err := r.FormFile("artifact")
 	if err != nil {
-		http.Error(w, "artifact file is required", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "artifact file is required"})
 		return
 	}
 	defer file.Close()
@@ -887,9 +945,10 @@ func (s *Server) writeWorkerArtifactResult(w http.ResponseWriter, artifact domai
 	if err != nil {
 		switch {
 		case errors.Is(err, app.ErrInvalidWorkerArtifact):
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 		case errors.Is(err, app.ErrWorkerArtifactLease):
-			http.Error(w, err.Error(), http.StatusConflict)
+			status, apiErr := apiErrorFromError(err)
+			writeAPIError(w, status, apiErr)
 		default:
 			writeError(w, err)
 		}
@@ -909,12 +968,12 @@ func (s *Server) authenticatedWorker(w http.ResponseWriter, r *http.Request) (re
 	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
 	const prefix = "Bearer "
 	if !strings.HasPrefix(authorization, prefix) {
-		http.Error(w, "worker authentication required", http.StatusUnauthorized)
+		writeAPIError(w, http.StatusUnauthorized, APIError{Code: "worker_authentication_required", Message: "worker authentication required"})
 		return remote.Worker{}, false
 	}
 	worker, err := s.service.AuthenticateWorker(r.Context(), strings.TrimSpace(strings.TrimPrefix(authorization, prefix)))
 	if err != nil {
-		http.Error(w, "worker authentication failed", http.StatusUnauthorized)
+		writeAPIError(w, http.StatusUnauthorized, APIError{Code: "worker_authentication_failed", Message: "worker authentication failed"})
 		return remote.Worker{}, false
 	}
 	return worker, true
@@ -987,12 +1046,57 @@ func (s *Server) listRoots(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, roots)
 }
 
+// RootHealth is the projection GET /api/v1/roots/health answers with. listRoots
+// already serializes domain.LibraryRoot directly (so /api/v1/roots carries the
+// same fields under their domain JSON names); this is the compact shape the
+// UIs render, with times preformatted the same way encoding/json formats
+// time.Time (RFC3339, fractional seconds only when nonzero).
+type RootHealth struct {
+	RootID      string  `json:"root_id"`
+	Path        string  `json:"path"`
+	State       string  `json:"state"` // unknown|healthy|unavailable
+	LastHealthy *string `json:"last_healthy_at,omitempty"`
+	LastScan    *string `json:"last_scan_at,omitempty"`
+}
+
+// rootsHealth is the read-only counterpart to listRoots: same data, same
+// admin-only posture (a root path is one of the pieces of infrastructure the
+// hub administrator owns), shaped for a status table. An unavailable root
+// keeps its last_healthy_at — MarkRootUnavailable deliberately never clears
+// it, and this endpoint is what lets the UI show "last healthy" during an
+// outage instead of a blank.
+func (s *Server) rootsHealth(w http.ResponseWriter, r *http.Request) {
+	roots, err := s.service.ListLibraryRoots(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	health := make([]RootHealth, 0, len(roots))
+	for _, root := range roots {
+		item := RootHealth{
+			RootID: root.ID,
+			Path:   root.Path,
+			State:  string(root.HealthState),
+		}
+		if root.LastHealthyAt != nil {
+			value := root.LastHealthyAt.Format(time.RFC3339Nano)
+			item.LastHealthy = &value
+		}
+		if root.LastScanAt != nil {
+			value := root.LastScanAt.Format(time.RFC3339Nano)
+			item.LastScan = &value
+		}
+		health = append(health, item)
+	}
+	writeJSON(w, http.StatusOK, health)
+}
+
 func (s *Server) createRoot(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Path string `json:"path"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request); err != nil || request.Path == "" {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		return
 	}
 	root, err := s.service.AddLibraryRoot(r.Context(), request.Path)
@@ -1006,7 +1110,10 @@ func (s *Server) createRoot(w http.ResponseWriter, r *http.Request) {
 			// inspection the wizard would have shown before the operator ever
 			// tried to add the root.
 			writeJSON(w, http.StatusUnprocessableEntity, shareNotMountedResponse{
-				Error:      err.Error(),
+				Error: APIError{Code: "share_not_mounted", Message: clipText(err.Error(), 300), Action: "mount_the_share"},
+				// The same inspection the wizard would have shown before the
+				// operator ever tried to add the root: an API caller that never
+				// opens /library-roots still gets the mount commands.
 				Inspection: s.service.InspectRootPath(r.Context(), request.Path, ""),
 			})
 			return
@@ -1020,7 +1127,7 @@ func (s *Server) createRoot(w http.ResponseWriter, r *http.Request) {
 // shareNotMountedResponse is what createRoot answers with when AddLibraryRoot
 // finds a network share where a mounted path was expected.
 type shareNotMountedResponse struct {
-	Error      string             `json:"error"`
+	Error      APIError           `json:"error"`
 	Inspection app.RootInspection `json:"inspection"`
 }
 
@@ -1046,7 +1153,7 @@ func (s *Server) inspectRoot(w http.ResponseWriter, r *http.Request) {
 		Mountpoint string `json:"mountpoint"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&request); err != nil || strings.TrimSpace(request.Path) == "" {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		return
 	}
 	writeJSON(w, http.StatusOK, s.service.InspectRootPath(r.Context(), request.Path, request.Mountpoint))
@@ -1185,6 +1292,15 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
+// clipText truncates s to at most n bytes, never splitting a UTF-8 rune, and
+// marks the cut with the same "…(truncated)" marker truncateMessage uses so
+// every truncated string in an envelope is self-advertising. Error envelopes
+// bound the message so a relayed or echoed body can never grow the stored job
+// error or the browser page without bound.
+func clipText(s string, n int) string {
+	return truncateMessage(s, n)
+}
+
 // pathInsideRoot returns true when localPath, after symlink resolution,
 // is inside the directory root. Both paths are resolved with
 // filepath.EvalSymlinks before computing the relative path, so symlink
@@ -1205,9 +1321,10 @@ func pathInsideRoot(localPath, root string) bool {
 	return !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)
 }
 
+// writeError answers an unclassified server-side failure. The error envelope's
+// classifier decides status and shape; anything it does not recognise is a 500.
 func writeError(w http.ResponseWriter, err error) {
-	slog.Error("request failed", "error", err)
-	http.Error(w, "internal server error", http.StatusInternalServerError)
+	writeErrorEnvelope(w, err)
 }
 
 // decodeStrictJSON decodes exactly one JSON value from r.Body (already
@@ -1221,9 +1338,9 @@ func decodeStrictJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	if err := dec.Decode(v); err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			writeAPIError(w, http.StatusRequestEntityTooLarge, APIError{Code: "request_body_too_large", Message: "request body too large"})
 		} else {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		}
 		return false
 	}
@@ -1232,14 +1349,14 @@ func decodeStrictJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	var dummy struct{}
 	if err := dec.Decode(&dummy); err == nil {
 		// Another JSON value parsed successfully — trailing content.
-		http.Error(w, "request body has trailing content", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "request body has trailing content"})
 		return false
 	} else if !errors.Is(err, io.EOF) {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			writeAPIError(w, http.StatusRequestEntityTooLarge, APIError{Code: "request_body_too_large", Message: "request body too large"})
 		} else {
-			http.Error(w, "request body has trailing content", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "request body has trailing content"})
 		}
 		return false
 	}
@@ -1295,6 +1412,33 @@ func (s *Server) jobSummary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, summary)
 }
 
+// costSummary serves the cost ledger's today/month estimates. The payload is
+// two sums in the channels' configured relative unit — a guide, never a
+// billing record — with no per-run detail, so it needs no admin gate: the
+// same class of aggregate as jobSummary.
+func (s *Server) costSummary(w http.ResponseWriter, r *http.Request) {
+	summary, err := s.service.CostSummary(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
+}
+
+// jobIssues serves the failure backlog grouped by category. Like jobSummary
+// it needs no admin gate: the payload is counts, category codes and a
+// representative asset id — never last_error_message, which can embed a
+// truncated provider response body and stays behind the admin token
+// everywhere else.
+func (s *Server) jobIssues(w http.ResponseWriter, r *http.Request) {
+	issues, err := s.service.JobIssues(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, issues)
+}
+
 func (s *Server) workerJobStatus(w http.ResponseWriter, r *http.Request) {
 	status, err := s.service.GetWorkerJobStatus(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -1310,26 +1454,27 @@ func (s *Server) setWorkerJobAssignment(w http.ResponseWriter, r *http.Request) 
 		Mode     remote.WorkerAssignmentMode `json:"mode"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&input); err != nil {
-		http.Error(w, "invalid worker assignment", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid worker assignment"})
 		return
 	}
 	// Validate mode and worker_id before calling the service so an invalid
 	// value is a 400, not a 500 from writeError.
 	if input.Mode != remote.WorkerAssignmentAny && input.Mode != remote.WorkerAssignmentPreferred && input.Mode != remote.WorkerAssignmentRequired {
-		http.Error(w, "unsupported worker assignment mode", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "unsupported worker assignment mode"})
 		return
 	}
 	if input.Mode != remote.WorkerAssignmentAny && strings.TrimSpace(input.WorkerID) == "" {
-		http.Error(w, "worker ID is required for a worker assignment", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "worker ID is required for a worker assignment"})
 		return
 	}
 	if err := s.service.SetDeriveWorkerAssignment(r.Context(), r.PathValue("id"), strings.TrimSpace(input.WorkerID), input.Mode); err != nil {
 		if errors.Is(err, domain.ErrJobNotAssignable) {
-			http.Error(w, err.Error(), http.StatusConflict)
+			status, apiErr := apiErrorFromError(err)
+			writeAPIError(w, status, apiErr)
 			return
 		}
 		if errors.Is(err, domain.ErrInvalidAssignment) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 			return
 		}
 		writeError(w, err)
@@ -1357,6 +1502,15 @@ func (s *Server) runPipeline(w http.ResponseWriter, r *http.Request) {
 type librarySupervisorView struct {
 	app.LibrarySupervisorStatus
 	HasError bool `json:"has_error"`
+}
+
+// setupStatus serves the first-run environment snapshot behind /setup: binary
+// presence, directory writability, free disk, database health and the counts
+// that drive the next-step heuristic. It is a trusted read, not admin-only,
+// because the page it feeds is the one shown before anything has been
+// configured.
+func (s *Server) setupStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.service.SetupStatus(r.Context()))
 }
 
 // librarySupervisorStatus is how an operator tells an unattended loop that is
@@ -1402,16 +1556,25 @@ func nextOffPeakLabel(throttle domain.PipelineThrottle, now time.Time) string {
 	return start.Format("2006-01-02 15:04")
 }
 
+func (s *Server) storageOverview(w http.ResponseWriter, r *http.Request) {
+	overview, err := s.service.StorageOverview(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, overview)
+}
+
 func (s *Server) savePipelineThrottle(w http.ResponseWriter, r *http.Request) {
 	var throttle domain.PipelineThrottle
 	if err := json.NewDecoder(io.LimitReader(r.Body, 8<<10)).Decode(&throttle); err != nil {
-		http.Error(w, "invalid throttle payload", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid throttle payload"})
 		return
 	}
 	if err := throttle.Validate(); err != nil {
 		// A rejected throttle is an operator mistake, not a server fault, and the
 		// message names the offending field — it is the only feedback the page has.
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 		return
 	}
 	if err := s.service.SavePipelineThrottle(r.Context(), throttle); err != nil {
@@ -1425,8 +1588,29 @@ func (s *Server) savePipelineThrottle(w http.ResponseWriter, r *http.Request) {
 // operator has since fixed — most often a provider that was not configured yet.
 // Neither exhausted attempts nor a terminal classification is undone by
 // rescanning, so without this the queue has no way back.
+//
+// An optional {"category":"..."} body narrows the revive to one failure
+// category — the strings GET /api/v1/issues reports, so the issues view can
+// retry one row at a time. An absent or empty body keeps the original
+// all-failed behavior, and a malformed body is refused outright rather than
+// silently requeueing everything the caller meant to scope.
 func (s *Server) retryFailedJobs(w http.ResponseWriter, r *http.Request) {
-	requeued, err := s.service.RequeueFailedJobs(r.Context())
+	var req struct {
+		Category string `json:"category"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 8<<10)).Decode(&req); err != nil && err != io.EOF {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
+		return
+	}
+	var (
+		requeued int
+		err      error
+	)
+	if req.Category == "" {
+		requeued, err = s.service.RequeueFailedJobs(r.Context())
+	} else {
+		requeued, err = s.service.RequeueFailedJobsByCategory(r.Context(), req.Category)
+	}
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1434,8 +1618,29 @@ func (s *Server) retryFailedJobs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int{"requeued": requeued})
 }
 
+// resumeDeferredJobs releases work parked on wall-clock waits early. An
+// optional {"reason":"..."} body scopes the release to one deferral category
+// (provider_route_exhausted, disk_space_low or budget_exhausted — the codes
+// the issues view lists as auto-recovering); an absent or empty body keeps
+// the historical default, which is provider_route_exhausted — the only
+// reason anything could park when this endpoint first shipped.
 func (s *Server) resumeDeferredJobs(w http.ResponseWriter, r *http.Request) {
-	resumed, err := s.service.ResumeDeferredJobs(r.Context())
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 8<<10)).Decode(&req); err != nil && err != io.EOF {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
+		return
+	}
+	var (
+		resumed int
+		err     error
+	)
+	if req.Reason == "" {
+		resumed, err = s.service.ResumeDeferredJobs(r.Context())
+	} else {
+		resumed, err = s.service.ResumeDeferredJobsByCategory(r.Context(), req.Reason)
+	}
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1446,12 +1651,12 @@ func (s *Server) resumeDeferredJobs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	if q == "" {
-		http.Error(w, "missing q", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "missing q"})
 		return
 	}
 	facets, err := parseFacetFilter(r.URL.Query())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 		return
 	}
 	// The browser turns this id list into cards with a follow-up GET
@@ -1478,12 +1683,12 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 func (s *Server) searchShots(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	if q == "" {
-		http.Error(w, "missing q", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "missing q"})
 		return
 	}
 	facets, err := parseFacetFilter(r.URL.Query())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 		return
 	}
 	hits, err := s.service.SearchShotsFiltered(r.Context(), q, parseInt(r.URL.Query().Get("limit"), 100), facets)
@@ -1497,19 +1702,19 @@ func (s *Server) searchShots(w http.ResponseWriter, r *http.Request) {
 func (s *Server) searchShotsV2(w http.ResponseWriter, r *http.Request) {
 	var req search.SearchRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText("invalid request body: "+err.Error(), 300)})
 		return
 	}
 	if strings.TrimSpace(req.Query) == "" {
-		http.Error(w, "missing query", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "missing query"})
 		return
 	}
 	if !search.ValidMode(req.Mode) {
-		http.Error(w, "unknown mode: "+req.Mode, http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "unknown mode: " + req.Mode})
 		return
 	}
 	if err := validateFacetFilter(&req.Facets); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 		return
 	}
 	response, err := s.service.SearchV2(r.Context(), req)
@@ -1523,12 +1728,12 @@ func (s *Server) searchShotsV2(w http.ResponseWriter, r *http.Request) {
 func (s *Server) hybridSearchShots(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	if q == "" {
-		http.Error(w, "missing q", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "missing q"})
 		return
 	}
 	facets, err := parseFacetFilter(r.URL.Query())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 		return
 	}
 	hits, err := s.service.HybridSearchShotsFiltered(r.Context(), q, parseInt(r.URL.Query().Get("limit"), 100), facets)
@@ -1542,7 +1747,7 @@ func (s *Server) hybridSearchShots(w http.ResponseWriter, r *http.Request) {
 func (s *Server) similarShots(w http.ResponseWriter, r *http.Request) {
 	facets, err := parseFacetFilter(r.URL.Query())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 		return
 	}
 	hits, err := s.service.SimilarShotsFiltered(r.Context(), r.PathValue("id"), parseInt(r.URL.Query().Get("limit"), 20), facets)
@@ -1553,7 +1758,7 @@ func (s *Server) similarShots(w http.ResponseWriter, r *http.Request) {
 		// compiler checks. Rewording the error there — ordinary maintenance —
 		// silently downgraded a missing shot to a 500.
 		if errors.Is(err, domain.ErrShotVectorNotFound) {
-			http.NotFound(w, r)
+			writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found"})
 			return
 		}
 		writeError(w, err)
@@ -1608,12 +1813,12 @@ func (s *Server) listAssetCards(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	facets, err := parseFacetFilter(query)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 		return
 	}
 	ids, err := parseAssetIDs(query.Get("ids"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 		return
 	}
 	// A caller narrowing by ids without an explicit limit gets a default sized
@@ -1695,7 +1900,7 @@ func queryValue(query map[string][]string, key string) string {
 func (s *Server) processingSummary(w http.ResponseWriter, r *http.Request) {
 	filter, err := collectionFilterFromQuery(r.URL.Query())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 		return
 	}
 	summary, err := s.service.GetAssetProcessingSummary(r.Context(), filter)
@@ -1713,7 +1918,7 @@ func (s *Server) listCollections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if collections == nil {
-		collections = []domain.AssetCollection{}
+		collections = []domain.CollectionSummary{}
 	}
 	writeJSON(w, http.StatusOK, collections)
 }
@@ -1725,7 +1930,7 @@ func (s *Server) getCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if collection == nil {
-		http.NotFound(w, r)
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found"})
 		return
 	}
 	writeJSON(w, http.StatusOK, collection)
@@ -1746,28 +1951,28 @@ func (s *Server) listCollectionAssets(w http.ResponseWriter, r *http.Request) {
 func (s *Server) saveCollection(w http.ResponseWriter, r *http.Request) {
 	var collection domain.AssetCollection
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&collection); err != nil {
-		http.Error(w, "invalid collection", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid collection"})
 		return
 	}
 	// Validate required fields before calling the service so an invalid
 	// value is a 400/422, not a 500 from writeError.
 	collection.Name = strings.TrimSpace(collection.Name)
 	if collection.Name == "" {
-		http.Error(w, "collection name is required", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "collection name is required"})
 		return
 	}
 	if len(collection.Name) > 200 {
-		http.Error(w, "collection name is too long", http.StatusUnprocessableEntity)
+		writeAPIError(w, http.StatusUnprocessableEntity, APIError{Code: "unprocessable_entity", Message: "collection name is too long"})
 		return
 	}
 	if len(collection.Description) > 2000 {
-		http.Error(w, "collection description is too long", http.StatusUnprocessableEntity)
+		writeAPIError(w, http.StatusUnprocessableEntity, APIError{Code: "unprocessable_entity", Message: "collection description is too long"})
 		return
 	}
 	saved, err := s.service.SaveAssetCollection(r.Context(), collection)
 	if err != nil {
 		if errors.Is(err, domain.ErrCollectionExists) {
-			http.Error(w, "collection name already exists", http.StatusConflict)
+			writeAPIError(w, http.StatusConflict, APIError{Code: "conflict", Message: "collection name already exists", Retryable: true})
 			return
 		}
 		writeError(w, err)
@@ -1782,6 +1987,75 @@ func (s *Server) deleteCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// addCollectionShot pins a shot into a collection's basket. The repository
+// absorbs a duplicate pin as a no-op (the collection_shots primary key), so a
+// retried POST answers the same 201 as the first — the call is idempotent by
+// construction, and the client never has to guess whether its earlier request
+// landed. A collection id naming nothing surfaces as 404 via
+// app.ErrCollectionNotFound; the service refuses before the write, so the
+// FK constraint is not the thing that reports it.
+func (s *Server) addCollectionShot(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ShotID string `json:"shot_id"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	if !decodeStrictJSON(w, r, &body) {
+		return
+	}
+	body.ShotID = strings.TrimSpace(body.ShotID)
+	if body.ShotID == "" {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "shot_id is required"})
+		return
+	}
+	if err := s.service.AddShotToCollection(r.Context(), r.PathValue("id"), body.ShotID); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]bool{"ok": true})
+}
+
+// removeCollectionShot unpins a shot. Removing a shot that is not pinned is a
+// no-op that still answers 204, matching the repository's idempotent delete.
+func (s *Server) removeCollectionShot(w http.ResponseWriter, r *http.Request) {
+	if err := s.service.RemoveShotFromCollection(r.Context(), r.PathValue("id"), r.PathValue("shot_id")); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// listCollectionShots answers the basket in display order, joined with the
+// shot fields a basket view needs without a second round trip.
+func (s *Server) listCollectionShots(w http.ResponseWriter, r *http.Request) {
+	shots, err := s.service.ListCollectionShots(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if shots == nil {
+		shots = []domain.CollectionShotDetail{}
+	}
+	writeJSON(w, http.StatusOK, shots)
+}
+
+// reorderCollectionShots replaces the basket's display order wholesale. The
+// repository rejects a list that is not exactly the collection's current pins,
+// so a stale client can never silently drop or inject shots through a reorder.
+func (s *Server) reorderCollectionShots(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ShotIDs []string `json:"shot_ids"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	if !decodeStrictJSON(w, r, &body) {
+		return
+	}
+	if err := s.service.ReorderCollectionShots(r.Context(), r.PathValue("id"), body.ShotIDs); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) listShootSessions(w http.ResponseWriter, r *http.Request) {
@@ -1819,7 +2093,7 @@ func (s *Server) assetDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if detail == nil {
-		http.NotFound(w, r)
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found"})
 		return
 	}
 	// The public library response is intentionally safe to render or share.
@@ -1845,7 +2119,7 @@ func (s *Server) assetCaptureLocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if detail == nil {
-		http.NotFound(w, r)
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found"})
 		return
 	}
 	if detail.Metadata == nil || detail.Metadata.Latitude == nil || detail.Metadata.Longitude == nil {
@@ -1880,11 +2154,11 @@ func (s *Server) serveArtifact(w http.ResponseWriter, r *http.Request, typ strin
 		return
 	}
 	if a == nil {
-		http.NotFound(w, r)
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found"})
 		return
 	}
 	if _, err := os.Stat(a.LocalPath); err != nil {
-		http.NotFound(w, r)
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found"})
 		return
 	}
 	// Verify the artifact lives inside the Hub data directory or its
@@ -1908,7 +2182,7 @@ func (s *Server) serveArtifact(w http.ResponseWriter, r *http.Request, typ strin
 	}
 	if !allowed {
 		slog.Warn("artifact path is outside allowed roots", "path", a.LocalPath, "datadir", s.service.DataDir(), "cachedir", s.service.CacheDir())
-		http.NotFound(w, r)
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found"})
 		return
 	}
 	if ct := mime.TypeByExtension(filepath.Ext(a.LocalPath)); ct != "" {
@@ -1922,6 +2196,17 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	// but matching on the path explicitly guards against misregistration or future pattern changes.
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
+		return
+	}
+	// Fresh-install routing: a hub that has never been pointed at a library
+	// root cannot serve a meaningful library, so the first visit lands on the
+	// setup wizard instead of a page that coaches "go add a root" from two
+	// hops away. Only this page route is affected — /setup and /worker-setup
+	// are separate routes — and only the zero-roots state redirects; a failed
+	// count renders the page as today, because a broken read must never
+	// bounce the browser away from the library.
+	if roots, err := s.service.ListLibraryRoots(r.Context()); err == nil && len(roots) == 0 {
+		http.Redirect(w, r, "/setup", http.StatusFound)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1939,7 +2224,7 @@ function timeline(x,shots){const duration=Math.max(Number(x.duration_ms)||0,1);i
 function thumbnail(x){return x.thumbnail_url?'<img class="thumb" loading="lazy" src="'+esc(x.thumbnail_url)+'" alt="'+esc(x.filename)+' 的缩略图" onerror="this.outerHTML=\'<div class=&quot;thumb-empty&quot;>缩略图不可用</div>\'">':'<div class="thumb-empty">暂无缩略图</div>'}
 function optionalDetails(x){const fields=[['相机',x.camera_model],['区域',x.region_label],['场次',x.session_id],['色彩',x.source_color],['配置',x.color_profile],['原始格式',x.raw_format],['预览',x.preview_status]].filter(([,value])=>value);return fields.length?'<div class="asset-details" aria-label="拍摄与预览信息">'+fields.map(([label,value])=>'<span class="detail"><b>'+esc(label)+'</b>'+esc(value)+'</span>').join('')+'</div>':''}
 function row(x,shots){return '<article class="asset-row"><div>'+thumbnail(x)+'</div><div class="asset-info"><div class="filename" title="'+esc(x.filename)+'">'+esc(x.filename||'未命名素材')+'</div><div class="asset-meta">'+fmt(x.duration_ms)+' · '+esc(x.orientation||'方向未知')+' · '+esc(x.state||'未知状态')+'</div><p class="summary">'+esc(x.summary||'正在等待视频理解结果。')+'</p><div class="chips">'+chips(x)+'</div>'+optionalDetails(x)+'</div><div class="timeline-card"><div class="timeline-head"><span class="timeline-title">镜头语义时间轴</span><span class="duration">'+fmt(x.duration_ms)+'</span></div>'+timeline(x,shots)+'</div></article>'}
-async function load(ids){library.innerHTML='<div class="loading">正在整理镜头时间轴…</div>';try{let data=await fetch('/api/v1/assets?limit=300').then(r=>r.ok?r.json():[]);data=Array.isArray(data)?data:[];if(ids)data=data.filter(x=>ids.includes(x.id));if(!data.length){library.innerHTML='<div class="empty">暂无素材。先在「启动配置」添加素材目录并运行处理任务，镜头、缩略图和时间轴会出现在这里。</div>';return}const rows=await Promise.all(data.map(async x=>row(x,await loadShots(x.id))));library.innerHTML=rows.join('')}catch(e){library.innerHTML='<div class="empty error">无法读取素材库：'+esc(e.message)+'</div>'}}
+async function load(ids){library.innerHTML='<div class="loading">正在整理镜头时间轴…</div>';try{let data=await fetch('/api/v1/assets?limit=300').then(r=>r.ok?r.json():[]);data=Array.isArray(data)?data:[];if(ids)data=data.filter(x=>ids.includes(x.id));if(!data.length){library.innerHTML='<div class="empty">暂无素材。先在<a href="/setup" style="color:#b7c8eb;text-decoration:underline">启动配置</a>添加素材目录并运行处理任务，镜头、缩略图和时间轴会出现在这里。<br><a href="/library-roots" style="display:inline-block;margin-top:14px;background:#324767;color:#eaf1ff;border-radius:9px;padding:10px 13px;font-weight:750">打开素材目录向导</a></div>';return}const rows=await Promise.all(data.map(async x=>row(x,await loadShots(x.id))));library.innerHTML=rows.join('')}catch(e){library.innerHTML='<div class="empty error">无法读取素材库：'+esc(e.message)+'</div>'}}
 async function search(){const q=document.getElementById('q').value.trim();if(!q)return load();try{const ids=await fetch('/api/v1/search?q='+encodeURIComponent(q)).then(r=>r.ok?r.json():[]);load(Array.isArray(ids)?ids:[])}catch(e){library.innerHTML='<div class="empty error">搜索失败：'+esc(e.message)+'</div>'}}document.getElementById('q').addEventListener('keydown',e=>{if(e.key==='Enter')search()});load();</script></body></html>`
 
 func (s *Server) providersPage(w http.ResponseWriter, r *http.Request) {
@@ -1958,9 +2243,10 @@ func (s *Server) progressPage(w http.ResponseWriter, r *http.Request) {
 }
 
 const progressHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · 处理进度</title><style>
-:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101827;color:#edf3ff;font:14px ui-sans-serif,system-ui,-apple-system,sans-serif}header{padding:15px 5vw;border-bottom:1px solid #293953;display:flex;gap:18px;align-items:center;background:#101827ee;position:sticky;top:0;z-index:1;backdrop-filter:blur(12px)}a{color:#b8c8ff;text-decoration:none}.brand{color:#fff;font-weight:800;margin-right:auto}.wrap{max-width:1180px;margin:auto;padding:32px 24px}.top{display:flex;justify-content:space-between;gap:18px;align-items:flex-end}.top h1{font-size:32px;margin:0;letter-spacing:-.04em}.muted{color:#aab8d0;line-height:1.5}button{background:#86a3ff;color:#091227;border:0;border-radius:9px;padding:10px 14px;font-weight:800;cursor:pointer}.console-hero{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;background:#172238;border:1px solid #2c3d5b;border-radius:14px;padding:16px 18px;margin:22px 0 14px}.hero-title{display:grid;gap:4px}.hero-job{font-size:19px;font-weight:850;color:#fff}.hero-meta{font-size:12px}.hero-actions{display:flex;gap:9px;flex-wrap:wrap}.hero-actions button{background:#31446a;color:#dbe6ff}.hero-actions button.primary{background:#86a3ff;color:#091227}.metrics{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin:24px 0}.metric,.panel{background:#172238;border:1px solid #2c3d5b;border-radius:14px}.metric{padding:16px}.number{font-size:30px;font-weight:800;letter-spacing:-.04em;margin-top:5px}.panels{display:grid;grid-template-columns:1.4fr .8fr;gap:16px}.panel{padding:18px;min-width:0;overflow-x:auto}.panel h2{margin:0 0 14px;font-size:17px}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:10px 7px;border-bottom:1px solid #2b3b55;font-size:13px;vertical-align:top}.state{border-radius:99px;padding:3px 8px;font-size:12px;font-weight:700;background:#34445e}.state.succeeded{background:#164b39;color:#9cf0c2}.state.failed{background:#612c3a;color:#ffc0c8}.state.running{background:#3a376b;color:#d8d4ff}.state.deferred{background:#5a4a1f;color:#ffdfa6}.log{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.55;color:#b9c7e3;min-height:280px;max-height:480px;overflow:auto;white-space:pre-wrap}.log div{padding:6px 0;border-bottom:1px solid #263650}@media(max-width:760px){.metrics{grid-template-columns:repeat(2,1fr)}.panels{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}header input{width:auto;max-width:260px;padding:9px 10px;border-radius:8px;border:1px solid #354764;background:#0e1728;color:#fff;font:inherit}</style></head><body><!--SHELL_HEADER--><main class="wrap"><div class="top"><div><h1>处理进度</h1><p class="muted">状态每 2.5 秒更新。右侧是本次浏览器会话的操作记录；下方作业错误来自本地任务队列。若通道内所有 API Key 都失败（多为额度用尽），作业会转入「等待额度」并在若干小时后自动重试，不消耗尝试次数。</p></div><div class="console-hero" data-console-hero aria-live="polite"><div class="hero-title"><span class="muted">正在处理</span><div class="hero-job" id="hero-job">当前没有运行中的作业</div><div class="hero-meta muted" id="hero-meta"></div></div><div class="hero-actions"><button id="run" class="primary" onclick="runPipeline()">运行待处理任务</button><button id="resume" onclick="resumeDeferred()">立即重试等待额度的作业</button><button id="retry" onclick="retryFailed()">重试失败作业</button></div></div></div><section id="supervisor" class="muted" style="margin-top:18px">无人值守巡检：正在读取…</section><section id="metrics" class="metrics"></section><section class="panels"><div class="panel"><h2>最近作业</h2><div id="jobs" class="muted">正在读取…</div></div><div class="panel"><h2>本次操作</h2><div id="log" class="log"></div></div></section></main><script>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101827;color:#edf3ff;font:14px ui-sans-serif,system-ui,-apple-system,sans-serif}header{padding:15px 5vw;border-bottom:1px solid #293953;display:flex;gap:18px;align-items:center;background:#101827ee;position:sticky;top:0;z-index:1;backdrop-filter:blur(12px)}a{color:#b8c8ff;text-decoration:none}.brand{color:#fff;font-weight:800;margin-right:auto}.wrap{max-width:1180px;margin:auto;padding:32px 24px}.top{display:flex;justify-content:space-between;gap:18px;align-items:flex-end}.top h1{font-size:32px;margin:0;letter-spacing:-.04em}.muted{color:#aab8d0;line-height:1.5}button{background:#86a3ff;color:#091227;border:0;border-radius:9px;padding:10px 14px;font-weight:800;cursor:pointer}.console-hero{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;background:#172238;border:1px solid #2c3d5b;border-radius:14px;padding:16px 18px;margin:22px 0 14px}.hero-title{display:grid;gap:4px}.hero-job{font-size:19px;font-weight:850;color:#fff}.hero-meta{font-size:12px}.hero-actions{display:flex;gap:9px;flex-wrap:wrap}.hero-actions button{background:#31446a;color:#dbe6ff}.hero-actions button.primary{background:#86a3ff;color:#091227}.metrics{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin:24px 0}.metric,.panel{background:#172238;border:1px solid #2c3d5b;border-radius:14px}.metric{padding:16px}.number{font-size:30px;font-weight:800;letter-spacing:-.04em;margin-top:5px}.panels{display:grid;grid-template-columns:1.4fr .8fr;gap:16px}.panel{padding:18px;min-width:0;overflow-x:auto}.panel h2{margin:0 0 14px;font-size:17px}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:10px 7px;border-bottom:1px solid #2b3b55;font-size:13px;vertical-align:top}.state{border-radius:99px;padding:3px 8px;font-size:12px;font-weight:700;background:#34445e}.state.succeeded{background:#164b39;color:#9cf0c2}.state.failed{background:#612c3a;color:#ffc0c8}.state.running{background:#3a376b;color:#d8d4ff}.state.deferred{background:#5a4a1f;color:#ffdfa6}.log{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.55;color:#b9c7e3;min-height:280px;max-height:480px;overflow:auto;white-space:pre-wrap}.log div{padding:6px 0;border-bottom:1px solid #263650}@media(max-width:760px){.metrics{grid-template-columns:repeat(2,1fr)}.panels{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}header input{width:auto;max-width:260px;padding:9px 10px;border-radius:8px;border:1px solid #354764;background:#0e1728;color:#fff;font:inherit}</style></head><body><!--SHELL_HEADER--><main class="wrap"><div class="top"><div><h1>处理进度</h1><p class="muted">状态每 2.5 秒更新。右侧是本次浏览器会话的操作记录；下方作业错误来自本地任务队列。若通道内所有 API Key 都失败（多为额度用尽），作业会转入「等待额度」并在若干小时后自动重试，不消耗尝试次数。</p></div><div class="console-hero" data-console-hero aria-live="polite"><div class="hero-title"><span class="muted">正在处理</span><div class="hero-job" id="hero-job">当前没有运行中的作业</div><div class="hero-meta muted" id="hero-meta"></div></div><div class="hero-actions"><button id="run" class="primary" onclick="runPipeline()">运行待处理任务</button><button id="resume" onclick="resumeDeferred()">立即重试等待额度的作业</button><button id="retry" onclick="retryFailed()">重试失败作业</button></div></div></div><section id="supervisor" class="muted" style="margin-top:18px">无人值守巡检：正在读取…</section><section id="metrics" class="metrics"></section><section id="issues" class="panel" style="display:none;margin-bottom:16px"><h2>需处理的问题</h2><div id="issues-body" class="muted">正在读取…</div></section><section class="panels"><div class="panel"><h2>最近作业</h2><div id="jobs" class="muted">正在读取…</div></div><div class="panel"><h2>本次操作</h2><div id="log" class="log"></div></div></section></main><script>
 function adminToken(){const el=document.getElementById('admin-token');return el?el.value.trim():''}
 function authHeaders(base){const headers=new Headers(base||{});const token=adminToken();if(token)headers.set('Authorization','Bearer '+token);return headers}
+async function apiErrMsg(r){try{const d=await r.json();if(d&&d.error&&d.error.message)return d.error.action?(d.error.message+'（'+d.error.action+'）'):d.error.message}catch(_){}return (await r.text()).trim()}
 const logEl=document.getElementById('log');let logs=[];function log(m){logs.unshift(new Date().toLocaleTimeString()+'  '+esc(m));logs=logs.slice(0,30);logEl.innerHTML=logs.map(x=>'<div>'+x+'</div>').join('')}function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function when(v){const t=new Date(v);return isNaN(t.getTime())?String(v||''):t.toLocaleString()}
 function stateCell(j){if(j.deferred_reason)return '<span class="state deferred">等待服务商额度</span>';return '<span class="state '+esc(j.state)+'">'+esc(j.terminal?j.state+'（永久，不再重试）':j.state)+'</span>'}
 function detailCell(j){if(j.deferred_reason)return '通道内所有 API Key 都失败（多为套餐额度用尽）。已暂停，'+esc(when(j.run_after))+' 自动重试，本次不计入尝试次数。';return esc(j.last_error||(j.has_error?'有错误（填入管理 Token 查看详情）':'')||j.run_after||'—')}
@@ -1969,7 +2255,7 @@ function detailCell(j){if(j.deferred_reason)return '通道内所有 API Key 都�
 // freshly enqueued work -- tallying them reported a library with thousands of
 // finished jobs as "0 done" and left it there.
 function renderMetrics(s){document.getElementById('metrics').innerHTML=[['待处理',s.pending],['处理中',s.running],['已完成',s.succeeded],['需处理',s.failed],['永久失败',s.terminal],['等待额度',s.deferred]].map(m=>'<div class="metric"><div class="muted">'+m[0]+'</div><div class="number">'+(m[1]||0)+'</div></div>').join('')}
-function renderHero(jobs){const el=document.getElementById('hero-job'),meta=document.getElementById('hero-meta');if(!el||!meta)return;const running=jobs.find(j=>j.state==='running')||jobs.find(j=>j.state==='pending');if(!running){el.textContent='当前没有运行中的作业';meta.textContent=jobs.length?('队列 '+jobs.length+' 个作业，等待运行'):'队列为空。先在素材根目录扫描视频。';return}const label={probe:'探测',derive:'派生',speech_gate:'语音门控',transcribe:'转写',align:'对齐',analyze:'分析',index:'索引',normalize:'归一化'}[running.job_type]||running.job_type;el.textContent=(running.filename||running.asset_id||'素材')+' · '+label;meta.textContent='尝试 '+running.attempt_count+'/'+running.max_attempts+(running.deferred_reason?' · 等待服务商额度':'')}function render(jobs){document.getElementById('jobs').innerHTML=jobs.length?'<table><tr><th>类型</th><th>状态</th><th>尝试</th><th>错误 / 下次运行</th></tr>'+jobs.map(j=>'<tr><td>'+esc(j.job_type)+'</td><td>'+stateCell(j)+'</td><td>'+j.attempt_count+'/'+j.max_attempts+'</td><td>'+detailCell(j)+'</td></tr>').join('')+'</table>':'暂无作业。先在素材根目录扫描视频。'}async function refresh(){try{const jobs=await fetch('/api/v1/jobs?limit=100',{headers:authHeaders()}).then(async r=>{if(!r.ok)throw Error(await r.text());return r.json()});render(jobs);renderHero(jobs)}catch(e){document.getElementById('jobs').textContent='无法读取作业：'+e.message}try{const s=await fetch('/api/v1/jobs/summary',{headers:authHeaders()}).then(async r=>{if(!r.ok)throw Error(await r.text());return r.json()});renderMetrics(s)}catch(e){log('无法读取队列统计：'+e.message)}refreshSupervisor()}
+function renderHero(jobs){const el=document.getElementById('hero-job'),meta=document.getElementById('hero-meta');if(!el||!meta)return;const running=jobs.find(j=>j.state==='running')||jobs.find(j=>j.state==='pending');if(!running){el.textContent='当前没有运行中的作业';meta.textContent=jobs.length?('队列 '+jobs.length+' 个作业，等待运行'):'队列为空。先在素材目录扫描视频。';return}const label={probe:'探测',derive:'派生',speech_gate:'语音门控',transcribe:'转写',align:'对齐',analyze:'分析',index:'索引',normalize:'归一化'}[running.job_type]||running.job_type;el.textContent=(running.filename||running.asset_id||'素材')+' · '+label;meta.textContent='尝试 '+running.attempt_count+'/'+running.max_attempts+(running.deferred_reason?' · 等待服务商额度':'')}function render(jobs){document.getElementById('jobs').innerHTML=jobs.length?'<table><tr><th>类型</th><th>状态</th><th>尝试</th><th>错误 / 下次运行</th></tr>'+jobs.map(j=>'<tr><td>'+esc(j.job_type)+'</td><td>'+stateCell(j)+'</td><td>'+j.attempt_count+'/'+j.max_attempts+'</td><td>'+detailCell(j)+'</td></tr>').join('')+'</table>':'暂无作业。先在<a href="/library-roots">素材目录</a>扫描视频。'}async function refresh(){try{const jobs=await fetch('/api/v1/jobs?limit=100',{headers:authHeaders()}).then(async r=>{if(!r.ok)throw Error(await apiErrMsg(r));return r.json()});render(jobs);renderHero(jobs)}catch(e){document.getElementById('jobs').textContent='无法读取作业：'+e.message}try{const s=await fetch('/api/v1/jobs/summary',{headers:authHeaders()}).then(async r=>{if(!r.ok)throw Error(await apiErrMsg(r));return r.json()});renderMetrics(s)}catch(e){log('无法读取队列统计：'+e.message)}refreshSupervisor()}
 function supervisorText(d){if(!d.enabled)return '无人值守巡检：<b>未开启</b>。在 Hub 的 config.json 设置 library_supervisor.enabled=true 并重启 Hub 后，Hub 会自动定时扫描素材目录并处理队列（会消耗服务商额度）。';
 if(!d.running)return '无人值守巡检：<b>已配置但未在运行</b>。当前进程可能不是 timingdex serve。';
 const parts=['无人值守巡检：<b>运行中</b>','每 '+Math.round(d.interval_seconds/60)+' 分钟扫描一次'];
@@ -1980,9 +2266,18 @@ else if(d.last_outcome==='pipeline_busy')parts.push('已有处理任务在运行
 else if(d.last_outcome==='error')parts.push('上次巡检有错误：'+esc(d.last_error||'填入管理 Token 查看详情'));
 else if(d.last_outcome==='scanned')parts.push('上次扫描 '+d.roots_scanned+' 个目录，新增 '+d.discovered+' 个素材');
 return parts.join(' · ')}
-async function refreshSupervisor(){const el=document.getElementById('supervisor');try{const r=await fetch('/api/v1/pipeline/supervisor',{headers:authHeaders()});if(!r.ok)throw Error(await r.text());el.innerHTML=supervisorText(await r.json())}catch(e){el.textContent='无法读取无人值守巡检状态：'+e.message}}
-async function retryFailed(){const b=document.getElementById('retry');b.disabled=true;log('已请求重试失败作业');try{const r=await fetch('/api/v1/pipeline/retry-failed',{method:'POST',headers:authHeaders()});if(!r.ok)throw Error(await r.text());const d=await r.json();log('已重新排队 '+d.requeued+' 个失败作业；点击「运行待处理任务」开始处理')}catch(e){log('重试失败：'+e.message)}finally{b.disabled=false;refresh()}}async function resumeDeferred(){const b=document.getElementById('resume');b.disabled=true;log('已请求提前释放等待额度的作业');try{const r=await fetch('/api/v1/pipeline/resume-deferred',{method:'POST',headers:authHeaders()});if(!r.ok)throw Error(await r.text());const d=await r.json();log(d.resumed?'已释放 '+d.resumed+' 个等待额度的作业；点击「运行待处理任务」开始处理':'当前没有等待额度的作业')}catch(e){log('释放失败：'+e.message)}finally{b.disabled=false;refresh()}}
-async function runPipeline(){const b=document.getElementById('run');b.disabled=true;b.textContent='正在运行…';log('已请求执行待处理任务');try{const r=await fetch('/api/v1/pipeline/run',{method:'POST',headers:authHeaders()});if(!r.ok)throw Error(await r.text());const d=await r.json().catch(()=>({}));log(d.status==='already_running'?'已有处理任务在后台运行':'处理任务已在后台启动，可关闭本页')}catch(e){log('执行失败：'+e.message)}finally{b.disabled=false;b.textContent='运行待处理任务';refresh()}}refresh();setInterval(refresh,2500);log('进度面板已打开');</script></body></html>`
+async function refreshSupervisor(){const el=document.getElementById('supervisor');try{const r=await fetch('/api/v1/pipeline/supervisor',{headers:authHeaders()});if(!r.ok)throw Error(await apiErrMsg(r));el.innerHTML=supervisorText(await r.json())}catch(e){el.textContent='无法读取无人值守巡检状态：'+e.message}}
+const issueLabels={'provider_quota':'服务商额度限制','provider_auth':'服务商密钥问题','provider_unavailable':'服务商不可用','provider_route_exhausted':'通道全部失败(等待额度)','media_decode':'媒体解码失败','unsupported_media':'不支持的媒体','disk_space_low':'磁盘空间不足','budget_exhausted':'成本预算已用尽','source_missing':'原片缺失','worker_offline':'Worker 离线','configuration':'配置问题','unknown':'其他'};
+// The deferral codes are the categories that recover on their own — their
+// parked jobs wake when run_after passes, the disk frees, or the budget
+// period rolls over — so 重试此组 on them must also release the parked half,
+// not just requeue failed rows.
+const issueAutoRecover={'provider_route_exhausted':true,'disk_space_low':true,'budget_exhausted':true};
+function issuesRow(i){const label=issueLabels[i.category]||i.category;const auto=issueAutoRecover[i.category]?'是':'否';const next=i.next_retry_at?esc(when(i.next_retry_at)):'—';return '<tr><td>'+esc(label)+'</td><td>'+(i.count||0)+'</td><td>'+(i.asset_count||0)+'</td><td>'+auto+'</td><td>'+next+'</td><td><button onclick="retryIssueGroup(\''+esc(i.category)+'\',this)">重试此组</button></td></tr>'}
+async function issuesRefresh(){const el=document.getElementById('issues'),body=document.getElementById('issues-body');if(!el||!body)return;try{const r=await fetch('/api/v1/issues',{headers:authHeaders()});if(!r.ok)throw Error(await apiErrMsg(r));const issues=await r.json();if(!(issues||[]).reduce((n,i)=>n+(i.count||0),0)){el.style.display='none';return}el.style.display='';body.innerHTML='<table><tr><th>问题</th><th>作业数</th><th>素材数</th><th>自动恢复?</th><th>下次重试</th><th></th></tr>'+(issues||[]).map(issuesRow).join('')+'</table>'}catch(e){el.style.display='';body.textContent='无法读取问题列表：'+e.message}}
+async function retryIssueGroup(category,btn){const label=issueLabels[category]||category;if(btn)btn.disabled=true;log('已请求重试「'+label+'」问题组');try{const r=await fetch('/api/v1/pipeline/retry-failed',{method:'POST',headers:authHeaders({'content-type':'application/json'}),body:JSON.stringify({category})});if(!r.ok)throw Error(await apiErrMsg(r));const d=await r.json();let extra='';if(issueAutoRecover[category]){const z=await fetch('/api/v1/pipeline/resume-deferred',{method:'POST',headers:authHeaders({'content-type':'application/json'}),body:JSON.stringify({reason:category})});if(!z.ok)throw Error(await apiErrMsg(z));const zd=await z.json();extra='，并提前释放 '+zd.resumed+' 个等待中的作业'}log('已重新排队 '+d.requeued+' 个「'+label+'」作业'+extra+'；点击「运行待处理任务」开始处理')}catch(e){log('重试失败：'+e.message)}finally{if(btn)btn.disabled=false;refresh();issuesRefresh()}}
+async function retryFailed(){const b=document.getElementById('retry');b.disabled=true;log('已请求重试失败作业');try{const r=await fetch('/api/v1/pipeline/retry-failed',{method:'POST',headers:authHeaders()});if(!r.ok)throw Error(await apiErrMsg(r));const d=await r.json();log('已重新排队 '+d.requeued+' 个失败作业；点击「运行待处理任务」开始处理')}catch(e){log('重试失败：'+e.message)}finally{b.disabled=false;refresh()}}async function resumeDeferred(){const b=document.getElementById('resume');b.disabled=true;log('已请求提前释放等待额度的作业');try{const r=await fetch('/api/v1/pipeline/resume-deferred',{method:'POST',headers:authHeaders()});if(!r.ok)throw Error(await apiErrMsg(r));const d=await r.json();log(d.resumed?'已释放 '+d.resumed+' 个等待额度的作业；点击「运行待处理任务」开始处理':'当前没有等待额度的作业')}catch(e){log('释放失败：'+e.message)}finally{b.disabled=false;refresh()}}
+async function runPipeline(){const b=document.getElementById('run');b.disabled=true;b.textContent='正在运行…';log('已请求执行待处理任务');try{const r=await fetch('/api/v1/pipeline/run',{method:'POST',headers:authHeaders()});if(!r.ok)throw Error(await apiErrMsg(r));const d=await r.json().catch(()=>({}));log(d.status==='already_running'?'已有处理任务在后台运行':'处理任务已在后台启动，可关闭本页')}catch(e){log('执行失败：'+e.message)}finally{b.disabled=false;b.textContent='运行待处理任务';refresh()}}refresh();issuesRefresh();setInterval(refresh,2500);setInterval(issuesRefresh,10000);log('进度面板已打开');</script></body></html>`
 
 func (s *Server) repurposePage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1994,12 +2289,13 @@ const repurposeWorkspaceHTML = `<!doctype html><html lang="zh-CN"><head><meta ch
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=ms=>{ms=Math.max(0,Math.floor((ms||0)/1000));return String(Math.floor(ms/60)).padStart(2,'0')+':'+String(ms%60).padStart(2,'0')};let activePlan=null,dirty=false;
 function adminToken(){const el=document.getElementById('admin-token');return el?el.value.trim():''}
 function authHeaders(base){const headers=new Headers(base||{});const token=adminToken();if(token)headers.set('Authorization','Bearer '+token);return headers}
-async function api(url,opt){opt=opt||{};const r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok){if(r.status===401)throw Error('需要 Hub 管理 Token：请先在顶部填入');throw Error(await r.text())}return r.json()}
+async function apiErrMsg(r){try{const d=await r.json();if(d&&d.error&&d.error.message)return d.error.action?(d.error.message+'（'+d.error.action+'）'):d.error.message}catch(_){}return (await r.text()).trim()}
+async function api(url,opt){opt=opt||{};const r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok){if(r.status===401)throw Error('需要 Hub 管理 Token：请先在顶部填入');throw Error(await apiErrMsg(r))}return r.json()}
 // Exports are fetched rather than linked because the route needs the admin
 // token in a header, which an <a href> cannot carry. The response is handed to
 // the browser as a Blob so the file never round-trips through a URL that would
 // put the token in history.
-async function downloadExport(kind){if(!activePlan)return;try{const r=await fetch('/api/v1/repurpose/plans/'+encodeURIComponent(activePlan.id)+'/export.'+kind,{headers:authHeaders()});if(!r.ok){if(r.status===401)throw Error('需要 Hub 管理 Token：请先在顶部填入');throw Error(await r.text())}const url=URL.createObjectURL(await r.blob());const a=document.createElement('a');a.href=url;a.download=activePlan.id+'.'+kind;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)}catch(e){alert('导出失败：'+e.message)}}
+async function downloadExport(kind){if(!activePlan)return;try{const r=await fetch('/api/v1/repurpose/plans/'+encodeURIComponent(activePlan.id)+'/export.'+kind,{headers:authHeaders()});if(!r.ok){if(r.status===401)throw Error('需要 Hub 管理 Token：请先在顶部填入');throw Error(await apiErrMsg(r))}const url=URL.createObjectURL(await r.blob());const a=document.createElement('a');a.href=url;a.download=activePlan.id+'.'+kind;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)}catch(e){alert('导出失败：'+e.message)}}
 function section(role){return activePlan.sections.find(s=>s.role===role)}
 function rerender(){render(activePlan);dirty=true;document.getElementById('statusline').textContent='有未保存的编辑。保存后会创建新的 revision。'}
 function candidate(s,c){const selected=s.selected_shot_id===c.shot_id,excluded=(s.excluded_shot_ids||[]).includes(c.shot_id),image='/api/v1/assets/'+encodeURIComponent(c.asset_id)+'/thumbnail',why=(c.reasons||[]).map(esc).join(' · ')||'由检索得分匹配';return '<article class="candidate '+(selected?'selected ':'')+(excluded?'excluded':'')+'"><img class="thumb" loading="lazy" src="'+image+'" onerror="this.style.visibility=\'hidden\'" alt="候选镜头缩略图"><div><b>'+fmt(c.start_ms)+' — '+fmt(c.end_ms)+'</b> <span class="pill">匹配 '+Math.round((c.score||0)*100)+'%</span>'+(c.reused?' <span class="pill warn">复用镜头</span>':'')+(selected?' <span class="pill">已选</span>':'')+'<div class="small">素材 '+esc(c.asset_id)+' · 镜头 '+esc(c.shot_id)+'</div><div class="small">'+why+'</div><div class="candidate-actions"><button class="select '+(selected?'on':'')+'" data-role="'+esc(s.role)+'" data-shot="'+esc(c.shot_id)+'" onclick="choose(this.dataset.role,this.dataset.shot)">'+(selected?'已选择':'选择此镜头')+'</button><button class="exclude" data-role="'+esc(s.role)+'" data-shot="'+esc(c.shot_id)+'" onclick="toggleExclude(this.dataset.role,this.dataset.shot)" '+(selected?'disabled':'')+'>'+ (excluded?'恢复候选':'排除')+'</button></div></div></article>'}
@@ -2065,7 +2361,7 @@ func (s *Server) reviewTagProposal(w http.ResponseWriter, r *http.Request) {
 		Note   string `json:"note"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		return
 	}
 	if err := s.service.ReviewTagProposal(r.Context(), r.PathValue("id"), req.Action, req.Note); err != nil {
@@ -2081,7 +2377,7 @@ func (s *Server) latestLibrarySummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if summary == nil {
-		http.NotFound(w, r)
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found"})
 		return
 	}
 	writeJSON(w, http.StatusOK, summary)
@@ -2098,7 +2394,7 @@ func (s *Server) generateLibrarySummary(w http.ResponseWriter, r *http.Request) 
 func (s *Server) createRepurposePlan(w http.ResponseWriter, r *http.Request) {
 	var brief domain.RepurposeBrief
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&brief); err != nil || strings.TrimSpace(brief.Brief) == "" {
-		http.Error(w, "brief is required", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "brief is required"})
 		return
 	}
 	plan, err := s.service.CreateRepurposePlan(r.Context(), brief)
@@ -2116,7 +2412,7 @@ func (s *Server) getRepurposePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if plan == nil {
-		http.NotFound(w, r)
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found"})
 		return
 	}
 	writeJSON(w, http.StatusOK, plan)
@@ -2137,7 +2433,7 @@ func (s *Server) reviseRepurposePlan(w http.ResponseWriter, r *http.Request) {
 		EditorNote string               `json:"editor_note"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		return
 	}
 	revision, err := s.service.ReviseRepurposePlan(r.Context(), r.PathValue("id"), request.Sections, request.EditorNote)
@@ -2149,15 +2445,16 @@ func (s *Server) reviseRepurposePlan(w http.ResponseWriter, r *http.Request) {
 		// reworded message, or an unrelated lower-layer error that happened
 		// to contain the same phrase, silently reclassified the response.
 		if errors.Is(err, app.ErrInvalidRepurposeRevision) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 			return
 		}
 		if errors.Is(err, app.ErrPlanImmutable) {
-			http.Error(w, err.Error(), http.StatusConflict)
+			status, apiErr := apiErrorFromError(err)
+			writeAPIError(w, status, apiErr)
 			return
 		}
 		if errors.Is(err, app.ErrPlanNotFound) {
-			http.NotFound(w, r)
+			writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found"})
 			return
 		}
 		writeError(w, err)
@@ -2169,21 +2466,22 @@ func (s *Server) reviseRepurposePlan(w http.ResponseWriter, r *http.Request) {
 func (s *Server) approveRepurposePlanRevision(w http.ResponseWriter, r *http.Request) {
 	revision, err := strconv.Atoi(r.PathValue("revision"))
 	if err != nil || revision <= 0 {
-		http.Error(w, "invalid revision", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid revision"})
 		return
 	}
 	approved, err := s.service.ApproveRepurposePlanRevision(r.Context(), r.PathValue("id"), revision)
 	if err != nil {
 		if errors.Is(err, app.ErrInvalidRepurposeRevision) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 			return
 		}
 		if errors.Is(err, app.ErrPlanRevisionNotFound) {
-			http.NotFound(w, r)
+			writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found"})
 			return
 		}
 		if errors.Is(err, app.ErrPlanRevisionNotDraft) || errors.Is(err, app.ErrPlanRevisionNotLatest) {
-			http.Error(w, err.Error(), http.StatusConflict)
+			status, apiErr := apiErrorFromError(err)
+			writeAPIError(w, status, apiErr)
 			return
 		}
 		writeError(w, err)
@@ -2237,11 +2535,12 @@ func writeExport(w http.ResponseWriter, contentType, filename, document string) 
 func writeExportError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, app.ErrPlanNotFound):
-		http.NotFound(w, r)
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found"})
 	case errors.Is(err, app.ErrPlanNotApproved):
-		http.Error(w, err.Error(), http.StatusConflict)
+		status, apiErr := apiErrorFromError(err)
+		writeAPIError(w, status, apiErr)
 	case errors.Is(err, app.ErrPlanNotExportable), errors.Is(err, nleexport.ErrInvalidTimeline):
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		writeAPIError(w, http.StatusUnprocessableEntity, APIError{Code: "plan_not_exportable", Message: clipText(err.Error(), 300)})
 	default:
 		writeError(w, err)
 	}
@@ -2253,11 +2552,15 @@ func (s *Server) tagsPage(w http.ResponseWriter, r *http.Request) {
 }
 
 const tagsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex Tag Curator</title><style>
-body{font-family:system-ui,-apple-system,sans-serif;margin:0;background:#101827;color:#edf3ff}header{position:sticky;top:0;padding:16px;background:#181818;display:flex;gap:12px;align-items:center}a{color:#8bc5ff}button{padding:8px 12px;border:0;border-radius:8px;cursor:pointer}.primary{background:#e8e8e8}.approve{background:#b8efc0}.reject{background:#efb8b8}.wrap{padding:16px;display:grid;gap:20px}.panel{background:#1b1b1b;border:1px solid #333;border-radius:12px;padding:14px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:9px;border-bottom:1px solid #333;vertical-align:top}.muted{color:#aaa;font-size:12px}.pill{display:inline-block;background:#333;padding:3px 7px;border-radius:999px;margin:2px;font-size:12px}input{flex:1;max-width:280px;padding:8px 10px;border-radius:8px;border:1px solid #444;background:#222;color:#eee;font:inherit}</style></head><body><!--SHELL_HEADER--><div class="wrap"><section class="panel"><h2>未解析标签</h2><div id="unresolved"></div></section><section class="panel"><h2>待审核提案</h2><div id="proposals"></div></section><section class="panel"><h2>Canonical Tags</h2><div id="tags"></div></section></div><script>
+/* box-sizing reset is load-bearing for the shell sidebar: without it this page
+   (the only one missing the reset) rendered the shell's width:220px aside as
+   content-box 220+24 padding+1 border = 245px, overlapping the 220px body gutter. */
+*{box-sizing:border-box}body{font-family:system-ui,-apple-system,sans-serif;margin:0;background:#101827;color:#edf3ff}header{position:sticky;top:0;padding:16px;background:#181818;display:flex;gap:12px;align-items:center}a{color:#8bc5ff}button{padding:8px 12px;border:0;border-radius:8px;cursor:pointer}.primary{background:#e8e8e8}.approve{background:#b8efc0}.reject{background:#efb8b8}.wrap{padding:16px;display:grid;gap:20px}.panel{background:#1b1b1b;border:1px solid #333;border-radius:12px;padding:14px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:9px;border-bottom:1px solid #333;vertical-align:top}.muted{color:#aaa;font-size:12px}.pill{display:inline-block;background:#333;padding:3px 7px;border-radius:999px;margin:2px;font-size:12px}input{flex:1;max-width:280px;padding:8px 10px;border-radius:8px;border:1px solid #444;background:#222;color:#eee;font:inherit}</style></head><body><!--SHELL_HEADER--><div class="wrap"><section class="panel"><h2>未解析标签</h2><div id="unresolved"></div></section><section class="panel"><h2>待审核提案</h2><div id="proposals"></div></section><section class="panel"><h2>Canonical Tags</h2><div id="tags"></div></section></div><script>
 const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));
 function adminToken(){const el=document.getElementById('admin-token');return el?el.value.trim():''}
 function authHeaders(base){const headers=new Headers(base||{});const token=adminToken();if(token)headers.set('Authorization','Bearer '+token);return headers}
-async function j(url,opt){opt=opt||{};const r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok){if(r.status===401)throw new Error('需要 Hub 管理 Token：请先在顶部填入');throw new Error(await r.text())}return r.json()}
+async function apiErrMsg(r){try{const d=await r.json();if(d&&d.error&&d.error.message)return d.error.action?(d.error.message+'（'+d.error.action+'）'):d.error.message}catch(_){}return (await r.text()).trim()}
+async function j(url,opt){opt=opt||{};const r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok){if(r.status===401)throw new Error('需要 Hub 管理 Token：请先在顶部填入');throw new Error(await apiErrMsg(r))}return r.json()}
 async function curate(){await j('/api/v1/tags/curate',{method:'POST'});await load()}
 async function review(id,action){await j('/api/v1/tags/proposals/'+id+'/review',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action})});await load()}
 function unresolvedTable(xs){return '<table><tr><th>标准化值</th><th>原始形式</th><th>素材数</th></tr>'+xs.map(x=>'<tr><td>'+esc(x.normalized_tag)+'</td><td>'+x.display_forms.map(v=>'<span class="pill">'+esc(v)+'</span>').join('')+'</td><td>'+x.asset_count+'</td></tr>').join('')+'</table>'}

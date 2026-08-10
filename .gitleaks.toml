@@ -1,0 +1,15 @@
+title = "Re:Footage timingdex secret-scan config"
+
+# [extend] keeps every default gitleaks rule; this file only adds an
+# allowlist. No default rule is disabled here.
+[extend]
+useDefault = true
+
+# Deliberate redaction-test fixtures only: fake values such as
+# api_key=arbitrary-secret-12345 that prove redactSecrets strips secrets
+# from error messages. They look like keys to the generic-api-key rule but
+# are never real credentials; keep this list to fixture markers only.
+[[allowlists]]
+description = "Redaction test fixtures in *_test.go (fake values that prove redactSecrets scrubs secrets); never real credentials. Scoped to the one file that carries the fixture marker so a real credential containing this substring elsewhere would still be flagged."
+paths = ['''internal/worker/client_test\.go''']
+regexes = ['''arbitrary-secret''']

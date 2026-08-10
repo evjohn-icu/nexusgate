@@ -51,6 +51,36 @@ type AssetCollection struct {
 // product-facing name.
 type SavedCollection = AssetCollection
 
+// CollectionShot is a single shot pinned into a collection's basket.
+// ShotID references asset_shots.id; a shot in a collection is a selection,
+// not a copy. Position is the 0-based display order within the collection.
+type CollectionShot struct {
+	CollectionID string    `json:"collection_id"`
+	ShotID       string    `json:"shot_id"`
+	Position     int       `json:"position"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// CollectionShotDetail joins a pinned shot with the shot fields a basket
+// view needs to render without a second round trip.
+type CollectionShotDetail struct {
+	CollectionShot
+	AssetID     string   `json:"asset_id"`
+	Filename    string   `json:"filename,omitempty"`
+	StartMS     int64    `json:"start_ms"`
+	EndMS       int64    `json:"end_ms"`
+	Description string   `json:"description,omitempty"`
+	Objects     []string `json:"objects,omitempty"`
+}
+
+// CollectionSummary is a saved filter plus the aggregate of the shots pinned
+// into its basket (zero when the collection has no pinned shots).
+type CollectionSummary struct {
+	AssetCollection
+	ShotCount       int   `json:"shot_count"`
+	TotalDurationMS int64 `json:"total_duration_ms"`
+}
+
 type AssetProcessingSummary struct {
 	Total    int                      `json:"total"`
 	ByStatus map[ProcessingStatus]int `json:"by_status"`

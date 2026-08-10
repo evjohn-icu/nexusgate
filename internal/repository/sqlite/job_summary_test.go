@@ -83,7 +83,7 @@ func TestJobSummarySeparatesDeferredAndTerminalFromTheRest(t *testing.T) {
 	if err != nil || dead == nil {
 		t.Fatalf("lease for terminal: %+v %v", dead, err)
 	}
-	if err := repo.FailJobTerminally(ctx, dead.ID, "worker", "permanent"); err != nil {
+	if err := repo.FailJobTerminally(ctx, dead.ID, "worker", domain.JobFailureCategoryProviderAuth, "permanent"); err != nil {
 		t.Fatal(err)
 	}
 	live, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{})

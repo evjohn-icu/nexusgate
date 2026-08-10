@@ -76,7 +76,7 @@ func (s *Server) fromTrustedNetwork(r *http.Request) bool {
 func (s *Server) requireTrustedRead(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.fromTrustedNetwork(r) && !s.isHubAdmin(r) && !s.isHubAgent(r) {
-			http.Error(w, "Library reads are restricted to trusted networks; present a Hub token or add this network to hub_security.trusted_read_networks", http.StatusForbidden)
+			writeAPIError(w, http.StatusForbidden, APIError{Code: "trusted_read_denied", Message: "Library reads are restricted to trusted networks; present a Hub token or add this network to hub_security.trusted_read_networks", Action: "present_hub_token_or_allow_network"})
 			return
 		}
 		next(w, r)

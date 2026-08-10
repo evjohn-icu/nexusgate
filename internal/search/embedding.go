@@ -58,26 +58,34 @@ func (r *TextEmbeddingRetriever) Retrieve(ctx context.Context, q SearchQuery, li
 	if err != nil {
 		return nil, err
 	}
+	// Full-library cosine scan. A stored vector whose dimension differs from
+	// the query vector's is a different model's artifact (a provider update
+	// without a rebuild) — it is skipped before the cutoff/cluster logic, so
+	// it neither distorts maxSimilarity nor enters the scored output.
 	maxSimilarity := 0.0
-	scores := make([]float64, 0, len(rows))
+	scored := make([]Candidate, 0, len(rows))
 	for _, row := range rows {
+		if len(row.Vector) != len(queryVector) {
+			continue
+		}
 		similarity := embeddingCosine(queryVector, row.Vector)
-		scores = append(scores, similarity)
 		if similarity > maxSimilarity {
 			maxSimilarity = similarity
 		}
-	}
-	cutoff := maxSimilarity * embeddingCutoffFraction
-	scored := make([]Candidate, 0, len(rows))
-	for i, row := range rows {
-		if scores[i] < cutoff {
-			continue
-		}
 		candidate := toCandidate(row.Shot)
-		candidate.Signals[SignalTextEmbedding] = scores[i]
-		candidate.Score = scores[i]
+		candidate.Signals[SignalTextEmbedding] = similarity
+		candidate.Score = similarity
 		scored = append(scored, candidate)
 	}
+	cutoff := maxSimilarity * embeddingCutoffFraction
+	kept := scored[:0]
+	for _, candidate := range scored {
+		if candidate.Score < cutoff {
+			continue
+		}
+		kept = append(kept, candidate)
+	}
+	scored = kept
 	sortCandidates(scored)
 	if len(scored) > limit {
 		scored = scored[:limit]
@@ -108,12 +116,15 @@ func ShotTextSourceHash(doc ShotSearchDocument) string {
 }
 
 // embeddingCosine is cosine similarity between the provider's float64 query
-// vector and the stored float32 shot vector. Dimension mismatch (a model
-// swap without a rebuild) scores 0 rather than garbage.
+// vector and the stored float32 shot vector. Dimension equality is exact: a
+// mismatch — a same-model dimension change, e.g. a provider update without a
+// rebuild — is rejected with a score of 0, never computed over a truncated
+// shared prefix. Truncating would silently cross-score vectors that were
+// produced under different dimensionalities.
 func embeddingCosine(query []float64, vector []float32) float64 {
 	n := len(query)
-	if n > len(vector) {
-		n = len(vector)
+	if n != len(vector) {
+		return 0
 	}
 	if n == 0 {
 		return 0

@@ -189,3 +189,107 @@ func TestReanalysisKeepsOldModelRunAuditable(t *testing.T) {
 		t.Fatalf("canonical shots did not switch to the reanalysis run: %+v", shots)
 	}
 }
+
+// EnqueueRederive is the recovery half of `cache gc --rebuildable`: it puts a
+// derive job back on the queue so the deleted files are re-created. Only an
+// asset whose analysis already committed is eligible — re-deriving an
+// in-flight chain's files would re-enqueue the paid stages (see the derive
+// stage's committed check in app/pipeline.go) — and the enqueue must be a
+// fresh hash every time, or the succeeded original derive would swallow it.
+func TestEnqueueRederiveOnlyForCommittedAssets(t *testing.T) {
+	repo := openTestRepo(t)
+	ctx := context.Background()
+	committed := seedCommittedAsset(t, repo, "derived-committed")
+
+	enqueued, err := repo.EnqueueRederive(ctx, committed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !enqueued {
+		t.Fatal("a committed asset must be re-derived")
+	}
+	var (
+		count  int
+		prio   int
+		hashes int
+	)
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*),COUNT(DISTINCT input_hash) FROM jobs WHERE asset_id=? AND job_type='derive'`, committed).Scan(&count, &hashes); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || hashes != 1 {
+		t.Fatalf("expected 1 distinct derive job, got count=%d distinct_hashes=%d", count, hashes)
+	}
+	if err := repo.db.QueryRowContext(ctx, `SELECT priority FROM jobs WHERE asset_id=? AND job_type='derive'`, committed).Scan(&prio); err != nil {
+		t.Fatal(err)
+	}
+	if prio != 90 {
+		t.Fatalf("re-derive priority = %d, want 90", prio)
+	}
+
+	// An asset with no committed analysis must not be re-derived: its chain is
+	// still in flight and a re-derive would fork a parallel paid chain.
+	uncommitted := seedReanalysisAsset(t, repo, "derived-uncommitted")
+	enqueued, err = repo.EnqueueRederive(ctx, uncommitted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enqueued {
+		t.Fatal("an uncommitted asset must not be re-derived")
+	}
+}
+
+func TestHasCommittedAnalysis(t *testing.T) {
+	repo := openTestRepo(t)
+	ctx := context.Background()
+	committed := seedCommittedAsset(t, repo, "committed")
+	got, err := repo.HasCommittedAnalysis(ctx, committed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Fatal("asset with asset_analysis + asset_shots must be committed")
+	}
+	uncommitted := seedReanalysisAsset(t, repo, "uncommitted")
+	got, err = repo.HasCommittedAnalysis(ctx, uncommitted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Fatal("asset with only metadata must not be committed")
+	}
+}
+
+// seedCommittedAsset creates an asset that looks exactly like one whose
+// analysis chain completed: primary location, media metadata, derived
+// artifacts, and canonical asset_analysis + asset_shots rows (each backed by
+// a model_runs row, which the foreign keys demand).
+func seedCommittedAsset(t *testing.T, repo *Repository, suffix string) string {
+	t.Helper()
+	ctx := context.Background()
+	assetID := "asset-committed-" + suffix
+	now := formatTime(time.Now().UTC())
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES(?,?,100,'ready',?,?)`, assetID, "fp-"+suffix, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO library_roots(id,path,created_at,updated_at) VALUES(?,?,?,?)`, "root-"+suffix, "/tmp/root-"+suffix, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO model_runs(id,asset_id,capability,provider,model,input_hash,prompt_version,schema_version,state,request_json,started_at) VALUES(?,'asset-committed-'||?,'vision','qwen','qwen-vl','run-hash-'||?,'p','s','committed','{}',?)`,
+		"run-"+suffix, suffix, suffix, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,exists_now,is_primary,last_seen_at) VALUES(?,?,?,?,?,?,1,1,?)`,
+		"loc-"+suffix, assetID, "root-"+suffix, "clip.mov", "/tmp/clip-"+suffix+".mov", 123, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO media_metadata(asset_id,ffprobe_json,exiftool_json,normalized_json,probe_version,updated_at) VALUES(?,'{}','{}',?,'test',?)`, assetID, `{"duration_ms":600000,"has_audio":true}`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO asset_analysis(asset_id,source_run_id,schema_version,asset_type,shot_size,camera_motion,audio_type,lighting,people_count,has_speech,quality,summary,scene_tags_json,subjects_json,mood_tags_json,usable_as_json,quality_flags_json,extra_tags_json,editorial_reason,updated_at) VALUES(?,'run-'||?,'asset-analysis/v2','clip','close','static','none','day',0,0,'fine','summary','[]','[]','[]','[]','[]','[]','',?)`, assetID, suffix, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO asset_shots(id,asset_id,source_run_id,ordinal,start_ms,end_ms,description,tags_json,objects_json,actions_json,mood_json,confidence,created_at) VALUES(?,?,'run-'||?,0,0,1000,'a committed shot','[]','[]','[]','[]',0.9,?)`, "shot-"+suffix, assetID, suffix, now); err != nil {
+		t.Fatal(err)
+	}
+	return assetID
+}

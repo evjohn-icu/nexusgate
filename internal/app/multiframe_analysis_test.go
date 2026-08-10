@@ -214,7 +214,7 @@ func TestMultiframeDetectorModeEndToEnd(t *testing.T) {
 		},
 	}
 	detector := &fakeShotDetector{bounds: []shotdetect.ShotBound{{StartMS: 0, EndMS: 1000}, {StartMS: 1000, EndMS: 2000}}}
-	pipeline := NewPipeline(repo, dir, nil, nil, &testMultiframeRouter{analyzer: analyzer}, nil, detector, media.HardwarePlan{}, nil, providerRouteDeferral)
+	pipeline := NewPipeline(repo, dir, nil, nil, &testMultiframeRouter{analyzer: analyzer}, nil, detector, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
 	if err := repo.EnqueueJob(ctx, assetID, domain.JobAnalyze, hashStrings("mf", "detector"), 30); err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func TestMultiframeTwoPassModeEndToEnd(t *testing.T) {
 			1500: {Description: "refined ending"},
 		},
 	}
-	pipeline := NewPipeline(repo, dir, nil, nil, &testMultiframeRouter{analyzer: analyzer, video: video}, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral)
+	pipeline := NewPipeline(repo, dir, nil, nil, &testMultiframeRouter{analyzer: analyzer, video: video}, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
 	if err := repo.EnqueueJob(ctx, assetID, domain.JobAnalyze, hashStrings("mf", "twopass"), 30); err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +370,7 @@ func TestMultiframeOnlyChainFailsTerminally(t *testing.T) {
 	ctx := context.Background()
 	assetID := seedMultiframeAsset(t, repo, root, "clip-c")
 
-	pipeline := NewPipeline(repo, dir, nil, nil, &testMultiframeRouter{analyzer: &fakeMultiframeAnalyzer{}}, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral)
+	pipeline := NewPipeline(repo, dir, nil, nil, &testMultiframeRouter{analyzer: &fakeMultiframeAnalyzer{}}, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
 	if err := repo.EnqueueJob(ctx, assetID, domain.JobAnalyze, hashStrings("mf", "only"), 30); err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +416,7 @@ func TestMultiframeRefinementFailureKeepsPassOneResults(t *testing.T) {
 			0: {Description: "refined opening"},
 		},
 	}
-	pipeline := NewPipeline(repo, dir, nil, nil, &testMultiframeRouter{analyzer: analyzer, video: video}, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral)
+	pipeline := NewPipeline(repo, dir, nil, nil, &testMultiframeRouter{analyzer: analyzer, video: video}, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
 	if err := repo.EnqueueJob(ctx, assetID, domain.JobAnalyze, hashStrings("mf", "fail"), 30); err != nil {
 		t.Fatal(err)
 	}
@@ -455,7 +455,7 @@ func TestMultiframeDetectorGarbageBoundariesFailTerminally(t *testing.T) {
 
 	analyzer := &fakeMultiframeAnalyzer{}
 	detector := &fakeShotDetector{bounds: []shotdetect.ShotBound{{StartMS: 500, EndMS: 100}, {StartMS: 0, EndMS: 2000}}}
-	pipeline := NewPipeline(repo, dir, nil, nil, &testMultiframeRouter{analyzer: analyzer}, nil, detector, media.HardwarePlan{}, nil, providerRouteDeferral)
+	pipeline := NewPipeline(repo, dir, nil, nil, &testMultiframeRouter{analyzer: analyzer}, nil, detector, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
 	if err := repo.EnqueueJob(ctx, assetID, domain.JobAnalyze, hashStrings("mf", "badbounds"), 30); err != nil {
 		t.Fatal(err)
 	}
@@ -582,7 +582,7 @@ func TestMultiframeDetectorChangeRekeysAnalysis(t *testing.T) {
 		summary: videoanalysisResult("city night"),
 	}
 	failAnalyzer.failOn = map[int64]error{0: fmt.Errorf("endpoint warming up")}
-	pipelineA := NewPipeline(repo, dir, nil, nil, &testMultiframeRouter{analyzer: failAnalyzer}, nil, &fakeShotDetector{name: "detector-a", bounds: []shotdetect.ShotBound{{StartMS: 0, EndMS: 1000}}}, media.HardwarePlan{}, nil, providerRouteDeferral)
+	pipelineA := NewPipeline(repo, dir, nil, nil, &testMultiframeRouter{analyzer: failAnalyzer}, nil, &fakeShotDetector{name: "detector-a", bounds: []shotdetect.ShotBound{{StartMS: 0, EndMS: 1000}}}, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
 	if _, err := pipelineA.RunUntilIdle(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -595,7 +595,7 @@ func TestMultiframeDetectorChangeRekeysAnalysis(t *testing.T) {
 			0: {Description: "shot under B"},
 		},
 	}
-	pipelineB := NewPipeline(repo, dir, nil, nil, &testMultiframeRouter{analyzer: okAnalyzer}, nil, &fakeShotDetector{name: "detector-b", bounds: []shotdetect.ShotBound{{StartMS: 0, EndMS: 1500}}}, media.HardwarePlan{}, nil, providerRouteDeferral)
+	pipelineB := NewPipeline(repo, dir, nil, nil, &testMultiframeRouter{analyzer: okAnalyzer}, nil, &fakeShotDetector{name: "detector-b", bounds: []shotdetect.ShotBound{{StartMS: 0, EndMS: 1500}}}, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
 	if _, err := pipelineB.RunUntilIdle(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -625,7 +625,7 @@ func TestMultiframeDetectorFailureFailsTheRun(t *testing.T) {
 
 	analyzer := &fakeMultiframeAnalyzer{}
 	detector := &fakeShotDetector{err: fmt.Errorf("detector exploded")}
-	pipeline := NewPipeline(repo, dir, nil, nil, &testMultiframeRouter{analyzer: analyzer}, nil, detector, media.HardwarePlan{}, nil, providerRouteDeferral)
+	pipeline := NewPipeline(repo, dir, nil, nil, &testMultiframeRouter{analyzer: analyzer}, nil, detector, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
 	if err := repo.EnqueueJob(ctx, assetID, domain.JobAnalyze, hashStrings("mf", "detfail"), 30); err != nil {
 		t.Fatal(err)
 	}

@@ -17,7 +17,8 @@
     "scan_interval_minutes": 15
   },
   "pipeline": {
-    "provider_route_deferral_minutes": 300
+    "provider_route_deferral_minutes": 300,
+    "minimum_free_space_bytes": 0
   },
   "hub_security": {
     "allow_worker_provider_credentials": false,

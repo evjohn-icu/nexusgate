@@ -8,14 +8,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	"github.com/evjohn-icu/timingdex/internal/idgen"
+	"github.com/evjohn-icu/timingdex/internal/ingest"
 	"github.com/evjohn-icu/timingdex/internal/media"
 	"github.com/evjohn-icu/timingdex/internal/providerchannels"
 	"github.com/evjohn-icu/timingdex/internal/providerpool"
@@ -44,12 +47,31 @@ type PipelineRepository interface {
 	// never-renewed 2 minutes and runs synchronous work that routinely
 	// exceeds it.
 	CompleteJob(context.Context, string, string, domain.JobState, string) error
-	RetryJob(context.Context, string, string, string, time.Duration) error
+	// RetryJob and FailJobTerminally both take the failing attempt's
+	// JobFailureCategory alongside the message: the category is written into
+	// jobs.last_error_code, the single column the issues view aggregates on,
+	// so a job's last failure stays machine-readable even after it stopped
+	// being retried. DeferJob's reason already lands in that column and IS a
+	// category value (see the JobDefer* constants).
+	RetryJob(context.Context, string, string, domain.JobFailureCategory, string, time.Duration) error
 	DeferJob(context.Context, string, string, time.Time, string, string) error
-	FailJobTerminally(context.Context, string, string, string) error
+	FailJobTerminally(context.Context, string, string, domain.JobFailureCategory, string) error
 	RequeueFailedJobs(context.Context) (int, error)
+	RequeueFailedJobsByCategory(context.Context, string) (int, error)
 	ResumeDeferredJobs(context.Context, string) (int, error)
 	GetPipelineThrottle(context.Context) (domain.PipelineThrottle, error)
+	// CostEstimateForDay and CostEstimateForMonth read the cost_ledger sums
+	// the budget gate (throttle.DailyBudget / MonthlyBudget) defers on. Day
+	// is a UTC calendar day "YYYY-MM-DD"; yearMonth a UTC "YYYY-MM" prefix.
+	// Both are one indexed aggregate per heavy job, which is the whole
+	// enforcement the gate needs.
+	CostEstimateForDay(context.Context, string) (float64, error)
+	CostEstimateForMonth(context.Context, string) (float64, error)
+	// PipelineThrottleConfigured reports whether the settings row exists. It
+	// is the difference between "0 = the default" and "0 = the operator
+	// explicitly disabled the check": without it, a settings-page 0 could not
+	// override a nonzero config floor.
+	PipelineThrottleConfigured(context.Context) (bool, error)
 	ListJobs(context.Context, int) ([]domain.Job, error)
 	JobSummary(context.Context) (domain.JobSummary, error)
 	RebuildSearch(context.Context, string) error
@@ -69,6 +91,12 @@ type PipelineRepository interface {
 	SaveProviderFile(context.Context, domain.ProviderFile) error
 	SaveAlignment(context.Context, string, string, string, string, string, domain.AlignmentResult) error
 	EnqueueReanalysis(context.Context, string, string) error
+	// HasCommittedAnalysis reports whether the asset's canonical analysis is
+	// already committed. JobDerive uses it to stop a re-derive job (enqueued
+	// by `cache gc --rebuildable`) from re-enqueueing the paid chain for an
+	// asset whose analysis is done: the files are what the clean-up asked to
+	// rebuild, never a new model run.
+	HasCommittedAnalysis(context.Context, string) (bool, error)
 	ListAssetShots(context.Context, string) ([]domain.AssetShot, error)
 	MarkModelRunCommitted(context.Context, string) error
 }
@@ -87,6 +115,11 @@ type Pipeline struct {
 	// failing at once. It is resolved once at construction from configuration
 	// so RunUntilIdle never reads config itself.
 	routeDeferral time.Duration
+	// minFreeBytes is the free-space floor the disk preflight enforces before
+	// a heavy stage runs; zero disables the preflight. It is resolved once at
+	// construction from configuration, like routeDeferral, so RunUntilIdle
+	// never reads config itself.
+	minFreeBytes int64
 	// onShotsCommitted is the optional post-commit hook (set by NewService
 	// via SetAfterShotsCommitted): it runs after shot rows become canonical,
 	// synchronously inside the job, so "the process exited" still means "no
@@ -94,9 +127,16 @@ type Pipeline struct {
 	// invariant. The hook never fails the job: its implementation swallows
 	// errors (the embedding layer is derived and best-effort).
 	onShotsCommitted func(ctx context.Context, assetID string)
+	// costEstimator is the optional post-commit cost hook (set by NewService
+	// via SetCostEstimator): it records an estimate for a committed model
+	// run against the serving channel's cost metadata. Same contract as
+	// onShotsCommitted — synchronous inside the job, never failing it — and
+	// nil when no cost tracking is wired (tests, minimal setups), in which
+	// case recordCostEstimate is a no-op.
+	costEstimator func(ctx context.Context, capability, provider, model, assetID string, durationMS int64)
 }
 
-func NewPipeline(repo PipelineRepository, cacheDir string, asr providers.ASR, asrFallback providers.ASR, videoProvider videoproviders.VideoUnderstandingProvider, alignment providers.Alignment, shotDetector shotdetect.Detector, hardware media.HardwarePlan, sourceStager *staging.SourceStager, deferral time.Duration) *Pipeline {
+func NewPipeline(repo PipelineRepository, cacheDir string, asr providers.ASR, asrFallback providers.ASR, videoProvider videoproviders.VideoUnderstandingProvider, alignment providers.Alignment, shotDetector shotdetect.Detector, hardware media.HardwarePlan, sourceStager *staging.SourceStager, deferral time.Duration, minFreeBytes int64) *Pipeline {
 	// A configured deferral of zero or less is a typo, not a request to park
 	// for no time at all — see minProviderRouteDeferral for why that matters.
 	// Floored here, at the point of use, exactly as the supervisor floors its
@@ -107,13 +147,20 @@ func NewPipeline(repo PipelineRepository, cacheDir string, asr providers.ASR, as
 	if deferral < minProviderRouteDeferral {
 		deferral = minProviderRouteDeferral
 	}
-	return &Pipeline{repo: repo, cacheDir: cacheDir, asr: asr, asrFallback: asrFallback, videoProvider: videoProvider, alignment: alignment, shotDetector: shotDetector, hardware: hardware, sourceStager: sourceStager, routeDeferral: deferral}
+	return &Pipeline{repo: repo, cacheDir: cacheDir, asr: asr, asrFallback: asrFallback, videoProvider: videoProvider, alignment: alignment, shotDetector: shotDetector, hardware: hardware, sourceStager: sourceStager, routeDeferral: deferral, minFreeBytes: minFreeBytes}
 }
 
 // SetAfterShotsCommitted attaches the post-commit hook (see onShotsCommitted).
 // Tests construct pipelines without one; the hook stays nil there.
 func (p *Pipeline) SetAfterShotsCommitted(hook func(ctx context.Context, assetID string)) {
 	p.onShotsCommitted = hook
+}
+
+// SetCostEstimator attaches the post-commit cost hook (see costEstimator).
+// Tests construct pipelines without one; the hook stays nil there, which
+// keeps recordCostEstimate a no-op.
+func (p *Pipeline) SetCostEstimator(hook func(ctx context.Context, capability, provider, model, assetID string, durationMS int64)) {
+	p.costEstimator = hook
 }
 
 // afterShotsCommitted fires the post-commit hook when one is attached.
@@ -123,12 +170,27 @@ func (p *Pipeline) afterShotsCommitted(ctx context.Context, assetID string) {
 	}
 }
 
+// recordCostEstimate fires the cost hook when one is attached. The hook
+// itself swallows errors (see recordAnalysisCostEstimate), so a ledger
+// hiccup can never fail the already-committed analysis job.
+func (p *Pipeline) recordCostEstimate(ctx context.Context, capability, provider, model, assetID string, durationMS int64) {
+	if p.costEstimator != nil {
+		p.costEstimator(ctx, capability, provider, model, assetID, durationMS)
+	}
+}
+
 func (p *Pipeline) EnqueueAsset(ctx context.Context, assetID string) error {
 	loc, err := p.repo.GetPrimaryLocation(ctx, assetID)
 	if err != nil {
 		return err
 	}
-	h := hashStrings(loc.AbsolutePath, fmt.Sprint(loc.ModifiedNS))
+	// The probe hash is derived from what the asset IS (fingerprint, size,
+	// mtime), never from where it sits: a rename, remount or case change keeps
+	// content and mtime intact, resolves to the same asset, and must not
+	// re-enqueue the chain — or every move would pay for a fresh analysis of
+	// identical footage. See ingest.StableAssetKey for the trade-off of
+	// collapsing byte-identical files onto one key.
+	h := ingest.StableAssetKey(loc.QuickFingerprint, loc.FileSize, loc.ModifiedNS)
 	return p.repo.EnqueueJob(ctx, assetID, domain.JobProbe, h, 100)
 }
 
@@ -234,8 +296,71 @@ func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 				slog.Warn("provider route exhausted; job deferred", "job", job.ID, "job_type", job.Type, "resume_at", resumeAt.Format(time.RFC3339))
 				continue
 			}
+			// The cache volume fell below the configured free-space floor
+			// before a heavy stage ran. The disk state is not the job's fault
+			// — no attempt is spent — and space frees slowly, so the park is a
+			// fixed long wait rather than retry backoff, which would burn the
+			// job's whole attempt budget in seconds while the operator frees
+			// space. The job resumes on its own; failing it would take the
+			// whole queue down with a full disk.
+			if errors.Is(err, errDiskSpaceLow) {
+				resumeAt := time.Now().Add(diskSpaceRetryDelay)
+				if deferErr := p.repo.DeferJob(ctx, job.ID, worker, resumeAt, domain.JobDeferDiskSpaceLow, err.Error()); deferErr != nil {
+					if isLeaseLostErr(deferErr) {
+						slog.Warn("job lease reclaimed before it could be deferred; discarding", "job", job.ID, "job_type", job.Type)
+						continue
+					}
+					return executed, deferErr
+				}
+				slog.Warn("cache volume below the configured free-space floor; job deferred", "job", job.ID, "job_type", job.Type, "resume_at", resumeAt.Format(time.RFC3339), "min_free_bytes", p.minFreeBytes)
+				continue
+			}
+			// The configured daily or monthly provider budget is spent for
+			// the period — budgetGateErr parked the job before any paid call
+			// ran. The spend is about the period, not the job, so no attempt
+			// is spent; the park runs to the period boundary (next day 00:05
+			// UTC, or the 1st of next month), where the ledger resets and the
+			// gate re-evaluates. Hot-retrying would just re-hit the same
+			// gate; the long park is the point, not a side effect.
+			if errors.Is(err, errBudgetExhausted) {
+				var be *budgetExhaustedErr
+				errors.As(err, &be)
+				resumeAt := nextBudgetReset(time.Now())
+				if be != nil {
+					resumeAt = be.resetAt
+				}
+				if deferErr := p.repo.DeferJob(ctx, job.ID, worker, resumeAt, domain.JobDeferBudgetExhausted, err.Error()); deferErr != nil {
+					if isLeaseLostErr(deferErr) {
+						slog.Warn("job lease reclaimed before it could be deferred; discarding", "job", job.ID, "job_type", job.Type)
+						continue
+					}
+					return executed, deferErr
+				}
+				slog.Warn("provider budget exhausted; job deferred", "job", job.ID, "job_type", job.Type, "resume_at", resumeAt.Format(time.RFC3339))
+				continue
+			}
+			// An actual disk-full failure — not the preflight's verdict but the
+			// filesystem answering ENOSPC mid-write — is the same environmental
+			// fact, so it gets the same park. The preflight exists to stop the
+			// job before it starts; this catches the disk that filled since,
+			// or the volume the preflight does not see (NAS mode, a Worker's
+			// local cache). Retrying it hot would burn the job's whole attempt
+			// budget against a volume that is still full; DeferJob hands the
+			// attempt back, and the job resumes on its own once the operator
+			// frees space or diskSpaceRetryDelay elapses.
+			if isNoSpaceErr(err) {
+				if deferErr := p.deferJobForDisk(ctx, *job, worker, err); deferErr != nil {
+					if isLeaseLostErr(deferErr) {
+						slog.Warn("job lease reclaimed before it could be deferred; discarding", "job", job.ID, "job_type", job.Type)
+						continue
+					}
+					return executed, deferErr
+				}
+				slog.Warn("disk full; job deferred", "job", job.ID, "job_type", job.Type, "resume_at", time.Now().Add(diskSpaceRetryDelay).Format(time.RFC3339))
+				continue
+			}
 			if isRetryableJobError(err) && job.AttemptCount < job.MaxAttempts {
-				if retryErr := p.repo.RetryJob(ctx, job.ID, worker, err.Error(), retryDelay(job.AttemptCount)); retryErr != nil {
+				if retryErr := p.repo.RetryJob(ctx, job.ID, worker, classifyJobFailure(err), err.Error(), retryDelay(job.AttemptCount)); retryErr != nil {
 					if isLeaseLostErr(retryErr) {
 						slog.Warn("job lease reclaimed before it could be retried; discarding", "job", job.ID, "job_type", job.Type)
 						continue
@@ -248,8 +373,11 @@ func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 			// terminal, so stop the lease predicate from handing it back. The
 			// lease-lost case is handled above before execute's error even
 			// reaches here; any other error from this call is swallowed exactly
-			// as before, since it already sat on a best-effort path.
-			_ = p.repo.FailJobTerminally(ctx, job.ID, worker, err.Error())
+			// as before, since it already sat on a best-effort path. The
+			// category rides into jobs.last_error_code with the message, so the
+			// issues view can aggregate this terminal failure without parsing
+			// prose.
+			_ = p.repo.FailJobTerminally(ctx, job.ID, worker, classifyJobFailure(err), err.Error())
 			if err := sleepContext(ctx, throttle.CooldownAt(time.Now())); err != nil {
 				return executed, err
 			}
@@ -328,6 +456,60 @@ const providerRouteDeferral = 5 * time.Hour
 // exists to prevent.
 const minProviderRouteDeferral = time.Minute
 
+// diskSpaceRetryDelay is how long a job parked on a full disk waits before it
+// is offered again — both the preflight's verdict (cache volume below
+// minimum_free_space_bytes) and an actual ENOSPC failure. The cause is
+// environmental: the operator has to free space, which a retry cannot hurry —
+// and hot-retrying would burn the job's whole attempt budget in seconds
+// against a volume that is still full. Ten minutes is long enough for the
+// queue to idle rather than spin, and short enough that a freed disk resumes
+// within the hour. Like the route-exhausted park, DeferJob spends no attempt.
+const diskSpaceRetryDelay = 10 * time.Minute
+
+// isNoSpaceErr reports whether the error chain is a full-disk failure. It
+// matches syscall.ENOSPC by value through errors.Is, never by message text, so
+// a wrapper that rewords the text ("no space left on device") cannot change
+// the verdict. os.ErrNoSpace does not exist in Go (checked against the
+// standard library), so the syscall sentinel is the portable choice: it is
+// defined on every GOOS the binary targets. Coverage note: the sentinel is
+// carried by Go-side writes (os.CreateTemp, staging copies); modernc's SQLite
+// reports SQLITE_FULL as a raw driver error without an exported sentinel, and
+// an ffmpeg mid-encode exit carries no ENOSPC at all. The preflight is the
+// real defense against a full disk; these two uncovered paths retry and
+// eventually fail terminal rather than being misclassified as the job's fault
+// — exactly the pre-wave behavior, minus the misreading.
+func isNoSpaceErr(err error) bool {
+	return errors.Is(err, syscall.ENOSPC)
+}
+
+// deferJobForDisk parks a job on a full disk on wall-clock time with the
+// disk_space_low reason instead of retrying it hot or failing it. cause is
+// the failure that surfaced it (the pre-lease guard can pass nil); its text
+// lands in last_error_message behind the admin token, while the reason
+// constant is what the queue's visible state reads. DeferJob hands the attempt
+// back, so a disk that fills during a scan costs the queue nothing.
+func (p *Pipeline) deferJobForDisk(ctx context.Context, job domain.Job, worker string, cause error) error {
+	msg := "disk space low"
+	if cause != nil {
+		msg = cause.Error()
+	}
+	return p.repo.DeferJob(ctx, job.ID, worker, time.Now().Add(diskSpaceRetryDelay), domain.JobDeferDiskSpaceLow, msg)
+}
+
+// diskFreeCheck is the free-space probe the preflight calls, behind a
+// package-level var so tests can override it: statfs needs a real path on a
+// real filesystem, and what the preflight tests are about is the deferral
+// wiring, not the kernel's reporting. Production is always freeBytes.
+var diskFreeCheck = freeBytes
+
+// errDiskSpaceLow is the sentinel a heavy stage returns when the preflight
+// found the cache volume below the configured floor. RunUntilIdle parks the
+// job on wall-clock time the same way it parks one on an exhausted provider
+// route — no attempt is spent, because the disk state is not the job's fault.
+// execute wraps the sentinel with the floor for the operator-facing message;
+// classification is by errors.Is, never by that text.
+var errDiskSpaceLow = errors.New("disk space low")
+
 func retryDelay(attempt int) time.Duration {
 	if attempt <= 1 {
 		return time.Second
@@ -384,7 +566,76 @@ func isRetryableJobError(err error) bool {
 	// unmarked error is still retried. providerchannels.ErrNoRoute and
 	// providerpool.ErrNoAvailable are deliberately unmarked: those clear on
 	// their own once a cooldown expires.
+	//
+	// A full disk is the one unmarked exception: the execute error path parks
+	// it (deferJobForDisk) before this function is even consulted, and
+	// classifying it as unretryable here is the guard at the decision point —
+	// if a future branch reordering ever routes an ENOSPC here, it must fall
+	// to the terminal path, not burn attempts. It is not marked
+	// domain.Permanent because deferring is the remedy, not failing.
+	if isNoSpaceErr(err) {
+		return false
+	}
 	return !errors.Is(err, domain.ErrPermanentFailure)
+}
+
+// classifyJobFailure maps a job's failure to its stable machine-readable
+// category (domain.JobFailureCategory), decided by sentinel alone — never by
+// reading the message text, which is prose for operators and drifts. It runs
+// at the moment the pipeline records the failure, and its answer lands in
+// jobs.last_error_code, so the issues view aggregates categories from that one
+// column without ever re-classifying prose.
+//
+// The order matters for what errors.Is/errors.As find first, and both walk the
+// whole chain, so domain.Permanent's marker (domain/errors.go) cannot hide the
+// underlying class: a Permanent-wrapped 429 still classifies as
+// JobFailureCategoryProviderQuota, exactly as the pipeline intends — marking
+// a failure permanent decides retries, never the category.
+func classifyJobFailure(err error) domain.JobFailureCategory {
+	if errors.Is(err, errDiskSpaceLow) || isNoSpaceErr(err) {
+		return domain.JobFailureCategoryDiskSpaceLow
+	}
+	if errors.Is(err, errBudgetExhausted) {
+		return domain.JobFailureCategoryBudgetExhausted
+	}
+	if errors.Is(err, providerchannels.ErrRouteExhausted) {
+		return domain.JobFailureCategoryProviderRouteExhausted
+	}
+	// Mirrors isRetryableJobError's status probe: the same *common.StatusError
+	// the retry decision reads, classified by status code alone — 401/402/403
+	// describe the key, 408/429 the account's momentary cap, 5xx the provider
+	// itself. Any other status (a 4xx the pool classified NonRetryable, say) is
+	// left to the default below: the registry does not yet give it a category,
+	// and guessing one from the body would reintroduce text matching.
+	var status *common.StatusError
+	if errors.As(err, &status) {
+		switch status.StatusCode {
+		case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden:
+			return domain.JobFailureCategoryProviderAuth
+		case http.StatusRequestTimeout, http.StatusTooManyRequests:
+			return domain.JobFailureCategoryProviderQuota
+		}
+		if status.StatusCode >= 500 && status.StatusCode <= 599 {
+			return domain.JobFailureCategoryProviderUnavailable
+		}
+	}
+	// The non-HTTP side of the same "the provider is not well" family: a
+	// deadline the request's context enforced, or a transport-level network
+	// error (the same net.Error probe providerpool.ClassifyFailure uses). Both
+	// heal on their own, so both share the unavailable category.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return domain.JobFailureCategoryProviderUnavailable
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) {
+		return domain.JobFailureCategoryProviderUnavailable
+	}
+	// Media decode failures (ffprobe/ffmpeg) are plain errors today —
+	// internal/media defines no decode/unsupported/no-audio sentinel — so they
+	// land in Unknown here. The registry is extensible: the day a stage marks
+	// one, this function maps it to JobFailureCategoryMediaDecode or
+	// JobFailureCategoryUnsupportedMedia without touching the issues view.
+	return domain.JobFailureCategoryUnknown
 }
 
 // previewPlanForDerive picks the preview render plan JobDerive needs for its
@@ -413,6 +664,138 @@ func sourceSizeBytes(path string) int64 {
 	return info.Size()
 }
 
+// diskSpaceErr reports whether a heavy stage may proceed: nil means run, an
+// error wrapping errDiskSpaceLow means the cache volume is below the
+// configured floor and the job must be parked. It is deliberately permissive
+// on a failed probe: an unreadable statfs (or a platform without one —
+// Windows) reads as "unknown", never as "blocked", because a false blocker
+// would park every heavy job in the queue while the operator hunts a disk
+// problem that does not exist. The guard is a safety net for NAS/local Linux
+// hubs. The check is one statfs per heavy job — nothing worth caching.
+// diskFloor picks the live free-space floor for one job: the throttle value
+// (editable from the settings page without a restart) when the settings row
+// exists, otherwise the static config floor. The configured flag is what makes
+// an explicitly saved zero meaningful: 0 in the settings page means "check
+// disabled", while a missing row falls back to the config floor.
+func (p *Pipeline) diskFloor(throttle domain.PipelineThrottle, configured bool) int64 {
+	if configured {
+		return throttle.MinimumFreeSpaceBytes
+	}
+	return p.minFreeBytes
+}
+
+func (p *Pipeline) diskSpaceErr(floor int64) error {
+	if floor <= 0 {
+		return nil
+	}
+	free, err := diskFreeCheck(p.cacheDir)
+	if err != nil {
+		slog.Warn("disk free-space probe failed; proceeding without the preflight", "cache_dir", p.cacheDir, "error", err)
+		return nil
+	}
+	if free < floor {
+		return fmt.Errorf("cache volume free space %d bytes below the configured minimum of %d bytes: %w", free, floor, errDiskSpaceLow)
+	}
+	return nil
+}
+
+// ledgerDayLayout is the UTC calendar-day shape the cost ledger attributes
+// estimates to (YYYY-MM-DD, zero-padded), the same shape the sqlite layer's
+// CostEstimateForDay/Month read. Month keys are a zero-padded "YYYY-MM"
+// prefix of it.
+const ledgerDayLayout = "2006-01-02"
+
+// budgetResetMinuteOffset is the minute past midnight UTC at which the budget
+// gate re-arms. Not 00:00: the ledger day key flips at midnight, and a job
+// deferred moments before it would otherwise wake into the rollover instant;
+// five minutes later the new period's ledger exists and the gate re-evaluates
+// against it cleanly.
+const budgetResetMinuteOffset = 5
+
+// nextBudgetReset is when the daily budget gate re-arms: the next 00:05 UTC.
+// Fixed-point for the whole day, so every job parked by today's gate resumes
+// at the same instant and the queue drains as one wave.
+func nextBudgetReset(now time.Time) time.Time {
+	next := time.Date(now.Year(), now.Month(), now.Day(), 0, budgetResetMinuteOffset, 0, 0, time.UTC)
+	if !next.After(now) {
+		next = next.AddDate(0, 0, 1)
+	}
+	return next
+}
+
+// nextMonthBudgetReset is when the monthly budget gate re-arms: the 1st of
+// the next month at 00:05 UTC.
+func nextMonthBudgetReset(now time.Time) time.Time {
+	next := time.Date(now.Year(), now.Month(), 1, 0, budgetResetMinuteOffset, 0, 0, time.UTC)
+	return next.AddDate(0, 1, 0)
+}
+
+// errBudgetExhausted is the sentinel a cloud stage returns when the budget
+// gate found the day's or month's ledger sum at or past the configured
+// budget. RunUntilIdle parks the job on wall-clock time the same way it parks
+// one on a full disk — no attempt is spent, because the spend is about the
+// period, not the job. execute wraps the sentinel with the spend facts and
+// the re-arm time; classification is by errors.Is, never by that text.
+var errBudgetExhausted = errors.New("budget exhausted")
+
+// budgetExhaustedErr is what budgetGateErr returns. The reset time rides on
+// the wrapper because it is a fact about the gate's verdict — which budget
+// was spent decides when the job may run again — and classification stays
+// errors.Is on the sentinel.
+type budgetExhaustedErr struct {
+	resetAt time.Time
+	spent   float64
+	budget  float64
+	period  string // "day" or "month"
+}
+
+func (e *budgetExhaustedErr) Error() string {
+	return fmt.Sprintf("%s budget exhausted: %.2f of %.2f spent; resuming %s", e.period, e.spent, e.budget, e.resetAt.Format(time.RFC3339))
+}
+
+func (e *budgetExhaustedErr) Unwrap() error { return errBudgetExhausted }
+
+// budgetGateErr reports whether a cloud call may proceed: nil means run, an
+// error wrapping errBudgetExhausted means the configured daily or monthly
+// budget is spent and the job must be parked until the period rolls over. It
+// guards only the paid stages (analyze, transcribe) — derive and the rest of
+// the chain cost no provider money, so no budget applies. The comparison is
+// >=: the gate sees spend already in the ledger, never the spend the next
+// call will add (estimates are recorded after a call commits), so a job is
+// held once the period's sum is at or past the budget.
+//
+// When both budgets are spent the monthly park wins: a daily park would only
+// re-hit the monthly gate the next day, so the shorter deferral buys nothing.
+//
+// A ledger read failure reads as "unknown", never as "blocked", for the same
+// reason the disk probe fails open: a false blocker would park every heavy
+// job in the queue while the operator hunts a database problem that does not
+// exist. Overspend is visible on the cost summary; a stalled queue is not.
+// The check is two indexed aggregates per heavy job — nothing worth caching.
+func (p *Pipeline) budgetGateErr(ctx context.Context, throttle domain.PipelineThrottle) error {
+	if throttle.DailyBudget <= 0 && throttle.MonthlyBudget <= 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	if throttle.MonthlyBudget > 0 {
+		month, err := p.repo.CostEstimateForMonth(ctx, now.Format(ledgerDayLayout)[:7])
+		if err != nil {
+			slog.Warn("cost ledger month sum unreadable; running without the monthly budget gate", "error", err)
+		} else if month >= throttle.MonthlyBudget {
+			return &budgetExhaustedErr{resetAt: nextMonthBudgetReset(now), spent: month, budget: throttle.MonthlyBudget, period: "month"}
+		}
+	}
+	if throttle.DailyBudget > 0 {
+		day, err := p.repo.CostEstimateForDay(ctx, now.Format(ledgerDayLayout))
+		if err != nil {
+			slog.Warn("cost ledger day sum unreadable; running without the daily budget gate", "error", err)
+		} else if day >= throttle.DailyBudget {
+			return &budgetExhaustedErr{resetAt: nextBudgetReset(now), spent: day, budget: throttle.DailyBudget, period: "day"}
+		}
+	}
+	return nil
+}
+
 func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, throttle domain.PipelineThrottle) error {
 	loc, err := p.repo.GetPrimaryLocation(ctx, j.AssetID)
 	if err != nil {
@@ -422,6 +805,16 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 	if err != nil {
 		return err
 	}
+	// The effective disk floor for this job: the settings page's throttle
+	// value wins when the row exists (including an explicit 0 = disabled),
+	// otherwise the static config floor. One existence query per job, not per
+	// stage.
+	configured, err := p.repo.PipelineThrottleConfigured(ctx)
+	if err != nil {
+		slog.Warn("pipeline throttle row presence unreadable; using the config floor", "error", err)
+		configured = false
+	}
+	diskFloor := p.diskFloor(throttle, configured)
 	switch j.Type {
 	case domain.JobProbe:
 		probe, err := media.Probe(ctx, sourcePath)
@@ -438,6 +831,9 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		}
 		return p.repo.EnqueueJob(ctx, j.AssetID, domain.JobDerive, hashStrings(j.InputHash, "derive-v1"), 90)
 	case domain.JobDerive:
+		if err := p.diskSpaceErr(diskFloor); err != nil {
+			return err
+		}
 		base := filepath.Join(p.cacheDir, j.AssetID)
 		// Keep profiles in separate cache paths: a proxy created by software x264
 		// must never be relabelled as an NVENC/QSV/VideoToolbox result.
@@ -495,7 +891,28 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 			if err := saveArtifact(p.repo, ctx, j.AssetID, "audio", "audio-16k-v1", audio, j.ID, worker); err != nil {
 				return err
 			}
+			// A re-derive job (enqueued by `cache gc --rebuildable`) re-creates
+			// the files for an asset whose analysis already committed. The paid
+			// chain must not re-run: the canonical shots are already there, and
+			// re-billing them for a cache clean-up is exactly the double spend
+			// the model-run dedup exists to prevent. The check is the committed
+			// analysis, the same canonical evidence reanalysis switches; the
+			// artifacts above were re-saved either way, so the rows never dangle.
+			committed, err := p.repo.HasCommittedAnalysis(ctx, j.AssetID)
+			if err != nil {
+				return err
+			}
+			if committed {
+				return nil
+			}
 			return p.repo.EnqueueJob(ctx, j.AssetID, domain.JobSpeechGate, hashStrings(j.InputHash, "speech-v1"), 80)
+		}
+		committed, err := p.repo.HasCommittedAnalysis(ctx, j.AssetID)
+		if err != nil {
+			return err
+		}
+		if committed {
+			return nil
 		}
 		return p.repo.EnqueueJob(ctx, j.AssetID, domain.JobAnalyze, hashStrings(j.InputHash, "analyze-v1"), 30)
 	case domain.JobSpeechGate:
@@ -531,6 +948,12 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		}
 		return p.repo.EnqueueJob(ctx, j.AssetID, domain.JobAnalyze, hashStrings(j.InputHash, "analyze-v1"), 30)
 	case domain.JobTranscribe:
+		if err := p.diskSpaceErr(diskFloor); err != nil {
+			return err
+		}
+		if err := p.budgetGateErr(ctx, throttle); err != nil {
+			return err
+		}
 		a, err := p.repo.GetArtifact(ctx, j.AssetID, "audio")
 		if err != nil {
 			return err
@@ -550,11 +973,32 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		if err := p.repo.SaveTranscript(ctx, j.AssetID, providerUsed.Name(), providerUsed.Model(), j.InputHash, t); err != nil {
 			return err
 		}
+		// The transcript is canonical; record the ASR estimate against the
+		// serving channel's cost metadata. The metadata fetch is skipped when
+		// no cost hook is wired, so unwired pipelines pay nothing for a
+		// guide they do not keep. Duration stands in for audio minutes (see
+		// RecordAnalysisCostEstimate). A metadata read failure must NOT fail
+		// the job: the transcript is already committed, and a retry would
+		// re-run the paid transcription to feed an estimate — the ledger is
+		// a guide, never a reason to spend twice.
+		if p.costEstimator != nil {
+			if metadata, metadataErr := p.repo.GetMediaMetadata(ctx, j.AssetID); metadataErr != nil {
+				slog.Warn("cost estimate metadata unreadable; skipping estimate", "asset_id", j.AssetID, "error", metadataErr)
+			} else if metadata != nil {
+				p.recordCostEstimate(ctx, "asr", providerUsed.Name(), providerUsed.Model(), j.AssetID, metadata.DurationMS)
+			}
+		}
 		if p.alignment != nil {
 			return p.repo.EnqueueJob(ctx, j.AssetID, domain.JobAlign, hashStrings(j.InputHash, p.alignment.Name(), p.alignment.Model()), 50)
 		}
 		return p.repo.EnqueueJob(ctx, j.AssetID, domain.JobAnalyze, hashStrings(j.InputHash, "analyze-v1"), 30)
 	case domain.JobAlign:
+		if err := p.diskSpaceErr(diskFloor); err != nil {
+			return err
+		}
+		// No budgetGateErr here, deliberately: alignment runs a local
+		// os/exec provider (externalalign) and costs no Provider money, so a
+		// spent daily/monthly budget must not park it until the next period.
 		a, err := p.repo.GetArtifact(ctx, j.AssetID, "audio")
 		if err != nil {
 			return err
@@ -579,6 +1023,12 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		}
 		return p.repo.EnqueueJob(ctx, j.AssetID, domain.JobAnalyze, hashStrings(j.InputHash, "analyze-v1"), 30)
 	case domain.JobAnalyze:
+		if err := p.diskSpaceErr(diskFloor); err != nil {
+			return err
+		}
+		if err := p.budgetGateErr(ctx, throttle); err != nil {
+			return err
+		}
 		if p.videoProvider == nil {
 			return domain.Permanent(fmt.Errorf("video analysis provider is not configured; set providers.vision_primary to an enabled provider"))
 		}

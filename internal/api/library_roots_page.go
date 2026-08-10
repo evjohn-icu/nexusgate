@@ -18,10 +18,16 @@ func (s *Server) libraryRootsPage(w http.ResponseWriter, _ *http.Request) {
 }
 
 const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · 添加素材目录</title><style>
-:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101827;color:#edf3ff;font:15px ui-sans-serif,system-ui,-apple-system,sans-serif}header{padding:15px 5vw;border-bottom:1px solid #293953;display:flex;gap:18px;align-items:center;background:#101827ee;position:sticky;top:0;z-index:2;backdrop-filter:blur(12px)}a{color:#b8c8ff;text-decoration:none}.brand{color:#fff;font-weight:800;margin-right:auto}.wrap{max-width:960px;margin:auto;padding:30px 24px 80px}.step-nav{display:flex;gap:0;margin-bottom:28px;border-radius:10px;overflow:hidden;border:1px solid #2c3d5b}.step-nav div{flex:1;text-align:center;padding:12px;font-size:13px;font-weight:700;background:#172238;color:#6c7fa2;border-right:1px solid #2c3d5b;transition:background .2s,color .2s}.step-nav div:last-child{border-right:0}.step-nav .active{background:#2b4070;color:#eef4ff}.step{display:none}.step.active{display:block}.panel{background:#172238;border:1px solid #2c3d5b;border-radius:14px;padding:20px;margin-bottom:16px}.panel h2{margin:0 0 14px;font-size:17px}.field{margin:12px 0}.field label{font-size:12px;color:#bfcae0;font-weight:800;display:block;margin:0 0 5px}input,select,textarea{width:100%;font:inherit;padding:10px;border-radius:8px;background:#0e1728;color:#fff;border:1px solid #374965}button{border:0;border-radius:8px;padding:10px 16px;font:inherit;font-weight:800;cursor:pointer}.primary{background:#8ca7ff;color:#0d1830}.secondary{background:#2e405e;color:#eaf1ff}.success{background:#3a9668;color:#d3fce4}.muted{color:#aab8d0;font-size:13px;line-height:1.6}.hint{font-size:13px;margin:8px 0;color:#ffc98d}.hint.ok{color:#82e4ad}.hint.bad{color:#ffb7ac}.step-actions{display:flex;gap:10px;margin-top:16px}.nav-btn{background:#2b4070;color:#eef4ff}.share-line{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;color:#d9e5ff;word-break:break-all;background:#0e1728;border-radius:8px;padding:8px;margin:6px 0}.guide-step{margin:16px 0}.guide-step-title{font-weight:800;font-size:13px;color:#dce6fb;margin-bottom:7px}.cmd{display:flex;gap:8px;align-items:flex-start;background:#0e1728;border:1px solid #374965;border-radius:8px;padding:9px 10px;margin:6px 0}.cmd code{flex:1;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:#d9e5ff;word-break:break-all;white-space:pre-wrap}.copy-btn{background:#4a618a;color:#fff;border:0;border-radius:7px;padding:6px 10px;font-size:12px;cursor:pointer;font-weight:700;white-space:nowrap}.notes{margin-top:14px;padding:12px 14px;background:#0e1728;border-radius:8px;color:#c7d3ea;font-size:12px;line-height:1.6}.notes ul{margin:6px 0 0;padding-left:18px}.center{text-align:center;margin:18px 0}.danger{background:#3f2230;color:#ffc2cc;border:1px solid #6d3547;border-radius:10px;padding:12px 14px;margin:10px 0 14px;font-size:13px;line-height:1.6}.danger b{color:#ffe1e6}@media(max-width:600px){.cmd{flex-direction:column}}
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101827;color:#edf3ff;font:15px ui-sans-serif,system-ui,-apple-system,sans-serif}header{padding:15px 5vw;border-bottom:1px solid #293953;display:flex;gap:18px;align-items:center;background:#101827ee;position:sticky;top:0;z-index:2;backdrop-filter:blur(12px)}a{color:#b8c8ff;text-decoration:none}.brand{color:#fff;font-weight:800;margin-right:auto}.wrap{max-width:960px;margin:auto;padding:30px 24px 80px}.step-nav{display:flex;gap:0;margin-bottom:28px;border-radius:10px;overflow:hidden;border:1px solid #2c3d5b}.step-nav div{flex:1;text-align:center;padding:12px;font-size:13px;font-weight:700;background:#172238;color:#6c7fa2;border-right:1px solid #2c3d5b;transition:background .2s,color .2s}.step-nav div:last-child{border-right:0}.step-nav .active{background:#2b4070;color:#eef4ff}.step{display:none}.step.active{display:block}.panel{background:#172238;border:1px solid #2c3d5b;border-radius:14px;padding:20px;margin-bottom:16px}.panel h2{margin:0 0 14px;font-size:17px}.field{margin:12px 0}.field label{font-size:12px;color:#bfcae0;font-weight:800;display:block;margin:0 0 5px}input,select,textarea{width:100%;font:inherit;padding:10px;border-radius:8px;background:#0e1728;color:#fff;border:1px solid #374965}button{border:0;border-radius:8px;padding:10px 16px;font:inherit;font-weight:800;cursor:pointer}.primary{background:#8ca7ff;color:#0d1830}.secondary{background:#2e405e;color:#eaf1ff}.success{background:#3a9668;color:#d3fce4}.muted{color:#aab8d0;font-size:13px;line-height:1.6}.hint{font-size:13px;margin:8px 0;color:#ffc98d}.hint.ok{color:#82e4ad}.hint.bad{color:#ffb7ac}.health-table{width:100%;border-collapse:collapse;margin-top:6px}.health-table th,.health-table td{text-align:left;padding:9px 8px;border-bottom:1px solid #2b3b55;font-size:13px;vertical-align:top}.health-table th{color:#93a6c6;font-size:11px;font-weight:800;letter-spacing:.05em}.health-table tr:last-child td{border-bottom:0}.health-path{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;word-break:break-all}.health-pill{border-radius:99px;padding:3px 9px;font-size:12px;font-weight:700;white-space:nowrap}.health-pill.ok{background:#164b39;color:#9cf0c2}.health-pill.err{background:#612c3a;color:#ffc0c8}.health-pill.muted{background:#34445e;color:#b8c8d8}.health-warn{margin:8px 0 0;font-size:13px;color:#ffc0c8;line-height:1.7}.step-actions{display:flex;gap:10px;margin-top:16px}.nav-btn{background:#2b4070;color:#eef4ff}.share-line{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;color:#d9e5ff;word-break:break-all;background:#0e1728;border-radius:8px;padding:8px;margin:6px 0}.guide-step{margin:16px 0}.guide-step-title{font-weight:800;font-size:13px;color:#dce6fb;margin-bottom:7px}.cmd{display:flex;gap:8px;align-items:flex-start;background:#0e1728;border:1px solid #374965;border-radius:8px;padding:9px 10px;margin:6px 0}.cmd code{flex:1;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:#d9e5ff;word-break:break-all;white-space:pre-wrap}.copy-btn{background:#4a618a;color:#fff;border:0;border-radius:7px;padding:6px 10px;font-size:12px;cursor:pointer;font-weight:700;white-space:nowrap}.notes{margin-top:14px;padding:12px 14px;background:#0e1728;border-radius:8px;color:#c7d3ea;font-size:12px;line-height:1.6}.notes ul{margin:6px 0 0;padding-left:18px}.center{text-align:center;margin:18px 0}.danger{background:#3f2230;color:#ffc2cc;border:1px solid #6d3547;border-radius:10px;padding:12px 14px;margin:10px 0 14px;font-size:13px;line-height:1.6}.danger b{color:#ffe1e6}@media(max-width:600px){.cmd{flex-direction:column}}
 </style></head><body data-library-roots-wizard>
 <!--SHELL_HEADER-->
 <div class="wrap">
+<div class="panel" id="root-health-section">
+<h2>素材目录状态</h2>
+<p class="muted">每个已添加素材目录的健康状态。目录离线时，缺失文件对账会暂停，不会把素材标记为缺失。</p>
+<div id="root-health-wrap"><div class="muted">正在读取…</div></div>
+</div>
+
 <div class="step-nav" id="step-nav"><div class="active" data-step="1">1. 输入路径或共享</div><div data-step="2">2. 挂载说明</div><div data-step="3">3. 验证挂载</div><div data-step="4">4. 添加并扫描</div></div>
 
 <div class="step active" id="step-1">
@@ -114,8 +120,33 @@ function translatedSummary(inspection){
 }
 function adminToken(){var el=document.getElementById('admin-token');return el?el.value.trim():''}
 function authHeaders(base){var headers=new Headers(base||{});var token=adminToken();if(token)headers.set('Authorization','Bearer '+token);return headers}
-async function json(url,opt){opt=opt||{};var r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok){var msg='';try{msg=await r.text()}catch(e){msg=r.statusText}throw new Error(msg)}return r.json()}
+async function apiErrMsg(r){try{const d=await r.json();if(d&&d.error&&d.error.message)return d.error.action?(d.error.message+'（'+d.error.action+'）'):d.error.message}catch(_){}return (await r.text()).trim()}
+async function json(url,opt){opt=opt||{};var r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok)throw new Error(await apiErrMsg(r));return r.json()}
 function goStep(n){for(var i=1;i<=4;i++){document.getElementById('step-'+i).className='step'+(i===n?' active':'');document.querySelectorAll('.step-nav div')[i-1].className=(i===n?'active':'')}}
+
+function healthTime(v){if(!v)return'—';var t=new Date(v);return isNaN(t.getTime())?esc(v):t.toLocaleString()}
+async function loadRootHealth(){
+  var wrap=document.getElementById('root-health-wrap');
+  if(!wrap)return;
+  var list;
+  try{list=await json('/api/v1/roots/health')}catch(e){wrap.innerHTML='<div class="muted">需要 Hub 管理 Token 才能查看目录状态。</div>';return}
+  if(!list||!list.length){wrap.innerHTML='<div class="muted">暂无素材目录。添加后这里会显示健康状态。</div>';return}
+  var warns=[];
+  var rows=list.map(function(h){
+    var pill='muted',label='未知';
+    if(h.state==='healthy'){pill='ok';label='正常'}
+    else if(h.state==='unavailable'){pill='err';label='离线'}
+    if(h.state==='unavailable'){
+      // The reconciliation gate pauses on an unavailable root (the scan
+      // service's verdict, not this page's) so assets are never marked
+      // missing while the root itself is the thing that is gone.
+      warns.push('<div class="health-warn">⚠ 目录离线 — 暂停缺失文件对账（不会把素材标记为缺失）。<br>Last healthy：'+esc(healthTime(h.last_healthy_at))+'</div>');
+    }
+    return '<tr><td class="health-path">'+esc(h.path)+'</td><td><span class="health-pill '+pill+'">'+label+'</span></td><td>'+esc(healthTime(h.last_healthy_at))+'</td><td>'+esc(healthTime(h.last_scan_at))+'</td></tr>';
+  }).join('');
+  wrap.innerHTML='<table class="health-table"><tr><th>路径</th><th>状态</th><th>Last healthy</th><th>上次扫描</th></tr>'+rows+'</table>'+warns.join('');
+}
+loadRootHealth();
 
 var lastInput='';
 var lastVerifyPath='';
@@ -126,12 +157,12 @@ async function addRoot(path){
   var body=null;
   try{body=await response.json()}catch(e){}
   if(response.status===422&&body&&body.inspection){
-    var shareErr=new Error(body.error||'该共享尚未挂载');
+    var shareErr=new Error((body.error&&body.error.message)||(typeof body.error==='string'?body.error:'')||'该共享尚未挂载');
     shareErr.shareNotMounted=true;
     shareErr.inspection=body.inspection;
     throw shareErr;
   }
-  if(!response.ok){throw new Error((body&&body.error)||response.statusText||('添加素材目录失败（'+response.status+'）'))}
+  if(!response.ok){throw new Error((body&&body.error&&body.error.message)||(body&&typeof body.error==='string'?body.error:'')||response.statusText||('添加素材目录失败（'+response.status+'）'))}
   return body;
 }
 
@@ -185,7 +216,7 @@ function renderComposeVolume(inspection){
   if(!volume){container.style.display='none';container.innerHTML='';return}
   container.style.display='';
   var protocol=((inspection.share||{}).protocol||'').toLowerCase();
-  var html='<h2>另一种方式：Docker Compose 挂载卷</h2><p class="muted">这个 Hub 运行在容器里，容器本身无法像宿主机那样执行上面的挂载命令。把下面这段配置粘贴进 docker-compose.yml 的 volumes: 下，下面第二段把它挂进 hub 和 worker 两个服务——Worker 也要，它租到 derive 作业后会自己打开源文件，只挂进 Hub 会让每个下发的作业都以文件不存在告终。</p>';
+  var html='<h2>另一种方式：Docker Compose 挂载卷</h2><p class="muted">这个 Hub 运行在容器里，容器本身无法像宿主机那样执行上面的挂载命令。把下面这段配置粘贴进 docker-compose.yml 的 volumes: 下，下面第二段把它挂进 hub 和 worker 两个服务——Worker 也要，它租到派生作业后会自己打开源文件，只挂进 Hub 会让每个下发的作业都以文件不存在告终。</p>';
   if(protocol==='smb'){
     html+='<p class="muted">推荐优先使用 NFS：如果这台 NAS 支持导出 NFS 共享，请改用 NFS 地址（例如 host:/export）重新执行本向导——NFS 形式的挂载卷不需要任何凭据，可以彻底避免下面这个问题。</p>';
   }else if(protocol==='nfs'){

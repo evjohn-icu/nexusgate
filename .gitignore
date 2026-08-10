@@ -21,8 +21,10 @@ config.json
 
 # Compose reads .env automatically, and docker-compose.yml passes six provider
 # key variables through from it. That makes an untracked .env the intended place
-# for them and a tracked one a committed key. .env.example stays tracked as the
-# documented template (same convention as config.example.json).
+# for them and a tracked one a committed key. No .env.example is shipped — the
+# documented template is config.example.json (and the README's Configuration
+# section), which carries no key values. The negation below only guards a
+# value-free .env.example if one is ever added.
 .env
 .env.*
 !.env.example

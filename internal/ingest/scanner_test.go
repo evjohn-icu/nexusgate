@@ -13,17 +13,15 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
-// stubScanRepo is an in-memory stub implementing ScanRepository.
+// stubScanRepo is an in-memory stub implementing ScanRepository. It has no
+// mark-missing method: the scanner deliberately does not reconcile — it
+// returns the seen list and the app service decides whether that list may be
+// used to mark files missing.
 type stubScanRepo struct {
 	// per-file callback: if set, invoked for each UpsertScannedFile call.
 	upsertFn func(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error)
-	// MarkUnseenLocationsMissing return values.
-	markMissing int
-	markErr     error
 	// record of calls for assertions.
-	upsertCalls  []string // relative paths seen
-	markCallSeen []string
-	markCallRoot string
+	upsertCalls []string // relative paths seen
 }
 
 func (s *stubScanRepo) UpsertScannedFile(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error) {
@@ -33,12 +31,6 @@ func (s *stubScanRepo) UpsertScannedFile(ctx context.Context, root domain.Librar
 	}
 	// default: discovered, not changed
 	return domain.ScannedFile{AssetID: "asset-" + relativePath, Created: true, Changed: false}, nil
-}
-
-func (s *stubScanRepo) MarkUnseenLocationsMissing(ctx context.Context, rootID string, seenRelativePaths []string) (int, error) {
-	s.markCallRoot = rootID
-	s.markCallSeen = append([]string(nil), seenRelativePaths...)
-	return s.markMissing, s.markErr
 }
 
 // helpers
@@ -176,11 +168,10 @@ func TestScanSingleVideoFile(t *testing.T) {
 	if len(repo.upsertCalls) != 1 || repo.upsertCalls[0] != "clip.mov" {
 		t.Errorf("upsertCalls = %v, want [clip.mov]", repo.upsertCalls)
 	}
-	if repo.markCallRoot != "r1" {
-		t.Errorf("markCallRoot = %q, want r1", repo.markCallRoot)
-	}
-	if len(repo.markCallSeen) != 1 || repo.markCallSeen[0] != "clip.mov" {
-		t.Errorf("markCallSeen = %v, want [clip.mov]", repo.markCallSeen)
+	// The seen list is handed back, not applied: reconciliation is decided by
+	// the service's root-health gate, so the scanner only reports.
+	if len(result.SeenRelativePaths) != 1 || result.SeenRelativePaths[0] != "clip.mov" {
+		t.Errorf("SeenRelativePaths = %v, want [clip.mov]", result.SeenRelativePaths)
 	}
 }
 
@@ -229,9 +220,15 @@ func TestScanEmptyDirectory(t *testing.T) {
 	if len(repo.upsertCalls) != 0 {
 		t.Errorf("upsertCalls = %v, want empty", repo.upsertCalls)
 	}
-	// MarkUnseenLocationsMissing should still be called with empty seen list.
-	if repo.markCallRoot != "r1" {
-		t.Errorf("markCallRoot = %q, want r1", repo.markCallRoot)
+	// An empty walk returns an empty seen list WITHOUT reconciling: the
+	// scanner must never mark files missing itself, because an unmounted NAS
+	// root walks exactly like this. Whether the empty seen list is applied
+	// (mark everything missing) is the service's root-health gate's call.
+	if len(result.SeenRelativePaths) != 0 {
+		t.Errorf("SeenRelativePaths = %v, want empty", result.SeenRelativePaths)
+	}
+	if result.Missing != 0 {
+		t.Errorf("Missing = %d, want 0: the scanner does not reconcile", result.Missing)
 	}
 }
 
@@ -357,19 +354,28 @@ func TestScanChangedAssetIDsDeduplication(t *testing.T) {
 	}
 }
 
-func TestScanMissingCount(t *testing.T) {
+// TestScannerNoLongerReconciles pins the boundary of the O1b change: the
+// scanner returns the seen list and leaves the Missing count at zero — the
+// service calls MarkUnseenLocationsMissing itself, and only after its
+// root-health gate has passed. A scanner that marks files missing would turn
+// an unmounted NAS root's empty walk into a mass missing-file verdict before
+// the gate ever ran.
+func TestScannerNoLongerReconciles(t *testing.T) {
 	root := writeDir(t, t.TempDir(), "root")
 	writeFile(t, root, "clip.mp4")
 
-	repo := &stubScanRepo{markMissing: 5}
+	repo := &stubScanRepo{}
 	s := NewScanner(repo)
 
 	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Missing != 5 {
-		t.Errorf("Missing = %d, want 5", result.Missing)
+	if result.Missing != 0 {
+		t.Errorf("Missing = %d, want 0 (reconciliation moved to the service)", result.Missing)
+	}
+	if len(result.SeenRelativePaths) != 1 || result.SeenRelativePaths[0] != "clip.mp4" {
+		t.Errorf("SeenRelativePaths = %v, want [clip.mp4]", result.SeenRelativePaths)
 	}
 }
 
@@ -420,7 +426,6 @@ func TestScanRepoUpsertErrorDoesNotStopWalk(t *testing.T) {
 		upsertFn: func(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error) {
 			return domain.ScannedFile{}, errors.New("persist error")
 		},
-		markMissing: 0,
 	}
 	s := NewScanner(repo)
 
@@ -431,26 +436,12 @@ func TestScanRepoUpsertErrorDoesNotStopWalk(t *testing.T) {
 	if len(result.Errors) != 2 {
 		t.Errorf("Errors len = %d, want 2", len(result.Errors))
 	}
-	// MarkUnseenLocationsMissing should still run.
-	if repo.markCallRoot == "" {
-		t.Error("MarkUnseenLocationsMissing was not called")
-	}
-}
-
-func TestScanMarkMissingErrorPropagated(t *testing.T) {
-	root := writeDir(t, t.TempDir(), "root")
-	writeFile(t, root, "clip.mp4")
-
-	markErr := errors.New("mark missing failed")
-	repo := &stubScanRepo{markErr: markErr}
-	s := NewScanner(repo)
-
-	_, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
-	if err == nil {
-		t.Fatal("expected error from MarkUnseenLocationsMissing, got nil")
-	}
-	if !errors.Is(err, markErr) {
-		t.Errorf("err = %v, want %v", err, markErr)
+	// Per-file errors do not lose the seen paths: the list is still reported
+	// for the service's gate, which is where a root-health verdict would keep
+	// this scan from marking anything missing. Reconciliation is not the
+	// scanner's to run.
+	if len(result.SeenRelativePaths) != 2 {
+		t.Errorf("SeenRelativePaths len = %d, want 2", len(result.SeenRelativePaths))
 	}
 }
 
@@ -492,6 +483,16 @@ func TestScanRootDoesNotExist(t *testing.T) {
 	}
 	if len(result.Errors) == 0 {
 		t.Fatal("expected walkErr in result.Errors, got none")
+	}
+	// Nothing was seen and nothing was reconciled: whether an unreachable
+	// root's empty walk may mark files missing is the service's gate to
+	// decide (it must not — see root_offline_gate_test.go), not the
+	// scanner's.
+	if len(result.SeenRelativePaths) != 0 {
+		t.Errorf("SeenRelativePaths = %v, want empty", result.SeenRelativePaths)
+	}
+	if result.Missing != 0 {
+		t.Errorf("Missing = %d, want 0", result.Missing)
 	}
 }
 
@@ -713,9 +714,9 @@ func TestScanMixedChangedAndUnchangedAssets(t *testing.T) {
 	}
 }
 
-// --------------- MarkUnseenLocationsMissing receives correct seen list ---------------
+// --------------- ScanResult carries the seen list the service reconciles with ---------------
 
-func TestScanMarkMissingSeenList(t *testing.T) {
+func TestScanReturnsSeenList(t *testing.T) {
 	root := writeDir(t, t.TempDir(), "root")
 	writeFile(t, root, "A.mp4")
 	writeFile(t, root, "sub/B.mov")
@@ -724,15 +725,15 @@ func TestScanMarkMissingSeenList(t *testing.T) {
 	repo := &stubScanRepo{}
 	s := NewScanner(repo)
 
-	_, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(repo.markCallSeen) != 2 {
-		t.Fatalf("markCallSeen len = %d, want 2: %v", len(repo.markCallSeen), repo.markCallSeen)
+	if len(result.SeenRelativePaths) != 2 {
+		t.Fatalf("SeenRelativePaths len = %d, want 2: %v", len(result.SeenRelativePaths), result.SeenRelativePaths)
 	}
 	// Order should be walk order (fs.WalkDir is lexical).
-	seen := repo.markCallSeen
+	seen := result.SeenRelativePaths
 	has := func(s string) bool {
 		for _, p := range seen {
 			if p == s {
@@ -771,7 +772,7 @@ func TestScanContextPreCancelled(t *testing.T) {
 
 // --------------- Error from repo.UpsertScannedFile does not corrupt result ---------------
 
-func TestScanUpsertErrorStillReportsMarkMissing(t *testing.T) {
+func TestScanUpsertErrorStillReturnsSeenList(t *testing.T) {
 	root := writeDir(t, t.TempDir(), "root")
 	writeFile(t, root, "clip.mp4")
 
@@ -779,7 +780,6 @@ func TestScanUpsertErrorStillReportsMarkMissing(t *testing.T) {
 		upsertFn: func(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error) {
 			return domain.ScannedFile{}, fmt.Errorf("insert failed")
 		},
-		markMissing: 3,
 	}
 	s := NewScanner(repo)
 
@@ -787,8 +787,14 @@ func TestScanUpsertErrorStillReportsMarkMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Missing != 3 {
-		t.Errorf("Missing = %d, want 3", result.Missing)
+	// The file was still seen even though its upsert failed, so the seen
+	// list stays complete for the service's reconciliation gate. Missing is
+	// the service's to count from MarkUnseenLocationsMissing's return.
+	if len(result.SeenRelativePaths) != 1 || result.SeenRelativePaths[0] != "clip.mp4" {
+		t.Errorf("SeenRelativePaths = %v, want [clip.mp4]", result.SeenRelativePaths)
+	}
+	if result.Missing != 0 {
+		t.Errorf("Missing = %d, want 0", result.Missing)
 	}
 	if len(result.Errors) != 1 {
 		t.Errorf("Errors len = %d, want 1", len(result.Errors))

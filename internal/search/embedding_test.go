@@ -98,6 +98,128 @@ func fakeVector32(text string, dim int) []float32 {
 	return out
 }
 
+// fakeEmbeddingStore is a minimal scripted ShotStore for embedding-channel
+// tests: it serves scripted embedding rows and returns empty results for
+// every other method. It is separate from service_test.go's fakeStore so the
+// embedding tests stand alone from the pipeline fixtures.
+type fakeEmbeddingStore struct {
+	embeddingRows map[string][]ShotEmbeddingRow
+}
+
+func (f *fakeEmbeddingStore) ScoreCandidates(_ context.Context, _ string, _ domain.FacetFilter) ([]domain.ShotSearchResult, error) {
+	return nil, nil
+}
+
+func (f *fakeEmbeddingStore) LexicalRankedShots(_ context.Context, _ string, _ [5]float64, _ int) ([]domain.ShotSearchResult, error) {
+	return nil, nil
+}
+
+func (f *fakeEmbeddingStore) TranscriptRankedShots(_ context.Context, _ string, _ int) ([]domain.ShotSearchResult, error) {
+	return nil, nil
+}
+
+func (f *fakeEmbeddingStore) MetadataRankedShots(_ context.Context, _ string, _ int) ([]domain.ShotSearchResult, error) {
+	return nil, nil
+}
+
+func (f *fakeEmbeddingStore) ShotTranscriptSpans(_ context.Context, _ string, _, _ int64) ([]domain.AlignmentWord, error) {
+	return nil, nil
+}
+
+func (f *fakeEmbeddingStore) NeighborShots(_ context.Context, _ string, _ int) (*domain.AssetShot, *domain.AssetShot, error) {
+	return nil, nil, nil
+}
+
+func (f *fakeEmbeddingStore) ShotSession(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+
+func (f *fakeEmbeddingStore) ShotSessions(_ context.Context, _ []string) (map[string]string, error) {
+	return nil, nil
+}
+
+func (f *fakeEmbeddingStore) UpsertShotTextEmbeddings(_ context.Context, _ []ShotEmbeddingRow) error {
+	return nil
+}
+
+func (f *fakeEmbeddingStore) ListShotTextEmbeddings(_ context.Context, model string) ([]ShotEmbeddingRow, error) {
+	return f.embeddingRows[model], nil
+}
+
+func (f *fakeEmbeddingStore) AllShotTextDocuments(_ context.Context) ([]ShotSearchDocument, error) {
+	return nil, nil
+}
+
+func (f *fakeEmbeddingStore) ShotTextDocumentsByAsset(_ context.Context, _ string) ([]ShotSearchDocument, error) {
+	return nil, nil
+}
+
+func (f *fakeEmbeddingStore) ShotTextEmbeddingHashes(_ context.Context, _, _ string) (map[string]string, error) {
+	return nil, nil
+}
+
+func TestEmbeddingCosineDimensionMismatch(t *testing.T) {
+	query := fakeVector("car crossing the street", 256)
+	stored := fakeVector32("car crossing the street", 256)
+	if got := embeddingCosine(query, stored); math.Abs(got-1) > 1e-9 {
+		t.Fatalf("matching 256-dim vectors must give cosine 1, got %v", got)
+	}
+	if got := embeddingCosine(fakeVector("car", 768), fakeVector32("car", 256)); got != 0 {
+		t.Fatalf("768 vs 256 mismatch must score 0, got %v", got)
+	}
+	if got := embeddingCosine(fakeVector("car", 768), fakeVector32("car", 1024)); got != 0 {
+		t.Fatalf("768 vs 1024 mismatch must score 0, got %v", got)
+	}
+	if got := embeddingCosine(nil, nil); got != 0 {
+		t.Fatalf("empty vectors must score 0, got %v", got)
+	}
+	if got := embeddingCosine(fakeVector("car", 256), nil); got != 0 {
+		t.Fatalf("query vs empty vector must score 0, got %v", got)
+	}
+}
+
+func TestEmbeddingRetrieverSkipsMismatchedRows(t *testing.T) {
+	store := &fakeEmbeddingStore{
+		embeddingRows: map[string][]ShotEmbeddingRow{
+			"fake-embed-v1": {
+				{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "s-match", Description: "car crossing the street"}}, Model: "fake-embed-v1", Vector: fakeVector32("car crossing the street", 4), SourceTextHash: "h1"},
+				{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "s-mismatch", Description: "dog playing in the park"}}, Model: "fake-embed-v1", Vector: fakeVector32("dog playing in the park", 8), SourceTextHash: "h2"},
+			},
+		},
+	}
+	retriever := NewTextEmbeddingRetriever(store, fakeEmbedder{dim: 4})
+	candidates, err := retriever.Retrieve(context.Background(), Compile("car"), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("only the dimension-matching row may be scored, got %d candidates: %+v", len(candidates), candidates)
+	}
+	if candidates[0].ShotID != "s-match" {
+		t.Fatalf("matched row must be the only scored candidate, got %+v", candidates)
+	}
+	if candidates[0].Signals[SignalTextEmbedding] <= 0 {
+		t.Fatalf("matched row must carry a positive embedding signal, got %+v", candidates[0].Signals)
+	}
+	// A library holding only mismatched rows must yield nothing: the
+	// mismatched vector neither distorts the cutoff nor enters the output.
+	only := &fakeEmbeddingStore{
+		embeddingRows: map[string][]ShotEmbeddingRow{
+			"fake-embed-v1": {
+				{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "s-mismatch", Description: "dog playing in the park"}}, Model: "fake-embed-v1", Vector: fakeVector32("dog playing in the park", 8), SourceTextHash: "h2"},
+			},
+		},
+	}
+	onlyRetriever := NewTextEmbeddingRetriever(only, fakeEmbedder{dim: 4})
+	candidates, err = onlyRetriever.Retrieve(context.Background(), Compile("car"), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("a mismatched-only library must yield no candidates, got %+v", candidates)
+	}
+}
+
 func TestEmbeddingRetrieverRanksByCosine(t *testing.T) {
 	store := &fakeStore{
 		embeddingRows: map[string][]ShotEmbeddingRow{

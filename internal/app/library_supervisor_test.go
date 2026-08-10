@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -321,6 +322,163 @@ func TestNextSupervisorPassLandsOnTheTickerPhase(t *testing.T) {
 		if got := nextSupervisorPass(last, interval, testCase.now); !got.Equal(testCase.want) {
 			t.Fatalf("now=%s next=%s, want %s", testCase.now, got, testCase.want)
 		}
+	}
+}
+
+// A root the last scan judged unavailable must not be walked at all, not
+// merely gated at the reconciliation step: the walk would re-trigger the
+// missing-asset reconciliation the verdict is pausing, and it is pure waste
+// while the mount is down. A clip left in the unavailable root proves the
+// skip — had the root been walked, it would have been discovered like the
+// one in the healthy root. The unhealthy roots carry one last-healthy time
+// each, so both log shapes are exercised; the healthy root must still be
+// scanned.
+func TestSupervisorSkipsUnhealthyRoot(t *testing.T) {
+	ctx := context.Background()
+	service, repo, rootDir := newSupervisedLibrary(t, config.LibrarySupervisorConfig{Enabled: true, ScanIntervalMinutes: 5})
+	healthyDir := filepath.Join(t.TempDir(), "healthy")
+	deadDir := filepath.Join(t.TempDir(), "dead")
+	for _, dir := range []string{healthyDir, deadDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.CreateLibraryRoot(ctx, dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	roots, err := repo.ListLibraryRoots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roots) != 3 {
+		t.Fatalf("roots=%d, want 3", len(roots))
+	}
+	lastHealthy := time.Now().UTC().Add(-2 * time.Hour)
+	if _, err := repo.DB().ExecContext(ctx, `UPDATE library_roots SET health_state = ?, last_healthy_at = ? WHERE id = ?`, domain.RootHealthUnavailable, lastHealthy.Format(time.RFC3339Nano), roots[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.DB().ExecContext(ctx, `UPDATE library_roots SET health_state = ? WHERE id = ?`, domain.RootHealthUnavailable, roots[1].ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []struct{ dir, name string }{{dir: rootDir, name: "dead-root.mov"}, {dir: deadDir, name: "also-dead.mov"}, {dir: healthyDir, name: "live-root.mov"}} {
+		if err := os.WriteFile(filepath.Join(file.dir, file.name), []byte("footage bytes"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result := service.supervisor.onePass(ctx)
+
+	if result.skippedUnhealthy != 2 {
+		t.Fatalf("skippedUnhealthy=%d, want 2", result.skippedUnhealthy)
+	}
+	if result.roots != 1 || result.discovered != 1 {
+		t.Fatalf("roots=%d discovered=%d, want 1/1: an unavailable root was walked", result.roots, result.discovered)
+	}
+	if result.err != nil {
+		t.Fatalf("an unavailable root must not fail the pass or stop the others: %v", result.err)
+	}
+}
+
+// Healthy and unknown roots are always scanned. Unknown includes the literal
+// zero value, which rows created before health tracking never wrote to the
+// column: a root whose verdict is missing must get a chance to produce one, or
+// nothing would ever break the deadlock after the state was lost.
+func TestSupervisorScansHealthyAndUnknownRoots(t *testing.T) {
+	ctx := context.Background()
+	service, repo, rootDir := newSupervisedLibrary(t, config.LibrarySupervisorConfig{Enabled: true, ScanIntervalMinutes: 5})
+	healthyDir := filepath.Join(t.TempDir(), "healthy")
+	zeroDir := filepath.Join(t.TempDir(), "zero")
+	for _, dir := range []string{healthyDir, zeroDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.CreateLibraryRoot(ctx, dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	roots, err := repo.ListLibraryRoots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roots) != 3 {
+		t.Fatalf("roots=%d, want 3", len(roots))
+	}
+	if _, err := repo.DB().ExecContext(ctx, `UPDATE library_roots SET health_state = ? WHERE id = ?`, domain.RootHealthHealthy, roots[1].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.DB().ExecContext(ctx, `UPDATE library_roots SET health_state = '' WHERE id = ?`, roots[2].ID); err != nil {
+		t.Fatal(err)
+	}
+	for i, dir := range []string{rootDir, healthyDir, zeroDir} {
+		// Distinct bytes: the scanner dedupes by content, and each root's
+		// clip must be counted as discovered.
+		if err := os.WriteFile(filepath.Join(dir, "clip.mov"), []byte(fmt.Sprintf("footage bytes %d", i)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result := service.supervisor.onePass(ctx)
+
+	if result.skippedUnhealthy != 0 {
+		t.Fatalf("skippedUnhealthy=%d, want 0", result.skippedUnhealthy)
+	}
+	if result.roots != 3 || result.discovered != 3 {
+		t.Fatalf("roots=%d discovered=%d, want 3/3: healthy and unknown roots must all be scanned", result.roots, result.discovered)
+	}
+	if result.err != nil {
+		t.Fatalf("pass failed: %v", result.err)
+	}
+}
+
+// A root marked unavailable is skipped for unavailableRetryEveryPasses passes,
+// then attempted anyway. The attempt is what lets an overnight outage
+// self-recover: the scan gate re-verifies health, so a root whose share came
+// back flips healthy while a still-dead root is re-marked unavailable without
+// reconciling anything.
+func TestSupervisorReattemptsUnavailableRootAfterNPasses(t *testing.T) {
+	ctx := context.Background()
+	service, repo, rootDir := newSupervisedLibrary(t, config.LibrarySupervisorConfig{Enabled: true, ScanIntervalMinutes: 5})
+	if err := os.WriteFile(filepath.Join(rootDir, "clip.mov"), []byte("footage bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.DB().ExecContext(ctx, `UPDATE library_roots SET health_state = ? WHERE path = ?`, domain.RootHealthUnavailable, rootDir); err != nil {
+		t.Fatal(err)
+	}
+
+	for pass := 1; pass < unavailableRetryEveryPasses; pass++ {
+		result := service.supervisor.onePass(ctx)
+		if result.skippedUnhealthy != 1 {
+			t.Fatalf("pass %d: skippedUnhealthy=%d, want 1", pass, result.skippedUnhealthy)
+		}
+		if result.roots != 0 {
+			t.Fatalf("pass %d: roots=%d, want 0: unavailable root walked before its retry pass", pass, result.roots)
+		}
+	}
+
+	// The retry pass walks the root; the scan gate finds a real, non-empty,
+	// mounted directory and flips it back to healthy.
+	result := service.supervisor.onePass(ctx)
+	if result.skippedUnhealthy != 0 {
+		t.Fatalf("retry pass: skippedUnhealthy=%d, want 0", result.skippedUnhealthy)
+	}
+	if result.roots != 1 || result.discovered != 1 {
+		t.Fatalf("retry pass: roots=%d discovered=%d, want 1/1", result.roots, result.discovered)
+	}
+	roots, err := repo.ListLibraryRoots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, root := range roots {
+		if root.Path == rootDir {
+			found = true
+			if root.HealthState != domain.RootHealthHealthy {
+				t.Fatalf("root state = %s, want healthy after a successful retry scan", root.HealthState)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("root not found after re-scan")
 	}
 }
 

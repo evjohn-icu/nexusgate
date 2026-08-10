@@ -1,5 +1,9 @@
 package search
 
+import (
+	"maps"
+)
+
 // WeightedBlend is the classic weighted-sum fusion: Score = sum(weight *
 // signal). It is the compatibility strategy (the legacy 0.70/0.30 blend is
 // just WeightedBlend over the two legacy signals) and the intent-profile
@@ -23,6 +27,10 @@ func (f *WeightedBlend) Fuse(results []ChannelResult) []Candidate {
 			if !ok {
 				idx = len(out)
 				index[candidate.ShotID] = idx
+				// Clone the first sighting's signals so the fused candidate
+				// never shares (and later mutates) the channel's own map —
+				// same invariant RRF and WeightedRRF keep.
+				candidate.Signals = maps.Clone(candidate.Signals)
 				out = append(out, candidate)
 				continue
 			}
@@ -54,6 +62,12 @@ func (f *WeightedBlend) Fuse(results []ChannelResult) []Candidate {
 // let one signal's noise ride on another's strong score the way a weighted
 // sum can — a shot only scores where a signal actually ranked it. k defaults
 // to 60 (the Cormack, Clarke & Buettcher SIGIR 2009 constant).
+//
+// A candidate keeps every channel's signal: when a shot is ranked by several
+// channels, its Signals map holds each channel's real value, so the API
+// scores map is per-signal explainable even though the fused Score is the RRF
+// sum. The score is the rank evidence; the signals are the per-signal
+// evidence behind it.
 type RRF struct {
 	K int
 }
@@ -73,7 +87,18 @@ func (f *RRF) Fuse(results []ChannelResult) []Candidate {
 			if !ok {
 				idx = len(fused)
 				index[candidate.ShotID] = idx
+				// Clone the first sighting's signals so the fused candidate
+				// never shares (and later mutates) the channel's own map —
+				// same invariant WeightedRRF keeps.
+				candidate.Signals = maps.Clone(candidate.Signals)
 				fused = append(fused, candidate)
+			}
+			// A candidate seen from several channels keeps every channel's
+			// signal: the RRF score is summed over all ranks, and the Signals map
+			// carries each channel's real value so the API scores map is
+			// per-signal explainable.
+			for signal, value := range candidate.Signals {
+				fused[idx].Signals[signal] = value
 			}
 			fused[idx].Score += 1 / (float64(k) + float64(rank) + 1)
 		}

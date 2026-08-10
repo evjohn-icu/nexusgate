@@ -44,6 +44,7 @@ func Compile(raw string) SearchQuery {
 
 	var speechPhrase string
 	raw, speechPhrase = extractSpeechPhrase(raw)
+	q.SpeechPhrase = speechPhrase
 
 	matches := Canonicalize(raw)
 	spans := NegationSpans(raw)
@@ -144,12 +145,20 @@ func sortConstraints(constraints []Constraint) []Constraint {
 func extractSpeechPhrase(raw string) (text, phrase string) {
 	for _, pair := range [][2]string{{"「", "」"}, {"“", "”"}, {`"`, `"`}, {"'", "'"}} {
 		start := strings.Index(raw, pair[0])
-		end := strings.Index(raw[start+len(pair[0]):], pair[1])
-		if start >= 0 && end >= 0 {
-			inner := raw[start+len(pair[0]) : start+len(pair[0])+end]
-			text = raw[:start] + raw[start+len(pair[0])+end+len(pair[1]):]
-			return text, strings.TrimSpace(inner)
+		if start < 0 {
+			continue
 		}
+		innerStart := start + len(pair[0])
+		if innerStart > len(raw) {
+			continue
+		}
+		end := strings.Index(raw[innerStart:], pair[1])
+		if end < 0 {
+			continue
+		}
+		inner := raw[innerStart : innerStart+end]
+		text = raw[:start] + raw[innerStart+end+len(pair[1]):]
+		return text, strings.TrimSpace(inner)
 	}
 	for _, marker := range speechMarkers {
 		if idx := strings.LastIndex(raw, marker); idx >= 0 {

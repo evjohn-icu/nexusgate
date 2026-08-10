@@ -72,15 +72,19 @@ ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.descriptio
 	return collection, nil
 }
 
-func (r *Repository) ListAssetCollections(ctx context.Context) ([]domain.AssetCollection, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id,name,description,filter_json,created_at,updated_at FROM asset_collections ORDER BY name COLLATE NOCASE,id`)
+func (r *Repository) ListAssetCollections(ctx context.Context) ([]domain.CollectionSummary, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT c.id,c.name,c.description,c.filter_json,c.created_at,c.updated_at,COUNT(cs.shot_id),COALESCE(SUM(s.end_ms-s.start_ms),0)
+FROM asset_collections c
+LEFT JOIN collection_shots cs ON cs.collection_id=c.id
+LEFT JOIN asset_shots s ON s.id=cs.shot_id
+GROUP BY c.id ORDER BY c.name COLLATE NOCASE,c.id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	collections := make([]domain.AssetCollection, 0)
+	collections := make([]domain.CollectionSummary, 0)
 	for rows.Next() {
-		collection, err := scanAssetCollection(rows)
+		collection, err := scanCollectionSummary(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -89,13 +93,17 @@ func (r *Repository) ListAssetCollections(ctx context.Context) ([]domain.AssetCo
 	return collections, rows.Err()
 }
 
-func (r *Repository) GetAssetCollection(ctx context.Context, id string) (*domain.AssetCollection, error) {
+func (r *Repository) GetAssetCollection(ctx context.Context, id string) (*domain.CollectionSummary, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, nil
 	}
-	row := r.db.QueryRowContext(ctx, `SELECT id,name,description,filter_json,created_at,updated_at FROM asset_collections WHERE id=?`, id)
-	collection, err := scanAssetCollection(row)
+	row := r.db.QueryRowContext(ctx, `SELECT c.id,c.name,c.description,c.filter_json,c.created_at,c.updated_at,COUNT(cs.shot_id),COALESCE(SUM(s.end_ms-s.start_ms),0)
+FROM asset_collections c
+LEFT JOIN collection_shots cs ON cs.collection_id=c.id
+LEFT JOIN asset_shots s ON s.id=cs.shot_id
+WHERE c.id=? GROUP BY c.id`, id)
+	collection, err := scanCollectionSummary(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -176,16 +184,119 @@ type collectionScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanAssetCollection(scanner collectionScanner) (domain.AssetCollection, error) {
-	var collection domain.AssetCollection
+func scanCollectionSummary(scanner collectionScanner) (domain.CollectionSummary, error) {
+	var collection domain.CollectionSummary
 	var rawFilter, createdAt, updatedAt string
-	if err := scanner.Scan(&collection.ID, &collection.Name, &collection.Description, &rawFilter, &createdAt, &updatedAt); err != nil {
-		return domain.AssetCollection{}, err
+	if err := scanner.Scan(&collection.ID, &collection.Name, &collection.Description, &rawFilter, &createdAt, &updatedAt, &collection.ShotCount, &collection.TotalDurationMS); err != nil {
+		return domain.CollectionSummary{}, err
 	}
 	if err := json.Unmarshal([]byte(rawFilter), &collection.Filter); err != nil {
-		return domain.AssetCollection{}, fmt.Errorf("decode collection filter: %w", err)
+		return domain.CollectionSummary{}, fmt.Errorf("decode collection filter: %w", err)
 	}
 	collection.CreatedAt = parseStoredTimeString(createdAt, "asset_collections.created_at")
 	collection.UpdatedAt = parseStoredTimeString(updatedAt, "asset_collections.updated_at")
 	return collection, nil
+}
+
+// AddShotToCollection pins a shot into the collection's basket. The shot must
+// exist in asset_shots; position is appended after the current tail. Adding a
+// shot that is already in the collection is a no-op (the primary key absorbs
+// it) and returns nil.
+func (r *Repository) AddShotToCollection(ctx context.Context, collectionID, shotID string) error {
+	var exists int
+	if err := r.db.QueryRowContext(ctx, `SELECT 1 FROM asset_shots WHERE id=?`, shotID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: shot %s does not exist", domain.ErrShotNotFound, shotID)
+		}
+		return err
+	}
+	// INSERT OR IGNORE keeps the call idempotent: re-adding an already pinned
+	// shot is absorbed by the primary key, and the MAX(position) select over a
+	// collection with no rows yields NULL, which COALESCE turns into position 0.
+	_, err := r.db.ExecContext(ctx, `INSERT OR IGNORE INTO collection_shots(collection_id,shot_id,position,created_at)
+SELECT ?,?,COALESCE(MAX(position),-1)+1,?
+FROM collection_shots WHERE collection_id=?`, collectionID, shotID, formatTime(time.Now().UTC()), collectionID)
+	return err
+}
+
+func (r *Repository) RemoveShotFromCollection(ctx context.Context, collectionID, shotID string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM collection_shots WHERE collection_id=? AND shot_id=?`, collectionID, shotID)
+	return err
+}
+
+// ListCollectionShots returns the pinned shots in display order, joined with
+// the owning asset's name and the shot fields a basket needs.
+func (r *Repository) ListCollectionShots(ctx context.Context, collectionID string) ([]domain.CollectionShotDetail, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT cs.collection_id,cs.shot_id,cs.position,cs.created_at,s.asset_id,s.start_ms,s.end_ms,s.description,s.objects_json,COALESCE((SELECT relative_path FROM asset_locations WHERE asset_id=s.asset_id AND is_primary=1 LIMIT 1),'')
+FROM collection_shots cs
+JOIN asset_shots s ON s.id=cs.shot_id
+WHERE cs.collection_id=? ORDER BY cs.position,cs.shot_id`, collectionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.CollectionShotDetail, 0)
+	for rows.Next() {
+		var detail domain.CollectionShotDetail
+		var createdAt, objects string
+		if err := rows.Scan(&detail.CollectionID, &detail.ShotID, &detail.Position, &createdAt, &detail.AssetID, &detail.StartMS, &detail.EndMS, &detail.Description, &objects, &detail.Filename); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(objects), &detail.Objects)
+		detail.CreatedAt = parseStoredTimeString(createdAt, "collection_shots.created_at")
+		out = append(out, detail)
+	}
+	return out, rows.Err()
+}
+
+// ReorderCollectionShots assigns display positions from the given list. The
+// list must be exactly the collection's current pinned shots: a length
+// mismatch or an id that is not in the collection rejects the whole reorder,
+// so a stale client can never silently drop or inject shots.
+func (r *Repository) ReorderCollectionShots(ctx context.Context, collectionID string, shotIDs []string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT shot_id FROM collection_shots WHERE collection_id=?`, collectionID)
+	if err != nil {
+		return err
+	}
+	current := make(map[string]struct{})
+	for rows.Next() {
+		var shotID string
+		if err := rows.Scan(&shotID); err != nil {
+			rows.Close()
+			return err
+		}
+		current[shotID] = struct{}{}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(shotIDs) != len(current) {
+		return fmt.Errorf("%w: reorder needs exactly the collection's %d shots, got %d", domain.ErrReorderInvalid, len(current), len(shotIDs))
+	}
+	// A duplicate id in the list passes both the length and the membership
+	// checks while silently stranding another shot at its old position — the
+	// client's intended order would be dropped without an error. The distinct
+	// count is the cheap way to reject it.
+	distinct := make(map[string]struct{}, len(shotIDs))
+	for _, shotID := range shotIDs {
+		distinct[shotID] = struct{}{}
+	}
+	if len(distinct) != len(shotIDs) {
+		return fmt.Errorf("%w: reorder list contains duplicates", domain.ErrReorderInvalid)
+	}
+	for i, shotID := range shotIDs {
+		if _, ok := current[shotID]; !ok {
+			return fmt.Errorf("%w: shot %s is not in collection %s", domain.ErrReorderInvalid, shotID, collectionID)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE collection_shots SET position=? WHERE collection_id=? AND shot_id=?`, i, collectionID, shotID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
