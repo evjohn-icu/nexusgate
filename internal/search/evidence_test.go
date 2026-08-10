@@ -117,6 +117,34 @@ func TestEvidenceSpeechPhraseFromTranscript(t *testing.T) {
 	}
 }
 
+func TestCreativeIntentDoesNotCreateSpeechEvidence(t *testing.T) {
+	q := Compile("给我找点雨")
+	if q.Intent != IntentCreative {
+		t.Fatalf("intent = %s, want creative", q.Intent)
+	}
+	if q.SpeechPhrase != "" {
+		t.Fatalf("creative query unexpectedly compiled speech phrase %q", q.SpeechPhrase)
+	}
+
+	// The transcript contains the creative query term as part of a longer
+	// utterance. It may be a retrieval hit, but without a speech constraint it
+	// cannot be reported as speech evidence.
+	c := Candidate{ShotID: "s1", Description: "creative sample", Signals: map[string]float64{}}
+	spans := []domain.AlignmentWord{{StartMS: 100, EndMS: 200, Text: "雨天出发"}}
+	evidence := evaluateConstraints(q, c, spans)
+	rain := evidenceForValue(evidence, "rain")
+	if rain == nil || rain.State != EvidenceUnknown {
+		t.Fatalf("partial transcript phrase must not support creative query evidence: %+v", rain)
+	}
+	for _, evidence := range evidence {
+		for _, source := range evidence.Sources {
+			if evidence.Constraint == ConstraintSpeech || source == SourceTranscript {
+				t.Fatalf("creative partial phrase produced speech evidence: %+v", evidence)
+			}
+		}
+	}
+}
+
 func TestEvidenceConflictPrecedence(t *testing.T) {
 	tests := []struct {
 		name      string

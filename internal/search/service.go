@@ -133,7 +133,8 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 		recallLimit = maxRecallPool
 	}
 
-	// Channel construction is intent-aware: a channel whose profile weight is
+	// Routing selects recall channels only; it does not establish what a shot
+	// claims. Channel construction is intent-aware: a channel whose profile weight is
 	// zero (or absent) is not executed at all — no DB query, no embedding call,
 	// no candidate noise. The transcript channel belongs to speech intent; the
 	// embedding channel needs a configured provider AND a positive profile

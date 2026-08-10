@@ -80,6 +80,10 @@ func evaluateConstraint(constraint Constraint, negated bool, c Candidate, transc
 	}
 	descriptionHas := matchesCanonical(value, c.Description)
 	descriptionNegates := canonicalNegatedIn(c.Description, constraint.Type, value)
+	// Routing may use fuzzy phrase recognition to choose retrieval channels, but
+	// a transcript can support a claim only when the complete speech phrase is
+	// present in aligned words. This keeps creative-intent recall from becoming
+	// speech evidence.
 	transcriptHas := constraint.Type == ConstraintSpeech && matchAlignedSpeechPhrase(value, transcriptSpans)
 
 	if negated {
