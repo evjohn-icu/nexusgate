@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/textindex"
 )
 
 // Evidence is the honest bridge between retrieval and assertion. A semantic
@@ -27,16 +26,12 @@ import (
 func evaluateConstraints(q SearchQuery, c Candidate, transcriptSpans []domain.AlignmentWord) []Evidence {
 	out := make([]Evidence, 0, len(q.Must)+len(q.Should)+len(q.MustNot))
 	seen := map[string]bool{}
-	var transcriptText string
-	for _, w := range transcriptSpans {
-		transcriptText += " " + w.Text
-	}
 	appendEvidence := func(constraint Constraint, negated bool) {
 		if seen[constraint.Value] {
 			return
 		}
 		seen[constraint.Value] = true
-		out = append(out, evaluateConstraint(constraint, negated, c, transcriptText))
+		out = append(out, evaluateConstraint(constraint, negated, c, transcriptSpans))
 	}
 	for _, constraint := range q.Must {
 		appendEvidence(constraint, false)
@@ -62,95 +57,84 @@ func evaluateConstraints(q SearchQuery, c Candidate, transcriptSpans []domain.Al
 // mention without negation is weak observation (also excluded); an explicit
 // absence phrase is the absence being stated, so it supports keeping the shot
 // — the API reports unknown, never "确认无人".
-func evaluateConstraint(constraint Constraint, negated bool, c Candidate, transcriptText string) Evidence {
+func evaluateConstraint(constraint Constraint, negated bool, c Candidate, transcriptSpans []domain.AlignmentWord) Evidence {
 	e := Evidence{Constraint: constraint.Type, Value: constraint.Value, Negated: negated}
 	value := constraint.Value
 
-	fieldHits := map[EvidenceSource]bool{}
+	fieldHits := [4]bool{}
 	structured := []struct {
-		source EvidenceSource
-		values []string
+		sourceIndex int
+		values      []string
 	}{
-		{SourceObjects, c.Objects},
-		{SourceActions, c.Actions},
-		{SourceTags, c.Tags},
-		{SourceMood, c.Mood},
+		{0, c.Objects},
+		{1, c.Actions},
+		{2, c.Tags},
+		{3, c.Mood},
 	}
 	for _, field := range structured {
 		for _, v := range field.values {
 			if matchesCanonical(value, v) {
-				fieldHits[field.source] = true
+				fieldHits[field.sourceIndex] = true
 			}
 		}
 	}
-	if len(fieldHits) > 0 {
-		if matchesCanonical(value, c.Description) {
-			fieldHits[SourceDescription] = true
-		}
-		e.State = EvidenceConfirmed
-		for source := range fieldHits {
-			e.Sources = append(e.Sources, source)
-		}
-		return e
-	}
-
 	descriptionHas := matchesCanonical(value, c.Description)
-	descriptionNegates := canonicalNegatedIn(c.Description, value)
+	descriptionNegates := canonicalNegatedIn(c.Description, constraint.Type, value)
+	transcriptHas := constraint.Type == ConstraintSpeech && matchAlignedSpeechPhrase(value, transcriptSpans)
 
 	if negated {
-		// For a MustNot constraint, absence text supports the negative.
+		if hasStructured(fieldHits) {
+			e.State = EvidenceConfirmed
+			e.Sources = appendStructuredSources(e.Sources, fieldHits)
+			if descriptionHas || descriptionNegates {
+				e.Sources = append(e.Sources, SourceDescription)
+			}
+			return e
+		}
 		if descriptionHas && !descriptionNegates {
-			e.State = EvidencePossible
-			e.Sources = []EvidenceSource{SourceDescription}
+			e.State, e.Sources = EvidencePossible, []EvidenceSource{SourceDescription}
 			return e
 		}
 		e.State = EvidenceUnknown
 		return e
 	}
 
-	if descriptionHas {
-		if descriptionNegates {
-			e.State = EvidenceContradicted
-			return e
-		}
-		e.State = EvidencePossible
-		e.Sources = []EvidenceSource{SourceDescription}
+	if descriptionNegates {
+		e.State = EvidenceContradicted
+		e.Sources = appendStructuredSources(e.Sources, fieldHits)
+		e.Sources = append(e.Sources, SourceDescription)
 		return e
 	}
-
-	if transcriptText != "" && transcriptMentions(constraint, transcriptText) {
-		e.State = EvidencePossible
-		e.Sources = []EvidenceSource{SourceTranscript}
+	if hasStructured(fieldHits) {
+		e.State = EvidenceConfirmed
+		e.Sources = appendStructuredSources(e.Sources, fieldHits)
+		if descriptionHas {
+			e.Sources = append(e.Sources, SourceDescription)
+		}
+		return e
+	}
+	if descriptionHas {
+		e.State, e.Sources = EvidencePossible, []EvidenceSource{SourceDescription}
+		return e
+	}
+	if transcriptHas {
+		e.State, e.Sources = EvidencePossible, []EvidenceSource{SourceTranscript}
 		return e
 	}
 	e.State = EvidenceUnknown
 	return e
 }
 
-// transcriptMentions checks whether the overlapping aligned words support the
-// constraint. A speech constraint matches when at least one token of the
-// claimed phrase is present; any other canonical matches via its canonical
-// family (speech is "possible", never "confirmed" — speech is mention, not
-// visual observation).
-func transcriptMentions(constraint Constraint, transcriptText string) bool {
-	if constraint.Type == ConstraintSpeech {
-		for _, token := range textindex.Tokens(constraint.Value) {
-			if token == "" {
-				continue
-			}
-			if hasCJK(token) {
-				if strings.Contains(transcriptText, token) {
-					return true
-				}
-				continue
-			}
-			if asciiWordSet(transcriptText)[token] {
-				return true
-			}
+func hasStructured(h [4]bool) bool { return h[0] || h[1] || h[2] || h[3] }
+
+func appendStructuredSources(out []EvidenceSource, hits [4]bool) []EvidenceSource {
+	ordered := [...]EvidenceSource{SourceObjects, SourceActions, SourceTags, SourceMood}
+	for i, source := range ordered {
+		if hits[i] {
+			out = append(out, source)
 		}
-		return false
 	}
-	return matchesCanonical(constraint.Value, transcriptText)
+	return out
 }
 
 // matchesCanonical reports whether a field text carries the canonical term.
@@ -180,7 +164,7 @@ func matchesCanonical(canonical, fieldText string) bool {
 // canonical — an absence marker whose window covers the canonical's surface
 // word ("no people", "没有人"). Positional, so "empty beach no people" does
 // not negate "beach".
-func canonicalNegatedIn(text string, canonical string) bool {
+func canonicalNegatedIn(text string, typ ConstraintType, canonical string) bool {
 	if text == "" {
 		return false
 	}
@@ -190,7 +174,7 @@ func canonicalNegatedIn(text string, canonical string) bool {
 		return false
 	}
 	for _, span := range NegationSpans(lower) {
-		if Negates(span, ConstraintObject, position) {
+		if Negates(span, typ, position) {
 			return true
 		}
 	}

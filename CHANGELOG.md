@@ -31,6 +31,18 @@
   restarts, reject symlinks/non-regular files/insecure permissions, and commit
   atomically with post-verification and parent-directory fsync. Corrected the
   access-control specification so only pairing/node token digests are stored.
+## v0.28.2-alpha — 2026-08-10（Search evidence correctness）
+
+- **Evidence conflict precedence**：positive structured observations no longer
+  mask an explicit description negation; the result is `contradicted` and cites
+  both sources. Negated queries distinguish observed forbidden content from
+  stated absence without asserting absence from silence.
+- **Exact speech phrases**：aligned speech retrieval now validates the complete
+  phrase in order, with ASCII whole-word matching, CJK segmentation tolerance,
+  no span reuse, and a 1500 ms maximum adjacent-span gap. Partial and reordered
+  token hits remain retrieval-only and cannot become evidence.
+- Bumped the Search v2 profile to `v2-profile-2` and added API, SQLite, and
+  matcher regression coverage.
 
 ## v0.28.1-alpha — 2026-08-09（发布前修复）
 

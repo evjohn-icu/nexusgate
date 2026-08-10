@@ -117,6 +117,43 @@ func TestEvidenceSpeechPhraseFromTranscript(t *testing.T) {
 	}
 }
 
+func TestEvidenceConflictPrecedence(t *testing.T) {
+	tests := []struct {
+		name      string
+		query     string
+		candidate Candidate
+		negated   bool
+		value     string
+		state     EvidenceState
+		sources   []EvidenceSource
+	}{
+		{"structured and description negation", "person", Candidate{Objects: []string{"person"}, Description: "no people"}, false, "person", EvidenceContradicted, []EvidenceSource{SourceObjects, SourceDescription}},
+		{"structured and positive description", "person", Candidate{Objects: []string{"person"}, Description: "a person"}, false, "person", EvidenceConfirmed, []EvidenceSource{SourceObjects, SourceDescription}},
+		{"description negation only", "person", Candidate{Description: "no people"}, false, "person", EvidenceContradicted, []EvidenceSource{SourceDescription}},
+		{"negated structured plus absence", "没有人的海边", Candidate{Objects: []string{"person"}, Description: "no people"}, true, "person", EvidenceConfirmed, []EvidenceSource{SourceObjects, SourceDescription}},
+		{"negated description mention", "没有人的海边", Candidate{Description: "a person"}, true, "person", EvidencePossible, []EvidenceSource{SourceDescription}},
+		{"negated absence only", "没有人的海边", Candidate{Description: "no people"}, true, "person", EvidenceUnknown, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := Compile(tt.query)
+			got := evaluateConstraints(q, tt.candidate, nil)
+			e := evidenceForValue(got, tt.value)
+			if e == nil || e.State != tt.state || e.Negated != tt.negated {
+				t.Fatalf("evidence=%+v, want state=%s negated=%v", e, tt.state, tt.negated)
+			}
+			if len(e.Sources) != len(tt.sources) {
+				t.Fatalf("sources=%v, want %v", e.Sources, tt.sources)
+			}
+			for i := range tt.sources {
+				if e.Sources[i] != tt.sources[i] {
+					t.Fatalf("sources=%v, want %v", e.Sources, tt.sources)
+				}
+			}
+		})
+	}
+}
+
 func evidenceForValue(evidence []Evidence, value string) *Evidence {
 	for i := range evidence {
 		if evidence[i].Value == value {

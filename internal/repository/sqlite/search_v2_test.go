@@ -176,6 +176,80 @@ func TestSearchV2TranscriptWholeWordDiscipline(t *testing.T) {
 	}
 }
 
+func TestSearchV2TranscriptRequiresExactPhrase(t *testing.T) {
+	repo, _ := seedSearchV2Corpus(t)
+	defer repo.Close()
+	ids := seedOneAsset(t, repo, map[string]string{}, goldenAssetSpec{
+		id: "asset-speech-hard-negatives", analysis: domain.StructuredAnalysis{Summary: "speech"},
+		shots: []goldenShotSpec{{startMS: 0, endMS: 10_000, description: "partial"}, {startMS: 10_000, endMS: 20_000, description: "reordered"}, {startMS: 20_000, endMS: 30_000, description: "ascii"}},
+		transcriptWords: []goldenTranscriptWord{
+			{startMS: 100, endMS: 200, text: "我们", confidence: 1},
+			{startMS: 10_100, endMS: 10_200, text: "出发", confidence: 1}, {startMS: 10_200, endMS: 10_300, text: "我们", confidence: 1},
+			{startMS: 20_100, endMS: 20_200, text: "carefree", confidence: 1},
+		},
+	})
+	hits, err := repo.TranscriptRankedShots(context.Background(), "我们出发", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("partial/reordered phrase candidates must not score, got %+v", hits)
+	}
+	_ = ids
+}
+
+func TestSearchV2TranscriptExactPhraseOnlyScores(t *testing.T) {
+	repo, ids := seedSearchV2Corpus(t)
+	defer repo.Close()
+	hits, err := repo.TranscriptRankedShots(context.Background(), "我们明天出发", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].ID != ids["asset-speech-quote:0"] {
+		t.Fatalf("only exact phrase should score, got %+v", hits)
+	}
+}
+
+func TestSearchV2EvidenceConflictThroughService(t *testing.T) {
+	repo, _ := seedSearchV2Corpus(t)
+	defer repo.Close()
+	ids := seedOneAsset(t, repo, map[string]string{}, goldenAssetSpec{
+		id: "asset-evidence-conflict", analysis: domain.StructuredAnalysis{Summary: "person"},
+		shots: []goldenShotSpec{{startMS: 0, endMS: 10_000, description: "no people", objects: []string{"person"}}},
+	})
+	svc := search.NewService(repo, search.DefaultOptions())
+	response, err := svc.Search(context.Background(), search.SearchRequest{Query: "person", Mode: "semantic", Limit: 10, IncludeEvidence: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conflictResult *search.ResultItem
+	for i := range response.Results {
+		if response.Results[i].ShotID == ids["asset-evidence-conflict:0"] {
+			conflictResult = &response.Results[i]
+			break
+		}
+	}
+	if conflictResult == nil {
+		t.Fatalf("conflict shot missing from results=%+v", response.Results)
+	}
+	e := evidenceForSearchValue(conflictResult.Evidence, "person")
+	if e == nil || e.State != search.EvidenceContradicted {
+		t.Fatalf("evidence=%+v", e)
+	}
+	if len(e.Sources) != 2 || e.Sources[0] != search.SourceObjects || e.Sources[1] != search.SourceDescription {
+		t.Fatalf("sources=%v", e.Sources)
+	}
+}
+
+func evidenceForSearchValue(evidence []search.Evidence, value string) *search.Evidence {
+	for i := range evidence {
+		if evidence[i].Value == value {
+			return &evidence[i]
+		}
+	}
+	return nil
+}
+
 func TestSearchV2MetadataChannel(t *testing.T) {
 	repo, ids := seedSearchV2Corpus(t)
 	ctx := context.Background()

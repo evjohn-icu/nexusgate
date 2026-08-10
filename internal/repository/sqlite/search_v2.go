@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/search"
 	"github.com/evjohn-icu/timingdex/internal/textindex"
 )
 
@@ -88,7 +89,13 @@ func (r *Repository) TranscriptRankedShots(ctx context.Context, q string, limit 
 		args = append(args, p)
 	}
 	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),''),MIN(SUM(COALESCE(w.confidence,1)),5.0)/5.0 AS tscore FROM transcript_words w JOIN asset_shots s ON s.asset_id=w.asset_id AND s.start_ms < w.end_ms AND s.end_ms > w.start_ms WHERE ` + strings.Join(where, ` OR `) + ` GROUP BY s.id ORDER BY tscore DESC LIMIT ?`
-	args = append(args, limit)
+	// SQL only narrows the candidate set. Exact phrase validation below must
+	// see enough candidates that partial token hits cannot consume the limit.
+	candidateLimit := limit * 10
+	if candidateLimit < 100 {
+		candidateLimit = 100
+	}
+	args = append(args, candidateLimit)
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -100,10 +107,20 @@ func (r *Repository) TranscriptRankedShots(ctx context.Context, q string, limit 
 		if err != nil {
 			return nil, err
 		}
+		spans, err := r.ShotTranscriptSpans(ctx, result.AssetID, result.StartMS, result.EndMS)
+		if err != nil {
+			return nil, err
+		}
+		if !search.MatchAlignedSpeechPhrase(q, spans) {
+			continue
+		}
 		result.TranscriptScore = result.LexicalScore // slot carries tscore
 		result.LexicalScore = 0
 		if result.TranscriptScore > 0 {
 			out = append(out, result)
+			if len(out) >= limit {
+				break
+			}
 		}
 	}
 	return out, rows.Err()

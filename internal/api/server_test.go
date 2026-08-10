@@ -179,6 +179,73 @@ func TestSearchShotsV2StructuredEndpoint(t *testing.T) {
 		t.Fatalf("person/umbrella must be confirmed, got %+v", parsed.Results[0].Evidence)
 	}
 
+	// A structured person observation does not override an explicit shot
+	// description saying that there are no people.
+	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{{ID: "shot-1", StartMS: 0, EndMS: 5000, Description: "no people", Tags: []string{"rain", "urban_night", "street"}, Objects: []string{"person", "umbrella"}}}); err != nil {
+		t.Fatal(err)
+	}
+	response, err = send(`{"query":"person","mode":"semantic","limit":10,"include_evidence":true}`)
+	if err != nil || response.Code != http.StatusOK {
+		t.Fatalf("conflict search status=%d err=%v body=%s", response.Code, err, response.Body.String())
+	}
+	var conflict struct {
+		Results []struct {
+			Evidence []struct {
+				Constraint, State string
+				Sources           []string
+			} `json:"evidence"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&conflict); err != nil {
+		t.Fatal(err)
+	}
+	if len(conflict.Results) == 0 {
+		t.Fatal("conflict query returned no result")
+	}
+	var foundConflict bool
+	for _, e := range conflict.Results[0].Evidence {
+		if e.Constraint == "person" && e.State == "contradicted" && len(e.Sources) == 2 && e.Sources[0] == "objects" && e.Sources[1] == "description" {
+			foundConflict = true
+		}
+	}
+	if !foundConflict {
+		t.Fatalf("conflict evidence missing: %+v", conflict.Results[0].Evidence)
+	}
+
+	if err := repo.SaveTranscript(ctx, assets[0].ID, "fixture", "fixture-model", "api-speech", domain.Transcript{Language: "zh", Text: "明天见"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SaveAlignment(ctx, assets[0].ID, "fixture", "fixture-model", "api-speech-align", "{}", domain.AlignmentResult{Words: []domain.AlignmentWord{{StartMS: 100, EndMS: 200, Text: "明天"}, {StartMS: 200, EndMS: 300, Text: "见"}}}); err != nil {
+		t.Fatal(err)
+	}
+	response, err = send(`{"query":"他说过明天见","mode":"speech","limit":10,"include_evidence":true}`)
+	if err != nil || response.Code != http.StatusOK {
+		t.Fatalf("speech search status=%d err=%v body=%s", response.Code, err, response.Body.String())
+	}
+	var speech struct {
+		Results []struct {
+			Evidence []struct {
+				Constraint, State string
+				Sources           []string
+			} `json:"evidence"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&speech); err != nil {
+		t.Fatal(err)
+	}
+	if len(speech.Results) == 0 {
+		t.Fatal("speech query returned no result")
+	}
+	var foundSpeech bool
+	for _, e := range speech.Results[0].Evidence {
+		if e.Constraint == "明天见" && e.State == "possible" && len(e.Sources) == 1 && e.Sources[0] == "transcript" {
+			foundSpeech = true
+		}
+	}
+	if !foundSpeech {
+		t.Fatalf("speech evidence missing: %+v", speech.Results[0].Evidence)
+	}
+
 	// Unknown mode 400s.
 	response, err = send(`{"query":"car","mode":"bogus"}`)
 	if err != nil {

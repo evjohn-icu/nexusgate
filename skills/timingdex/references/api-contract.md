@@ -110,16 +110,27 @@ a query), and each result carries per-constraint `evidence`:
 Evidence semantics — the boundary this Skill must respect:
 
 - `confirmed` — the canonical term appears in a structured observation field
-  (objects/actions/tags/mood). This is a model observation.
-- `possible` — the term appears only in the description (narrative) or in
-  aligned transcript speech. Mention is not visual proof.
+  (objects/actions/tags/mood). This is a model observation. Structured and
+  positive description evidence is reported together, in deterministic source
+  order.
+- `possible` — the term appears only in the description (narrative), or a
+  complete aligned transcript speech phrase matches. A speech phrase must
+  match all components in order, with ASCII whole-word matching, CJK sequence
+  matching across ASR segmentation, and no more than 1500 ms between adjacent
+  matched spans. Partial, reordered, or over-gap phrases are `unknown`.
 - `contradicted` — the shot's own words explicitly negate the term
-  ("no people", "没有人").
+  ("no people", "没有人"). Explicit description negation wins over structured
+  positive evidence; both structured and description sources are returned.
 - `unknown` — no evidence found. `unknown` is NOT "确认无人": absence is never
   asserted from silence. A `negated: true` evidence entry means the query
   asked for the absence (e.g. "没有人的海边空镜"): `confirmed` there means the
   forbidden thing was observed in that shot, `unknown` means it was not
   observed — never read `unknown` on a negated entry as a confirmed absence.
+
+For a negated query, structured positive evidence remains `confirmed` and is
+the exclusion signal even when the description says the term is absent.
+Description-only positive evidence is `possible` and is also excluded;
+description-only absence remains `unknown` and keeps the shot.
 
 Do not treat a high `score` as proof that the shot contains what the query
 named: scores are retrieval signals, evidence is the claim. The `scores` map
