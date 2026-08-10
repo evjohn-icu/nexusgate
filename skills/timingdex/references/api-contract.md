@@ -1,4 +1,4 @@
-# Timingdex v0.13 Local Agent API Contract
+# Timingdex v0.14 Local Agent API Contract
 
 Base URL: the user’s local Timingdex server, normally `http://127.0.0.1:8787`.
 All requests and responses are JSON unless noted. This Skill is limited to the

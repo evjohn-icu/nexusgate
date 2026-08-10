@@ -18,6 +18,15 @@
   但响应和页面只使用新的成本参考命名。历史 `budget_exhausted` 持久化类别保留，
   新流程不再产生。
 
+## v0.28.2 — 2026-08-10
+
+- **Worker setup path redaction**: the trusted-read worker setup context now returns
+  only library root IDs. Absolute paths are available only through the Hub-admin
+  route `/api/v1/admin/hub/worker-setup/library-roots`, which propagates repository
+  failures instead of returning an empty list. The wizard keeps the admin token in
+  page memory while loading those details.
+- Bumped the agent API contract version to `v0.14` for the changed read contract.
+
 ## v0.28.1-alpha — 2026-08-09（发布前修复）
 
 - **修复 `RebuildAutomaticShootSessions` 多 location asset 撞

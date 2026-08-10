@@ -987,7 +987,7 @@ func (s *Server) agentCapabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		// version is the agent contract version, not the product version. The
 		// skills/timingdex package — its SKILL.md and
-		// references/api-contract.md, titled "Timingdex v0.13 Local Agent API
+		// references/api-contract.md, titled "Timingdex v0.14 Local Agent API
 		// Contract" — is written against this exact string, and server_test.go
 		// pins it, so it only moves when the contract itself changes: a route,
 		// an action, or a field in this document. It must not track Hub
@@ -995,7 +995,7 @@ func (s *Server) agentCapabilities(w http.ResponseWriter, r *http.Request) {
 		// gap is the contract not having changed, not this endpoint being
 		// stale. Bumping it means re-versioning and re-validating the skills
 		// package in the same change.
-		"version":       "v0.13",
+		"version":       "v0.14",
 		"approval_mode": "human_required",
 		"auth": map[string]any{
 			"header": "Authorization: Bearer <agent-token>",

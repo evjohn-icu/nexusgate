@@ -19,9 +19,7 @@ import (
 )
 
 func workerSetupHandler(s *Server) http.Handler {
-	mux := http.NewServeMux()
-	s.registerWorkerSetupRoutes(mux)
-	return requestLogger(mux)
+	return s.Handler()
 }
 
 func TestWorkerSetupPageRendersWithStepMarkers(t *testing.T) {
@@ -59,10 +57,143 @@ func TestWorkerSetupPageRendersWithStepMarkers(t *testing.T) {
 		`type="password"`,
 		"GOOS=windows GOARCH=amd64",
 		"worker-binaries",
+		"/api/v1/admin/hub/worker-setup/library-roots",
+		"Authorization",
+		"localStorage",
+		"sessionStorage",
 	} {
+		if marker == "localStorage" || marker == "sessionStorage" {
+			if strings.Contains(body, marker) {
+				t.Fatalf("page must not use browser storage API %q", marker)
+			}
+			continue
+		}
 		if !strings.Contains(body, marker) {
 			t.Fatalf("page missing marker %q", marker)
 		}
+	}
+}
+
+func TestWorkerSetupContextAuthMatrixRedactsPaths(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "worker-setup-context-auth.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := t.TempDir()
+	root, err := repo.CreateLibraryRoot(ctx, rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+	tests := []struct {
+		name       string
+		request    func() *http.Request
+		wantStatus int
+	}{
+		{name: "lan", request: func() *http.Request {
+			return lanRequest(http.MethodGet, "/api/v1/hub/worker-setup/context", nil)
+		}, wantStatus: http.StatusOK},
+		{name: "remote", request: func() *http.Request {
+			return httptest.NewRequest(http.MethodGet, "/api/v1/hub/worker-setup/context", nil)
+		}, wantStatus: http.StatusForbidden},
+		{name: "agent", request: func() *http.Request {
+			return hubAgentRequest(service, http.MethodGet, "/api/v1/hub/worker-setup/context", nil)
+		}, wantStatus: http.StatusOK},
+		{name: "admin", request: func() *http.Request {
+			return hubAdminRequest(service, http.MethodGet, "/api/v1/hub/worker-setup/context", nil)
+		}, wantStatus: http.StatusOK},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, test.request())
+			if response.Code != test.wantStatus {
+				t.Fatalf("status=%d body=%s, want %d", response.Code, response.Body.String(), test.wantStatus)
+			}
+			if response.Code != http.StatusOK {
+				return
+			}
+			var data struct {
+				LibraryRoots []map[string]any `json:"library_roots"`
+			}
+			if err := json.NewDecoder(response.Body).Decode(&data); err != nil {
+				t.Fatal(err)
+			}
+			if len(data.LibraryRoots) != 1 || data.LibraryRoots[0]["id"] != root.ID {
+				t.Fatalf("library_roots=%+v", data.LibraryRoots)
+			}
+			if _, exists := data.LibraryRoots[0]["path"]; exists {
+				t.Fatalf("context returned path: %+v", data.LibraryRoots[0])
+			}
+			if strings.Contains(response.Body.String(), rootPath) {
+				t.Fatalf("context disclosed root path %q", rootPath)
+			}
+		})
+	}
+}
+
+func TestWorkerSetupLibraryRootsAdminAuthMatrix(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "worker-setup-library-roots-auth.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := t.TempDir()
+	root, err := repo.CreateLibraryRoot(ctx, rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+	requests := []struct {
+		name       string
+		request    func() *http.Request
+		wantStatus int
+	}{
+		{name: "no token", request: func() *http.Request {
+			return httptest.NewRequest(http.MethodGet, "/api/v1/admin/hub/worker-setup/library-roots", nil)
+		}, wantStatus: http.StatusUnauthorized},
+		{name: "agent token", request: func() *http.Request {
+			return hubAgentRequest(service, http.MethodGet, "/api/v1/admin/hub/worker-setup/library-roots", nil)
+		}, wantStatus: http.StatusUnauthorized},
+		{name: "admin token", request: func() *http.Request {
+			return hubAdminRequest(service, http.MethodGet, "/api/v1/admin/hub/worker-setup/library-roots", nil)
+		}, wantStatus: http.StatusOK},
+	}
+	for _, test := range requests {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, test.request())
+			if response.Code != test.wantStatus {
+				t.Fatalf("status=%d body=%s, want %d", response.Code, response.Body.String(), test.wantStatus)
+			}
+			if response.Code != http.StatusOK {
+				return
+			}
+			var data workerSetupLibraryRootsResponse
+			if err := json.NewDecoder(response.Body).Decode(&data); err != nil {
+				t.Fatal(err)
+			}
+			if len(data.LibraryRoots) != 1 || data.LibraryRoots[0].ID != root.ID || data.LibraryRoots[0].Path != rootPath {
+				t.Fatalf("library_roots=%+v, want id=%q path=%q", data.LibraryRoots, root.ID, rootPath)
+			}
+		})
 	}
 }
 
@@ -108,8 +239,11 @@ func TestWorkerSetupContextReturnsHubInfo(t *testing.T) {
 	if data.TLS {
 		t.Fatal("expected tls=false without TLS cert")
 	}
-	if len(data.LibraryRoots) != 1 || data.LibraryRoots[0].Path != rootPath {
+	if len(data.LibraryRoots) != 1 || data.LibraryRoots[0].ID == "" {
 		t.Fatalf("library_roots=%+v", data.LibraryRoots)
+	}
+	if strings.Contains(response.Body.String(), rootPath) || strings.Contains(response.Body.String(), `"path"`) {
+		t.Fatalf("context disclosed a library path: %s", response.Body.String())
 	}
 	if len(data.AvailableBinaries) == 0 {
 		t.Fatal("available_binaries is empty")
@@ -140,11 +274,22 @@ func TestWorkerSetupScriptRequiresAdminToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response := httptest.NewRecorder()
 	body := `{"platform":"linux-amd64","pairing_token":"test-token"}`
-	workerSetupHandler(NewServer("", service)).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/hub/worker-setup/script", strings.NewReader(body)))
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("status=%d body=%s, want 401", response.Code, response.Body.String())
+	handler := NewServer("", service).Handler()
+	for _, test := range []struct {
+		name    string
+		request *http.Request
+	}{
+		{name: "no token", request: httptest.NewRequest(http.MethodPost, "/api/v1/hub/worker-setup/script", strings.NewReader(body))},
+		{name: "agent token", request: hubAgentRequest(service, http.MethodPost, "/api/v1/hub/worker-setup/script", strings.NewReader(body))},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, test.request)
+			if response.Code != http.StatusUnauthorized {
+				t.Fatalf("status=%d body=%s, want 401", response.Code, response.Body.String())
+			}
+		})
 	}
 }
 

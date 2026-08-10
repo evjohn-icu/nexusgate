@@ -1699,7 +1699,7 @@ func TestHandlerDeclaresBoundedAgentCapabilities(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&capabilities); err != nil {
 		t.Fatal(err)
 	}
-	if capabilities.Version != "v0.13" || capabilities.ApprovalMode != "human_required" {
+	if capabilities.Version != "v0.14" || capabilities.ApprovalMode != "human_required" {
 		t.Fatalf("capabilities=%+v", capabilities)
 	}
 	if !containsString(capabilities.AllowedActions, "create_draft_plan") || containsString(capabilities.AllowedActions, "approve_plan") || !containsString(capabilities.DeniedActions, "approve_plan") {
