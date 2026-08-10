@@ -30,6 +30,7 @@ const (
 	secretFileMode = os.FileMode(0o600)
 	maxRefLength   = 512
 	keyBytes       = 32
+	rekeyJournal   = "rekey.journal"
 )
 
 // ErrAdminTokenRotated reports a store that predates the independent key file
@@ -47,6 +48,29 @@ type Store struct {
 	path    string
 	gcm     cipher.AEAD
 	secrets map[string]string
+	ops     fileOps
+}
+
+type fileOps struct {
+	createTemp    func(string) (*os.File, error)
+	rename        func(string, string) error
+	syncDirectory func(string) error
+	remove        func(string) error
+}
+
+type rekeyJournalData struct {
+	State              string `json:"state"`
+	CiphertextPath     string `json:"ciphertext_path"`
+	CiphertextExisted  bool   `json:"ciphertext_existed"`
+	KeyPath            string `json:"key_path"`
+	SnapshotCiphertext string `json:"snapshot_ciphertext"`
+	SnapshotKey        string `json:"snapshot_key"`
+	StagedCiphertext   string `json:"staged_ciphertext"`
+	StagedKey          string `json:"staged_key"`
+}
+
+func defaultFileOps() fileOps {
+	return fileOps{createTemp: func(dir string) (*os.File, error) { return os.CreateTemp(dir, ".provider-secrets-*") }, rename: os.Rename, syncDirectory: syncDirectory, remove: os.Remove}
 }
 
 // Open opens the Hub-only provider secret store. When dataDir is empty, the
@@ -76,7 +100,7 @@ func Open(dataDir, hubAdminToken string) (*Store, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &Store{path: "", gcm: gcm, secrets: map[string]string{}}, nil
+		return &Store{path: "", gcm: gcm, secrets: map[string]string{}, ops: defaultFileOps()}, nil
 	}
 
 	// The Hub data directory also contains SQLite, derived media and other
@@ -90,6 +114,9 @@ func Open(dataDir, hubAdminToken string) (*Store, error) {
 	path := filepath.Join(secretDir, filename)
 	keyPath := filepath.Join(secretDir, keyFilename)
 
+	if err := recoverRekey(secretDir); err != nil {
+		return nil, fmt.Errorf("recover secret store rekey: %w", err)
+	}
 	if err := migrateLegacyStore(path, keyPath, hubAdminToken); err != nil {
 		return nil, err
 	}
@@ -102,7 +129,7 @@ func Open(dataDir, hubAdminToken string) (*Store, error) {
 		return nil, err
 	}
 
-	s := &Store{path: path, gcm: gcm, secrets: map[string]string{}}
+	s := &Store{path: path, gcm: gcm, secrets: map[string]string{}, ops: defaultFileOps()}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.reloadLocked(); err != nil {
@@ -203,7 +230,7 @@ func loadOrCreateKey(keyPath string) ([]byte, error) {
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {
 		return nil, fmt.Errorf("generate secret store key: %w", err)
 	}
-	if err := writePrivateFile(keyPath, []byte(base64.StdEncoding.EncodeToString(key))); err != nil {
+	if err := writePrivateFile(keyPath, []byte(base64.StdEncoding.EncodeToString(key)), defaultFileOps()); err != nil {
 		return nil, fmt.Errorf("write secret store key: %w", err)
 	}
 	return key, nil
@@ -214,7 +241,7 @@ func copyPrivateFile(source, destination string) error {
 	if err != nil {
 		return err
 	}
-	return writePrivateFile(destination, raw)
+	return writePrivateFile(destination, raw, defaultFileOps())
 }
 
 // Rekey generates a new data-encryption key, re-encrypts every stored secret
@@ -239,15 +266,33 @@ func (s *Store) Rekey() error {
 
 	keyPath := s.keyPath()
 	preRekeyPath := keyPath + ".pre-rekey"
-
-	// Phase 1: back up the current key before we overwrite anything. Read it
-	// once so the backup is a snapshot of what we are about to replace.
+	journalPath := filepath.Join(filepath.Dir(s.path), rekeyJournal)
+	oldCiphertext, err := os.ReadFile(s.path)
+	ciphertextExisted := err == nil
+	if os.IsNotExist(err) {
+		oldCiphertext = nil
+	} else if err != nil {
+		return fmt.Errorf("read current ciphertext for rekey: %w", err)
+	}
 	oldKey, err := os.ReadFile(keyPath)
 	if err != nil {
 		return fmt.Errorf("read current key for rekey: %w", err)
 	}
-	// Best-effort: if this fails the rekey can still proceed.
-	_ = writePrivateFile(preRekeyPath, oldKey)
+	oldKeySnapshot := journalPath + ".old-key"
+	oldCipherSnapshot := journalPath + ".old-ciphertext"
+	cleanup := func() { _ = s.ops.remove(oldKeySnapshot); _ = s.ops.remove(oldCipherSnapshot) }
+	if err := writePrivateFile(oldKeySnapshot, oldKey, s.ops); err != nil {
+		cleanup()
+		return fmt.Errorf("back up current key for rekey: %w", err)
+	}
+	if err := writePrivateFile(oldCipherSnapshot, oldCiphertext, s.ops); err != nil {
+		cleanup()
+		return fmt.Errorf("back up current ciphertext for rekey: %w", err)
+	}
+	if err := writePrivateFile(preRekeyPath, oldKey, s.ops); err != nil {
+		cleanup()
+		return fmt.Errorf("back up key before rekey: %w", err)
+	}
 
 	// Generate new key material.
 	newKeyBytes := make([]byte, keyBytes)
@@ -259,28 +304,42 @@ func (s *Store) Rekey() error {
 		return err
 	}
 
-	// Phase 2: persist ciphertext with the new key. We temporarily swap the
-	// AEAD so persistLocked encrypts with the new key.
-	oldGCM := s.gcm
-	s.gcm = newGCM
-	if err := s.persistLocked(); err != nil {
-		s.gcm = oldGCM
-		return fmt.Errorf("rekey: write new ciphertext: %w", err)
+	newCiphertext, err := encryptedBytes(s.secrets, newGCM)
+	if err != nil {
+		cleanup()
+		return fmt.Errorf("rekey: encrypt new ciphertext: %w", err)
 	}
-
-	// Phase 3: write the new key file. If this fails we must roll back the
-	// ciphertext to the old key because persistLocked already committed it.
-	if err := writePrivateFile(keyPath, []byte(base64.StdEncoding.EncodeToString(newKeyBytes))); err != nil {
-		// Rollback: re-encrypt with the old key.
-		s.gcm = oldGCM
-		if rbErr := s.persistLocked(); rbErr != nil {
-			return fmt.Errorf("rekey: write new key: %w; rollback also failed: %v", err, rbErr)
-		}
-		return fmt.Errorf("rekey: write new key: %w", err)
+	cipherTemp, err := writePrivateTemp(s.ops, s.path, newCiphertext)
+	if err != nil {
+		cleanup()
+		return fmt.Errorf("rekey: stage new ciphertext: %w", err)
 	}
-
-	// Phase 4: the new gcm is now the canonical one. persistLocked already
-	// committed the new ciphertext and writePrivateFile committed the new key.
+	keyTemp, err := writePrivateTemp(s.ops, keyPath, []byte(base64.StdEncoding.EncodeToString(newKeyBytes)))
+	if err != nil {
+		_ = s.ops.remove(cipherTemp)
+		cleanup()
+		return fmt.Errorf("rekey: stage new key: %w", err)
+	}
+	j := rekeyJournalData{State: "prepared", CiphertextPath: s.path, CiphertextExisted: ciphertextExisted, KeyPath: keyPath, SnapshotCiphertext: oldCipherSnapshot, SnapshotKey: oldKeySnapshot, StagedCiphertext: cipherTemp, StagedKey: keyTemp}
+	if err := writeJournal(journalPath, j, s.ops); err != nil {
+		_ = s.ops.remove(cipherTemp)
+		_ = s.ops.remove(keyTemp)
+		cleanup()
+		return fmt.Errorf("rekey: write journal: %w", err)
+	}
+	if err := renameAndSync(s.ops, cipherTemp, s.path); err != nil {
+		return fmt.Errorf("rekey: commit ciphertext: %w", err)
+	}
+	if err := renameAndSync(s.ops, keyTemp, keyPath); err != nil {
+		return fmt.Errorf("rekey: commit key: %w", err)
+	}
+	j.State = "committed"
+	if err := writeJournal(journalPath, j, s.ops); err != nil {
+		return fmt.Errorf("rekey: write commit marker: %w", err)
+	}
+	_ = s.ops.remove(oldKeySnapshot)
+	_ = s.ops.remove(oldCipherSnapshot)
+	_ = s.ops.remove(journalPath)
 	s.gcm = newGCM
 	return nil
 }
@@ -492,48 +551,134 @@ func (s *Store) persistLocked() error {
 		return fmt.Errorf("encode encrypted secret store")
 	}
 
-	return writePrivateFile(s.path, raw)
+	ops := s.ops
+	if ops.createTemp == nil {
+		ops = defaultFileOps()
+	}
+	return writePrivateFile(s.path, raw, ops)
 }
 
-// writePrivateFile commits raw to path atomically at mode 0600. It is shared by
-// the ciphertext, the key file and the migration backup so all three get the
-// same durability and permission guarantees.
-func writePrivateFile(path string, raw []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".provider-secrets-*")
+func writePrivateTemp(ops fileOps, path string, raw []byte) (string, error) {
+	tmp, err := ops.createTemp(filepath.Dir(path))
 	if err != nil {
-		return fmt.Errorf("create secret store temporary file: %w", err)
+		return "", fmt.Errorf("create secret store temporary file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	committed := false
 	defer func() {
 		_ = tmp.Close()
-		if !committed {
-			_ = os.Remove(tmpPath)
-		}
 	}()
 	if err := tmp.Chmod(secretFileMode); err != nil {
-		return fmt.Errorf("protect secret store temporary file: %w", err)
+		_ = ops.remove(tmpPath)
+		return "", fmt.Errorf("protect secret store temporary file: %w", err)
 	}
 	if _, err := tmp.Write(raw); err != nil {
-		return fmt.Errorf("write secret store: %w", err)
+		_ = ops.remove(tmpPath)
+		return "", fmt.Errorf("write secret store: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
-		return fmt.Errorf("sync secret store: %w", err)
+		_ = ops.remove(tmpPath)
+		return "", fmt.Errorf("sync secret store: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close secret store: %w", err)
+		_ = ops.remove(tmpPath)
+		return "", fmt.Errorf("close secret store: %w", err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	return tmpPath, nil
+}
+
+func renameAndSync(ops fileOps, source, destination string) error {
+	if err := ops.rename(source, destination); err != nil {
 		return fmt.Errorf("commit secret store: %w", err)
 	}
-	committed = true
-	if info, err := os.Lstat(path); err != nil {
+	if info, err := os.Lstat(destination); err != nil {
 		return fmt.Errorf("stat committed secret store: %w", err)
 	} else if err := validateSecretFileInfo(info); err != nil {
 		return fmt.Errorf("commit secret store: %w", err)
 	}
-	if err := syncDirectory(filepath.Dir(path)); err != nil {
+	if err := ops.syncDirectory(filepath.Dir(destination)); err != nil {
 		return fmt.Errorf("sync secret store directory: %w", err)
+	}
+	return nil
+}
+
+func writePrivateFile(path string, raw []byte, ops fileOps) error {
+	tmpPath, err := writePrivateTemp(ops, path, raw)
+	if err != nil {
+		return err
+	}
+	if err := renameAndSync(ops, tmpPath, path); err != nil {
+		_ = ops.remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+func encryptedBytes(secrets map[string]string, gcm cipher.AEAD) ([]byte, error) {
+	plain, err := json.Marshal(secrets)
+	if err != nil {
+		return nil, fmt.Errorf("encode secret store")
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, fmt.Errorf("generate secret nonce: %w", err)
+	}
+	return json.Marshal(encryptedFile{Version: 1, Nonce: nonce, Ciphertext: gcm.Seal(nil, nonce, plain, nil)})
+}
+
+func writeJournal(path string, journal rekeyJournalData, ops fileOps) error {
+	raw, err := json.Marshal(journal)
+	if err != nil {
+		return err
+	}
+	return writePrivateFile(path, raw, ops)
+}
+
+func recoverRekey(dir string) error {
+	path := filepath.Join(dir, rekeyJournal)
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var journal rekeyJournalData
+	if err := json.Unmarshal(raw, &journal); err != nil {
+		return fmt.Errorf("read rekey journal: %w", err)
+	}
+	if journal.State == "committed" {
+		for _, p := range []string{journal.SnapshotCiphertext, journal.SnapshotKey, journal.StagedCiphertext, journal.StagedKey} {
+			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("clean committed rekey transient: %w", err)
+			}
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove committed rekey journal: %w", err)
+		}
+		return nil
+	}
+	if journal.State != "prepared" {
+		return fmt.Errorf("invalid rekey journal state")
+	}
+	for _, item := range []struct{ snapshot, canonical string }{{journal.SnapshotCiphertext, journal.CiphertextPath}, {journal.SnapshotKey, journal.KeyPath}} {
+		if item.canonical == journal.CiphertextPath && !journal.CiphertextExisted {
+			if err := os.Remove(item.canonical); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove rekey rollback ciphertext: %w", err)
+			}
+			continue
+		}
+		old, err := os.ReadFile(item.snapshot)
+		if err != nil {
+			return fmt.Errorf("read rekey rollback snapshot: %w", err)
+		}
+		if err := writePrivateFile(item.canonical, old, defaultFileOps()); err != nil {
+			return fmt.Errorf("restore rekey rollback snapshot: %w", err)
+		}
+	}
+	for _, p := range []string{journal.SnapshotCiphertext, journal.SnapshotKey, journal.StagedCiphertext, journal.StagedKey, path} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("clean rekey rollback transient: %w", err)
+		}
 	}
 	return nil
 }
