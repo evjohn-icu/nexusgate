@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -51,21 +52,37 @@ type PipelineThrottle struct {
 	// until a disk-full error. Zero disables the guard.
 	MinimumFreeSpaceBytes int64 `json:"minimum_free_space_bytes"`
 
-	// DailyBudget caps the provider spend the pipeline lets through in one
-	// UTC day, in the same unit as the provider-channel cost metadata
-	// (cost_per_request / cost_per_video_minute / cost_per_audio_minute). The
-	// gate defers cloud jobs (analyze, transcribe) once the cost_ledger sum
-	// for the day is already at or past the budget — the comparison is >=
-	// because the job's own estimate is only recorded after the call, so the
-	// gate can see spend already in the ledger, not spend the next call will
-	// add — and the jobs re-arm at the day boundary (00:05 UTC). Zero
-	// disables the daily gate.
-	DailyBudget float64 `json:"daily_budget,omitempty"`
-	// MonthlyBudget is the same cap over one UTC month; exceeded jobs defer
-	// until the 1st of the next month at 00:05 UTC. When both budgets are
-	// spent, the monthly park wins: a daily park would only re-hit the
-	// monthly gate the next day. Zero disables the monthly gate.
-	MonthlyBudget float64 `json:"monthly_budget,omitempty"`
+	// DailyCostGuide is an operator reference for estimated provider cost in
+	// the UTC day. It never blocks or defers a provider call.
+	DailyCostGuide float64 `json:"daily_cost_guide,omitempty"`
+	// MonthlyCostGuide is an operator reference for estimated provider cost in
+	// the UTC month. It never blocks or defers a provider call.
+	MonthlyCostGuide float64 `json:"monthly_cost_guide,omitempty"`
+}
+
+// UnmarshalJSON accepts the pre-v0.30 budget names for one version while
+// MarshalJSON emits only the advisory guide names.
+func (t *PipelineThrottle) UnmarshalJSON(data []byte) error {
+	type throttleJSON PipelineThrottle
+	var fields struct {
+		DailyCostGuide   *float64 `json:"daily_cost_guide"`
+		MonthlyCostGuide *float64 `json:"monthly_cost_guide"`
+		DailyBudget      *float64 `json:"daily_budget"`
+		MonthlyBudget    *float64 `json:"monthly_budget"`
+	}
+	if err := json.Unmarshal(data, (*throttleJSON)(t)); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if fields.DailyCostGuide == nil && fields.DailyBudget != nil {
+		t.DailyCostGuide = *fields.DailyBudget
+	}
+	if fields.MonthlyCostGuide == nil && fields.MonthlyBudget != nil {
+		t.MonthlyCostGuide = *fields.MonthlyBudget
+	}
+	return nil
 }
 
 // LeaseFilter narrows what the lease predicate is willing to hand out. It is a
@@ -109,11 +126,11 @@ func (t PipelineThrottle) Validate() error {
 	if t.MinimumFreeSpaceBytes < 0 {
 		return fmt.Errorf("minimum_free_space_bytes must not be negative")
 	}
-	if t.DailyBudget < 0 {
-		return fmt.Errorf("daily_budget must not be negative")
+	if t.DailyCostGuide < 0 {
+		return fmt.Errorf("daily_cost_guide must not be negative")
 	}
-	if t.MonthlyBudget < 0 {
-		return fmt.Errorf("monthly_budget must not be negative")
+	if t.MonthlyCostGuide < 0 {
+		return fmt.Errorf("monthly_cost_guide must not be negative")
 	}
 	// Otherwise a file could be both "always immediate" and "window only", and
 	// which rule won would be an implementation detail rather than a decision.

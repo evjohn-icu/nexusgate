@@ -133,7 +133,7 @@ func run() error {
 			fmt.Printf("Library supervisor: rescanning every root every %s\n", (time.Duration(status.IntervalSeconds) * time.Second).String())
 		}
 		server := api.NewTLSServer(*addr, service, certificate, key)
-		setupWebDAVDelivery(service, server, repo)
+		setupWebDAVDelivery(service, server, repo, cfg.DataDir)
 		serveErr := server.Run(ctx)
 		// Joined, not abandoned: the supervisor may be mid-pass, and the point
 		// of running the pipeline inline in it is that this wait is what makes
@@ -177,9 +177,23 @@ func run() error {
 
 	case "search":
 		if len(os.Args) < 3 {
-			return errors.New("usage: timingdex search rebuild-embeddings")
+			return errors.New("usage: timingdex search rebuild|rebuild-embeddings")
 		}
 		switch os.Args[2] {
+		case "rebuild":
+			fmt.Println("rebuilding asset search index...")
+			rebuilt, failures, err := repo.RebuildAllSearch(context.Background())
+			if err != nil {
+				return err
+			}
+			for _, failure := range failures {
+				fmt.Printf("failed: %s\n", failure)
+			}
+			fmt.Printf("rebuilt %d asset search index(es); %d failure(s)\n", rebuilt, len(failures))
+			if len(failures) > 0 {
+				return errors.New("one or more asset search indexes failed to rebuild")
+			}
+			return nil
 		case "rebuild-embeddings":
 			rebuilt, err := service.RebuildShotTextEmbeddings(context.Background())
 			if err != nil {
@@ -188,7 +202,7 @@ func run() error {
 			fmt.Printf("rebuilt %d shot text embedding(s); run `timingdex pipeline run` if jobs are queued\n", rebuilt)
 			return nil
 		default:
-			return errors.New("usage: timingdex search rebuild-embeddings")
+			return errors.New("usage: timingdex search rebuild|rebuild-embeddings")
 		}
 
 	case "doctor":
@@ -306,10 +320,10 @@ func runSecretsCommand(cfg config.Config) error {
 // hashes), the space manager whose linker resolves assets through the
 // service, and the /spaces/ route on the API server. The feature is always
 // compiled in; the admin endpoints gate creation of accounts and spaces.
-func setupWebDAVDelivery(service *app.Service, server *api.Server, repo *sqliterepo.Repository) {
+func setupWebDAVDelivery(service *app.Service, server *api.Server, repo *sqliterepo.Repository, dataDir string) {
 	accounts := sqliterepo.WebDAVAccountStore{Repo: repo}
 	linker := app.WebDAVLinker{Service: service}
-	manager := webdavspace.NewManager(linker, accounts)
+	manager := webdavspace.NewManager(linker, accounts, dataDir)
 	service.SetWebDAVSpaceManager(manager, accounts)
 	server.SetWebDAVSpaceManager(manager)
 }
@@ -390,7 +404,7 @@ Usage:
   timingdex doctor [-json]
   timingdex secrets rekey
   timingdex support bundle [-out path]
-  timingdex worker enroll --hub https://nas:8787 --pairing <token> [--name worker] [--mount root-id=/mounted/path] [--provider-operation video_analysis]
+  timingdex worker enroll --hub https://nas:8787 --fingerprint <sha256> --pairing <token> [--name worker] [--mount root-id=/mounted/path] [--provider-operation video_analysis]
   timingdex worker run [--config path] [--tray]
   timingdex worker doctor [--config path]`)
 	return errors.New("invalid command")
@@ -419,6 +433,9 @@ func runWorkerCommand() error {
 		}
 		if *hub == "" || *pairing == "" {
 			return errors.New("--hub and --pairing are required")
+		}
+		if !worker.ValidFingerprint(*fingerprint) {
+			return errors.New("--fingerprint is required and must be a SHA-256 hex fingerprint")
 		}
 		if !strings.HasPrefix(strings.ToLower(*hub), "https://") {
 			return errors.New("Worker enrollment requires an https Hub URL")

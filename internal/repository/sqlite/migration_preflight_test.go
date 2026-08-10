@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // removeNewestMigration deletes the newest applied version row, making the
@@ -135,6 +136,47 @@ func TestPreflightFreeSpaceError(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("preflight error %q does not mention %q", err, want)
 		}
+	}
+}
+
+func TestPreflightCountsKnownMissingMigrationDespiteUnknownSchemaRow(t *testing.T) {
+	repo, err := Open(filepath.Join(t.TempDir(), "future.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { repo.Close() })
+	if err := repo.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	removeNewestMigration(t, repo)
+	if _, err := repo.db.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES('9999_future_migration.sql', ?)`, formatTime(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+
+	old := statfsFreeBytes
+	statfsFreeBytes = func(string) (uint64, error) { return 1, nil }
+	t.Cleanup(func() { statfsFreeBytes = old })
+	if err := repo.checkPreMigrationConditions(context.Background()); err == nil || !strings.Contains(err.Error(), "free disk space") {
+		t.Fatalf("preflight with a missing known migration and unknown row = %v, want free-space error", err)
+	}
+}
+
+func TestPendingMigrationCountIgnoresUnknownRows(t *testing.T) {
+	repo, err := Open(filepath.Join(t.TempDir(), "future-only.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { repo.Close() })
+	if err := repo.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES('9999_future_migration.sql', ?)`, formatTime(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := repo.pendingMigrationCount(context.Background()); err != nil {
+		t.Fatal(err)
+	} else if got != 0 {
+		t.Fatalf("pendingMigrationCount with only an unknown row = %d, want 0", got)
 	}
 }
 

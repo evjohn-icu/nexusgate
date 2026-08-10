@@ -2,7 +2,11 @@ package sqlite
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"path/filepath"
+	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -178,6 +182,49 @@ func TestCollectionShotReorderAssignsPositions(t *testing.T) {
 	}
 }
 
+func TestCollectionShotRemoveCompactsPositionsBeforeAppend(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "basket-remove-compact.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	collection, err := repo.SaveAssetCollection(ctx, domain.AssetCollection{Name: "移除压紧"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"shot-rm-a", "shot-rm-b", "shot-rm-c"} {
+		seedShotBasketFixture(t, repo, "asset-"+id, id, 0, 1000)
+		if err := repo.AddShotToCollection(ctx, collection.ID, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.RemoveShotFromCollection(ctx, collection.ID, "shot-rm-b"); err != nil {
+		t.Fatal(err)
+	}
+	shots, err := repo.ListCollectionShots(ctx, collection.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shots) != 2 || shots[0].ShotID != "shot-rm-a" || shots[0].Position != 0 || shots[1].ShotID != "shot-rm-c" || shots[1].Position != 1 {
+		t.Fatalf("after middle removal=%+v, want positions 0 and 1", shots)
+	}
+	seedShotBasketFixture(t, repo, "asset-rm-d", "shot-rm-d", 0, 1000)
+	if err := repo.AddShotToCollection(ctx, collection.ID, "shot-rm-d"); err != nil {
+		t.Fatal(err)
+	}
+	shots, err = repo.ListCollectionShots(ctx, collection.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shots) != 3 || shots[2].ShotID != "shot-rm-d" || shots[2].Position != 2 {
+		t.Fatalf("after append=%+v, want new shot at position 2", shots)
+	}
+}
+
 func TestCollectionSummaryCountsShotsAndDuration(t *testing.T) {
 	ctx := context.Background()
 	repo, err := Open(filepath.Join(t.TempDir(), "basket-summary.db"))
@@ -278,8 +325,9 @@ func TestShotDeletionCascadesPinnedShots(t *testing.T) {
 	if err := repo.AddShotToCollection(ctx, collection.ID, "shot-d"); err != nil {
 		t.Fatal(err)
 	}
-	// The re-analysis shape: the old shot row is deleted, a fresh id appears.
-	if _, err := repo.db.ExecContext(ctx, `DELETE FROM asset_shots WHERE id=?`, "shot-d"); err != nil {
+	// The re-analysis shape: ReplaceAssetShots deletes the old row and inserts a
+	// fresh id in one transaction, so the old pin must cascade away.
+	if err := repo.ReplaceAssetShots(ctx, "asset-d", "", []domain.AssetShot{{ID: "shot-d-new", StartMS: 0, EndMS: 1200, Description: "new shot"}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	var count int
@@ -296,5 +344,197 @@ func TestShotDeletionCascadesPinnedShots(t *testing.T) {
 	}
 	if got == nil || got.ShotCount != 0 {
 		t.Fatalf("summary after shot cascade=%+v, want ShotCount 0", got)
+	}
+	if err := repo.AddShotToCollection(ctx, collection.ID, "shot-d-new"); err != nil {
+		t.Fatal(err)
+	}
+	shots, err := repo.ListCollectionShots(ctx, collection.ID)
+	if err != nil || len(shots) != 1 || shots[0].ShotID != "shot-d-new" || shots[0].Position != 0 {
+		t.Fatalf("replacement pin=%+v err=%v, want new shot at position 0", shots, err)
+	}
+}
+
+func TestCollectionConcurrentAppendsHaveUniquePositions(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "concurrent-append.db")
+	repo1, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo1.Close()
+	if err := repo1.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo2, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo2.Close()
+	collection, err := repo1.SaveAssetCollection(ctx, domain.AssetCollection{Name: "并发追加"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedShotBasketFixture(t, repo1, "asset-ca", "shot-ca", 0, 1000)
+	seedShotBasketFixture(t, repo1, "asset-cb", "shot-cb", 0, 1000)
+	barrier := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, item := range []struct {
+		repo *Repository
+		shot string
+	}{{repo1, "shot-ca"}, {repo2, "shot-cb"}} {
+		wg.Add(1)
+		go func(repo *Repository, shot string) {
+			defer wg.Done()
+			<-barrier
+			errs <- repo.AddShotToCollection(ctx, collection.ID, shot)
+		}(item.repo, item.shot)
+	}
+	close(barrier)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var count, distinct int
+	if err := repo1.db.QueryRowContext(ctx, `SELECT COUNT(*),COUNT(DISTINCT position) FROM collection_shots WHERE collection_id=?`, collection.ID).Scan(&count, &distinct); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 || distinct != 2 {
+		t.Fatalf("count=%d distinct=%d, want two uniquely positioned rows", count, distinct)
+	}
+	var positions []int
+	rows, err := repo1.db.QueryContext(ctx, `SELECT position FROM collection_shots WHERE collection_id=? ORDER BY position`, collection.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var position int
+		if err := rows.Scan(&position); err != nil {
+			t.Fatal(err)
+		}
+		positions = append(positions, position)
+	}
+	if rows.Err() != nil || len(positions) != 2 || positions[0] != 0 || positions[1] != 1 {
+		t.Fatalf("positions=%v", positions)
+	}
+}
+
+func TestCollectionAppendConcurrentWithReorderPreservesInvariant(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "append-reorder.db")
+	repo, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	collection, err := repo.SaveAssetCollection(ctx, domain.AssetCollection{Name: "追加重排"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"shot-ar-a", "shot-ar-b", "shot-ar-c"} {
+		seedShotBasketFixture(t, repo, "asset-"+id, id, 0, 1000)
+		if err := repo.AddShotToCollection(ctx, collection.ID, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedShotBasketFixture(t, repo, "asset-ar-d", "shot-ar-d", 0, 1000)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	wg.Add(2)
+	go func() { defer wg.Done(); <-start; errs <- repo.AddShotToCollection(ctx, collection.ID, "shot-ar-d") }()
+	go func() {
+		defer wg.Done()
+		<-start
+		errs <- repo.ReorderCollectionShots(ctx, collection.ID, []string{"shot-ar-c", "shot-ar-b", "shot-ar-a"})
+	}()
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil && !errors.Is(err, domain.ErrReorderInvalid) {
+			t.Fatal(err)
+		}
+	}
+	var count, distinct int
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*),COUNT(DISTINCT position) FROM collection_shots WHERE collection_id=?`, collection.ID).Scan(&count, &distinct); err != nil {
+		t.Fatal(err)
+	}
+	if count != distinct {
+		t.Fatalf("count=%d distinct=%d, positions are not unique", count, distinct)
+	}
+}
+
+func TestCollectionPositionsMigrationNormalizesDuplicates(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "migration-positions.db")
+	repo, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if _, err := repo.db.ExecContext(ctx, `CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := fs.ReadDir(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	for _, entry := range entries {
+		if entry.Name() == "0032_collection_shot_positions.sql" {
+			continue
+		}
+		content, err := migrationFiles.ReadFile("migrations/" + entry.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.db.ExecContext(ctx, string(content)); err != nil {
+			t.Fatalf("apply %s: %v", entry.Name(), err)
+		}
+		if _, err := repo.db.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (?,?)`, entry.Name(), formatTime(time.Now())); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO asset_collections(id,name,description,filter_json,created_at,updated_at) VALUES('migration-coll','legacy','', '{}', ?, ?)`, formatTime(time.Now()), formatTime(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	seedShotBasketFixture(t, repo, "asset-m-a", "shot-z", 0, 1000)
+	seedShotBasketFixture(t, repo, "asset-m-b", "shot-a", 0, 1000)
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO collection_shots(collection_id,shot_id,position,created_at) VALUES('migration-coll','shot-z',4,?),( 'migration-coll','shot-a',4,?)`, formatTime(time.Now()), formatTime(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var first, second int
+	if err := repo.db.QueryRowContext(ctx, `SELECT position FROM collection_shots WHERE shot_id='shot-a'`).Scan(&first); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.db.QueryRowContext(ctx, `SELECT position FROM collection_shots WHERE shot_id='shot-z'`).Scan(&second); err != nil {
+		t.Fatal(err)
+	}
+	if first != 0 || second != 1 {
+		t.Fatalf("normalized positions shot-a=%d shot-z=%d", first, second)
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO collection_shots(collection_id,shot_id,position,created_at) VALUES('migration-coll','shot-z',0,?)`, formatTime(time.Now())); err == nil {
+		t.Fatal("unique collection position was not enforced")
+	}
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatalf("rerunning migration: %v", err)
+	}
+	var indexCount int
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version=?`, "0032_collection_shot_positions.sql").Scan(&indexCount); err != nil {
+		t.Fatal(err)
+	}
+	if indexCount != 1 {
+		t.Fatalf("migration was not recorded exactly once")
 	}
 }

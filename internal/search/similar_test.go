@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
@@ -102,8 +103,8 @@ func TestSimilarByTextRanksTopNByCosine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(candidates) != 2 {
-		t.Fatalf("limit 2 must return 2 candidates, got %d", len(candidates))
+	if len(candidates) != 1 {
+		t.Fatalf("only positive cosine candidates must be returned, got %d", len(candidates))
 	}
 	if candidates[0].ShotID != "s-car" {
 		t.Fatalf("car query must rank the car shot first, got %+v", candidates)
@@ -123,6 +124,37 @@ func TestSimilarByTextRanksTopNByCosine(t *testing.T) {
 		if i > 0 && candidates[i-1].Score < candidate.Score {
 			t.Fatalf("candidates must be score-descending: %+v", candidates)
 		}
+	}
+}
+
+func TestSimilarByTextExcludesInvalidScoresAndIsDeterministic(t *testing.T) {
+	rows := similarEmbeddingRows()["fake-embed-v1"]
+	invalid := make([]float32, 256)
+	rows = append(rows,
+		ShotEmbeddingRow{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "negative"}}, Vector: func() []float32 { v := append([]float32(nil), invalid...); v[0] = -1; return v }()},
+		ShotEmbeddingRow{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "zero"}}, Vector: invalid},
+		ShotEmbeddingRow{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "nan"}}, Vector: func() []float32 { v := append([]float32(nil), invalid...); v[0] = float32(math.NaN()); return v }()},
+	)
+	store := &similarFakeStore{embeddingRows: map[string][]ShotEmbeddingRow{"fake-embed-v1": rows}}
+	opts := DefaultOptions()
+	opts.Embedder = fixedEmbedder{vector: fakeVector("car", 256)}
+	got, err := NewService(store, opts).SimilarByText(context.Background(), "x", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range got {
+		if candidate.ShotID == "negative" || candidate.ShotID == "zero" || candidate.ShotID == "nan" {
+			t.Fatalf("invalid candidate returned: %+v", candidate)
+		}
+	}
+}
+
+func TestSimilarByTextRejectsInvalidQuery(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Embedder = fixedEmbedder{vector: []float64{0, 0}}
+	_, err := NewService(&similarFakeStore{embeddingRows: similarEmbeddingRows()}, opts).SimilarByText(context.Background(), "x", 10)
+	if err == nil {
+		t.Fatal("zero query vector must be rejected")
 	}
 }
 
@@ -154,8 +186,8 @@ func TestSimilarByTextDefaultLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(candidates) != len(similarEmbeddingRows()["fake-embed-v1"]) {
-		t.Fatalf("limit 0 must fall back to DefaultLimit, got %d results", len(candidates))
+	if len(candidates) != 1 {
+		t.Fatalf("only positive cosine candidates must be returned, got %d results", len(candidates))
 	}
 }
 

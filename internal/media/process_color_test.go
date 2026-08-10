@@ -30,6 +30,29 @@ func TestNormalizeMetadataUsesEmbeddedCaptureTimeBeforeFilesystemFallback(t *tes
 	if !metadata.CapturedAt.Equal(want) {
 		t.Fatalf("captured_at=%s, want %s", metadata.CapturedAt, want)
 	}
+	if metadata.CaptureTimeSource != "embedded_exif" || metadata.CaptureTimeConfidence != .95 {
+		t.Fatalf("capture provenance=%q/%v", metadata.CaptureTimeSource, metadata.CaptureTimeConfidence)
+	}
+}
+
+func TestNormalizeMetadataProvenanceFallbacksAndCompleteCoordinates(t *testing.T) {
+	probe := FFProbeResult{}
+	probe.Format.Tags = map[string]string{"creation_time": "2026-07-26T14:15:16Z", "gps_latitude": "35.0", "gps_longitude": "139.0"}
+	metadata := NormalizeMetadata(probe, map[string]any{"FileModifyDate": "2026:07:25 14:15:16"})
+	if metadata.CaptureTimeSource != "embedded_probe" || metadata.CaptureTimeConfidence != .75 {
+		t.Fatalf("probe provenance=%q/%v", metadata.CaptureTimeSource, metadata.CaptureTimeConfidence)
+	}
+	if metadata.Latitude == nil || metadata.Longitude == nil || metadata.LocationSource != "embedded_probe" || metadata.LocationPrecision != "exact" {
+		t.Fatalf("probe coordinates=%+v", metadata)
+	}
+	metadata = NormalizeMetadata(FFProbeResult{}, map[string]any{"FileModifyDate": "2026:07:25 14:15:16"})
+	if metadata.CaptureTimeSource != "filesystem" || metadata.CaptureTimeConfidence != .25 {
+		t.Fatalf("filesystem provenance=%q/%v", metadata.CaptureTimeSource, metadata.CaptureTimeConfidence)
+	}
+	metadata = NormalizeMetadata(FFProbeResult{}, map[string]any{"GPSLatitude": 35.0})
+	if metadata.Latitude != nil || metadata.Longitude != nil {
+		t.Fatalf("partial GPS pair should be absent: %+v", metadata)
+	}
 }
 
 func TestNormalizeMetadataPersistsCameraCaptureProfile(t *testing.T) {

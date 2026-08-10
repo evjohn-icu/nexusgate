@@ -242,6 +242,13 @@ type Service struct {
 	scanFailuresMu sync.Mutex
 	scanFailures   map[string]map[string]int
 
+	// scanRootLocks serialize the walk and reconciliation for each root. The
+	// job layer prevents cross-process duplicate scans; this in-process lock
+	// prevents one scan's reconciliation from interleaving with another scan's
+	// upserts. Cross-process walk/reconcile overlap remains a residual.
+	scanRootLocksMu sync.Mutex
+	scanRootLocks   map[string]*sync.Mutex
+
 	// hostOverride replaces mount.LocalHost() in InspectRootPath when set. It
 	// exists only so tests can exercise the mount.Host.Container branch (the
 	// compose-volume suggestion below) without this test binary actually
@@ -331,6 +338,7 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 		hardware: hardware, adminToken: adminToken, agentToken: agentToken, secrets: secrets,
 		channelRuntime: channelRuntime,
 		scanFailures:   make(map[string]map[string]int),
+		scanRootLocks:  make(map[string]*sync.Mutex),
 	}
 	// Constructed for every command, started by none of them: only `serve`
 	// calls RunLibrarySupervisor, and a disabled supervisor's Run is a no-op.
@@ -1029,6 +1037,19 @@ func workerArtifactExtension(artifactType, contentType string) string {
 }
 
 func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.ScanResult, error) {
+	s.scanRootLocksMu.Lock()
+	if s.scanRootLocks == nil {
+		s.scanRootLocks = make(map[string]*sync.Mutex)
+	}
+	rootLock := s.scanRootLocks[rootID]
+	if rootLock == nil {
+		rootLock = &sync.Mutex{}
+		s.scanRootLocks[rootID] = rootLock
+	}
+	s.scanRootLocksMu.Unlock()
+	rootLock.Lock()
+	defer rootLock.Unlock()
+
 	root, err := s.repo.GetLibraryRoot(ctx, rootID)
 	if err != nil {
 		return domain.ScanResult{}, err
@@ -1184,7 +1205,6 @@ func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.Sc
 // this gate exists to prevent. The rules therefore err on the side of NOT
 // reconciling —
 //
-//   - the walk itself reported the root path unreachable → not healthy
 //   - the root directory no longer exists (os.Stat fails) → not healthy
 //   - mount.LooksUnmounted: the directory is empty and the mount table says
 //     it resolves to a different filesystem (the state of a mount whose share
@@ -1198,12 +1218,7 @@ func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.Sc
 // one unreadable clip must not stop the library from reconciling files that
 // were genuinely deleted.
 func (s *Service) rootHealthyAfterScan(root domain.LibraryRoot, result domain.ScanResult) bool {
-	// The scanner records the walker's error verbatim, which for the root
-	// itself carries the path directly after the kernel verb ("lstat
-	// /mnt/nas: no such file or directory", "open /mnt/nas: permission
-	// denied"). The check is positional — the root path must directly precede
-	// the colon — so an error about a file inside the root never matches.
-	if len(result.Errors) > 0 && rootPathUnreachableInErrors(result.Errors, root) {
+	if !result.Complete || !result.RootReachable {
 		return false
 	}
 	// The walk can also complete without errors while the root is gone if the
@@ -1219,21 +1234,6 @@ func (s *Service) rootHealthyAfterScan(root domain.LibraryRoot, result domain.Sc
 		return false
 	}
 	return len(entries) > 0
-}
-
-// rootPathUnreachableInErrors reports whether result.Errors contains the
-// walk's failure to reach the root directory itself. The scanner appends the
-// raw walker error for the root path, so the verbs are the ones the kernel's
-// os.Lstat/os.Open produce on any platform this runs on.
-func rootPathUnreachableInErrors(errs []string, root domain.LibraryRoot) bool {
-	for _, e := range errs {
-		for _, verb := range []string{"lstat ", "stat ", "open ", "readdir ", "readdirent "} {
-			if strings.HasPrefix(e, verb+root.Path+":") {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (s *Service) ListAssets(ctx context.Context, limit, offset int) ([]domain.Asset, error) {

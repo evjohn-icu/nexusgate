@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -21,8 +20,7 @@ func (s *Server) runTestDrive(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		AssetIDs []string `json:"asset_ids"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxTestDriveBodyBytes)).Decode(&input); err != nil {
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid test drive payload"})
+	if !decodeStrictJSON(w, r, &input, maxTestDriveBodyBytes) {
 		return
 	}
 	result, err := s.service.TestDrive(r.Context(), input.AssetIDs)

@@ -19,7 +19,7 @@ import (
 func newSetupStatusService(t *testing.T) *Service {
 	t.Helper()
 	ctx := context.Background()
-	dir := t.TempDir()
+	dir := secureDataDir(t)
 	repo, err := sqlite.Open(filepath.Join(dir, "setup.db"))
 	if err != nil {
 		t.Fatal(err)

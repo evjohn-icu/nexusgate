@@ -94,9 +94,6 @@ func TestWeirdAspectPipeline(t *testing.T) {
 		t.Fatalf("model runs != 1 for the weird-aspect asset")
 	}
 
-	if err := fx.repo.RebuildSearch(ctx, assetID); err != nil {
-		t.Fatal(err)
-	}
 	hits, err := fx.repo.SearchShots(ctx, "scene", 10)
 	if err != nil {
 		t.Fatal(err)
@@ -206,9 +203,6 @@ func TestShortClipPipeline(t *testing.T) {
 	if shots[0].Ordinal != 0 {
 		t.Fatalf("shot ordinal = %d, want 0", shots[0].Ordinal)
 	}
-	if err := fx.repo.RebuildSearch(ctx, assetID); err != nil {
-		t.Fatal(err)
-	}
 	hits, err := fx.repo.SearchShots(ctx, "scene", 10)
 	if err != nil {
 		t.Fatal(err)
@@ -298,9 +292,6 @@ func TestMultiShotClip(t *testing.T) {
 	if countModelRuns(t, fx.repo, assetID) != 1 {
 		t.Fatalf("model runs != 1 for the multi-scene asset")
 	}
-	if err := fx.repo.RebuildSearch(ctx, assetID); err != nil {
-		t.Fatal(err)
-	}
 	hits, err := fx.repo.SearchShots(ctx, "scene", 10)
 	if err != nil {
 		t.Fatal(err)
@@ -359,9 +350,6 @@ func TestMultiLocationAssetE2E(t *testing.T) {
 	}
 	if len(shots) == 0 {
 		t.Fatal("no shots committed for the multi-location asset")
-	}
-	if err := fx.repo.RebuildSearch(ctx, assetID); err != nil {
-		t.Fatal(err)
 	}
 	hits, err := fx.repo.SearchShots(ctx, "scene", 10)
 	if err != nil {

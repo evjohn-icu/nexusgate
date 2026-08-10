@@ -41,7 +41,7 @@ func TestWorkerCredentialDeliveryAllowsLeasedTrustedWorkerWhenExplicitlyEnabled(
 		t.Fatalf("lease=%+v err=%v", job, err)
 	}
 
-	service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), HubSecurity: config.HubSecurityConfig{AllowWorkerProviderCredentials: true}, Providers: config.ProvidersConfig{VisionPrimary: "volcengine_video", VolcVideo: config.ProviderConfig{Enabled: true, BaseURL: "https://vision.example", APIKey: "credential-secret", Model: "vision-v1"}}})
+	service, err := app.NewService(repo, config.Config{DataDir: secureTestDataDir(t), HubSecurity: config.HubSecurityConfig{AllowWorkerProviderCredentials: true}, Providers: config.ProvidersConfig{VisionPrimary: "volcengine_video", VolcVideo: config.ProviderConfig{Enabled: true, BaseURL: "https://vision.example", APIKey: "credential-secret", Model: "vision-v1"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestWorkerCannotGetCredentialForAnotherWorkersJob(t *testing.T) {
 	if err != nil || job == nil {
 		t.Fatalf("lease=%+v err=%v", job, err)
 	}
-	service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), HubSecurity: config.HubSecurityConfig{AllowWorkerProviderCredentials: true}, Providers: config.ProvidersConfig{VisionPrimary: "volcengine_video", VolcVideo: config.ProviderConfig{Enabled: true, BaseURL: "https://vision.example", APIKey: "secret", Model: "vision-v1"}}})
+	service, err := app.NewService(repo, config.Config{DataDir: secureTestDataDir(t), HubSecurity: config.HubSecurityConfig{AllowWorkerProviderCredentials: true}, Providers: config.ProvidersConfig{VisionPrimary: "volcengine_video", VolcVideo: config.ProviderConfig{Enabled: true, BaseURL: "https://vision.example", APIKey: "secret", Model: "vision-v1"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestWorkerCredentialDeliveryIsDisabledByDefault(t *testing.T) {
 	if err != nil || job == nil {
 		t.Fatalf("lease=%+v err=%v", job, err)
 	}
-	service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), Providers: config.ProvidersConfig{VisionPrimary: "volcengine_video", VolcVideo: config.ProviderConfig{Enabled: true, BaseURL: "https://vision.example", APIKey: "credential-secret", Model: "vision-v1"}}})
+	service, err := app.NewService(repo, config.Config{DataDir: secureTestDataDir(t), Providers: config.ProvidersConfig{VisionPrimary: "volcengine_video", VolcVideo: config.ProviderConfig{Enabled: true, BaseURL: "https://vision.example", APIKey: "credential-secret", Model: "vision-v1"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

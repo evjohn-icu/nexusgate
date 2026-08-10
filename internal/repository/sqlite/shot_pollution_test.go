@@ -29,7 +29,7 @@ func TestShotSearchNotPollutedByAssetGlobalObjects(t *testing.T) {
 	if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES('asset-poll','fp',100,'discovered',?,?)`, now, now); err != nil {
 		t.Fatal(err)
 	}
-	runID, _, err := repo.CreateModelRun(ctx, "asset-poll", "vision", "fixture", "fixture-model", "poll-hash", "footage-analysis-v4", "asset-analysis/v2", "{}")
+	runID, _, err := repo.CreateModelRun(ctx, "asset-poll", "vision", "fixture", "fixture-model", "poll-hash", "footage-analysis-v4", "asset-analysis/v2", "{}", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestShotSearchNotPollutedByAssetGlobalObjects(t *testing.T) {
 	if len(shots) != 2 || len(shots[0].Objects) != 0 {
 		t.Fatalf("ToAssetShots polluted shot A: %+v", shots)
 	}
-	if err := repo.ReplaceAssetShots(ctx, "asset-poll", runID, shots); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, "asset-poll", runID, shots, "", ""); err != nil {
 		t.Fatal(err)
 	}
 

@@ -436,12 +436,11 @@ func TestScanRepoUpsertErrorDoesNotStopWalk(t *testing.T) {
 	if len(result.Errors) != 2 {
 		t.Errorf("Errors len = %d, want 2", len(result.Errors))
 	}
-	// Per-file errors do not lose the seen paths: the list is still reported
-	// for the service's gate, which is where a root-health verdict would keep
-	// this scan from marking anything missing. Reconciliation is not the
-	// scanner's to run.
-	if len(result.SeenRelativePaths) != 2 {
-		t.Errorf("SeenRelativePaths len = %d, want 2", len(result.SeenRelativePaths))
+	if len(result.SeenRelativePaths) != 0 {
+		t.Errorf("SeenRelativePaths len = %d, want 0 for failed persists", len(result.SeenRelativePaths))
+	}
+	if result.Complete {
+		t.Error("failed persists must make scan incomplete")
 	}
 }
 
@@ -483,6 +482,12 @@ func TestScanRootDoesNotExist(t *testing.T) {
 	}
 	if len(result.Errors) == 0 {
 		t.Fatal("expected walkErr in result.Errors, got none")
+	}
+	if result.Complete || result.RootReachable {
+		t.Fatalf("missing root result = complete=%v reachable=%v, want false/false", result.Complete, result.RootReachable)
+	}
+	if !strings.HasPrefix(result.Errors[0], "walk root: ") {
+		t.Fatalf("root error = %q, want stable walk root prefix", result.Errors[0])
 	}
 	// Nothing was seen and nothing was reconciled: whether an unreachable
 	// root's empty walk may mark files missing is the service's gate to
@@ -729,6 +734,9 @@ func TestScanReturnsSeenList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if !result.Complete || !result.RootReachable {
+		t.Fatalf("successful tree result = complete=%v reachable=%v, want true/true", result.Complete, result.RootReachable)
+	}
 	if len(result.SeenRelativePaths) != 2 {
 		t.Fatalf("SeenRelativePaths len = %d, want 2: %v", len(result.SeenRelativePaths), result.SeenRelativePaths)
 	}
@@ -764,9 +772,12 @@ func TestScanContextPreCancelled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := s.Scan(ctx, domain.LibraryRoot{ID: "r1", Path: root})
+	result, err := s.Scan(ctx, domain.LibraryRoot{ID: "r1", Path: root})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	if result.Complete {
+		t.Error("cancelled scan must be incomplete")
 	}
 }
 
@@ -787,16 +798,19 @@ func TestScanUpsertErrorStillReturnsSeenList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// The file was still seen even though its upsert failed, so the seen
-	// list stays complete for the service's reconciliation gate. Missing is
-	// the service's to count from MarkUnseenLocationsMissing's return.
-	if len(result.SeenRelativePaths) != 1 || result.SeenRelativePaths[0] != "clip.mp4" {
-		t.Errorf("SeenRelativePaths = %v, want [clip.mp4]", result.SeenRelativePaths)
+	if len(result.SeenRelativePaths) != 0 {
+		t.Errorf("SeenRelativePaths = %v, want empty after failed persist", result.SeenRelativePaths)
 	}
 	if result.Missing != 0 {
 		t.Errorf("Missing = %d, want 0", result.Missing)
 	}
 	if len(result.Errors) != 1 {
 		t.Errorf("Errors len = %d, want 1", len(result.Errors))
+	}
+	if !strings.HasPrefix(result.Errors[0], "persist file: ") {
+		t.Errorf("error = %q, want stable persist file prefix", result.Errors[0])
+	}
+	if result.Complete {
+		t.Error("upsert failure must make scan incomplete")
 	}
 }

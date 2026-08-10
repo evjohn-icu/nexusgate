@@ -82,7 +82,9 @@ func settleJob(t *testing.T, repo *sqlite.Repository, pipeline *Pipeline, settle
 		if settled(jobs[0]) || time.Now().After(deadline) {
 			return jobs[0]
 		}
-		time.Sleep(100 * time.Millisecond)
+		// Retry backoffs are the synchronization point; this poll only avoids a
+		// busy loop while waiting for the next due job.
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

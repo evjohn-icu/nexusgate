@@ -28,9 +28,9 @@ const settingsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf
 <section class="panel"><h2>磁盘空间保护</h2><p class="hint">处理流程把派生产物（缩略图、代理视频、抽音轨）写到 Hub 的缓存盘。缓存盘满了，FFmpeg 会在编码中途报「磁盘已满」—— 这类失败现在会被识别出来，作业推迟而不是原地重试烧掉重试次数；下面的设定让作业在开跑前就提前检查剩余空间。</p>
 <div class="row"><label for="min-free-space">最小剩余空间</label><div><input id="min-free-space" type="number" min="0" step="1" placeholder="0"> GB<p class="note">缓存盘剩余空间低于这个值时，重作业（派生、转写、分析）不启动，直接按磁盘空间低推迟，10 分钟后自动再试，不消耗重试次数。<b>0 表示关闭检查</b>。磁盘满失败本身无论是否开启都会按同一方式推迟。</p></div></div>
 </section>
-<section class="panel"><h2>成本预算</h2><p class="hint">云调用（分析、转写）的花费按服务商渠道的成本元数据逐笔记入账本，这里设定当日 / 当月累计预算。达到预算后，尚未开始的云调用直接推迟到下一个日 / 月周期开始，不消耗重试次数。单位与渠道成本元数据（每次请求 / 每分钟视频 / 每分钟音频）一致。<b>0 表示不设限</b>。</p>
-<div class="row"><label for="daily-budget">每日预算</label><div><input id="daily-budget" type="number" min="0" step="0.01" placeholder="0"><p class="note">当日（UTC）账本累计达到这个值后，分析 / 转写作业推迟到次日 00:05 UTC 自动再试。<b>0 表示不设限</b>。</p></div></div>
-<div class="row"><label for="monthly-budget">每月预算</label><div><input id="monthly-budget" type="number" min="0" step="0.01" placeholder="0"><p class="note">当月（UTC）账本累计达到这个值后，作业推迟到下月 1 日 00:05 UTC 自动再试。日预算与月预算同时用尽时，按月预算推迟。<b>0 表示不设限</b>。</p></div></div>
+<section class="panel"><h2>成本参考</h2><p class="hint">云调用（分析、转写）的估算按服务商渠道的成本元数据逐笔记入账本，这里设置当日 / 当月成本参考值。参考值只帮助观察成本，不会限制或推迟云调用；账本是追加式的事后估算记录，永远不是账单。单位与渠道成本元数据（每次请求 / 每分钟视频 / 每分钟音频）一致。<b>0 表示不显示参考值</b>。</p>
+<div class="row"><label for="daily-cost-guide">每日成本参考</label><div><input id="daily-cost-guide" type="number" min="0" step="0.01" placeholder="0"><p class="note">当日（UTC）估算参考值，仅用于对照；达到或超过它不会阻止分析 / 转写。<b>0 表示不设置</b>。</p></div></div>
+<div class="row"><label for="monthly-cost-guide">每月成本参考</label><div><input id="monthly-cost-guide" type="number" min="0" step="0.01" placeholder="0"><p class="note">当月（UTC）估算参考值，仅用于对照；达到或超过它不会阻止作业。<b>0 表示不设置</b>。</p></div></div>
 </section>
 <section class="panel"><h2>凌晨时段</h2><p class="hint">时间按 <b id="server-zone">Hub 本地时区</b> 判断，当前 Hub 时间 <b id="server-time">--:--</b>。窗口内不限冷却（夜里没人要保护，全速跑完才是重点）。结束时间早于开始时间表示跨过午夜，例如 22:00–06:00。</p>
 <div class="row"><label for="off-peak">启用时段调度</label><div><input id="off-peak" type="checkbox"><p class="note">关闭后，被推迟的作业会立刻释放，不会滞留。</p></div></div>
@@ -57,8 +57,8 @@ else{pills.push('<span class="pill">时段调度已关闭</span>')}
 if(d.holding_above>0){pills.push('<span class="pill hold">正在推迟 &gt;'+esc(Math.round(d.holding_above/MB))+' MB 的素材，'+esc(d.next_off_peak)+' 开始处理</span>')}
 pills.push('<span class="pill">当前实际冷却 '+esc(d.cooldown_now_s)+' 秒</span>');
 if(t.minimum_free_space_bytes>0){pills.push('<span class="pill">剩余空间保护 &gt;'+esc(Math.round(t.minimum_free_space_bytes/GB))+' GB</span>')}
-if(t.daily_budget>0){pills.push('<span class="pill">每日预算 '+esc(t.daily_budget)+'</span>')}
-if(t.monthly_budget>0){pills.push('<span class="pill">每月预算 '+esc(t.monthly_budget)+'</span>')}
+if(t.daily_cost_guide>0){pills.push('<span class="pill">每日成本参考 '+esc(t.daily_cost_guide)+'</span>')}
+if(t.monthly_cost_guide>0){pills.push('<span class="pill">每月成本参考 '+esc(t.monthly_cost_guide)+'</span>')}
 document.getElementById('state').innerHTML=pills.join('');
 document.getElementById('server-time').textContent=d.server_time||'--:--';
 document.getElementById('server-zone').textContent=d.server_zone||'Hub 本地时区'}
@@ -71,12 +71,12 @@ document.getElementById('off-end').value=t.off_peak_end||'07:00';
 document.getElementById('defer-mb').value=t.defer_above_bytes?Math.round(t.defer_above_bytes/MB):0;
 document.getElementById('immediate-mb').value=t.immediate_max_bytes?Math.round(t.immediate_max_bytes/MB):0;
 document.getElementById('min-free-space').value=t.minimum_free_space_bytes?Math.round(t.minimum_free_space_bytes/GB):0;
-document.getElementById('daily-budget').value=t.daily_budget||0;
-document.getElementById('monthly-budget').value=t.monthly_budget||0;
+document.getElementById('daily-cost-guide').value=t.daily_cost_guide||0;
+document.getElementById('monthly-cost-guide').value=t.monthly_cost_guide||0;
 renderState(d)}
 async function load(){try{const d=await fetch('/api/v1/pipeline/throttle',{headers:authHeaders()}).then(async r=>{if(!r.ok)throw Error(await apiErrMsg(r));return r.json()});fill(d);document.getElementById('status').className='status'}catch(e){say('无法读取设置：'+e.message,false)}}
 async function save(){const b=document.getElementById('save');b.disabled=true;
-const body={read_rate:num('read-rate'),cooldown_seconds:Math.round(num('cooldown')),off_peak_enabled:document.getElementById('off-peak').checked,off_peak_start:val('off-start')||'01:00',off_peak_end:val('off-end')||'07:00',defer_above_bytes:Math.round(num('defer-mb')*MB),immediate_max_bytes:Math.round(num('immediate-mb')*MB),minimum_free_space_bytes:Math.round(num('min-free-space')*GB),daily_budget:num('daily-budget'),monthly_budget:num('monthly-budget')};
+const body={read_rate:num('read-rate'),cooldown_seconds:Math.round(num('cooldown')),off_peak_enabled:document.getElementById('off-peak').checked,off_peak_start:val('off-start')||'01:00',off_peak_end:val('off-end')||'07:00',defer_above_bytes:Math.round(num('defer-mb')*MB),immediate_max_bytes:Math.round(num('immediate-mb')*MB),minimum_free_space_bytes:Math.round(num('min-free-space')*GB),daily_cost_guide:num('daily-cost-guide'),monthly_cost_guide:num('monthly-cost-guide')};
 try{const d=await fetch('/api/v1/pipeline/throttle',{method:'PUT',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)}).then(async r=>{if(!r.ok)throw Error(await apiErrMsg(r));return r.json()});fill(d);say('已保存，下一个作业开始生效。',true)}catch(e){say('保存失败：'+e.message,false)}finally{b.disabled=false}}
 load();loadStorage();setInterval(renderStateRefresh,15000);
 function fmtBytes(n){const v=Number(n)||0;if(v<1024)return Math.round(v)+' B';const u=['KB','MB','GB','TB'];let i=0;let x=v;while(x>=1024&&i<u.length-1){x/=1024;i++}return x.toFixed(1)+' '+u[i]}

@@ -79,7 +79,7 @@ func TestShellCSSSidebarLayout(t *testing.T) {
 		}
 	}
 	narrow := shellCSS[strings.Index(shellCSS, "@media(max-width:860px)"):]
-	if !strings.Contains(narrow, `body{padding-left:0}`) {
+	if !strings.Contains(narrow, `body{padding-left:0`) || !strings.Contains(narrow, `overflow-x:hidden`) {
 		t.Fatal("narrow-screen media query must remove the body gutter")
 	}
 	if !strings.Contains(narrow, `.shell-sidebar{position:relative`) {

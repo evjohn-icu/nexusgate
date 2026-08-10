@@ -267,7 +267,11 @@ func Load() (Config, error) {
 	}
 	configPath := filepath.Join(dataDir, "config.json")
 	raw, err := os.ReadFile(configPath)
+	var explicit map[string]json.RawMessage
 	if err == nil {
+		if err := json.Unmarshal(raw, &explicit); err != nil {
+			return Config{}, fmt.Errorf("parse %s: %w", configPath, err)
+		}
 		if err := json.Unmarshal(raw, &cfg); err != nil {
 			return Config{}, fmt.Errorf("parse %s: %w", configPath, err)
 		}
@@ -360,10 +364,44 @@ func Load() (Config, error) {
 			cfg.Providers.VolcASR.TimeoutSeconds = n
 		}
 	}
+	if err := validate(cfg, explicit); err != nil {
+		return Config{}, err
+	}
 	if err := os.MkdirAll(cfg.CacheDir, 0o700); err != nil {
 		return Config{}, fmt.Errorf("create cache directory: %w", err)
 	}
 	return cfg, nil
+}
+
+func validate(cfg Config, explicit map[string]json.RawMessage) error {
+	switch strings.ToLower(strings.TrimSpace(cfg.HubTLS.Mode)) {
+	case "auto", "files", "off":
+	default:
+		return fmt.Errorf("hub_tls.mode: unsupported value %q (want auto, files, or off)", cfg.HubTLS.Mode)
+	}
+	if cfg.LibrarySupervisor.Enabled && cfg.LibrarySupervisor.ScanIntervalMinutes <= 0 {
+		return fmt.Errorf("library_supervisor.scan_interval_minutes: must be greater than zero when supervisor is enabled")
+	}
+	if cfg.Pipeline.ProviderRouteDeferralMinutes <= 0 && explicitField(explicit, "pipeline", "provider_route_deferral_minutes") {
+		return fmt.Errorf("pipeline.provider_route_deferral_minutes: explicit value must be greater than zero")
+	}
+	if cfg.Pipeline.MinimumFreeSpaceBytes < 0 {
+		return fmt.Errorf("pipeline.minimum_free_space_bytes: must not be negative")
+	}
+	return nil
+}
+
+func explicitField(tree map[string]json.RawMessage, parent, field string) bool {
+	raw, ok := tree[parent]
+	if !ok {
+		return false
+	}
+	var child map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &child); err != nil {
+		return false
+	}
+	_, ok = child[field]
+	return ok
 }
 func defaultDataDir() (string, error) {
 	if value := os.Getenv("TIMINGDEX_DATA_DIR"); value != "" {

@@ -12,7 +12,7 @@ import (
 
 func TestPreviewRendererRejectsAppleLogWithoutLUT(t *testing.T) {
 	renderer := NewPreviewRenderer("")
-	err := renderer.RenderProxy(context.Background(), "apple-log.mov", filepath.Join(t.TempDir(), "proxy.mp4"), HardwarePlan{Mode: "software"}, PreviewRenderPlan{
+	_, err := renderer.RenderProxy(context.Background(), "apple-log.mov", filepath.Join(t.TempDir(), "proxy.mp4"), HardwarePlan{Mode: "software"}, PreviewRenderPlan{
 		SourceColor: SourceColorLogApple,
 		Mode:        PreviewRenderLUT,
 		RequiresLUT: true,
@@ -30,7 +30,7 @@ func TestPreviewRendererRejectsRAWWithoutInvokingFFmpeg(t *testing.T) {
 	renderer := NewPreviewRenderer("")
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "thumb.jpg")
-	err := renderer.RenderThumbnail(context.Background(), "frame.BRAW", dst, HardwarePlan{Mode: "software"}, PreviewRenderPlan{
+	_, err := renderer.RenderThumbnail(context.Background(), "frame.BRAW", dst, HardwarePlan{Mode: "software"}, PreviewRenderPlan{
 		SourceColor: SourceColorRAW,
 		Mode:        PreviewRenderUnavailable,
 	})
@@ -62,7 +62,7 @@ func TestPreviewRendererRefusesToOverwriteOriginal(t *testing.T) {
 	if err := os.WriteFile(src, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := NewPreviewRenderer("").RenderThumbnail(context.Background(), src, src, HardwarePlan{Mode: "software"}, PreviewRenderPlan{
+	_, err := NewPreviewRenderer("").RenderThumbnail(context.Background(), src, src, HardwarePlan{Mode: "software"}, PreviewRenderPlan{
 		SourceColor: SourceColorSDR,
 		Mode:        PreviewRenderDirect,
 		Available:   true,
@@ -123,7 +123,7 @@ func TestPreviewRendererUsesExplicitAppleLogLUT(t *testing.T) {
 }
 
 func TestGenerateProxyRejectsRAWByPathBeforeFFmpeg(t *testing.T) {
-	err := GenerateProxy(context.Background(), "frame.braw", filepath.Join(t.TempDir(), "proxy.mp4"), HardwarePlan{Mode: "software"})
+	_, err := GenerateProxy(context.Background(), "frame.braw", filepath.Join(t.TempDir(), "proxy.mp4"), HardwarePlan{Mode: "software"})
 	if err == nil {
 		t.Fatal("expected RAW proxy generation to be rejected")
 	}
@@ -178,11 +178,11 @@ func TestGenerateProxyPassesClassifiedHDRFilterToFFmpeg(t *testing.T) {
 		}
 	}
 	writeExecutable("ffprobe", "#!/bin/sh\nprintf '%s' '{\"streams\":[{\"codec_type\":\"video\",\"color_transfer\":\"arib-std-b67\"}]}'\n")
-	writeExecutable("ffmpeg", "#!/bin/sh\nprevious=''\nfor argument in \"$@\"; do\n  if [ \"$previous\" = \"-vf\" ]; then printf '%s' \"$argument\" > \"$TIMINGDEX_FILTER_LOG\"; fi\n  previous=\"$argument\"\ndone\nexit 0\n")
+	writeExecutable("ffmpeg", "#!/bin/sh\nprevious=''\nfor argument in \"$@\"; do\n  if [ \"$previous\" = \"-vf\" ]; then printf '%s' \"$argument\" > \"$TIMINGDEX_FILTER_LOG\"; fi\n  previous=\"$argument\"\ndone\nprintf x > \"$previous\"\nexit 0\n")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("TIMINGDEX_FILTER_LOG", filterLog)
 
-	if err := GenerateProxy(context.Background(), "hdr.mov", filepath.Join(t.TempDir(), "proxy.mp4"), HardwarePlan{Mode: "software"}); err != nil {
+	if _, err := GenerateProxy(context.Background(), "hdr.mov", filepath.Join(t.TempDir(), "proxy.mp4"), HardwarePlan{Mode: "software"}); err != nil {
 		t.Fatal(err)
 	}
 	filter, err := os.ReadFile(filterLog)

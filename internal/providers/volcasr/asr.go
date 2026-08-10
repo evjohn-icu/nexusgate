@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os/exec"
 	"strings"
@@ -170,7 +171,7 @@ func (a *ASR) Transcribe(ctx context.Context, req common.TranscribeRequest) (dom
 			// it as one fails the job for every clip whose only sound is wind
 			// or room tone, which the speech gate cannot tell from speech.
 			if websocket.CloseStatus(err) == websocket.StatusNormalClosure {
-				return domain.Transcript{Language: req.Language, RawResponse: strings.Join(raw, "\n")}, nil
+				return domain.Transcript{Language: req.Language, RawResponse: common.RedactString(strings.Join(raw, "\n"), a.APIKey)}, nil
 			}
 			return domain.Transcript{}, fmt.Errorf("read Volcengine ASR response: %w", err)
 		}
@@ -183,7 +184,7 @@ func (a *ASR) Transcribe(ctx context.Context, req common.TranscribeRequest) (dom
 			if len(payloadStr) > 2048 {
 				payloadStr = payloadStr[:2048] + "…(truncated)"
 			}
-			return domain.Transcript{}, fmt.Errorf("Volcengine ASR error: %s", payloadStr)
+			return domain.Transcript{}, common.RedactError(fmt.Errorf("Volcengine ASR error: %s: %w", payloadStr, &common.StatusError{StatusCode: http.StatusBadGateway, Body: payloadStr}), a.APIKey)
 		}
 		if len(payload) == 0 {
 			continue
@@ -191,10 +192,10 @@ func (a *ASR) Transcribe(ctx context.Context, req common.TranscribeRequest) (dom
 		raw = append(raw, string(payload))
 		text, providerErr := transcriptText(payload)
 		if providerErr != "" {
-			return domain.Transcript{}, fmt.Errorf("Volcengine ASR error: %s", providerErr)
+			return domain.Transcript{}, common.RedactError(fmt.Errorf("Volcengine ASR error: %s: %w", providerErr, &common.StatusError{StatusCode: http.StatusBadGateway, Body: providerErr}), a.APIKey)
 		}
 		if text != "" {
-			return domain.Transcript{Language: req.Language, Text: text, Segments: []domain.TranscriptSegment{{Text: text}}, RawResponse: strings.Join(raw, "\n")}, nil
+			return domain.Transcript{Language: req.Language, Text: text, Segments: []domain.TranscriptSegment{{Text: text}}, RawResponse: common.RedactString(strings.Join(raw, "\n"), a.APIKey)}, nil
 		}
 	}
 }

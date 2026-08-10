@@ -1,6 +1,47 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestLoadSparseConfigPreservesDefaults(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("TIMINGDEX_DATA_DIR", dataDir)
+	if err := os.WriteFile(filepath.Join(dataDir, "config.json"), []byte(`{"providers":{"stepfun":{"enabled":true}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LibrarySupervisor.ScanIntervalMinutes != 15 || cfg.HubTLS.Mode != "auto" || cfg.Pipeline.ProviderRouteDeferralMinutes != defaultProviderRouteDeferralMinutes {
+		t.Fatalf("sparse config lost defaults: supervisor=%d tls=%q deferral=%d", cfg.LibrarySupervisor.ScanIntervalMinutes, cfg.HubTLS.Mode, cfg.Pipeline.ProviderRouteDeferralMinutes)
+	}
+}
+
+func TestLoadRejectsExplicitZeroSupervisorIntervalWhenEnabled(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("TIMINGDEX_DATA_DIR", dataDir)
+	if err := os.WriteFile(filepath.Join(dataDir, "config.json"), []byte(`{"library_supervisor":{"enabled":true,"scan_interval_minutes":0}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(); err == nil {
+		t.Fatal("explicit zero supervisor interval should be rejected")
+	}
+}
+
+func TestLoadRejectsInvalidTLSMode(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("TIMINGDEX_DATA_DIR", dataDir)
+	if err := os.WriteFile(filepath.Join(dataDir, "config.json"), []byte(`{"hub_tls":{"mode":""}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(); err == nil {
+		t.Fatal("explicit empty TLS mode should be rejected")
+	}
+}
 
 // The Ark plan endpoints authenticate with a bearer token. Shipping any other
 // header/scheme pairing here is not a cosmetic default: the provider answers

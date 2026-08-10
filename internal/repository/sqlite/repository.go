@@ -112,6 +112,26 @@ func (r *Repository) AuthenticateWorker(ctx context.Context, token string) (remo
 }
 
 func (r *Repository) HeartbeatWorker(ctx context.Context, workerID, version string, capabilities remote.WorkerCapabilities) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var storedRaw, status string
+	err = tx.QueryRowContext(ctx, `SELECT capabilities_json,status FROM workers WHERE id=?`, workerID).Scan(&storedRaw, &status)
+	if errors.Is(err, sql.ErrNoRows) || status == string(remote.WorkerRevoked) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var stored remote.WorkerCapabilities
+	if err := json.Unmarshal([]byte(storedRaw), &stored); err != nil {
+		return err
+	}
+	// Provider operations are the operator's enrollment-time trust decision;
+	// a heartbeat may report capabilities but cannot grant provider access.
+	capabilities.ProviderOperations = stored.ProviderOperations
 	raw, err := json.Marshal(capabilities)
 	if err != nil {
 		return err
@@ -125,8 +145,10 @@ func (r *Repository) HeartbeatWorker(ctx context.Context, workerID, version stri
 		query = `UPDATE workers SET status='online',capabilities_json=?,version=?,last_seen_at=? WHERE id=? AND status!='revoked'`
 		args = []any{string(raw), version, formatTime(time.Now().UTC()), workerID}
 	}
-	_, err = r.db.ExecContext(ctx, query, args...)
-	return err
+	if _, err = tx.ExecContext(ctx, query, args...); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // workerOfflineAfter bounds how stale a worker's last heartbeat may be before
@@ -204,6 +226,10 @@ type Repository struct {
 	semanticVectorCache map[string][]float64
 }
 
+// migrationPauseAfterLock is intentionally narrow so concurrency tests can
+// hold the SQLite migration lock while another repository waits for it.
+var migrationPauseAfterLock func()
+
 func Open(path string) (*Repository, error) {
 	dsn := "file:" + filepath.ToSlash(path) + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)"
 	db, err := sql.Open("sqlite", dsn)
@@ -222,60 +248,92 @@ func Open(path string) (*Repository, error) {
 func (r *Repository) Close() error { return r.db.Close() }
 
 func (r *Repository) Migrate(ctx context.Context) error {
-	// Preflight before any migration DDL: never let an upgrade run against a
-	// corrupt database (it would bury the corruption under fresh schema) or one
-	// that could die mid-upgrade with ENOSPC. No-op when nothing is pending.
-	if err := r.checkPreMigrationConditions(ctx); err != nil {
+	lockConn, err := r.db.Conn(ctx)
+	if err != nil {
 		return err
 	}
-
-	if _, err := r.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
+	defer lockConn.Close()
+	if _, err := lockConn.ExecContext(ctx, `PRAGMA busy_timeout=30000`); err != nil {
 		return err
 	}
-
+	if _, err := lockConn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
+		return err
+	}
+	// Preflight and VACUUM INTO run outside a transaction because VACUUM cannot
+	// run inside one. The snapshot is a consistent SQLite image of this conn.
+	if err := r.checkPreMigrationConditionsWith(ctx, lockConn); err != nil {
+		return err
+	}
 	entries, err := fs.ReadDir(migrationFiles, "migrations")
 	if err != nil {
 		return err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-
-	// L1b: snapshot the pre-migration database before the first pending
-	// migration is applied. The L1a integrity/free-space gate (above) runs
-	// first; this guard is a no-op when the schema is already up to date.
-	if err := r.preMigrationSnapshotGuard(ctx); err != nil {
+	if _, err := r.preMigrationSnapshotWith(ctx, lockConn); err != nil {
 		return err
 	}
-
+	// SQLite ignores PRAGMA foreign_keys changes inside a transaction. Disable
+	// enforcement on this dedicated connection before the migration transaction.
+	if _, err := lockConn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		return err
+	}
+	if _, err := lockConn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = lockConn.ExecContext(context.Background(), `ROLLBACK`)
+		}
+	}()
+	if migrationPauseAfterLock != nil {
+		migrationPauseAfterLock()
+	}
+	applied, err := appliedMigrationVersions(ctx, lockConn)
+	if err != nil {
+		return err
+	}
+	// The model_runs rebuild drops a table referenced by canonical rows. The
+	// check after re-enabling enforcement catches damaged relationships.
+	foreignKeysRestored := false
+	defer func() {
+		if !foreignKeysRestored {
+			_, _ = lockConn.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`)
+		}
+	}()
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
 			continue
 		}
-		var exists int
-		if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, entry.Name()).Scan(&exists); err != nil {
-			return err
-		}
-		if exists > 0 {
+		if _, exists := applied[entry.Name()]; exists {
 			continue
 		}
 		content, err := migrationFiles.ReadFile("migrations/" + entry.Name())
 		if err != nil {
 			return err
 		}
-		tx, err := r.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, string(content)); err != nil {
-			tx.Rollback()
+		if _, err := lockConn.ExecContext(ctx, string(content)); err != nil {
 			return fmt.Errorf("apply migration %s: %w", entry.Name(), err)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)`, entry.Name(), formatTime(time.Now())); err != nil {
-			tx.Rollback()
+		if _, err := lockConn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)`, entry.Name(), formatTime(time.Now())); err != nil {
 			return err
 		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
+		applied[entry.Name()] = struct{}{}
+	}
+	if _, err := lockConn.ExecContext(ctx, `COMMIT`); err != nil {
+		return err
+	}
+	committed = true
+	if _, err := lockConn.ExecContext(ctx, `PRAGMA foreign_keys=ON`); err != nil {
+		return err
+	}
+	foreignKeysRestored = true
+	var violations int
+	if err := lockConn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&violations); err != nil {
+		return err
+	}
+	if violations != 0 {
+		return fmt.Errorf("migration left %d foreign key violations", violations)
 	}
 	return r.ensureCJKBigramFTS(ctx)
 }
@@ -296,14 +354,18 @@ var statfsFreeBytes func(path string) (uint64, error)
 // with ENOSPC. A fully migrated database skips both checks entirely so
 // everyday startup pays nothing.
 func (r *Repository) checkPreMigrationConditions(ctx context.Context) error {
-	pending, err := r.pendingMigrationCount(ctx)
+	return r.checkPreMigrationConditionsWith(ctx, r.db)
+}
+
+func (r *Repository) checkPreMigrationConditionsWith(ctx context.Context, q migrationQuerier) error {
+	pending, err := r.pendingMigrationCountWith(ctx, q)
 	if err != nil {
 		return fmt.Errorf("migration preflight: cannot determine pending migrations: %w", err)
 	}
 	if pending == 0 {
 		return nil
 	}
-	if err := r.IntegrityCheck(ctx); err != nil {
+	if err := integrityCheck(ctx, q); err != nil {
 		return fmt.Errorf("migration preflight: refusing to migrate a corrupt database: %w (the operator must restore the library from backup first; this upgrade will not run until the database passes integrity_check)", err)
 	}
 	dbSize, err := os.Stat(r.dbPath)
@@ -328,31 +390,73 @@ func (r *Repository) checkPreMigrationConditions(ctx context.Context) error {
 // never been migrated reports the full embedded count; a fully migrated one
 // reports zero, and the preflight then returns without touching the disk.
 func (r *Repository) pendingMigrationCount(ctx context.Context) (int, error) {
+	return r.pendingMigrationCountWith(ctx, r.db)
+}
+
+func (r *Repository) pendingMigrationCountWith(ctx context.Context, q migrationQuerier) (int, error) {
 	entries, err := fs.ReadDir(migrationFiles, "migrations")
 	if err != nil {
 		return 0, err
 	}
-	embedded := 0
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
-			embedded++
-		}
-	}
 	var exists int
-	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_migrations'`).Scan(&exists); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_migrations'`).Scan(&exists); err != nil {
 		return 0, err
 	}
 	if exists == 0 {
-		return embedded, nil
+		pending := 0
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
+				pending++
+			}
+		}
+		return pending, nil
 	}
-	var applied int
-	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil {
+	applied, err := appliedMigrationVersions(ctx, q)
+	if err != nil {
 		return 0, err
 	}
-	if applied >= embedded {
-		return 0, nil
+	pending := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
+			if _, ok := applied[entry.Name()]; !ok {
+				pending++
+			}
+		}
 	}
-	return embedded - applied, nil
+	return pending, nil
+}
+
+type migrationQuerier interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func integrityCheck(ctx context.Context, q migrationQuerier) error {
+	var result string
+	if err := q.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&result); err != nil {
+		return err
+	}
+	if result != "ok" {
+		return fmt.Errorf("SQLite integrity_check reported: %s", result)
+	}
+	return nil
+}
+
+func appliedMigrationVersions(ctx context.Context, q migrationQuerier) (map[string]struct{}, error) {
+	rows, err := q.QueryContext(ctx, `SELECT version FROM schema_migrations`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	applied := make(map[string]struct{})
+	for rows.Next() {
+		var version string
+		if err := rows.Scan(&version); err != nil {
+			return nil, err
+		}
+		applied[version] = struct{}{}
+	}
+	return applied, rows.Err()
 }
 
 // migrationFreeSpaceRequired is the disk headroom demanded before an upgrade
@@ -397,7 +501,7 @@ func (r *Repository) rebuildCJKBigramFTS(ctx context.Context) error {
 	type assetRecord struct{ id, filename, summary, transcript, sceneTags, subjects, moods, extra, reason string }
 	assets := make([]assetRecord, 0)
 	assetRows, err := tx.QueryContext(ctx, `SELECT a.id,
-COALESCE((SELECT absolute_path FROM asset_locations l WHERE l.asset_id=a.id AND l.exists_now=1 ORDER BY l.is_primary DESC,l.last_seen_at DESC LIMIT 1),''),
+COALESCE((SELECT absolute_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=a.id AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.is_primary DESC,l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),''),
 COALESCE(an.summary,''),COALESCE((SELECT full_text FROM transcripts t WHERE t.asset_id=a.id AND t.status='succeeded' ORDER BY t.created_at DESC LIMIT 1),''),
 COALESCE(an.scene_tags_json,''),COALESCE(an.subjects_json,''),COALESCE(an.mood_tags_json,''),COALESCE(an.extra_tags_json,''),COALESCE(an.editorial_reason,'')
 FROM assets a LEFT JOIN asset_analysis an ON an.asset_id=a.id`)
@@ -539,32 +643,54 @@ func (r *Repository) UpsertScannedFile(ctx context.Context, root domain.LibraryR
 	result := domain.ScannedFile{}
 	if errors.Is(err, sql.ErrNoRows) {
 		assetID = idgen.New()
-		_, err = tx.ExecContext(ctx, `INSERT INTO assets(id, quick_fingerprint, file_size, state, first_seen_at, last_seen_at) VALUES (?, ?, ?, 'discovered', ?, ?)`, assetID, fingerprint, info.Size(), formatTime(now), formatTime(now))
+		_, err = tx.ExecContext(ctx, `INSERT INTO assets(id, quick_fingerprint, file_size, probe_modified_ns, state, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, 'discovered', ?, ?)`, assetID, fingerprint, info.Size(), info.ModTime().UnixNano(), formatTime(now), formatTime(now))
 		result.Created = true
 	}
 	if err != nil {
 		return result, err
 	}
 	result.AssetID = assetID
+	var assetHadLiveLocation bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM asset_locations WHERE asset_id=? AND exists_now=1)`, assetID).Scan(&assetHadLiveLocation); err != nil {
+		return result, err
+	}
+	var assetHadLiveLocationInRoot bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM asset_locations WHERE asset_id=? AND root_id=? AND exists_now=1)`, assetID, root.ID).Scan(&assetHadLiveLocationInRoot); err != nil {
+		return result, err
+	}
 
 	// Widen the lookup beyond the id so the scan can tell whether this revisit
 	// changed anything the pipeline keys its jobs on (mtime, and a new or
 	// moved location) without a second round trip. Only the id is ever written
 	// back; the rest is compared.
 	var locationID string
-	var existingAbsolutePath string
+	var existingAbsolutePath, oldAssetID string
 	var existingModifiedNS int64
+	var existingExistsNow int
 	locationExists := true
-	err = tx.QueryRowContext(ctx, `SELECT id, modified_ns, absolute_path FROM asset_locations WHERE root_id = ? AND relative_path = ?`, root.ID, relativePath).Scan(&locationID, &existingModifiedNS, &existingAbsolutePath)
+	err = tx.QueryRowContext(ctx, `SELECT id, asset_id, modified_ns, absolute_path, exists_now FROM asset_locations WHERE root_id = ? AND relative_path = ?`, root.ID, relativePath).Scan(&locationID, &oldAssetID, &existingModifiedNS, &existingAbsolutePath, &existingExistsNow)
 	if errors.Is(err, sql.ErrNoRows) {
 		locationExists = false
 		locationID = idgen.New()
-		_, err = tx.ExecContext(ctx, `INSERT INTO asset_locations(id, asset_id, root_id, relative_path, absolute_path, modified_ns, exists_now, is_primary, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)`, locationID, assetID, root.ID, relativePath, absolutePath, info.ModTime().UnixNano(), formatTime(now))
+		_, err = tx.ExecContext(ctx, `INSERT INTO asset_locations(id, asset_id, root_id, relative_path, absolute_path, modified_ns, exists_now, is_primary, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?)`, locationID, assetID, root.ID, relativePath, absolutePath, info.ModTime().UnixNano(), formatTime(now))
 	} else if err == nil {
-		_, err = tx.ExecContext(ctx, `UPDATE asset_locations SET asset_id = ?, absolute_path = ?, modified_ns = ?, exists_now = 1, last_seen_at = ? WHERE id = ?`, assetID, absolutePath, info.ModTime().UnixNano(), formatTime(now), locationID)
+		_, err = tx.ExecContext(ctx, `UPDATE asset_locations SET is_primary=0, asset_id = ?, absolute_path = ?, modified_ns = ?, exists_now = 1, last_seen_at = ? WHERE id = ?`, assetID, absolutePath, info.ModTime().UnixNano(), formatTime(now), locationID)
 	}
 	if err != nil {
 		return result, err
+	}
+	if err := normalizePrimaryLocation(ctx, tx, assetID); err != nil {
+		return result, err
+	}
+	if oldAssetID != "" && oldAssetID != assetID {
+		if err := normalizePrimaryLocation(ctx, tx, oldAssetID); err != nil {
+			return result, err
+		}
+	}
+	if locationExists && existingModifiedNS != info.ModTime().UnixNano() {
+		if _, err = tx.ExecContext(ctx, `UPDATE assets SET probe_modified_ns = ? WHERE id = ?`, info.ModTime().UnixNano(), assetID); err != nil {
+			return result, err
+		}
 	}
 	// A location that did not exist was inserted — a known asset appearing at
 	// a new path, or a brand-new asset — so it counts as changed. An existing
@@ -572,11 +698,42 @@ func (r *Repository) UpsertScannedFile(ctx context.Context, root domain.LibraryR
 	// from moved, or the path changed (a move or remount: the asset is worth
 	// re-enqueuing, and the probe hash dedup makes that re-enqueue a no-op
 	// when content and mtime are unchanged).
-	result.Changed = result.Created || !locationExists || existingModifiedNS != info.ModTime().UnixNano() || existingAbsolutePath != absolutePath
+	// A newly discovered alternate location only changes the canonical choice;
+	// it does not change the media inputs keyed by the asset.
+	result.Changed = result.Created || (!locationExists && (assetHadLiveLocationInRoot || !assetHadLiveLocation)) || (locationExists && (existingExistsNow == 0 || existingModifiedNS != info.ModTime().UnixNano() || existingAbsolutePath != absolutePath))
 
 	_, err = tx.ExecContext(ctx, `UPDATE assets SET state = 'discovered', last_seen_at = ?, missing_since = NULL WHERE id = ?`, formatTime(now), assetID)
 	if err != nil {
 		return result, err
+	}
+	var locationCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM asset_locations l JOIN assets a ON a.id=l.asset_id WHERE a.quick_fingerprint=? AND a.file_size=?`, fingerprint, info.Size()).Scan(&locationCount); err != nil {
+		return result, err
+	}
+	if locationCount > 1 {
+		rows, err := tx.QueryContext(ctx, `SELECT DISTINCT root_id FROM asset_locations l JOIN assets a ON a.id=l.asset_id WHERE a.quick_fingerprint=? AND a.file_size=? ORDER BY root_id`, fingerprint, info.Size())
+		if err != nil {
+			return result, err
+		}
+		var rootIDs []string
+		for rows.Next() {
+			var rootID string
+			if err := rows.Scan(&rootID); err != nil {
+				rows.Close()
+				return result, err
+			}
+			rootIDs = append(rootIDs, rootID)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return result, err
+		}
+		rows.Close()
+		var committed int
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM model_runs WHERE asset_id=? AND state='committed')`, assetID).Scan(&committed); err != nil {
+			return result, err
+		}
+		slog.Info("sampled fingerprint collision", "asset_id", assetID, "root_ids", rootIDs, "count", locationCount, "has_committed_analysis", committed == 1)
 	}
 
 	return result, tx.Commit()
@@ -607,11 +764,43 @@ func (r *Repository) MarkUnseenLocationsMissing(ctx context.Context, rootID stri
 	}
 	stmt.Close()
 
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS scan_affected(asset_id TEXT PRIMARY KEY)`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM scan_affected`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO scan_affected SELECT asset_id FROM asset_locations WHERE root_id = ? AND relative_path NOT IN (SELECT relative_path FROM scan_seen) AND exists_now = 1`, rootID); err != nil {
+		return 0, err
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE asset_locations SET exists_now = 0 WHERE root_id = ? AND relative_path NOT IN (SELECT relative_path FROM scan_seen) AND exists_now = 1`, rootID)
 	if err != nil {
 		return 0, err
 	}
 	count, _ := result.RowsAffected()
+	affectedRows, err := tx.QueryContext(ctx, `SELECT asset_id FROM scan_affected`)
+	if err != nil {
+		return 0, err
+	}
+	var affected []string
+	for affectedRows.Next() {
+		var id string
+		if err := affectedRows.Scan(&id); err != nil {
+			affectedRows.Close()
+			return 0, err
+		}
+		affected = append(affected, id)
+	}
+	if err := affectedRows.Err(); err != nil {
+		affectedRows.Close()
+		return 0, err
+	}
+	affectedRows.Close()
+	for _, id := range affected {
+		if err := normalizePrimaryLocation(ctx, tx, id); err != nil {
+			return 0, err
+		}
+	}
 
 	now := formatTime(time.Now().UTC())
 	if _, err := tx.ExecContext(ctx, `UPDATE assets SET state = 'missing', missing_since = COALESCE(missing_since, ?) WHERE id IN (SELECT a.id FROM assets a WHERE NOT EXISTS (SELECT 1 FROM asset_locations l WHERE l.asset_id = a.id AND l.exists_now = 1))`, now); err != nil {
@@ -695,7 +884,7 @@ func (r *Repository) GetPrimaryLocation(ctx context.Context, assetID string) (do
 	// row: the pipeline derives the probe job's input hash from them (not from
 	// the path), and asking a second time for data one join provides would be
 	// a needless round trip on the hottest pipeline path.
-	err := r.db.QueryRowContext(ctx, `SELECT l.id,l.asset_id,l.root_id,l.relative_path,l.absolute_path,COALESCE(l.file_id,''),l.modified_ns,l.exists_now,l.is_primary,l.last_seen_at,a.quick_fingerprint,a.file_size FROM asset_locations l JOIN assets a ON a.id=l.asset_id WHERE l.asset_id=? AND l.exists_now=1 ORDER BY l.is_primary DESC,l.last_seen_at DESC LIMIT 1`, assetID).Scan(&v.ID, &v.AssetID, &v.RootID, &v.RelativePath, &v.AbsolutePath, &v.FileID, &v.ModifiedNS, &existsNow, &primary, &last, &v.QuickFingerprint, &v.FileSize)
+	err := r.db.QueryRowContext(ctx, `SELECT l.id,l.asset_id,l.root_id,l.relative_path,l.absolute_path,COALESCE(l.file_id,''),l.modified_ns,l.exists_now,l.is_primary,l.last_seen_at,a.quick_fingerprint,a.file_size,COALESCE(a.probe_modified_ns, l.modified_ns) FROM asset_locations l JOIN assets a ON a.id=l.asset_id JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=? AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.is_primary DESC,l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1`, assetID).Scan(&v.ID, &v.AssetID, &v.RootID, &v.RelativePath, &v.AbsolutePath, &v.FileID, &v.ModifiedNS, &existsNow, &primary, &last, &v.QuickFingerprint, &v.FileSize, &v.ProbeModifiedNS)
 	if err != nil {
 		return domain.AssetLocation{}, err
 	}
@@ -703,6 +892,14 @@ func (r *Repository) GetPrimaryLocation(ctx context.Context, assetID string) (do
 	v.IsPrimary = primary == 1
 	v.LastSeenAt, _ = time.Parse(time.RFC3339Nano, last)
 	return v, nil
+}
+
+func normalizePrimaryLocation(ctx context.Context, tx *sql.Tx, assetID string) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE asset_locations SET is_primary=0 WHERE asset_id=?`, assetID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE asset_locations SET is_primary=1 WHERE id=(SELECT al.id FROM asset_locations al JOIN library_roots lr ON lr.id=al.root_id WHERE al.asset_id=? ORDER BY CASE WHEN al.exists_now=1 AND lr.health_state='healthy' THEN 0 WHEN al.exists_now=1 AND lr.health_state='unknown' THEN 1 WHEN al.exists_now=0 AND lr.health_state='healthy' THEN 2 WHEN al.exists_now=1 AND lr.health_state='unavailable' THEN 3 WHEN al.exists_now=0 AND lr.health_state='unknown' THEN 4 WHEN al.exists_now=0 AND lr.health_state='unavailable' THEN 5 ELSE 6 END,al.last_seen_at DESC,lr.created_at,lr.id,al.relative_path,al.id LIMIT 1)`, assetID)
+	return err
 }
 
 func (r *Repository) UpsertProviderChannel(ctx context.Context, channel domain.ProviderChannel) (domain.ProviderChannel, error) {
@@ -861,7 +1058,7 @@ func (r *Repository) ListProviderChannels(ctx context.Context, capability string
 // capture groups for one library root. Manual sessions are intentionally left
 // untouched; source files and metadata are never modified.
 func (r *Repository) RebuildAutomaticShootSessions(ctx context.Context, rootID string) error {
-	rows, err := r.db.QueryContext(ctx, `SELECT a.id,COALESCE(al.relative_path,''),COALESCE(cm.vendor,''),COALESCE(cm.model,''),COALESCE(cm.device_serial,''),cm.captured_at,COALESCE(m.duration_ms,0),COALESCE(cm.session_marker,''),COALESCE(cm.reel,'') FROM assets a JOIN asset_locations al ON al.asset_id=a.id AND al.root_id=? AND al.exists_now=1 LEFT JOIN capture_metadata cm ON cm.asset_id=a.id LEFT JOIN media_metadata m ON m.asset_id=a.id WHERE cm.captured_at IS NOT NULL GROUP BY a.id`, rootID)
+	rows, err := r.db.QueryContext(ctx, `SELECT a.id,COALESCE(al.relative_path,''),COALESCE(cm.vendor,''),COALESCE(cm.model,''),COALESCE(cm.device_serial,''),cm.captured_at,COALESCE(m.duration_ms,0),COALESCE(cm.session_marker,''),COALESCE(cm.reel,'') FROM assets a JOIN asset_locations al ON al.id=(SELECT l.id FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=a.id AND l.root_id=? AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.is_primary DESC,l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1) LEFT JOIN capture_metadata cm ON cm.asset_id=a.id LEFT JOIN media_metadata m ON m.asset_id=a.id WHERE cm.captured_at IS NOT NULL GROUP BY a.id`, rootID)
 	if err != nil {
 		return err
 	}
@@ -915,8 +1112,26 @@ func (r *Repository) RebuildAutomaticShootSessions(ctx context.Context, rootID s
 }
 
 func (r *Repository) SaveMediaMetadata(ctx context.Context, assetID string, m domain.MediaMetadata, version string) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var oldRaw string
+	err = tx.QueryRowContext(ctx, `SELECT normalized_json FROM media_metadata WHERE asset_id=?`, assetID).Scan(&oldRaw)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
+	}
+	if err != nil {
+		return err
+	}
+	var old domain.MediaMetadata
+	if oldRaw != "" {
+		_ = json.Unmarshal([]byte(oldRaw), &old)
+	}
+	m = mergeMediaMetadata(old, m)
 	norm, _ := json.Marshal(m)
-	_, err := r.db.ExecContext(ctx, `INSERT INTO media_metadata(asset_id,ffprobe_json,exiftool_json,normalized_json,probe_version,updated_at,duration_ms,width,height,fps,video_codec,audio_codec,has_audio,orientation,captured_at,camera_model,latitude,longitude)
+	_, err = tx.ExecContext(ctx, `INSERT INTO media_metadata(asset_id,ffprobe_json,exiftool_json,normalized_json,probe_version,updated_at,duration_ms,width,height,fps,video_codec,audio_codec,has_audio,orientation,captured_at,camera_model,latitude,longitude)
 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(asset_id) DO UPDATE SET ffprobe_json=excluded.ffprobe_json,exiftool_json=excluded.exiftool_json,normalized_json=excluded.normalized_json,probe_version=excluded.probe_version,updated_at=excluded.updated_at,duration_ms=excluded.duration_ms,width=excluded.width,height=excluded.height,fps=excluded.fps,video_codec=excluded.video_codec,audio_codec=excluded.audio_codec,has_audio=excluded.has_audio,orientation=excluded.orientation,captured_at=excluded.captured_at,camera_model=excluded.camera_model,latitude=excluded.latitude,longitude=excluded.longitude`, assetID, m.FFProbeRaw, m.ExifToolRaw, string(norm), version, formatTime(time.Now()), m.DurationMS, m.Width, m.Height, m.FPS, m.VideoCodec, m.AudioCodec, boolInt(m.HasAudio), m.Orientation, nullableTime(m.CapturedAt), m.CameraModel, m.Latitude, m.Longitude)
 	if err != nil {
 		return err
@@ -925,45 +1140,158 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(asset_id) DO UPDATE SET 
 	if previewStatus == "" {
 		previewStatus = "unknown"
 	}
-	_, err = r.db.ExecContext(ctx, `INSERT INTO capture_metadata(asset_id,vendor,make,model,device_serial,captured_at,capture_time_source,capture_time_confidence,latitude,longitude,location_source,location_precision,source_color,color_profile,raw_format,preview_status,normalized_json,updated_at)
+	_, err = tx.ExecContext(ctx, `INSERT INTO capture_metadata(asset_id,vendor,make,model,device_serial,captured_at,capture_time_source,capture_time_confidence,latitude,longitude,location_source,location_precision,source_color,color_profile,raw_format,preview_status,normalized_json,updated_at)
 VALUES(?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(asset_id) DO UPDATE SET vendor=excluded.vendor,make=excluded.make,model=excluded.model,device_serial=excluded.device_serial,captured_at=excluded.captured_at,capture_time_source=excluded.capture_time_source,capture_time_confidence=excluded.capture_time_confidence,latitude=excluded.latitude,longitude=excluded.longitude,location_source=excluded.location_source,location_precision=excluded.location_precision,source_color=excluded.source_color,color_profile=excluded.color_profile,raw_format=excluded.raw_format,preview_status=excluded.preview_status,normalized_json=excluded.normalized_json,updated_at=excluded.updated_at`,
 		assetID, m.CaptureVendor, m.CameraMake, m.CameraModel, m.CameraSerial, nullableTime(m.CapturedAt), captureTimeSource(m), captureTimeConfidence(m), m.Latitude, m.Longitude, captureLocationSource(m), captureLocationPrecision(m), m.SourceColor, m.ColorProfile, m.RawFormat, previewStatus, string(norm), formatTime(time.Now()))
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func captureTimeSource(m domain.MediaMetadata) string {
-	if m.CapturedAt == nil {
-		return ""
-	}
-	if m.ExifToolRaw != "" {
-		return "embedded"
-	}
-	return "probe"
+	return m.CaptureTimeSource
 }
 
 func captureTimeConfidence(m domain.MediaMetadata) float64 {
-	if m.CapturedAt == nil {
-		return 0
-	}
-	if m.ExifToolRaw != "" {
-		return 0.9
-	}
-	return 0.6
+	return m.CaptureTimeConfidence
 }
 
 func captureLocationSource(m domain.MediaMetadata) string {
-	if m.Latitude == nil || m.Longitude == nil {
-		return ""
-	}
-	return "embedded"
+	return m.LocationSource
 }
 
 func captureLocationPrecision(m domain.MediaMetadata) string {
-	if m.Latitude == nil || m.Longitude == nil {
-		return ""
+	return m.LocationPrecision
+}
+
+func mergeMediaMetadata(old, next domain.MediaMetadata) domain.MediaMetadata {
+	if next.DurationMS == 0 {
+		next.DurationMS = old.DurationMS
 	}
-	return "precise"
+	if next.Width == 0 {
+		next.Width = old.Width
+	}
+	if next.Height == 0 {
+		next.Height = old.Height
+	}
+	if next.FPS == 0 {
+		next.FPS = old.FPS
+	}
+	if next.VideoCodec == "" {
+		next.VideoCodec = old.VideoCodec
+	}
+	if next.AudioCodec == "" {
+		next.AudioCodec = old.AudioCodec
+	}
+	if !next.HasAudio {
+		next.HasAudio = old.HasAudio
+	}
+	if next.Orientation == "" {
+		next.Orientation = old.Orientation
+	}
+	if next.CaptureVendor == "" {
+		next.CaptureVendor = old.CaptureVendor
+	}
+	if next.CameraMake == "" {
+		next.CameraMake = old.CameraMake
+	}
+	if next.CameraModel == "" {
+		next.CameraModel = old.CameraModel
+	}
+	if next.CameraSerial == "" {
+		next.CameraSerial = old.CameraSerial
+	}
+	if next.LensModel == "" {
+		next.LensModel = old.LensModel
+	}
+	if next.Reel == "" {
+		next.Reel = old.Reel
+	}
+	if next.Clip == "" {
+		next.Clip = old.Clip
+	}
+	if next.SourceTimecode == "" {
+		next.SourceTimecode = old.SourceTimecode
+	}
+	if next.PixelFormat == "" {
+		next.PixelFormat = old.PixelFormat
+	}
+	if next.BitDepth == 0 {
+		next.BitDepth = old.BitDepth
+	}
+	if next.ColorSpace == "" {
+		next.ColorSpace = old.ColorSpace
+	}
+	if next.ColorTransfer == "" {
+		next.ColorTransfer = old.ColorTransfer
+	}
+	if next.ColorPrimaries == "" {
+		next.ColorPrimaries = old.ColorPrimaries
+	}
+	if next.SourceColor == "" {
+		next.SourceColor = old.SourceColor
+	}
+	if next.ColorProfile == "" {
+		next.ColorProfile = old.ColorProfile
+	}
+	if next.RawFormat == "" {
+		next.RawFormat = old.RawFormat
+	}
+	if next.PreviewStatus == "" {
+		next.PreviewStatus = old.PreviewStatus
+	}
+	if next.PreviewRenderMode == "" {
+		next.PreviewRenderMode = old.PreviewRenderMode
+	}
+	if !next.PreviewAvailable {
+		next.PreviewAvailable = old.PreviewAvailable
+	}
+	if !next.PreviewRequiresLUT {
+		next.PreviewRequiresLUT = old.PreviewRequiresLUT
+	}
+	if next.FFProbeRaw == "" {
+		next.FFProbeRaw = old.FFProbeRaw
+	}
+	if next.ExifToolRaw == "" {
+		next.ExifToolRaw = old.ExifToolRaw
+	}
+	if next.CapturedAt == nil || timeSourceRank(next.CaptureTimeSource) < timeSourceRank(old.CaptureTimeSource) && old.CapturedAt != nil {
+		next.CapturedAt, next.CaptureTimeSource, next.CaptureTimeConfidence = old.CapturedAt, old.CaptureTimeSource, old.CaptureTimeConfidence
+	}
+	if next.Latitude == nil || next.Longitude == nil || (old.Latitude != nil && old.Longitude != nil && (locationSourceRank(next.LocationSource) < locationSourceRank(old.LocationSource) || locationSourceRank(next.LocationSource) == locationSourceRank(old.LocationSource) && locationPrecisionRank(next.LocationPrecision) < locationPrecisionRank(old.LocationPrecision))) {
+		next.Latitude, next.Longitude, next.LocationSource, next.LocationPrecision = old.Latitude, old.Longitude, old.LocationSource, old.LocationPrecision
+	}
+	return next
+}
+
+func timeSourceRank(s string) int {
+	switch s {
+	case "manual":
+		return 500
+	case "embedded_exif":
+		return 400
+	case "embedded_probe":
+		return 300
+	case "filesystem":
+		return 100
+	default:
+		return 0
+	}
+}
+func locationSourceRank(s string) int { return timeSourceRank(s) }
+func locationPrecisionRank(s string) int {
+	switch s {
+	case "exact", "precise":
+		return 300
+	case "approximate":
+		return 200
+	case "region":
+		return 100
+	default:
+		return 0
+	}
 }
 
 func (r *Repository) GetMediaMetadata(ctx context.Context, assetID string) (*domain.MediaMetadata, error) {
@@ -978,6 +1306,9 @@ func (r *Repository) GetMediaMetadata(ctx context.Context, assetID string) (*dom
 	var m domain.MediaMetadata
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		return nil, err
+	}
+	if m.LocationPrecision == "precise" {
+		m.LocationPrecision = "exact"
 	}
 	return &m, nil
 }
@@ -1380,7 +1711,7 @@ func isDeferCode(code string) bool {
 }
 
 func (r *Repository) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT j.id,COALESCE(j.asset_id,''),j.job_type,j.state,j.priority,j.attempt_count,j.max_attempts,j.run_after,j.input_hash,COALESCE(j.last_error_message,''),j.terminal,COALESCE(j.last_error_code,''),COALESCE((SELECT loc.relative_path FROM asset_locations loc WHERE loc.asset_id=j.asset_id AND loc.is_primary=1 LIMIT 1),'') FROM jobs j ORDER BY j.created_at DESC LIMIT ?`, limit)
+	rows, err := r.db.QueryContext(ctx, `SELECT j.id,COALESCE(j.asset_id,''),j.job_type,j.state,j.priority,j.attempt_count,j.max_attempts,j.run_after,j.input_hash,COALESCE(j.last_error_message,''),j.terminal,COALESCE(j.last_error_code,''),COALESCE((SELECT loc.relative_path FROM asset_locations loc JOIN library_roots lr ON lr.id=loc.root_id WHERE loc.asset_id=j.asset_id AND loc.is_primary=1 AND loc.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY loc.last_seen_at DESC,lr.created_at,lr.id,loc.relative_path,loc.id LIMIT 1),'') FROM jobs j ORDER BY j.created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1474,6 +1805,78 @@ func (r *Repository) RebuildSearch(ctx context.Context, assetID string) error {
 	return tx.Commit()
 }
 
+// RebuildAllSearch repairs the asset-level index from canonical analysis and
+// successful transcript rows. It deliberately continues after an individual
+// asset failure so one stale location cannot hide the rest of the repair.
+func (r *Repository) RebuildAllSearch(ctx context.Context) (int, []string, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT a.id,
+        CASE WHEN an.asset_id IS NOT NULL THEN 1 ELSE 0 END,
+        CASE WHEN t.asset_id IS NOT NULL THEN 1 ELSE 0 END,
+        COALESCE(an.summary,''),COALESCE(an.scene_tags_json,''),COALESCE(an.subjects_json,''),
+        COALESCE(an.mood_tags_json,''),COALESCE(an.extra_tags_json,''),COALESCE(an.editorial_reason,''),
+        COALESCE(t.full_text,''),
+		COALESCE(
+			(SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id
+			 WHERE l.asset_id=a.id AND l.exists_now=1 AND lr.health_state<>'unavailable'
+			 ORDER BY l.is_primary DESC,l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),
+			(SELECT l.relative_path FROM asset_locations l WHERE l.asset_id=a.id
+			 ORDER BY l.last_seen_at DESC,l.id LIMIT 1), '')
+        FROM assets a
+        LEFT JOIN asset_analysis an ON an.asset_id=a.id
+        LEFT JOIN transcripts t ON t.id=(SELECT t2.id FROM transcripts t2 WHERE t2.asset_id=a.id AND t2.status='succeeded' ORDER BY t2.created_at DESC,t2.id DESC LIMIT 1)
+        ORDER BY a.id`)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer rows.Close()
+	type assetSearchRecord struct {
+		id, filename, summary, transcript, tags, subjects, moods, extra, reason string
+		hasAnalysis, hasTranscript                                              int
+	}
+	var records []assetSearchRecord
+	for rows.Next() {
+		var record assetSearchRecord
+		if err := rows.Scan(&record.id, &record.hasAnalysis, &record.hasTranscript, &record.summary, &record.tags, &record.subjects, &record.moods, &record.extra, &record.reason, &record.transcript, &record.filename); err != nil {
+			return 0, nil, err
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, nil, err
+	}
+	rebuilt := 0
+	var failures []string
+	for _, record := range records {
+		tx, err := r.db.BeginTx(ctx, nil)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", record.id, err))
+			continue
+		}
+		if record.hasAnalysis == 1 || record.hasTranscript == 1 {
+			filename := ""
+			if record.filename != "" {
+				filename = filepath.Base(record.filename)
+			}
+			err = r.rebuildSearchTx(ctx, tx, record.id, filename, record.summary, record.transcript, record.tags, record.subjects, record.moods, record.extra, record.reason)
+		} else {
+			err = r.deleteFromSearchIndexTx(ctx, tx, record.id)
+		}
+		if err == nil {
+			err = tx.Commit()
+		} else {
+			_ = tx.Rollback()
+		}
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", record.id, err))
+			continue
+		}
+		if record.hasAnalysis == 1 || record.hasTranscript == 1 {
+			rebuilt++
+		}
+	}
+	return rebuilt, failures, nil
+}
+
 // rebuildSearchTx assumes the caller already owns the transaction, so this
 // delete+insert pair can be composed into a larger transaction later without
 // nesting BeginTx calls. RebuildSearch is currently the only caller and it
@@ -1509,7 +1912,7 @@ func (r *Repository) deleteFromSearchIndexTx(ctx context.Context, tx *sql.Tx, as
 	return err
 }
 
-func (r *Repository) ReplaceAssetShots(ctx context.Context, assetID, sourceRunID string, shots []domain.AssetShot) error {
+func (r *Repository) ReplaceAssetShots(ctx context.Context, assetID, sourceRunID string, shots []domain.AssetShot, jobID, owner string) error {
 	if err := validateAssetShots(shots); err != nil {
 		return err
 	}
@@ -1520,6 +1923,47 @@ func (r *Repository) ReplaceAssetShots(ctx context.Context, assetID, sourceRunID
 	defer tx.Rollback()
 	if err := r.replaceAssetShotsTx(ctx, tx, assetID, sourceRunID, shots); err != nil {
 		return err
+	}
+	if err := leaseGuard(ctx, tx, jobID, assetID, owner); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	r.clearSemanticVectorCache()
+	return nil
+}
+
+// CommitShotRefinement replaces the canonical shot set and commits the
+// refinement run as one transaction. The lease assertion follows all writes,
+// so a stale refinement cannot leave either shots or model-run state behind.
+func (r *Repository) CommitShotRefinement(ctx context.Context, assetID, runID string, shots []domain.AssetShot, jobID, owner string) error {
+	if err := validateAssetShots(shots); err != nil {
+		return err
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := r.replaceAssetShotsTx(ctx, tx, assetID, runID, shots); err != nil {
+		return err
+	}
+	if err := leaseGuard(ctx, tx, jobID, assetID, owner); err != nil {
+		return err
+	}
+	now := formatTime(time.Now().UTC())
+	res, err := tx.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND asset_id=? AND state='validated' AND (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?))`, now, runID, assetID, jobID, jobID, assetID, owner, now)
+	if err != nil {
+		return err
+	}
+	if n, e := res.RowsAffected(); e != nil {
+		return e
+	} else if n != 1 {
+		if jobID != "" {
+			return leaseLostErr(jobID, owner)
+		}
+		return domain.Permanent(fmt.Errorf("%w: run %s state is not validated", domain.ErrCommitRunNotValidated, runID))
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -1918,7 +2362,7 @@ func (r *Repository) scoreShotCandidates(ctx context.Context, q string, facets d
 	// never replace this filter.
 	clauses, args := facetWhere(facets)
 	clauses, args = appendShotDurationBounds(clauses, args, facets)
-	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,v.vector_json,COALESCE((SELECT relative_path FROM asset_locations WHERE asset_id=s.asset_id AND is_primary=1 LIMIT 1),'') FROM asset_shots s JOIN shot_semantic_vectors v ON v.shot_id=s.id LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id WHERE v.model=?`
+	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,v.vector_json,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),'') FROM asset_shots s JOIN shot_semantic_vectors v ON v.shot_id=s.id LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id WHERE v.model=?`
 	queryArgs := append([]any{discovery.HeuristicVectorModel}, args...)
 	if len(clauses) > 0 {
 		query += ` AND ` + strings.Join(clauses, ` AND `)
@@ -2197,7 +2641,7 @@ type semanticShotRecord struct {
 func (r *Repository) loadSemanticShotRecords(ctx context.Context, facets domain.FacetFilter) ([]semanticShotRecord, error) {
 	clauses, args := facetWhere(facets)
 	clauses, args = appendShotDurationBounds(clauses, args, facets)
-	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,v.vector_json,COALESCE((SELECT relative_path FROM asset_locations WHERE asset_id=s.asset_id AND is_primary=1 LIMIT 1),'') FROM asset_shots s JOIN shot_semantic_vectors v ON v.shot_id=s.id LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id WHERE v.model=?`
+	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,v.vector_json,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),'') FROM asset_shots s JOIN shot_semantic_vectors v ON v.shot_id=s.id LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id WHERE v.model=?`
 	queryArgs := append([]any{discovery.HeuristicVectorModel}, args...)
 	if len(clauses) > 0 {
 		query += ` AND ` + strings.Join(clauses, ` AND `)
@@ -2460,9 +2904,42 @@ func nullString(v string) any {
 // Repository methods, which own the SQL.
 func (r *Repository) DB() *sql.DB { return r.db }
 
-func (r *Repository) CreateModelRun(ctx context.Context, assetID, capability, provider, model, inputHash, promptVersion, schemaVersion, requestJSON string) (string, bool, error) {
+func leaseParams(args []string) (string, string) {
+	if len(args) >= 2 {
+		return args[len(args)-2], args[len(args)-1]
+	}
+	return "", ""
+}
+
+func leaseGuard(ctx context.Context, exec interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, jobID, assetID, owner string) error {
+	if jobID == "" && owner == "" {
+		return nil
+	}
+	now := formatTime(time.Now().UTC())
+	res, err := exec.ExecContext(ctx, `UPDATE jobs SET updated_at=updated_at WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?`, jobID, assetID, owner, now)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return leaseLostErr(jobID, owner)
+	}
+	return nil
+}
+
+func (r *Repository) CreateModelRun(ctx context.Context, assetID, capability, provider, model, inputHash, promptVersion, schemaVersion, requestJSON, jobID, owner string) (string, bool, error) {
+	if jobID != "" || owner != "" {
+		if err := leaseGuard(ctx, r.db, jobID, assetID, owner); err != nil {
+			return "", false, err
+		}
+	}
 	var existingID, state string
-	err := r.db.QueryRowContext(ctx, `SELECT id,state FROM model_runs WHERE capability=? AND provider=? AND model=? AND input_hash=? AND prompt_version=? AND schema_version=?`, capability, provider, model, inputHash, promptVersion, schemaVersion).Scan(&existingID, &state)
+	err := r.db.QueryRowContext(ctx, `SELECT id,state FROM model_runs WHERE capability=? AND provider=? AND model=? AND input_hash=? AND prompt_version=? AND schema_version=? AND state != 'failed'`, capability, provider, model, inputHash, promptVersion, schemaVersion).Scan(&existingID, &state)
 	if err == nil {
 		return existingID, state == "committed", nil
 	}
@@ -2470,13 +2947,44 @@ func (r *Repository) CreateModelRun(ctx context.Context, assetID, capability, pr
 		return "", false, err
 	}
 	id := idgen.New()
-	_, err = r.db.ExecContext(ctx, `INSERT INTO model_runs(id,asset_id,capability,provider,model,input_hash,prompt_version,schema_version,state,request_json,started_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, id, assetID, capability, provider, model, inputHash, promptVersion, schemaVersion, "running", requestJSON, formatTime(time.Now()))
-	return id, false, err
+	now := formatTime(time.Now().UTC())
+	res, err := r.db.ExecContext(ctx, `INSERT INTO model_runs(id,asset_id,capability,provider,model,input_hash,prompt_version,schema_version,state,request_json,started_at)
+SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?))`, id, assetID, capability, provider, model, inputHash, promptVersion, schemaVersion, "running", requestJSON, now, jobID, jobID, assetID, owner, now)
+	if err != nil {
+		return "", false, err
+	}
+	if jobID != "" {
+		n, err := res.RowsAffected()
+		if err != nil {
+			return "", false, err
+		}
+		if n != 1 {
+			return "", false, leaseLostErr(jobID, owner)
+		}
+	}
+	return id, false, nil
 }
 
-func (r *Repository) FailModelRun(ctx context.Context, runID, code, message, raw string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='failed',raw_response=?,error_code=?,error_message=?,finished_at=? WHERE id=?`, raw, code, message, formatTime(time.Now()), runID)
-	return err
+func (r *Repository) FailModelRun(ctx context.Context, runID, code, message, raw, jobID, owner string) error {
+	assetID := ""
+	if err := r.db.QueryRowContext(ctx, `SELECT asset_id FROM model_runs WHERE id=?`, runID).Scan(&assetID); err != nil {
+		return err
+	}
+	res, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='failed',raw_response=?,error_code=?,error_message=?,finished_at=? WHERE id=? AND state='running' AND (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?))`, raw, code, message, formatTime(time.Now()), runID, jobID, jobID, assetID, owner, formatTime(time.Now().UTC()))
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 && jobID != "" {
+		return leaseLostErr(jobID, owner)
+	}
+	if n != 1 {
+		return domain.Permanent(fmt.Errorf("%w: run %s", domain.ErrModelRunNotRunning, runID))
+	}
+	return nil
 }
 
 // MarkModelRunCommitted advances a validated run to committed without writing
@@ -2484,17 +2992,51 @@ func (r *Repository) FailModelRun(ctx context.Context, runID, code, message, raw
 // refinement run replaces only the shot rows (ReplaceAssetShots) while the
 // asset-level analysis stays attributed to the run that produced it, so its
 // run record needs the same state transition on its own.
-func (r *Repository) MarkModelRunCommitted(ctx context.Context, runID string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND state='validated'`, formatTime(time.Now()), runID)
-	return err
+func (r *Repository) MarkModelRunCommitted(ctx context.Context, runID, jobID, owner string) error {
+	assetID := ""
+	if err := r.db.QueryRowContext(ctx, `SELECT asset_id FROM model_runs WHERE id=?`, runID).Scan(&assetID); err != nil {
+		return err
+	}
+	res, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND state='validated' AND (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?))`, formatTime(time.Now()), runID, jobID, jobID, assetID, owner, formatTime(time.Now().UTC()))
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 && jobID != "" {
+		return leaseLostErr(jobID, owner)
+	}
+	if n != 1 {
+		return domain.Permanent(fmt.Errorf("%w: run %s", domain.ErrCommitRunNotValidated, runID))
+	}
+	return nil
 }
 
-func (r *Repository) StageModelRun(ctx context.Context, runID, raw, parsed string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='validated',raw_response=?,parsed_json=?,validation_errors=NULL,finished_at=? WHERE id=?`, raw, parsed, formatTime(time.Now()), runID)
-	return err
+func (r *Repository) StageModelRun(ctx context.Context, runID, raw, parsed, jobID, owner string) error {
+	assetID := ""
+	if err := r.db.QueryRowContext(ctx, `SELECT asset_id FROM model_runs WHERE id=?`, runID).Scan(&assetID); err != nil {
+		return err
+	}
+	res, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='validated',raw_response=?,parsed_json=?,validation_errors=NULL,finished_at=? WHERE id=? AND state='running' AND (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?))`, raw, parsed, formatTime(time.Now()), runID, jobID, jobID, assetID, owner, formatTime(time.Now().UTC()))
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 && jobID != "" {
+		return leaseLostErr(jobID, owner)
+	}
+	if n != 1 {
+		return domain.Permanent(fmt.Errorf("%w: run %s", domain.ErrModelRunNotRunning, runID))
+	}
+	return nil
 }
 
-func (r *Repository) CommitAnalysis(ctx context.Context, assetID, runID, schemaVersion string, a domain.StructuredAnalysis) error {
+func (r *Repository) CommitAnalysis(ctx context.Context, assetID, runID, schemaVersion string, a domain.StructuredAnalysis, jobID, owner string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -2502,6 +3044,21 @@ func (r *Repository) CommitAnalysis(ctx context.Context, assetID, runID, schemaV
 	defer tx.Rollback()
 	if err := r.commitAnalysisTx(ctx, tx, assetID, runID, schemaVersion, a); err != nil {
 		return err
+	}
+	now := formatTime(time.Now().UTC())
+	res, err := tx.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND state='validated' AND (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?))`, now, runID, jobID, jobID, assetID, owner, now)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		if jobID != "" {
+			return leaseLostErr(jobID, owner)
+		}
+		return domain.Permanent(fmt.Errorf("%w: run %s state is not validated", domain.ErrCommitRunNotValidated, runID))
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -2513,7 +3070,7 @@ func (r *Repository) CommitAnalysis(ctx context.Context, assetID, runID, schemaV
 // CommitAnalysisWithShots makes a validated model result visible as one unit:
 // whole-asset analysis, AI tag links, time-bounded shots, FTS, and local
 // discovery vectors either all change or all keep their prior trusted state.
-func (r *Repository) CommitAnalysisWithShots(ctx context.Context, assetID, runID, schemaVersion string, a domain.StructuredAnalysis, shots []domain.AssetShot) error {
+func (r *Repository) CommitAnalysisWithShots(ctx context.Context, assetID, runID, schemaVersion string, a domain.StructuredAnalysis, shots []domain.AssetShot, jobID, owner string) error {
 	if err := validateAssetShots(shots); err != nil {
 		return err
 	}
@@ -2530,6 +3087,22 @@ func (r *Repository) CommitAnalysisWithShots(ctx context.Context, assetID, runID
 	}
 	if err := r.replaceAssetShotsTx(ctx, tx, assetID, runID, shots); err != nil {
 		return err
+	}
+	if err := leaseGuard(ctx, tx, jobID, assetID, owner); err != nil {
+		return err
+	}
+	now := formatTime(time.Now().UTC())
+	res, err := tx.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND state='validated' AND (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?))`, now, runID, jobID, jobID, assetID, owner, now)
+	if err != nil {
+		return err
+	}
+	if n, e := res.RowsAffected(); e != nil {
+		return e
+	} else if n != 1 {
+		if jobID != "" {
+			return leaseLostErr(jobID, owner)
+		}
+		return domain.Permanent(fmt.Errorf("%w: run %s state is not validated", domain.ErrCommitRunNotValidated, runID))
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -2567,9 +3140,6 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(asset_id) DO UPDATE 
 	if err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND state='validated'`, formatTime(time.Now()), runID); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -2582,12 +3152,25 @@ func (r *Repository) GetSpeechClassification(ctx context.Context, assetID string
 	return &c, err
 }
 
-func (r *Repository) SaveTranscript(ctx context.Context, assetID, provider, model, inputHash string, t domain.Transcript) error {
+func (r *Repository) SaveTranscript(ctx context.Context, assetID, provider, model, inputHash string, t domain.Transcript, jobID, owner string) error {
 	segments, _ := json.Marshal(t.Segments)
-	_, err := r.db.ExecContext(ctx, `INSERT INTO transcripts(id,asset_id,provider,model,input_hash,language,full_text,segments_json,raw_response,status,created_at)
-VALUES(?,?,?,?,?,?,?,?,?,'succeeded',?) ON CONFLICT(asset_id,input_hash) DO UPDATE SET language=excluded.language,full_text=excluded.full_text,segments_json=excluded.segments_json,raw_response=excluded.raw_response,status='succeeded'`,
-		idgen.New(), assetID, provider, model, inputHash, t.Language, t.Text, string(segments), t.RawResponse, formatTime(time.Now().UTC()))
-	return err
+	now := formatTime(time.Now().UTC())
+	res, err := r.db.ExecContext(ctx, `INSERT INTO transcripts(id,asset_id,provider,model,input_hash,language,full_text,segments_json,raw_response,status,created_at)
+SELECT ?,?,?,?,?,?,?,?,?, 'succeeded',? WHERE (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?)) ON CONFLICT(asset_id,input_hash) DO UPDATE SET language=excluded.language,full_text=excluded.full_text,segments_json=excluded.segments_json,raw_response=excluded.raw_response,status='succeeded'`,
+		idgen.New(), assetID, provider, model, inputHash, t.Language, t.Text, string(segments), t.RawResponse, now, jobID, jobID, assetID, owner, now)
+	if err != nil {
+		return err
+	}
+	if jobID != "" {
+		n, e := res.RowsAffected()
+		if e != nil {
+			return e
+		}
+		if n != 1 {
+			return leaseLostErr(jobID, owner)
+		}
+	}
+	return nil
 }
 
 func (r *Repository) GetTranscript(ctx context.Context, assetID string) (*domain.Transcript, error) {

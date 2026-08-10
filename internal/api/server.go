@@ -348,8 +348,7 @@ func (s *Server) createWebDAVAccount(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
+	if !decodeStrictJSON(w, r, &req, 1<<20) {
 		return
 	}
 	if err := s.service.CreateWebDAVAccount(r.Context(), req.Username, req.Password); err != nil {
@@ -404,8 +403,7 @@ func (s *Server) linkWebDAVAsset(w http.ResponseWriter, r *http.Request) {
 		AssetID string `json:"asset_id"`
 		Kind    string `json:"kind"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
+	if !decodeStrictJSON(w, r, &req, 1<<20) {
 		return
 	}
 	path, err := s.service.LinkWebDAVAsset(r.Context(), r.PathValue("id"), req.AssetID, req.Kind)
@@ -507,8 +505,7 @@ func (s *Server) saveProviderChannel(w http.ResponseWriter, r *http.Request) {
 			MaxInflight int    `json:"max_inflight"`
 		} `json:"members"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&input); err != nil {
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid provider channel"})
+	if !decodeStrictJSON(w, r, &input, 1<<20) {
 		return
 	}
 	channel := domain.ProviderChannel{ID: input.ID, Capability: strings.TrimSpace(input.Capability), Label: strings.TrimSpace(input.Label), ProviderName: strings.TrimSpace(input.ProviderName), Protocol: strings.TrimSpace(input.Protocol), Endpoint: strings.TrimSpace(input.Endpoint), Model: strings.TrimSpace(input.Model), Enabled: input.Enabled, RouteOrder: input.RouteOrder, CostPerRequest: input.CostPerRequest, CostPerVideoMinute: input.CostPerVideoMinute, CostPerAudioMinute: input.CostPerAudioMinute}
@@ -557,8 +554,7 @@ func (s *Server) saveProviderChannel(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateProviderChannel(w http.ResponseWriter, r *http.Request) {
 	var patch app.ProviderChannelUpdate
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&patch); err != nil {
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid provider channel update"})
+	if !decodeStrictJSON(w, r, &patch, 1<<20) {
 		return
 	}
 	updated, err := s.service.UpdateProviderChannel(r.Context(), r.PathValue("id"), patch)
@@ -634,8 +630,7 @@ func (s *Server) enrollWorker(w http.ResponseWriter, r *http.Request) {
 		PairingToken string `json:"pairing_token"`
 		remote.WorkerRegistration
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
-	if !decodeStrictJSON(w, r, &request) {
+	if !decodeStrictJSON(w, r, &request, 32<<10) {
 		return
 	}
 	if strings.TrimSpace(request.PairingToken) == "" {
@@ -660,8 +655,7 @@ func (s *Server) workerHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request remote.WorkerHeartbeat
-	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
-	if !decodeStrictJSON(w, r, &request) {
+	if !decodeStrictJSON(w, r, &request, 16<<10) {
 		return
 	}
 	if err := s.service.HeartbeatWorker(r.Context(), worker.ID, request.Version, request.Capabilities); err != nil {
@@ -708,8 +702,7 @@ func (s *Server) workerCompleteJob(w http.ResponseWriter, r *http.Request) {
 		State   domain.JobState `json:"state"`
 		Message string          `json:"message"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
-	if !decodeStrictJSON(w, r, &request) {
+	if !decodeStrictJSON(w, r, &request, 32<<10) {
 		return
 	}
 	// Validate state before calling the service so an invalid state is a
@@ -741,8 +734,7 @@ func (s *Server) workerProgress(w http.ResponseWriter, r *http.Request) {
 		Event    string  `json:"event"`
 		Message  string  `json:"message"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
-	if !decodeStrictJSON(w, r, &request) {
+	if !decodeStrictJSON(w, r, &request, 16<<10) {
 		return
 	}
 	if err := s.service.RecordWorkerJobProgress(r.Context(), r.PathValue("id"), worker.ID, strings.TrimSpace(request.Stage), request.Progress, strings.TrimSpace(request.Event), strings.TrimSpace(request.Message)); err != nil {
@@ -984,10 +976,12 @@ func (s *Server) hardwareReport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) agentCapabilities(w http.ResponseWriter, r *http.Request) {
+	// Confidence describes the persisted capture-time observation, not GPS
+	// location confidence; location certainty is represented by precision.
 	writeJSON(w, http.StatusOK, map[string]any{
 		// version is the agent contract version, not the product version. The
 		// skills/timingdex package — its SKILL.md and
-		// references/api-contract.md, titled "Timingdex v0.13 Local Agent API
+		// references/api-contract.md, titled "Timingdex v0.14 Local Agent API
 		// Contract" — is written against this exact string, and server_test.go
 		// pins it, so it only moves when the contract itself changes: a route,
 		// an action, or a field in this document. It must not track Hub
@@ -995,7 +989,7 @@ func (s *Server) agentCapabilities(w http.ResponseWriter, r *http.Request) {
 		// gap is the contract not having changed, not this endpoint being
 		// stale. Bumping it means re-versioning and re-validating the skills
 		// package in the same change.
-		"version":       "v0.13",
+		"version":       "v0.14",
 		"approval_mode": "human_required",
 		"auth": map[string]any{
 			"header": "Authorization: Bearer <agent-token>",
@@ -1095,7 +1089,10 @@ func (s *Server) createRoot(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Path string `json:"path"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request); err != nil || request.Path == "" {
+	if !decodeStrictJSON(w, r, &request, 1<<20) {
+		return
+	}
+	if request.Path == "" {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		return
 	}
@@ -1152,7 +1149,10 @@ func (s *Server) inspectRoot(w http.ResponseWriter, r *http.Request) {
 		Path       string `json:"path"`
 		Mountpoint string `json:"mountpoint"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&request); err != nil || strings.TrimSpace(request.Path) == "" {
+	if !decodeStrictJSON(w, r, &request, 4<<10) {
+		return
+	}
+	if strings.TrimSpace(request.Path) == "" {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		return
 	}
@@ -1327,14 +1327,14 @@ func writeError(w http.ResponseWriter, err error) {
 	writeErrorEnvelope(w, err)
 }
 
-// decodeStrictJSON decodes exactly one JSON value from r.Body (already
-// wrapped with http.MaxBytesReader by the caller) and rejects any trailing
+// decodeStrictJSON decodes exactly one bounded JSON value from r.Body and rejects any trailing
 // bytes — including bytes already buffered inside json.Decoder that a
 // separate drainBody would miss. A successful second Decode (non-EOF) or a
 // non-EOF decode error both indicate trailing content: *http.MaxBytesError
 // → 413, anything else → 400.
-func decodeStrictJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(r.Body)
+func decodeStrictJSON(w http.ResponseWriter, r *http.Request, v any, maxBytes int64) bool {
+	body := http.MaxBytesReader(w, r.Body, maxBytes)
+	dec := json.NewDecoder(body)
 	if err := dec.Decode(v); err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
@@ -1348,19 +1348,77 @@ func decodeStrictJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	// bytes json.Decoder buffered from the underlying reader.
 	var dummy struct{}
 	if err := dec.Decode(&dummy); err == nil {
+		if _, drainErr := io.ReadAll(body); drainErr != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(drainErr, &maxBytesErr) {
+				writeAPIError(w, http.StatusRequestEntityTooLarge, APIError{Code: "request_body_too_large", Message: "request body too large"})
+				return false
+			}
+		}
 		// Another JSON value parsed successfully — trailing content.
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "request body has trailing content"})
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		return false
 	} else if !errors.Is(err, io.EOF) {
+		if _, drainErr := io.ReadAll(body); drainErr != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(drainErr, &maxBytesErr) {
+				writeAPIError(w, http.StatusRequestEntityTooLarge, APIError{Code: "request_body_too_large", Message: "request body too large"})
+				return false
+			}
+		}
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			writeAPIError(w, http.StatusRequestEntityTooLarge, APIError{Code: "request_body_too_large", Message: "request body too large"})
 		} else {
-			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "request body has trailing content"})
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		}
 		return false
 	}
 	return true
+}
+
+// decodeOptionalStrictJSON preserves the historical empty-body behavior for
+// the two pipeline control endpoints while keeping non-empty bodies strict.
+func decodeOptionalStrictJSON(w http.ResponseWriter, r *http.Request, v any, maxBytes int64) (present, ok bool) {
+	body := http.MaxBytesReader(w, r.Body, maxBytes)
+	dec := json.NewDecoder(body)
+	if err := dec.Decode(v); err != nil {
+		if errors.Is(err, io.EOF) {
+			return false, true
+		}
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeAPIError(w, http.StatusRequestEntityTooLarge, APIError{Code: "request_body_too_large", Message: "request body too large"})
+		} else {
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
+		}
+		return true, false
+	}
+	var dummy struct{}
+	if err := dec.Decode(&dummy); err != io.EOF {
+		if _, drainErr := io.ReadAll(body); drainErr != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(drainErr, &maxBytesErr) {
+				writeAPIError(w, http.StatusRequestEntityTooLarge, APIError{Code: "request_body_too_large", Message: "request body too large"})
+				return true, false
+			}
+		}
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeAPIError(w, http.StatusRequestEntityTooLarge, APIError{Code: "request_body_too_large", Message: "request body too large"})
+		} else {
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
+		}
+		return true, false
+	}
+	if _, err := io.ReadAll(body); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeAPIError(w, http.StatusRequestEntityTooLarge, APIError{Code: "request_body_too_large", Message: "request body too large"})
+			return true, false
+		}
+	}
+	return true, true
 }
 
 func requestLogger(next http.Handler) http.Handler {
@@ -1453,8 +1511,7 @@ func (s *Server) setWorkerJobAssignment(w http.ResponseWriter, r *http.Request) 
 		WorkerID string                      `json:"worker_id"`
 		Mode     remote.WorkerAssignmentMode `json:"mode"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&input); err != nil {
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid worker assignment"})
+	if !decodeStrictJSON(w, r, &input, 16<<10) {
 		return
 	}
 	// Validate mode and worker_id before calling the service so an invalid
@@ -1567,8 +1624,7 @@ func (s *Server) storageOverview(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) savePipelineThrottle(w http.ResponseWriter, r *http.Request) {
 	var throttle domain.PipelineThrottle
-	if err := json.NewDecoder(io.LimitReader(r.Body, 8<<10)).Decode(&throttle); err != nil {
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid throttle payload"})
+	if !decodeStrictJSON(w, r, &throttle, 8<<10) {
 		return
 	}
 	if err := throttle.Validate(); err != nil {
@@ -1598,8 +1654,7 @@ func (s *Server) retryFailedJobs(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Category string `json:"category"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 8<<10)).Decode(&req); err != nil && err != io.EOF {
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
+	if _, ok := decodeOptionalStrictJSON(w, r, &req, 8<<10); !ok {
 		return
 	}
 	var (
@@ -1628,8 +1683,7 @@ func (s *Server) resumeDeferredJobs(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Reason string `json:"reason"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 8<<10)).Decode(&req); err != nil && err != io.EOF {
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
+	if _, ok := decodeOptionalStrictJSON(w, r, &req, 8<<10); !ok {
 		return
 	}
 	var (
@@ -1701,8 +1755,7 @@ func (s *Server) searchShots(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) searchShotsV2(w http.ResponseWriter, r *http.Request) {
 	var req search.SearchRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText("invalid request body: "+err.Error(), 300)})
+	if !decodeStrictJSON(w, r, &req, 1<<20) {
 		return
 	}
 	if strings.TrimSpace(req.Query) == "" {
@@ -1711,6 +1764,14 @@ func (s *Server) searchShotsV2(w http.ResponseWriter, r *http.Request) {
 	}
 	if !search.ValidMode(req.Mode) {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "unknown mode: " + req.Mode})
+		return
+	}
+	if req.Offset < 0 {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "offset must not be negative"})
+		return
+	}
+	if err := search.ValidatePagination(req.Limit, req.Offset); err != nil {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 		return
 	}
 	if err := validateFacetFilter(&req.Facets); err != nil {
@@ -1950,8 +2011,7 @@ func (s *Server) listCollectionAssets(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) saveCollection(w http.ResponseWriter, r *http.Request) {
 	var collection domain.AssetCollection
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&collection); err != nil {
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid collection"})
+	if !decodeStrictJSON(w, r, &collection, 64<<10) {
 		return
 	}
 	// Validate required fields before calling the service so an invalid
@@ -2000,8 +2060,7 @@ func (s *Server) addCollectionShot(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ShotID string `json:"shot_id"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
-	if !decodeStrictJSON(w, r, &body) {
+	if !decodeStrictJSON(w, r, &body, 64<<10) {
 		return
 	}
 	body.ShotID = strings.TrimSpace(body.ShotID)
@@ -2047,8 +2106,7 @@ func (s *Server) reorderCollectionShots(w http.ResponseWriter, r *http.Request) 
 	var body struct {
 		ShotIDs []string `json:"shot_ids"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
-	if !decodeStrictJSON(w, r, &body) {
+	if !decodeStrictJSON(w, r, &body, 64<<10) {
 		return
 	}
 	if err := s.service.ReorderCollectionShots(r.Context(), r.PathValue("id"), body.ShotIDs); err != nil {
@@ -2127,10 +2185,12 @@ func (s *Server) assetCaptureLocation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"available": true,
-		"latitude":  *detail.Metadata.Latitude,
-		"longitude": *detail.Metadata.Longitude,
-		"precision": "source",
+		"available":               true,
+		"latitude":                *detail.Metadata.Latitude,
+		"longitude":               *detail.Metadata.Longitude,
+		"precision":               detail.Metadata.LocationPrecision,
+		"source":                  detail.Metadata.LocationSource,
+		"capture_time_confidence": detail.Metadata.CaptureTimeConfidence,
 	})
 }
 
@@ -2273,7 +2333,8 @@ const issueLabels={'provider_quota':'服务商额度限制','provider_auth':'服
 // period rolls over — so 重试此组 on them must also release the parked half,
 // not just requeue failed rows.
 const issueAutoRecover={'provider_route_exhausted':true,'disk_space_low':true,'budget_exhausted':true};
-function issuesRow(i){const label=issueLabels[i.category]||i.category;const auto=issueAutoRecover[i.category]?'是':'否';const next=i.next_retry_at?esc(when(i.next_retry_at)):'—';return '<tr><td>'+esc(label)+'</td><td>'+(i.count||0)+'</td><td>'+(i.asset_count||0)+'</td><td>'+auto+'</td><td>'+next+'</td><td><button onclick="retryIssueGroup(\''+esc(i.category)+'\',this)">重试此组</button></td></tr>'}
+ function issuesRow(i){const label=issueLabels[i.category]||i.category;const auto=issueAutoRecover[i.category]?'是':'否';const count=Number.isFinite(Number(i.count))?Number(i.count):0;const assets=Number.isFinite(Number(i.asset_count))?Number(i.asset_count):0;const next=i.next_retry_at?esc(when(i.next_retry_at)):'—';return '<tr><td>'+esc(label)+'</td><td>'+count+'</td><td>'+assets+'</td><td>'+auto+'</td><td>'+next+'</td><td><button data-action="retry-issue" data-category="'+esc(i.category)+'">重试此组</button></td></tr>'}
+ document.body.addEventListener('click',function(e){const b=e.target.closest('[data-action="retry-issue"]');if(b)retryIssueGroup(b.dataset.category,b)});
 async function issuesRefresh(){const el=document.getElementById('issues'),body=document.getElementById('issues-body');if(!el||!body)return;try{const r=await fetch('/api/v1/issues',{headers:authHeaders()});if(!r.ok)throw Error(await apiErrMsg(r));const issues=await r.json();if(!(issues||[]).reduce((n,i)=>n+(i.count||0),0)){el.style.display='none';return}el.style.display='';body.innerHTML='<table><tr><th>问题</th><th>作业数</th><th>素材数</th><th>自动恢复?</th><th>下次重试</th><th></th></tr>'+(issues||[]).map(issuesRow).join('')+'</table>'}catch(e){el.style.display='';body.textContent='无法读取问题列表：'+e.message}}
 async function retryIssueGroup(category,btn){const label=issueLabels[category]||category;if(btn)btn.disabled=true;log('已请求重试「'+label+'」问题组');try{const r=await fetch('/api/v1/pipeline/retry-failed',{method:'POST',headers:authHeaders({'content-type':'application/json'}),body:JSON.stringify({category})});if(!r.ok)throw Error(await apiErrMsg(r));const d=await r.json();let extra='';if(issueAutoRecover[category]){const z=await fetch('/api/v1/pipeline/resume-deferred',{method:'POST',headers:authHeaders({'content-type':'application/json'}),body:JSON.stringify({reason:category})});if(!z.ok)throw Error(await apiErrMsg(z));const zd=await z.json();extra='，并提前释放 '+zd.resumed+' 个等待中的作业'}log('已重新排队 '+d.requeued+' 个「'+label+'」作业'+extra+'；点击「运行待处理任务」开始处理')}catch(e){log('重试失败：'+e.message)}finally{if(btn)btn.disabled=false;refresh();issuesRefresh()}}
 async function retryFailed(){const b=document.getElementById('retry');b.disabled=true;log('已请求重试失败作业');try{const r=await fetch('/api/v1/pipeline/retry-failed',{method:'POST',headers:authHeaders()});if(!r.ok)throw Error(await apiErrMsg(r));const d=await r.json();log('已重新排队 '+d.requeued+' 个失败作业；点击「运行待处理任务」开始处理')}catch(e){log('重试失败：'+e.message)}finally{b.disabled=false;refresh()}}async function resumeDeferred(){const b=document.getElementById('resume');b.disabled=true;log('已请求提前释放等待额度的作业');try{const r=await fetch('/api/v1/pipeline/resume-deferred',{method:'POST',headers:authHeaders()});if(!r.ok)throw Error(await apiErrMsg(r));const d=await r.json();log(d.resumed?'已释放 '+d.resumed+' 个等待额度的作业；点击「运行待处理任务」开始处理':'当前没有等待额度的作业')}catch(e){log('释放失败：'+e.message)}finally{b.disabled=false;refresh()}}
@@ -2298,9 +2359,9 @@ async function api(url,opt){opt=opt||{};const r=await fetch(url,{...opt,headers:
 async function downloadExport(kind){if(!activePlan)return;try{const r=await fetch('/api/v1/repurpose/plans/'+encodeURIComponent(activePlan.id)+'/export.'+kind,{headers:authHeaders()});if(!r.ok){if(r.status===401)throw Error('需要 Hub 管理 Token：请先在顶部填入');throw Error(await apiErrMsg(r))}const url=URL.createObjectURL(await r.blob());const a=document.createElement('a');a.href=url;a.download=activePlan.id+'.'+kind;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)}catch(e){alert('导出失败：'+e.message)}}
 function section(role){return activePlan.sections.find(s=>s.role===role)}
 function rerender(){render(activePlan);dirty=true;document.getElementById('statusline').textContent='有未保存的编辑。保存后会创建新的 revision。'}
-function candidate(s,c){const selected=s.selected_shot_id===c.shot_id,excluded=(s.excluded_shot_ids||[]).includes(c.shot_id),image='/api/v1/assets/'+encodeURIComponent(c.asset_id)+'/thumbnail',why=(c.reasons||[]).map(esc).join(' · ')||'由检索得分匹配';return '<article class="candidate '+(selected?'selected ':'')+(excluded?'excluded':'')+'"><img class="thumb" loading="lazy" src="'+image+'" onerror="this.style.visibility=\'hidden\'" alt="候选镜头缩略图"><div><b>'+fmt(c.start_ms)+' — '+fmt(c.end_ms)+'</b> <span class="pill">匹配 '+Math.round((c.score||0)*100)+'%</span>'+(c.reused?' <span class="pill warn">复用镜头</span>':'')+(selected?' <span class="pill">已选</span>':'')+'<div class="small">素材 '+esc(c.asset_id)+' · 镜头 '+esc(c.shot_id)+'</div><div class="small">'+why+'</div><div class="candidate-actions"><button class="select '+(selected?'on':'')+'" data-role="'+esc(s.role)+'" data-shot="'+esc(c.shot_id)+'" onclick="choose(this.dataset.role,this.dataset.shot)">'+(selected?'已选择':'选择此镜头')+'</button><button class="exclude" data-role="'+esc(s.role)+'" data-shot="'+esc(c.shot_id)+'" onclick="toggleExclude(this.dataset.role,this.dataset.shot)" '+(selected?'disabled':'')+'>'+ (excluded?'恢复候选':'排除')+'</button></div></div></article>'}
+ function candidate(s,c){const selected=s.selected_shot_id===c.shot_id,excluded=(s.excluded_shot_ids||[]).includes(c.shot_id),image='/api/v1/assets/'+encodeURIComponent(c.asset_id)+'/thumbnail',why=(c.reasons||[]).map(esc).join(' · ')||'由检索得分匹配';return '<article class="candidate '+(selected?'selected ':'')+(excluded?'excluded':'')+'"><img class="thumb" loading="lazy" src="'+image+'" onerror="this.style.visibility=\'hidden\'" alt="候选镜头缩略图"><div><b>'+fmt(c.start_ms)+' — '+fmt(c.end_ms)+'</b> <span class="pill">匹配 '+Math.round(Number(c.score||0)*100)+'%</span>'+(c.reused?' <span class="pill warn">复用镜头</span>':'')+(selected?' <span class="pill">已选</span>':'')+'<div class="small">素材 '+esc(c.asset_id)+' · 镜头 '+esc(c.shot_id)+'</div><div class="small">'+why+'</div><div class="candidate-actions"><button class="select '+(selected?'on':'')+'" data-action="choose" data-role="'+esc(s.role)+'" data-shot="'+esc(c.shot_id)+'">'+(selected?'已选择':'选择此镜头')+'</button><button class="exclude" data-action="exclude" data-role="'+esc(s.role)+'" data-shot="'+esc(c.shot_id)+'" '+(selected?'disabled':'')+'>'+ (excluded?'恢复候选':'排除')+'</button></div></div></article>'}
 function render(p){activePlan=p;const sections=(p.sections||[]).map(s=>'<section class="section"><div class="sectionhead"><div><div class="role">'+esc(s.role)+'</div><div class="small">目标 '+fmt(s.duration_ms)+' · 查询：'+esc(s.query)+'</div></div><div class="sectionactions"><span class="pill">'+(s.required?'必需':'可选')+'</span>'+(s.locked?'<button class="secondary" data-role="'+esc(s.role)+'" onclick="unlock(this.dataset.role)">解除锁定</button>':'<button class="secondary" data-role="'+esc(s.role)+'" onclick="lock(this.dataset.role)">锁定选择</button>')+'<button class="secondary" data-role="'+esc(s.role)+'" onclick="findAlternatives(this.dataset.role)">找替代镜头</button></div></div><div class="rationale">'+esc(s.rationale||'')+(s.locked?' · 此段已锁定':'')+'</div>'+(s.candidates&&s.candidates.length?s.candidates.map(c=>candidate(s,c)).join(''):'<div class="empty">此段没有足够的匹配镜头。可以尝试找替代镜头，或保留缺口以便补拍。</div>')+'</section>').join('');document.getElementById('result').innerHTML='<div class="planhead"><div><div class="eyebrow">'+esc(p.provider||'deterministic')+' · '+esc(p.model||'')+'</div><h2>'+esc(p.title||p.brief)+'</h2><p class="muted">'+fmt(p.duration_ms)+' · '+esc(p.style||'未设定风格')+' · '+esc(p.audience||'未设定受众')+'</p></div><div><span class="pill">'+esc(p.status)+'</span> '+(p.status==='draft'?'<button class="approve" onclick="approve()">批准这一版</button>':'')+(p.status==='approved'?'<button class="secondary" onclick="downloadExport(\'edl\')">导出 EDL</button> <button class="secondary" onclick="downloadExport(\'fcpxml\')">导出 FCPXML</button>':'')+'</div></div>'+(p.missing_needs&&p.missing_needs.length?'<p class="warn">还缺：'+p.missing_needs.map(esc).join('、')+'</p>':'')+sections+(p.status==='draft'?'<div class="editor"><div class="editorbar"><div style="flex:1"><label class="small" for="editorNote">这次编辑的说明</label><textarea id="editorNote" placeholder="例如：将雨夜航拍锁为开场，排除手持街拍"></textarea><div id="statusline" class="statusline">选择镜头后，保存为新的编辑版。</div></div><button class="save" onclick="saveRevision()">保存编辑版</button></div></div>':'')}
-function choose(role,shot){const s=section(role);if(s.locked){alert('此段已锁定，请先解除锁定。');return}s.selected_shot_id=shot;s.excluded_shot_ids=(s.excluded_shot_ids||[]).filter(id=>id!==shot);rerender()}
+ document.getElementById('result').addEventListener('click',function(e){const b=e.target.closest('[data-action]');if(!b)return;const role=b.dataset.role;if(b.dataset.action==='choose')choose(role,b.dataset.shot);else if(b.dataset.action==='exclude')toggleExclude(role,b.dataset.shot);else if(b.dataset.action==='lock')lock(role);else if(b.dataset.action==='unlock')unlock(role);else if(b.dataset.action==='alternatives')findAlternatives(role)});function choose(role,shot){const s=section(role);if(s.locked){alert('此段已锁定，请先解除锁定。');return}s.selected_shot_id=shot;s.excluded_shot_ids=(s.excluded_shot_ids||[]).filter(id=>id!==shot);rerender()}
 function lock(role){const s=section(role);if(!s.selected_shot_id){alert('请先选择此段要使用的镜头。');return}s.locked=true;s.unlock=false;rerender()}
 function unlock(role){const s=section(role);s.locked=false;s.unlock=true;rerender()}
 function toggleExclude(role,shot){const s=section(role);if(s.selected_shot_id===shot){alert('已选镜头不能同时被排除。');return}const ids=s.excluded_shot_ids||[];s.excluded_shot_ids=ids.includes(shot)?ids.filter(id=>id!==shot):ids.concat(shot);rerender()}
@@ -2360,8 +2421,7 @@ func (s *Server) reviewTagProposal(w http.ResponseWriter, r *http.Request) {
 		Action string `json:"action"`
 		Note   string `json:"note"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
+	if !decodeStrictJSON(w, r, &req, 1<<20) {
 		return
 	}
 	if err := s.service.ReviewTagProposal(r.Context(), r.PathValue("id"), req.Action, req.Note); err != nil {
@@ -2393,7 +2453,10 @@ func (s *Server) generateLibrarySummary(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) createRepurposePlan(w http.ResponseWriter, r *http.Request) {
 	var brief domain.RepurposeBrief
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&brief); err != nil || strings.TrimSpace(brief.Brief) == "" {
+	if !decodeStrictJSON(w, r, &brief, 1<<20) {
+		return
+	}
+	if strings.TrimSpace(brief.Brief) == "" {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "brief is required"})
 		return
 	}
@@ -2432,8 +2495,7 @@ func (s *Server) reviseRepurposePlan(w http.ResponseWriter, r *http.Request) {
 		Sections   []domain.PlanSection `json:"sections"`
 		EditorNote string               `json:"editor_note"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request); err != nil {
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
+	if !decodeStrictJSON(w, r, &request, 1<<20) {
 		return
 	}
 	revision, err := s.service.ReviseRepurposePlan(r.Context(), r.PathValue("id"), request.Sections, request.EditorNote)
@@ -2563,7 +2625,9 @@ async function apiErrMsg(r){try{const d=await r.json();if(d&&d.error&&d.error.me
 async function j(url,opt){opt=opt||{};const r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok){if(r.status===401)throw new Error('需要 Hub 管理 Token：请先在顶部填入');throw new Error(await apiErrMsg(r))}return r.json()}
 async function curate(){await j('/api/v1/tags/curate',{method:'POST'});await load()}
 async function review(id,action){await j('/api/v1/tags/proposals/'+id+'/review',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action})});await load()}
-function unresolvedTable(xs){return '<table><tr><th>标准化值</th><th>原始形式</th><th>素材数</th></tr>'+xs.map(x=>'<tr><td>'+esc(x.normalized_tag)+'</td><td>'+x.display_forms.map(v=>'<span class="pill">'+esc(v)+'</span>').join('')+'</td><td>'+x.asset_count+'</td></tr>').join('')+'</table>'}
-function proposalTable(xs){return '<table><tr><th>动作</th><th>Canonical</th><th>原因</th><th>影响</th><th></th></tr>'+xs.map(x=>'<tr><td>'+esc(x.proposal_type)+'</td><td>'+esc(x.canonical_name)+'</td><td>'+esc(x.reason)+'<div class="muted">置信度 '+Math.round(x.confidence*100)+'%</div></td><td>'+x.affected_assets+'</td><td><button class="approve" onclick="review(\''+x.id+'\',\'approve\')">批准</button> <button class="reject" onclick="review(\''+x.id+'\',\'reject\')">拒绝</button></td></tr>').join('')+'</table>'}
-function tagTable(xs){return '<table><tr><th>Canonical</th><th>分类</th><th>素材</th><th>别名</th></tr>'+xs.map(x=>'<tr><td>'+esc(x.canonical_name)+'</td><td>'+esc(x.category)+'</td><td>'+x.usage_count+'</td><td>'+x.alias_count+'</td></tr>').join('')+'</table>'}
+ function unresolvedTable(xs){return '<table><tr><th>标准化值</th><th>原始形式</th><th>素材数</th></tr>'+xs.map(x=>'<tr><td>'+esc(x.normalized_tag)+'</td><td>'+x.display_forms.map(v=>'<span class="pill">'+esc(v)+'</span>').join('')+'</td><td>'+numeric(x.asset_count)+'</td></tr>').join('')+'</table>'}
+ function proposalTable(xs){return '<table><tr><th>动作</th><th>Canonical</th><th>原因</th><th>影响</th><th></th></tr>'+xs.map(x=>'<tr><td>'+esc(x.proposal_type)+'</td><td>'+esc(x.canonical_name)+'</td><td>'+esc(x.reason)+'<div class="muted">置信度 '+Math.round(Number(x.confidence||0)*100)+'%</div></td><td>'+numeric(x.affected_assets)+'</td><td><button class="approve" data-action="review" data-id="'+esc(x.id)+'" data-review="approve">批准</button> <button class="reject" data-action="review" data-id="'+esc(x.id)+'" data-review="reject">拒绝</button></td></tr>').join('')+'</table>'}
+ function numeric(v){const n=Number(v);return Number.isFinite(n)?String(n):'0'}
+ function tagTable(xs){return '<table><tr><th>Canonical</th><th>分类</th><th>素材</th><th>别名</th></tr>'+xs.map(x=>'<tr><td>'+esc(x.canonical_name)+'</td><td>'+esc(x.category)+'</td><td>'+numeric(x.usage_count)+'</td><td>'+numeric(x.alias_count)+'</td></tr>').join('')+'</table>'}
+ document.body.addEventListener('click',function(e){const b=e.target.closest('[data-action="review"]');if(b)review(b.dataset.id,b.dataset.review)});
 async function load(){const [u,p,t]=await Promise.all([j('/api/v1/tags/unresolved'),j('/api/v1/tags/proposals?state=pending'),j('/api/v1/tags')]);document.getElementById('unresolved').innerHTML=u.length?unresolvedTable(u):'<p class="muted">暂无未解析标签</p>';document.getElementById('proposals').innerHTML=p.length?proposalTable(p):'<p class="muted">暂无待审核提案</p>';document.getElementById('tags').innerHTML=t.length?tagTable(t):'<p class="muted">尚未建立 Canonical Tag</p>'}load();</script></body></html>`

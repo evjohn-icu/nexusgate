@@ -2,6 +2,8 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -14,6 +16,33 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/credentials"
 	"github.com/evjohn-icu/timingdex/internal/remote"
 )
+
+func TestValidFingerprint(t *testing.T) {
+	valid := strings.Repeat("ab", 32)
+	if !ValidFingerprint(valid) {
+		t.Fatal("valid SHA-256 fingerprints rejected")
+	}
+	if ValidFingerprint("") || ValidFingerprint("not-a-fingerprint") || ValidFingerprint(strings.Repeat("a", 64)+"0") || ValidFingerprint("ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab:ab") {
+		t.Fatal("invalid fingerprint accepted")
+	}
+}
+
+func TestClientFingerprintMatchingAndMismatching(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"worker":{"id":"worker-1"},"token":"worker-token"}`))
+	}))
+	defer server.Close()
+	sum := sha256.Sum256(server.Certificate().Raw)
+	fingerprint := hex.EncodeToString(sum[:])
+	registration := remote.WorkerRegistration{Name: "test", Platform: "linux-amd64"}
+	if _, err := NewClient(server.URL, fingerprint).Enroll(context.Background(), "pairing", registration); err != nil {
+		t.Fatalf("matching fingerprint rejected: %v", err)
+	}
+	if _, err := NewClient(server.URL, strings.Repeat("a", 64)).Enroll(context.Background(), "pairing", registration); err == nil || !strings.Contains(err.Error(), "fingerprint") {
+		t.Fatalf("mismatching fingerprint error = %v", err)
+	}
+}
 
 func TestClientEnrollsThenSendsHeartbeat(t *testing.T) {
 	var token, version string

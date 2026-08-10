@@ -56,8 +56,14 @@ func (s *SourceStager) Stage(ctx context.Context, sourcePath, assetID, inputVers
 		ext = ".media"
 	}
 	destination := filepath.Join(s.cacheDir, "sources", assetID, inputVersion+ext)
-	if cached, err := os.Stat(destination); err == nil && cached.Mode().IsRegular() {
-		return destination, nil
+	if cached, err := os.Lstat(destination); err == nil {
+		if cached.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("refusing symlink source cache destination: %s", destination)
+		}
+		if cached.Mode().IsRegular() {
+			return destination, nil
+		}
+		return "", fmt.Errorf("source cache destination is not a regular file: %s", destination)
 	}
 	info, err := os.Stat(sourcePath)
 	if err != nil {

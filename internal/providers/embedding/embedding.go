@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"math"
 	"net/http"
 
 	"github.com/evjohn-icu/timingdex/internal/providers/common"
@@ -67,9 +67,9 @@ func (p *Provider) Embed(ctx context.Context, inputs []string) ([][]float64, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return nil, common.ReadError(resp)
+		return nil, common.ReadErrorWithSecret(resp, p.Endpoint.APIKey)
 	}
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := common.ReadBody(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -87,10 +87,15 @@ func (p *Provider) Embed(ctx context.Context, inputs []string) ([][]float64, err
 	}
 	vectors := make([][]float64, len(inputs))
 	for _, item := range out.Data {
-		if item.Index < 0 || item.Index >= len(vectors) || len(item.Embedding) == 0 {
+		if item.Index < 0 || item.Index >= len(vectors) || vectors[item.Index] != nil || !validVector(item.Embedding) {
 			return nil, fmt.Errorf("invalid embedding response")
 		}
 		vectors[item.Index] = item.Embedding
+	}
+	for _, vector := range vectors {
+		if vector == nil {
+			return nil, fmt.Errorf("invalid embedding response")
+		}
 	}
 	return vectors, nil
 }
@@ -107,7 +112,7 @@ func (p *Provider) embedGemini(ctx context.Context, path, input string) ([][]flo
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return nil, common.ReadError(resp)
+		return nil, common.ReadErrorWithSecret(resp, p.Endpoint.APIKey)
 	}
 	var out struct {
 		Embedding struct {
@@ -117,8 +122,22 @@ func (p *Provider) embedGemini(ctx context.Context, path, input string) ([][]flo
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode Gemini embedding: %w", err)
 	}
-	if len(out.Embedding.Values) == 0 {
+	if !validVector(out.Embedding.Values) {
 		return nil, fmt.Errorf("Gemini embedding response is empty")
 	}
 	return [][]float64{out.Embedding.Values}, nil
+}
+
+func validVector(vector []float64) bool {
+	if len(vector) == 0 {
+		return false
+	}
+	var norm float64
+	for _, value := range vector {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return false
+		}
+		norm += value * value
+	}
+	return !math.IsNaN(norm) && !math.IsInf(norm, 0) && norm > 0
 }

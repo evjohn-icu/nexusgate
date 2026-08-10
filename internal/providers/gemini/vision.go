@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -96,7 +95,7 @@ func (v *Vision) PrepareVideo(ctx context.Context, req common.PrepareVideoReques
 	}
 	if resp.StatusCode/100 != 2 {
 		defer resp.Body.Close()
-		return common.PreparedVideo{}, common.ReadError(resp)
+		return common.PreparedVideo{}, common.ReadErrorWithSecret(resp, v.Endpoint.APIKey)
 	}
 	uploadURL := resp.Header.Get("X-Goog-Upload-URL")
 	resp.Body.Close()
@@ -118,9 +117,9 @@ func (v *Vision) PrepareVideo(ctx context.Context, req common.PrepareVideoReques
 	}
 	defer uploadResp.Body.Close()
 	if uploadResp.StatusCode/100 != 2 {
-		return common.PreparedVideo{}, common.ReadError(uploadResp)
+		return common.PreparedVideo{}, common.ReadErrorWithSecret(uploadResp, v.Endpoint.APIKey)
 	}
-	raw, err := io.ReadAll(uploadResp.Body)
+	raw, err := common.ReadBody(uploadResp.Body)
 	if err != nil {
 		return common.PreparedVideo{}, err
 	}
@@ -136,7 +135,7 @@ func (v *Vision) PrepareVideo(ctx context.Context, req common.PrepareVideoReques
 		return common.PreparedVideo{}, err
 	}
 	if out.File.Name == "" || out.File.URI == "" {
-		return common.PreparedVideo{}, fmt.Errorf("invalid Gemini file response: %s", string(raw))
+		return common.PreparedVideo{}, common.Errorf(v.Endpoint.APIKey, "invalid Gemini file response: %s", string(raw))
 	}
 	prepared := common.PreparedVideo{RemoteName: out.File.Name, RemoteURI: out.File.URI, MIMEType: mt, State: out.File.State, SizeBytes: info.Size()}
 	for prepared.State != "ACTIVE" {
@@ -169,7 +168,7 @@ func (v *Vision) fileState(ctx context.Context, name string) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return "", common.ReadError(resp)
+		return "", common.ReadErrorWithSecret(resp, v.Endpoint.APIKey)
 	}
 	var x struct {
 		State string `json:"state"`
@@ -236,9 +235,9 @@ func (v *Vision) analyzeNative(ctx context.Context, req videoanalysis.Input, pro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return videoanalysis.Result{}, "", common.ReadError(resp)
+		return videoanalysis.Result{}, "", common.ReadErrorWithSecret(resp, v.Endpoint.APIKey)
 	}
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := common.ReadBody(resp.Body)
 	if err != nil {
 		return videoanalysis.Result{}, "", err
 	}
@@ -252,13 +251,13 @@ func (v *Vision) analyzeNative(ctx context.Context, req videoanalysis.Input, pro
 		} `json:"candidates"`
 	}
 	if err := json.Unmarshal(raw, &x); err != nil || len(x.Candidates) == 0 {
-		return videoanalysis.Result{}, string(raw), fmt.Errorf("invalid Gemini response")
+		return videoanalysis.Result{}, common.RedactString(string(raw), v.Endpoint.APIKey), common.Errorf(v.Endpoint.APIKey, "invalid Gemini response: %s", string(raw))
 	}
 	var text string
 	for _, p := range x.Candidates[0].Content.Parts {
 		text += p.Text
 	}
-	return decodeAnalysis(text, raw)
+	return decodeAnalysis(text, raw, v.Endpoint.APIKey)
 }
 
 func (v *Vision) analyzeOpenAI(ctx context.Context, req videoanalysis.Input, prompt string) (videoanalysis.Result, string, error) {
@@ -284,9 +283,9 @@ func (v *Vision) analyzeOpenAI(ctx context.Context, req videoanalysis.Input, pro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return videoanalysis.Result{}, "", common.ReadError(resp)
+		return videoanalysis.Result{}, "", common.ReadErrorWithSecret(resp, v.Endpoint.APIKey)
 	}
-	raw, _ := io.ReadAll(resp.Body)
+	raw, _ := common.ReadBody(resp.Body)
 	var x struct {
 		Choices []struct {
 			Message struct {
@@ -295,31 +294,36 @@ func (v *Vision) analyzeOpenAI(ctx context.Context, req videoanalysis.Input, pro
 		} `json:"choices"`
 	}
 	if json.Unmarshal(raw, &x) != nil || len(x.Choices) == 0 {
-		return videoanalysis.Result{}, string(raw), fmt.Errorf("invalid OpenAI-compatible response")
+		return videoanalysis.Result{}, common.RedactString(string(raw), v.Endpoint.APIKey), common.Errorf(v.Endpoint.APIKey, "invalid OpenAI-compatible response: %s", string(raw))
 	}
-	return decodeAnalysis(x.Choices[0].Message.Content, raw)
+	return decodeAnalysis(x.Choices[0].Message.Content, raw, v.Endpoint.APIKey)
 }
 
-func decodeAnalysis(text string, raw []byte) (videoanalysis.Result, string, error) {
+func decodeAnalysis(text string, raw []byte, secrets ...string) (videoanalysis.Result, string, error) {
+	secret := ""
+	if len(secrets) > 0 {
+		secret = secrets[0]
+	}
+	redactedRaw := common.RedactString(string(raw), secret)
 	text = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(text), "```json"), "```"))
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(text), &fields); err != nil {
-		return videoanalysis.Result{}, string(raw), fmt.Errorf("decode structured video analysis: %w", err)
+		return videoanalysis.Result{}, redactedRaw, fmt.Errorf("decode structured video analysis: %w; response: %s", err, redactedRaw)
 	}
 	for _, key := range []string{"asset_type", "scene_tags", "subjects", "people_count", "shot_size", "camera_motion", "lighting", "audio_type", "has_speech", "usable_as", "mood_tags", "quality", "quality_flags", "extra_tags", "editorial_reason"} {
 		if _, ok := fields[key]; ok {
 			var legacy domain.StructuredAnalysis
 			if err := json.Unmarshal([]byte(text), &legacy); err != nil {
-				return videoanalysis.Result{}, string(raw), fmt.Errorf("decode legacy structured analysis: %w", err)
+				return videoanalysis.Result{}, redactedRaw, fmt.Errorf("decode legacy structured analysis: %w; response: %s", err, redactedRaw)
 			}
-			return videoanalysis.Result{Summary: legacy.Summary, Analysis: legacy}, string(raw), nil
+			return videoanalysis.Result{Summary: legacy.Summary, Analysis: legacy}, redactedRaw, nil
 		}
 	}
 	var out videoanalysis.Result
 	if err := json.Unmarshal([]byte(text), &out); err == nil && (out.Summary != "" || len(out.Scenes) > 0 || len(out.RawTags) > 0) {
-		return out, string(raw), nil
+		return out, redactedRaw, nil
 	}
-	return out, string(raw), fmt.Errorf("decode structured video analysis: response has no unified fields")
+	return out, redactedRaw, common.Errorf(secret, "decode structured video analysis: response has no unified fields; response: %s", redactedRaw)
 }
 
 func (v *Vision) applyAuth(req *http.Request) {

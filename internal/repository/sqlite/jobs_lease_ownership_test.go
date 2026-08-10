@@ -21,7 +21,9 @@ func leaseAndExpire(t *testing.T, ctx context.Context, repo *Repository, owner s
 	if err != nil || job == nil {
 		t.Fatalf("lease as %s: job=%+v err=%v", owner, job, err)
 	}
-	time.Sleep(20 * time.Millisecond)
+	if _, err := repo.db.ExecContext(ctx, `UPDATE jobs SET lease_expires_at=? WHERE id=?`, formatTime(time.Now().Add(-time.Hour)), job.ID); err != nil {
+		t.Fatalf("expire lease %s: %v", job.ID, err)
+	}
 	return job
 }
 

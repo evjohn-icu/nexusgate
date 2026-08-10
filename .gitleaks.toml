@@ -5,11 +5,16 @@ title = "Re:Footage timingdex secret-scan config"
 [extend]
 useDefault = true
 
-# Deliberate redaction-test fixtures only: fake values such as
-# api_key=arbitrary-secret-12345 that prove redactSecrets strips secrets
-# from error messages. They look like keys to the generic-api-key rule but
-# are never real credentials; keep this list to fixture markers only.
+# Deliberate redaction-test fixtures only: these fake header values prove the
+# redactor strips provider credentials from output. They look like keys to the
+# generic-api-key rule but are never real credentials; keep this list to the
+# exact fixture values and the test files that use them.
 [[allowlists]]
-description = "Redaction test fixtures in *_test.go (fake values that prove redactSecrets scrubs secrets); never real credentials. Scoped to the one file that carries the fixture marker so a real credential containing this substring elsewhere would still be flagged."
+description = "Redaction test fixtures in provider_test.go (fake header values that prove provider credentials are scrubbed); never real credentials. Scoped to exact values in the one test file so unrelated credentials remain flagged."
+paths = ['''internal/secretredact/provider_test\.go''']
+regexes = ['''header-secret-987654''', '''arbitrary-header-secret-123''']
+
+[[allowlists]]
+description = "Worker redaction-test marker REDACTED; a fixed non-secret output asserted by the historical fixture, scoped to the worker test file."
 paths = ['''internal/worker/client_test\.go''']
-regexes = ['''arbitrary-secret''']
+regexes = ['''REDACTED''']

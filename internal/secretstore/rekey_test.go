@@ -1,11 +1,249 @@
 package secretstore
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 )
+
+func rekeyFixture(t *testing.T) (*Store, string, []byte, []byte) {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := Open(dir, "hub-admin-token-for-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put("provider-channel/c1/m1", "sk-rekey"); err != nil {
+		t.Fatal(err)
+	}
+	secretDir := filepath.Join(dir, "provider-secrets")
+	ciphertext, err := os.ReadFile(filepath.Join(secretDir, filename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := os.ReadFile(filepath.Join(secretDir, keyFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, dir, ciphertext, key
+}
+
+func failingRekeyOps(t *testing.T, fail func(string, string) bool, syncFail func(string) bool) fileOps {
+	t.Helper()
+	ops := defaultFileOps()
+	ops.rename = func(source, destination string) error {
+		if err := os.Rename(source, destination); err != nil {
+			return err
+		}
+		if fail(source, destination) {
+			return errors.New("injected rename failure")
+		}
+		return nil
+	}
+	ops.syncDirectory = func(dir string) error {
+		if err := syncDirectory(dir); err != nil {
+			return err
+		}
+		if syncFail(dir) {
+			return errors.New("injected directory sync failure")
+		}
+		return nil
+	}
+	return ops
+}
+
+func assertCanonicalBytes(t *testing.T, dir string, wantCiphertext, wantKey []byte) {
+	t.Helper()
+	secretDir := filepath.Join(dir, "provider-secrets")
+	got, err := os.ReadFile(filepath.Join(secretDir, filename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(wantCiphertext) {
+		t.Fatal("canonical ciphertext changed")
+	}
+	got, err = os.ReadFile(filepath.Join(secretDir, keyFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(wantKey) {
+		t.Fatal("canonical key changed")
+	}
+}
+
+func TestRekeyFailureAfterCiphertextRenameRecoversOnOpen(t *testing.T) {
+	store, dir, oldCiphertext, oldKey := rekeyFixture(t)
+	store.ops = failingRekeyOps(t, func(_, destination string) bool { return filepath.Base(destination) == filename }, func(string) bool { return false })
+	if err := store.Rekey(); err == nil {
+		t.Fatal("Rekey succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "provider-secrets", rekeyJournal)); err != nil {
+		t.Fatalf("journal missing: %v", err)
+	}
+	reopened, err := Open(dir, "hub-admin-token-for-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCanonicalBytes(t, dir, oldCiphertext, oldKey)
+	if _, ok, err := reopened.Resolve("provider-channel/c1/m1"); err != nil || !ok {
+		t.Fatalf("recovered secret: %v, %t", err, ok)
+	}
+}
+
+func TestRekeyFailureAfterCiphertextDirectorySyncRecoversOnOpen(t *testing.T) {
+	store, dir, oldCiphertext, oldKey := rekeyFixture(t)
+	var syncs int
+	store.ops = failingRekeyOps(t, func(_, _ string) bool { return false }, func(_ string) bool {
+		syncs++
+		return syncs == 5
+	})
+	if err := store.Rekey(); err == nil {
+		t.Fatal("Rekey succeeded")
+	}
+	if _, err := Open(dir, "hub-admin-token-for-test"); err != nil {
+		t.Fatal(err)
+	}
+	assertCanonicalBytes(t, dir, oldCiphertext, oldKey)
+}
+
+func TestRekeyPreparedJournalWriteFailureLeavesCanonicalFilesUntouched(t *testing.T) {
+	store, dir, oldCiphertext, oldKey := rekeyFixture(t)
+	var syncs int
+	store.ops = failingRekeyOps(t, func(_, _ string) bool { return false }, func(_ string) bool {
+		syncs++
+		return syncs == 4 // prepared journal directory sync, after its rename
+	})
+	if err := store.Rekey(); err == nil {
+		t.Fatal("Rekey succeeded")
+	}
+	if _, err := Open(dir, "hub-admin-token-for-test"); err != nil {
+		t.Fatalf("Open after prepared journal failure: %v", err)
+	}
+	assertCanonicalBytes(t, dir, oldCiphertext, oldKey)
+	if _, err := os.Stat(filepath.Join(dir, "provider-secrets", rekeyJournal)); !os.IsNotExist(err) {
+		t.Fatalf("prepared journal remains after failed write: %v", err)
+	}
+}
+
+func TestRekeyFailureAfterKeyRenameRecoversOnOpen(t *testing.T) {
+	store, dir, oldCiphertext, oldKey := rekeyFixture(t)
+	store.ops = failingRekeyOps(t, func(_, destination string) bool { return filepath.Base(destination) == keyFilename }, func(string) bool { return false })
+	if err := store.Rekey(); err == nil {
+		t.Fatal("Rekey succeeded")
+	}
+	if _, err := Open(dir, "hub-admin-token-for-test"); err != nil {
+		t.Fatal(err)
+	}
+	assertCanonicalBytes(t, dir, oldCiphertext, oldKey)
+}
+
+func TestRekeyFailureAfterKeyDirectorySyncRecoversOnOpen(t *testing.T) {
+	store, dir, oldCiphertext, oldKey := rekeyFixture(t)
+	var syncs int
+	store.ops = failingRekeyOps(t, func(_, _ string) bool { return false }, func(_ string) bool {
+		syncs++
+		return syncs == 6
+	})
+	if err := store.Rekey(); err == nil {
+		t.Fatal("Rekey succeeded")
+	}
+	if _, err := Open(dir, "hub-admin-token-for-test"); err != nil {
+		t.Fatal(err)
+	}
+	assertCanonicalBytes(t, dir, oldCiphertext, oldKey)
+}
+
+func TestRekeyCommitMarkerFailureRecoversOnOpen(t *testing.T) {
+	store, dir, _, _ := rekeyFixture(t)
+	var journalWrites int
+	store.ops = failingRekeyOps(t, func(_, destination string) bool {
+		if filepath.Base(destination) == rekeyJournal {
+			journalWrites++
+			return journalWrites == 2
+		}
+		return false
+	}, func(string) bool { return false })
+	if err := store.Rekey(); err == nil {
+		t.Fatal("Rekey succeeded")
+	}
+	if _, err := Open(dir, "hub-admin-token-for-test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "provider-secrets", rekeyJournal)); !os.IsNotExist(err) {
+		t.Fatal("journal was not cleaned after rollback")
+	}
+}
+
+func TestRekeyRollbackFailureLeavesJournalForReopen(t *testing.T) {
+	store, dir, oldCiphertext, oldKey := rekeyFixture(t)
+	store.ops = failingRekeyOps(t, func(_, destination string) bool { return filepath.Base(destination) == keyFilename }, func(string) bool { return false })
+	if err := store.Rekey(); err == nil {
+		t.Fatal("Rekey succeeded")
+	}
+	// The failed transaction leaves the prepared journal; Open must restore it
+	// using production operations, independently of the failed Store hooks.
+	reopened, err := Open(dir, "hub-admin-token-for-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCanonicalBytes(t, dir, oldCiphertext, oldKey)
+	if _, ok, err := reopened.Resolve("provider-channel/c1/m1"); err != nil || !ok {
+		t.Fatalf("recovered secret: %v, %t", err, ok)
+	}
+}
+
+func TestRekeyBackupWriteFailureLeavesCanonicalFilesUntouched(t *testing.T) {
+	store, dir, oldCiphertext, oldKey := rekeyFixture(t)
+	store.ops = failingRekeyOps(t, func(_, destination string) bool { return filepath.Base(destination) == "store.key.pre-rekey" }, func(string) bool { return false })
+	if err := store.Rekey(); err == nil {
+		t.Fatal("Rekey succeeded")
+	}
+	assertCanonicalBytes(t, dir, oldCiphertext, oldKey)
+}
+
+func TestRekeySuccessCleansJournalAndPreservesPermissions(t *testing.T) {
+	store, dir, _, _ := rekeyFixture(t)
+	if err := store.Rekey(); err != nil {
+		t.Fatal(err)
+	}
+	secretDir := filepath.Join(dir, "provider-secrets")
+	if _, err := os.Stat(filepath.Join(secretDir, rekeyJournal)); !os.IsNotExist(err) {
+		t.Fatal("journal remains")
+	}
+	for _, name := range []string{filename, keyFilename, keyFilename + ".pre-rekey"} {
+		info, err := os.Stat(filepath.Join(secretDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != secretFileMode {
+			t.Fatalf("%s mode = %o", name, info.Mode().Perm())
+		}
+	}
+}
+
+func TestRekeyEmptyStoreRollbackDoesNotCreateCiphertext(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Open(dir, "hub-admin-token-for-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretPath := filepath.Join(dir, "provider-secrets", filename)
+	if _, err := os.Stat(secretPath); !os.IsNotExist(err) {
+		t.Fatalf("empty store ciphertext stat = %v, want not exist", err)
+	}
+	store.ops = failingRekeyOps(t, func(_, destination string) bool { return filepath.Base(destination) == filename }, func(string) bool { return false })
+	if err := store.Rekey(); err == nil {
+		t.Fatal("Rekey succeeded")
+	}
+	if _, err := Open(dir, "hub-admin-token-for-test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(secretPath); !os.IsNotExist(err) {
+		t.Fatalf("recovered empty store ciphertext stat = %v, want not exist", err)
+	}
+}
 
 func TestRekeyRotatesKeyAndPreservesSecrets(t *testing.T) {
 	dir := t.TempDir()

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/evjohn-icu/timingdex/internal/cachecoord"
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	videoanalysis "github.com/evjohn-icu/timingdex/internal/domain/video_analysis"
 	"github.com/evjohn-icu/timingdex/internal/idgen"
@@ -21,7 +22,7 @@ import (
 // around its inline budget, validation, and the canonical commit. The plain
 // route passes the whole router (fallbacks stay intact); the two-pass
 // multiframe fallback reuses it for pass 1 with the route's video member.
-func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *domain.MediaMetadata, provider videoproviders.VideoUnderstandingProvider, sourcePath string) error {
+func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *domain.MediaMetadata, provider videoproviders.VideoUnderstandingProvider, sourcePath, worker string) error {
 	reqJSON := fmt.Sprintf(`{"asset_id":%q,"path":%q}`, j.AssetID, sourcePath)
 	// v4 of the prompt and v2 of the schema change shot semantics: a shot
 	// that did not observe an object/action/mood keeps empty lists instead
@@ -29,7 +30,7 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 	// objects/actions/mood. The version bump is what breaks CreateModelRun's
 	// cache so an old run can never satisfy a new analysis.
 	providerName, modelName, promptVersion := provider.Name(), provider.Model(), "footage-analysis-v4"
-	runID, cached, err := p.repo.CreateModelRun(ctx, j.AssetID, "vision", providerName, modelName, j.InputHash, promptVersion, "asset-analysis/v2", reqJSON)
+	runID, cached, err := p.repo.CreateModelRun(ctx, j.AssetID, "vision", providerName, modelName, j.InputHash, promptVersion, "asset-analysis/v2", reqJSON, j.ID, worker)
 	if err != nil {
 		return err
 	}
@@ -65,6 +66,10 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 		}
 	}
 	analyzeReq := videoanalysis.Input{VideoPath: proxy.LocalPath, Transcript: transcript, Metadata: *m}
+	cacheLock, e := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+	if e != nil {
+		return e
+	}
 	requiresPreparation := false
 	if preparation, ok := provider.(interface{ RequiresVideoPreparation() bool }); ok {
 		requiresPreparation = preparation.RequiresVideoPreparation()
@@ -92,11 +97,16 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 		}
 		analyzeReq.RemoteURI, analyzeReq.MIMEType = cachedFile.RemoteURI, cachedFile.MIMEType
 	}
+	if e := cacheLock.Release(); e != nil {
+		return e
+	}
 	result, rawResult, providerErr := p.analyzeVideo(ctx, provider, j.AssetID, analyzeReq, m.DurationMS)
 	raw = rawResult
 	err = providerErr
 	if err != nil {
-		_ = p.repo.FailModelRun(ctx, runID, "provider_error", err.Error(), raw)
+		if failErr := p.failModelRun(ctx, runID, "provider_error", err.Error(), raw, j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 	// The model has been paid and has answered; nothing from here to the
@@ -108,19 +118,23 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 	a = result.ToStructuredAnalysis()
 	a, err = normalize.ValidateAndNormalize(a)
 	if err != nil {
-		_ = p.repo.FailModelRun(ctx, runID, "validation_error", err.Error(), "")
+		if failErr := p.failModelRun(ctx, runID, "validation_error", err.Error(), "", j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 	shots := result.ToAssetShots(j.AssetID, runID)
 	if err := validateAnalysisShots(shots, m.DurationMS); err != nil {
-		_ = p.repo.FailModelRun(ctx, runID, "validation_error", err.Error(), raw)
+		if failErr := p.failModelRun(ctx, runID, "validation_error", err.Error(), raw, j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 	parsed, _ := json.Marshal(a)
-	if err := p.repo.StageModelRun(ctx, runID, raw, string(parsed)); err != nil {
+	if err := p.repo.StageModelRun(ctx, runID, raw, string(parsed), j.ID, worker); err != nil {
 		return err
 	}
-	if err := p.repo.CommitAnalysisWithShots(ctx, j.AssetID, runID, "asset-analysis/v2", a, shots); err != nil {
+	if err := p.repo.CommitAnalysisWithShots(ctx, j.AssetID, runID, "asset-analysis/v2", a, shots, j.ID, worker); err != nil {
 		return err
 	}
 	// The run is canonical; record its estimate against the serving

@@ -164,14 +164,22 @@ func TestTranscribeTreatsNormalClosureAsEmptyTranscript(t *testing.T) {
 		// come from a healthy connection, so it is issued here rather than
 		// after a cancelled read — a read that fails first would tear the
 		// socket down and the client would see EOF instead of a close frame.
+		configReceived := make(chan struct{})
 		go func() {
 			for {
 				if _, _, readErr := conn.Read(context.Background()); readErr != nil {
 					return
 				}
+				close(configReceived)
+				return
 			}
 		}()
-		time.Sleep(300 * time.Millisecond)
+		select {
+		case <-configReceived:
+		case <-time.After(time.Second):
+			t.Error("timed out waiting for ASR config frame")
+			return
+		}
 		conn.Close(websocket.StatusNormalClosure, "finish last sequence")
 	}))
 	defer server.Close()

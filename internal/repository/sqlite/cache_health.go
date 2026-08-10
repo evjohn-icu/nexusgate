@@ -3,9 +3,83 @@ package sqlite
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
 )
+
+func (r *Repository) MatchingDerivedArtifactsByProfilePrefixes(ctx context.Context, prefixes []string) ([]domain.DerivedArtifact, error) {
+	if len(prefixes) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(prefixes))
+	args := make([]any, len(prefixes))
+	for i, prefix := range prefixes {
+		placeholders[i] = "profile_hash LIKE ?"
+		args[i] = prefix + "%"
+	}
+	query := `SELECT id,asset_id,artifact_type,profile_hash,local_path,size_bytes FROM derived_artifacts WHERE artifact_type IN ('thumbnail','proxy') AND (` + strings.Join(placeholders, " OR ") + `) ORDER BY asset_id,artifact_type`
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var artifacts []domain.DerivedArtifact
+	for rows.Next() {
+		var a domain.DerivedArtifact
+		if err := rows.Scan(&a.ID, &a.AssetID, &a.Type, &a.ProfileHash, &a.LocalPath, &a.SizeBytes); err != nil {
+			return nil, err
+		}
+		artifacts = append(artifacts, a)
+	}
+	return artifacts, rows.Err()
+}
+
+// DeleteDerivedArtifactsByProfilePrefixes removes only the requested preview
+// rows. Files are owned by the cache command and are deleted separately.
+func (r *Repository) DeleteDerivedArtifactsByProfilePrefixes(ctx context.Context, prefixes []string) ([]string, error) {
+	if len(prefixes) == 0 {
+		return nil, nil
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	placeholders := make([]string, len(prefixes))
+	args := make([]any, len(prefixes))
+	for i, prefix := range prefixes {
+		placeholders[i] = "profile_hash LIKE ?"
+		args[i] = prefix + "%"
+	}
+	query := `SELECT DISTINCT asset_id FROM derived_artifacts WHERE artifact_type IN ('thumbnail','proxy') AND (` + strings.Join(placeholders, " OR ") + `)`
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	var assets []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		assets = append(assets, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	deleteQuery := `DELETE FROM derived_artifacts WHERE artifact_type IN ('thumbnail','proxy') AND (` + strings.Join(placeholders, " OR ") + `)`
+	if _, err := tx.ExecContext(ctx, deleteQuery, args...); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return assets, nil
+}
 
 // ListDerivedArtifacts returns every derived_artifacts row. It backs the
 // cache-health commands (`timingdex cache gc`, `timingdex cache verify`),
@@ -28,6 +102,25 @@ func (r *Repository) ListDerivedArtifacts(ctx context.Context) ([]domain.Derived
 		artifacts = append(artifacts, a)
 	}
 	return artifacts, rows.Err()
+}
+
+// ListLiveJobAssetIDs returns assets whose non-terminal running job still has
+// a valid lease. Cache maintenance protects all of their derived files.
+func (r *Repository) ListLiveJobAssetIDs(ctx context.Context, now time.Time) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT DISTINCT asset_id FROM jobs WHERE asset_id IS NOT NULL AND state='running' AND terminal=0 AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`, formatTime(now))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // ListAllAssetIDs returns every asset id in the assets table. It backs

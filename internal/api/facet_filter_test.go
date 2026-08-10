@@ -288,7 +288,7 @@ func newFacetTestService(t *testing.T) *app.Service {
 		if assetID == "" {
 			t.Fatalf("no new asset found after scanning %s", relPath)
 		}
-		runID, _, err := repo.CreateModelRun(ctx, assetID, "vision", "fixture", "fixture-model", "hash-"+assetID, "facet-prompt-v1", "asset-analysis/v1", "{}")
+		runID, _, err := repo.CreateModelRun(ctx, assetID, "vision", "fixture", "fixture-model", "hash-"+assetID, "facet-prompt-v1", "asset-analysis/v1", "{}", "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -297,10 +297,10 @@ func newFacetTestService(t *testing.T) *app.Service {
 		// first (an active guard introduced with the model_runs boundary work);
 		// the production pipeline always stages before committing, so the
 		// fixture must mirror that or every commit is rejected.
-		if err := repo.StageModelRun(ctx, runID, "{}", "{}"); err != nil {
+		if err := repo.StageModelRun(ctx, runID, "{}", "{}", "", ""); err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.CommitAnalysisWithShots(ctx, assetID, runID, "asset-analysis/v1", analysis, nil); err != nil {
+		if err := repo.CommitAnalysisWithShots(ctx, assetID, runID, "asset-analysis/v1", analysis, nil, "", ""); err != nil {
 			t.Fatal(err)
 		}
 		// The pipeline rebuilds the FTS index as its own step after committing

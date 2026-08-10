@@ -10,6 +10,7 @@ import (
 
 	"github.com/evjohn-icu/timingdex/internal/config"
 	"github.com/evjohn-icu/timingdex/internal/domain"
+	sqliterepo "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 )
 
 func scanWriteVideoFile(t *testing.T, path string) {
@@ -305,5 +306,12 @@ func TestScanLibraryRootConcurrentSameRoot(t *testing.T) {
 		if count <= 0 {
 			t.Errorf("scanFailure for %q has count %d, want >0 or absent", id, count)
 		}
+	}
+	var live int
+	if err := service.repo.(*sqliterepo.Repository).DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM asset_locations WHERE root_id=? AND exists_now=1`, rootID).Scan(&live); err != nil {
+		t.Fatal(err)
+	}
+	if live == 0 {
+		t.Fatal("overlapping same-root scans left all locations missing")
 	}
 }

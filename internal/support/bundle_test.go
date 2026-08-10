@@ -68,8 +68,9 @@ func TestSupportBundleRedactsSecretsAndBasenames(t *testing.T) {
 			},
 			Alignment: config.AlignmentConfig{
 				Command: "/opt/timingdex/bin/timingdex-align",
-				Args:    []string{"-i", "/mnt/nas/clips"},
+				Args:    []string{"-i", "/mnt/nas/clips", `C:\Users\ev\clips\input.mp4`, "https://example.test/media/input.mp4"},
 			},
+			ShotDetection: config.ShotDetectionConfig{Args: []string{`D:\Footage\nested\cut.mp4`}},
 		},
 		HubTLS:   config.HubTLSConfig{Mode: "files", CertificateFile: "/etc/timingdex/tls.crt", KeyFile: "/etc/timingdex/tls.key"},
 		Hardware: media.HardwareConfig{Mode: "auto", Device: "/dev/dri/renderD128", AllowFallback: true, ProxyBitrateKbps: 1800},
@@ -145,8 +146,12 @@ func TestSupportBundleRedactsSecretsAndBasenames(t *testing.T) {
 	if got := align["command"]; got != "timingdex-align" {
 		t.Errorf("config.sanitized.json alignment.command = %v, want basename timingdex-align", got)
 	}
-	if args, ok := align["args"].([]any); !ok || len(args) != 2 || args[0] != "-i" || args[1] != "clips" {
-		t.Errorf("config.sanitized.json alignment.args = %v, want [-i clips] (absolute path basenamed)", args)
+	if args, ok := align["args"].([]any); !ok || len(args) != 4 || args[0] != "-i" || args[1] != "clips" || args[2] != "input.mp4" || args[3] != "https://example.test/media/input.mp4" {
+		t.Errorf("config.sanitized.json alignment.args = %v, want cross-platform basenames with URL preserved", args)
+	}
+	shot := sanitized["providers"].(map[string]any)["shot_detection"].(map[string]any)
+	if args, ok := shot["args"].([]any); !ok || len(args) != 1 || args[0] != "cut.mp4" {
+		t.Errorf("config.sanitized.json shot_detection.args = %v, want [cut.mp4]", args)
 	}
 	tls := sanitized["hub_tls"].(map[string]any)
 	if got := tls["certificate_file"]; got != "tls.crt" {
@@ -236,6 +241,92 @@ func TestSupportBundleCapsRecentErrorCodesAtTwenty(t *testing.T) {
 	}
 	if bundle.RecentErrorCodes[0] != "code-01" || bundle.RecentErrorCodes[19] != "code-20" {
 		t.Errorf("recent_error_codes not sorted-and-capped: %v", bundle.RecentErrorCodes)
+	}
+}
+
+type largeBundleSource struct{ doctor string }
+
+func (largeBundleSource) JobSummary(context.Context) (domain.JobSummary, error) {
+	return domain.JobSummary{}, nil
+}
+func (largeBundleSource) JobIssues(context.Context) ([]domain.JobIssue, error) { return nil, nil }
+func (s largeBundleSource) Doctor(_ context.Context, w io.Writer) error {
+	_, err := io.WriteString(w, s.doctor)
+	return err
+}
+
+func TestSupportBundleBoundsOversizedEntriesAndLeavesNoPartialOutput(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "doctor.zip")
+	if err := Generate(context.Background(), domain.DoctorReport{}, config.Config{}, largeBundleSource{doctor: strings.Repeat("x", maxBundleEntryBytes+1024)}, out); err != nil {
+		t.Fatal(err)
+	}
+	files := readZip(t, out)
+	if len(files["doctor.txt"]) > maxBundleEntryBytes || !strings.Contains(string(files["doctor.txt"]), "TRUNCATED") {
+		t.Fatalf("doctor entry was not bounded with marker: %d bytes", len(files["doctor.txt"]))
+	}
+	out = filepath.Join(dir, "config.zip")
+	cfg := config.Config{Providers: config.ProvidersConfig{Alignment: config.AlignmentConfig{Args: []string{strings.Repeat("x", maxBundleEntryBytes+1024)}}}}
+	if err := Generate(context.Background(), domain.DoctorReport{}, cfg, largeBundleSource{}, out); err != nil {
+		t.Fatal(err)
+	}
+	files = readZip(t, out)
+	if len(files["config.sanitized.json"]) > maxBundleEntryBytes || !strings.Contains(string(files["config.sanitized.json"]), "TRUNCATED") {
+		t.Fatalf("config entry was not bounded with marker: %d bytes", len(files["config.sanitized.json"]))
+	}
+	bad := filepath.Join(t.TempDir(), "missing", "bundle.zip")
+	if err := Generate(context.Background(), domain.DoctorReport{}, config.Config{}, largeBundleSource{doctor: strings.Repeat("x", maxBundleEntryBytes*3)}, bad); err == nil {
+		t.Fatal("expected failure creating archive in missing directory")
+	}
+	if _, err := os.Stat(bad); !os.IsNotExist(err) {
+		t.Fatalf("partial output exists after failed generation: %v", err)
+	}
+}
+
+func TestSanitizePathTextIsCrossPlatformAndPreservesURLs(t *testing.T) {
+	got := SanitizePathText(`file C:\Users\ev\footage\clip.mp4 URL https://example.test/a/b`)
+	if strings.Contains(got, `C:\Users`) || !strings.Contains(got, "clip.mp4") || !strings.Contains(got, "https://example.test/a/b") {
+		t.Fatalf("sanitized text = %q", got)
+	}
+}
+
+func TestSupportBundleRedactsLegacyProviderSecretsInSanitizedConfig(t *testing.T) {
+	const apiKey = "legacy-provider-api-key-secret"
+	const headerValue = "legacy-extra-header-secret"
+	cfg := config.Config{Providers: config.ProvidersConfig{
+		StepFun: config.ProviderConfig{
+			APIKey:       apiKey,
+			APIKeyEnv:    "STEP_API_KEY",
+			ExtraHeaders: map[string]string{"X-Provider-Key": headerValue},
+		},
+	}}
+
+	out := filepath.Join(t.TempDir(), "bundle.zip")
+	if err := Generate(context.Background(), domain.DoctorReport{}, cfg, fakeBundleSource{}, out); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	files := readZip(t, out)
+	raw := files["config.sanitized.json"]
+	if strings.Contains(string(raw), apiKey) || strings.Contains(string(raw), headerValue) {
+		t.Fatalf("config.sanitized.json leaked legacy provider secret: %s", raw)
+	}
+
+	var sanitized map[string]any
+	if err := json.Unmarshal(raw, &sanitized); err != nil {
+		t.Fatalf("parse config.sanitized.json: %v", err)
+	}
+	providers, ok := sanitized["providers"].(map[string]any)
+	if !ok {
+		t.Fatalf("providers has unexpected shape: %T", sanitized["providers"])
+	}
+	stepfun, ok := providers["stepfun"].(map[string]any)
+	if !ok {
+		t.Fatalf("providers.stepfun has unexpected shape: %T", providers["stepfun"])
+	}
+	for _, key := range []string{"api_key", "api_key_env", "extra_headers"} {
+		if got := stepfun[key]; got != "***" {
+			t.Errorf("providers.stepfun.%s = %v, want ***", key, got)
+		}
 	}
 }
 

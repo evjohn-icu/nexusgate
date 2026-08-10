@@ -89,14 +89,21 @@ func NormalizeMetadata(probe FFProbeResult, exif map[string]any) domain.MediaMet
 	}
 	if capturedAt, ok := captureTime(exif); ok {
 		m.CapturedAt = &capturedAt
+		m.CaptureTimeSource, m.CaptureTimeConfidence = captureTimeProvenance(exif)
 	} else if capturedAt, ok := captureTimeFromProbe(probe); ok {
 		m.CapturedAt = &capturedAt
+		m.CaptureTimeSource = "embedded_probe"
+		m.CaptureTimeConfidence = 0.75
+	} else if capturedAt, ok := captureTimeValue(exif["FileModifyDate"]); ok {
+		m.CapturedAt = &capturedAt
+		m.CaptureTimeSource, m.CaptureTimeConfidence = "filesystem", 0.25
 	}
-	if v, ok := number(exif["GPSLatitude"]); ok {
-		m.Latitude = &v
-	}
-	if v, ok := number(exif["GPSLongitude"]); ok {
-		m.Longitude = &v
+	if lat, lon, ok := completeCoordinates(exif); ok {
+		m.Latitude, m.Longitude = &lat, &lon
+		m.LocationSource, m.LocationPrecision = "embedded_exif", "exact"
+	} else if lat, lon, ok := probeCoordinates(probe); ok {
+		m.Latitude, m.Longitude = &lat, &lon
+		m.LocationSource, m.LocationPrecision = "embedded_probe", "exact"
 	}
 	return m
 }
@@ -238,7 +245,7 @@ func captureExifFields(exif map[string]any) []string {
 // as UTC for the legacy MediaMetadata field; CaptureContext records its source
 // and timezone confidence before it is used for automatic session grouping.
 func captureTime(exif map[string]any) (time.Time, bool) {
-	for _, key := range []string{"DateTimeOriginal", "CreateDate", "MediaCreateDate", "TrackCreateDate", "FileModifyDate"} {
+	for _, key := range []string{"DateTimeOriginal", "CreateDate", "MediaCreateDate", "TrackCreateDate"} {
 		value, ok := exif[key]
 		if !ok {
 			continue
@@ -255,12 +262,53 @@ func captureTime(exif map[string]any) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+func captureTimeProvenance(exif map[string]any) (string, float64) {
+	for _, key := range []string{"DateTimeOriginal", "CreateDate", "MediaCreateDate", "TrackCreateDate"} {
+		if _, ok := captureTimeValue(exif[key]); ok {
+			return "embedded_exif", 0.95
+		}
+	}
+	if _, ok := captureTimeValue(exif["FileModifyDate"]); ok {
+		return "filesystem", 0.25
+	}
+	return "unknown", 0
+}
+
+func captureTimeValue(value any) (time.Time, bool) {
+	switch v := value.(type) {
+	case time.Time:
+		return v.UTC(), true
+	case string:
+		return parseCaptureTime(v)
+	default:
+		return time.Time{}, false
+	}
+}
+
+func completeCoordinates(values map[string]any) (float64, float64, bool) {
+	lat, latOK := number(values["GPSLatitude"])
+	lon, lonOK := number(values["GPSLongitude"])
+	return lat, lon, latOK && lonOK
+}
+
+func probeCoordinates(probe FFProbeResult) (float64, float64, bool) {
+	fields := [][]metadataField{probeMetadataFields(probe)}
+	lat, latOK := numberString(firstMetadataString(fields, "GPSLatitude"))
+	lon, lonOK := numberString(firstMetadataString(fields, "GPSLongitude"))
+	return lat, lon, latOK && lonOK
+}
+
+func numberString(value string) (float64, bool) {
+	if value == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	return v, err == nil
+}
+
 func captureTimeFromProbe(probe FFProbeResult) (time.Time, bool) {
 	groups := [][]metadataField{probeMetadataFields(probe)}
-	for _, key := range []string{
-		"CreationTime", "CreationDate", "DateCreated", "CreateDate",
-		"MediaCreateDate", "TrackCreateDate", "FileModifyDate",
-	} {
+	for _, key := range []string{"CreationTime", "CreationDate", "DateCreated", "CreateDate", "MediaCreateDate", "TrackCreateDate"} {
 		if value := firstMetadataString(groups, key); value != "" {
 			if parsed, ok := parseCaptureTime(value); ok {
 				return parsed, true
@@ -304,18 +352,18 @@ func parseBitDepth(raw, pixelFormat string) int {
 	return 0
 }
 
-func GenerateThumbnail(ctx context.Context, src, dst string, plan HardwarePlan) error {
+func GenerateThumbnail(ctx context.Context, src, dst string, plan HardwarePlan) (HardwarePlan, error) {
 	previewPlan, err := previewPlanForSource(ctx, src)
 	if err != nil {
-		return err
+		return plan, err
 	}
 	return NewPreviewRenderer("").RenderThumbnail(ctx, src, dst, plan, previewPlan)
 }
 
-func GenerateProxy(ctx context.Context, src, dst string, plan HardwarePlan) error {
+func GenerateProxy(ctx context.Context, src, dst string, plan HardwarePlan) (HardwarePlan, error) {
 	previewPlan, err := previewPlanForSource(ctx, src)
 	if err != nil {
-		return err
+		return plan, err
 	}
 	return NewPreviewRenderer("").RenderProxy(ctx, src, dst, plan, previewPlan)
 }
@@ -364,8 +412,7 @@ func ExtractAudio(ctx context.Context, src, dst string, readRate float64) error 
 	return atomicFFmpegOutput(dst, func(out string) error {
 		args := append([]string{"-hide_banner", "-loglevel", "error", "-y"}, readRateArgs(readRate)...)
 		args = append(args, "-i", src, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "64k", out)
-		cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-		if raw, err := cmd.CombinedOutput(); err != nil {
+		if raw, err := runFFmpeg(ctx, nil, args...); err != nil {
 			return fmt.Errorf("audio: %w: %s", err, truncateStderr(raw))
 		}
 		return nil
@@ -393,38 +440,100 @@ func atomicFFmpegOutput(dst string, produce func(outputPath string) error) error
 		return err
 	}
 	temporaryPath := temporary.Name()
+	if info, err := os.Lstat(temporaryPath); err != nil || !info.Mode().IsRegular() {
+		_ = temporary.Close()
+		_ = os.Remove(temporaryPath)
+		if err != nil {
+			return fmt.Errorf("lstat ffmpeg temporary output: %w", err)
+		}
+		return fmt.Errorf("ffmpeg temporary output is not a regular file")
+	}
 	if err := temporary.Close(); err != nil {
 		_ = os.Remove(temporaryPath)
 		return err
 	}
 	defer os.Remove(temporaryPath)
 
+	if info, err := os.Lstat(temporaryPath); err != nil || !info.Mode().IsRegular() {
+		if err != nil {
+			return fmt.Errorf("recheck ffmpeg temporary output: %w", err)
+		}
+		return fmt.Errorf("ffmpeg temporary output was replaced")
+	}
 	if err := produce(temporaryPath); err != nil {
 		return err
+	}
+	// Recheck after the external producer returns. This closes the ordinary
+	// replacement window; a hostile same-directory actor could still race the
+	// final rename, so the residual TOCTOU is bounded by the directory mode and
+	// platform rename semantics rather than claimed away.
+	if info, err := os.Lstat(temporaryPath); err != nil || !info.Mode().IsRegular() {
+		if err != nil {
+			return fmt.Errorf("lstat ffmpeg output after render: %w", err)
+		}
+		return fmt.Errorf("ffmpeg output was replaced before publish")
+	}
+	if !UsableDerivedFile(temporaryPath) {
+		return fmt.Errorf("ffmpeg produced an empty or non-regular output")
 	}
 	return os.Rename(temporaryPath, dst)
 }
 
-func runWithFallback(ctx context.Context, label string, args []string, plan HardwarePlan, software func() []string) error {
+var runFFmpeg = func(ctx context.Context, env []string, args ...string) ([]byte, error) {
+	command := exec.CommandContext(ctx, "ffmpeg", args...)
+	if len(env) > 0 {
+		command.Env = append(os.Environ(), env...)
+	}
+	return command.CombinedOutput()
+}
+
+func runWithFallback(ctx context.Context, label string, args []string, plan HardwarePlan, software func() []string) (HardwarePlan, error) {
 	// The accelerated attempt runs with the plan's environment, which is how a
 	// probed libva driver reaches the encode; the software fallback below is
 	// deliberately left on the plain environment.
-	hardwareCommand := exec.CommandContext(ctx, "ffmpeg", args...)
-	if len(plan.Env) > 0 {
-		hardwareCommand.Env = append(os.Environ(), plan.Env...)
-	}
-	out, err := hardwareCommand.CombinedOutput()
+	out, err := runFFmpeg(ctx, plan.Env, args...)
 	if err == nil {
-		return nil
+		return plan, nil
 	}
 	if plan.Mode != "software" && plan.AllowFallback {
-		fallbackOut, fallbackErr := exec.CommandContext(ctx, "ffmpeg", software()...).CombinedOutput()
+		fallbackOut, fallbackErr := runFFmpeg(ctx, nil, software()...)
 		if fallbackErr == nil {
-			return nil
+			return plan.SoftwareFallback(), nil
 		}
-		return fmt.Errorf("%s hardware %s failed: %s; software fallback failed: %w: %s", label, plan.Mode, truncateStderr(out), fallbackErr, truncateStderr(fallbackOut))
+		return plan, fmt.Errorf("%s hardware %s failed: %s; software fallback failed: %w: %s", label, plan.Mode, truncateStderr(out), fallbackErr, truncateStderr(fallbackOut))
 	}
-	return fmt.Errorf("%s (%s): %w: %s", label, plan.Mode, err, truncateStderr(out))
+	return plan, fmt.Errorf("%s (%s): %w: %s", label, plan.Mode, err, truncateStderr(out))
+}
+
+// PublishDerivedOutput atomically moves a staged, non-empty derived file into
+// place. The staged file is removed on every failure and an empty file is never
+// published.
+func PublishDerivedOutput(staged, final string) error {
+	if !UsableDerivedFile(staged) {
+		_ = os.Remove(staged)
+		return fmt.Errorf("staged derived output is empty or not regular")
+	}
+	if info, err := os.Lstat(final); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		_ = os.Remove(staged)
+		return fmt.Errorf("refusing to publish through symlink: %s", final)
+	} else if err != nil && !os.IsNotExist(err) {
+		_ = os.Remove(staged)
+		return fmt.Errorf("lstat derived output: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(final), 0o700); err != nil {
+		_ = os.Remove(staged)
+		return err
+	}
+	if err := os.Rename(staged, final); err != nil {
+		_ = os.Remove(staged)
+		return err
+	}
+	return nil
+}
+
+func UsableDerivedFile(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular() && info.Size() > 0
 }
 
 const mostlySilentThreshold = 0.80

@@ -7,9 +7,10 @@
 // piecewise suites (internal/media, internal/app, internal/repository/sqlite)
 // prove each stage in isolation.
 //
-// The suite is skipped cleanly when ffmpeg/ffprobe are absent: CI installs
-// ffmpeg, so the full chain runs there. A skip whose message names the
-// missing binary is an environment skip; anything else is a wiring bug.
+// The suite is skipped cleanly when ffmpeg/ffprobe are absent locally: CI
+// installs ffmpeg, so the full chain runs there. Set TIMINGDEX_MEDIA_OPTIONAL=1
+// to retain local skips in an environment where a fixture cannot be encoded.
+// When unset in CI, fixture failures are test failures rather than skips.
 package e2e
 
 import (
@@ -144,16 +145,16 @@ func (f Fixture) transcribes() bool {
 }
 
 // expectedJobs is the exact chain length this family must succeed: probe,
-// derive, speech gate and analyze are universal; transcribe joins only when
-// the gate classifies speech.
+// derive, speech gate, analyze and index are universal; transcribe joins only
+// when the gate classifies speech.
 func (f Fixture) expectedJobs() int {
 	if !f.Opts.Audio {
-		return 3 // probe derive analyze
+		return 4 // probe derive analyze index
 	}
 	if f.transcribes() {
-		return 5 // probe derive speech_gate transcribe analyze
+		return 6 // probe derive speech_gate transcribe analyze index
 	}
-	return 4 // probe derive speech_gate analyze
+	return 5 // probe derive speech_gate analyze index
 }
 
 // CoreFixtures is the fixture family table. Every row is a real encoded clip
@@ -239,10 +240,10 @@ var CoreFixtures = []Fixture{
 func generateClip(t testing.TB, outDir, name string, opts ClipOpts) string {
 	t.Helper()
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg is required to generate the e2e clip fixtures (CI installs ffmpeg; this suite is skipped without it)")
+		fixtureSkipOrFail(t, "ffmpeg is required to generate the e2e clip fixtures")
 	}
 	if _, err := exec.LookPath("ffprobe"); err != nil {
-		t.Skip("ffprobe is required to verify the e2e clip fixtures (CI installs ffprobe; this suite is skipped without it)")
+		fixtureSkipOrFail(t, "ffprobe is required to verify the e2e clip fixtures")
 	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -295,12 +296,12 @@ func generateClip(t testing.TB, outDir, name string, opts ClipOpts) string {
 			t.Logf("libx265 encode failed; falling back to libx264 for %s: %v: %s", name, err, truncateStderr(raw))
 			args = swapCodec(args, "libx265", "libx264")
 			if raw2, err2 := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput(); err2 != nil {
-				t.Skipf("test fixture cannot be encoded by local ffmpeg (libx265 and libx264 both failed): %v: %s", err2, truncateStderr(raw2))
+				fixtureSkipOrFailf(t, "test fixture cannot be encoded by local ffmpeg (libx265 and libx264 both failed): %v: %s", err2, truncateStderr(raw2))
 			}
 		} else if opts.Codec == "libx264" && opts.PixelFmt == "yuv420p10le" {
-			t.Skipf("local ffmpeg cannot encode 10-bit H.264 (high10); skipping the 10-bit family: %v: %s", err, truncateStderr(raw))
+			fixtureSkipOrFailf(t, "local ffmpeg cannot encode 10-bit H.264 (high10); skipping the 10-bit family: %v: %s", err, truncateStderr(raw))
 		} else {
-			t.Skipf("test fixture cannot be encoded by local ffmpeg: %v: %s", err, truncateStderr(raw))
+			fixtureSkipOrFailf(t, "test fixture cannot be encoded by local ffmpeg: %v: %s", err, truncateStderr(raw))
 		}
 	}
 
@@ -309,13 +310,35 @@ func generateClip(t testing.TB, outDir, name string, opts ClipOpts) string {
 	// pipeline bug. A generated-but-unprobeable file is a local build quirk;
 	// name it as such.
 	if _, err := media.Probe(ctx, out); err != nil {
-		t.Skipf("generated fixture %s does not probe cleanly: %v", name, err)
+		fixtureSkipOrFailf(t, "generated fixture %s does not probe cleanly: %v", name, err)
 	}
 	info, err := os.Stat(out)
 	if err != nil || info.Size() == 0 {
-		t.Skipf("generated fixture %s is empty or missing: %v", name, err)
+		fixtureSkipOrFailf(t, "generated fixture %s is empty or missing: %v", name, err)
 	}
 	return out
+}
+
+func fixtureSkipOrFail(t testing.TB, message string) {
+	t.Helper()
+	if fixtureFailureShouldSkip(os.Getenv("TIMINGDEX_MEDIA_OPTIONAL"), os.Getenv("CI"), os.Getenv("GITHUB_ACTIONS")) {
+		t.Skip(message)
+	}
+	t.Fatal(message)
+}
+
+// fixtureFailureShouldSkip keeps the environment policy separate from testing.TB
+// side effects so the optional-media contract remains directly testable.
+func fixtureFailureShouldSkip(mediaOptional, ci, githubActions string) bool {
+	if mediaOptional == "1" {
+		return true
+	}
+	return ci == "" && githubActions == ""
+}
+
+func fixtureSkipOrFailf(t testing.TB, format string, args ...any) {
+	t.Helper()
+	fixtureSkipOrFail(t, fmt.Sprintf(format, args...))
 }
 
 // swapCodec rewrites one encoder choice for another in an ffmpeg argument

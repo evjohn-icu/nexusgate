@@ -240,12 +240,12 @@ func seedGoldenCorpus(t *testing.T) (*Repository, map[string]string) {
 		if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES(?,?,100,'discovered',?,?)`, asset.id, "fp-"+asset.id, now, now); err != nil {
 			t.Fatal(err)
 		}
-		runID, _, err := repo.CreateModelRun(ctx, asset.id, "vision", "fixture", "fixture-model", "golden-"+asset.id, "footage-analysis-v4", "asset-analysis/v2", "{}")
+		runID, _, err := repo.CreateModelRun(ctx, asset.id, "vision", "fixture", "fixture-model", "golden-"+asset.id, "footage-analysis-v4", "asset-analysis/v2", "{}", "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
 		parsed, _ := json.Marshal(asset.analysis)
-		if err := repo.StageModelRun(ctx, runID, `{"golden":true}`, string(parsed)); err != nil {
+		if err := repo.StageModelRun(ctx, runID, `{"golden":true}`, string(parsed), "", ""); err != nil {
 			t.Fatal(err)
 		}
 		shots := make([]domain.AssetShot, 0, len(asset.shots))
@@ -256,7 +256,7 @@ func seedGoldenCorpus(t *testing.T) (*Repository, map[string]string) {
 				Tags: spec.tags, Objects: spec.objects, Actions: spec.actions, Mood: spec.mood,
 			})
 		}
-		if err := repo.CommitAnalysisWithShots(ctx, asset.id, runID, "asset-analysis/v2", asset.analysis, shots); err != nil {
+		if err := repo.CommitAnalysisWithShots(ctx, asset.id, runID, "asset-analysis/v2", asset.analysis, shots, "", ""); err != nil {
 			t.Fatal(err)
 		}
 		if len(asset.transcriptWords) > 0 {
@@ -267,7 +267,7 @@ func seedGoldenCorpus(t *testing.T) (*Repository, map[string]string) {
 				words = append(words, domain.AlignmentWord{StartMS: w.startMS, EndMS: w.endMS, Text: w.text, Confidence: &confidence})
 				joined += w.text + " "
 			}
-			if err := repo.SaveTranscript(ctx, asset.id, "fixture", "fixture-model", "golden-transcript-"+asset.id, domain.Transcript{Language: "zh", Text: strings.TrimSpace(joined)}); err != nil {
+			if err := repo.SaveTranscript(ctx, asset.id, "fixture", "fixture-model", "golden-transcript-"+asset.id, domain.Transcript{Language: "zh", Text: strings.TrimSpace(joined)}, "", ""); err != nil {
 				t.Fatal(err)
 			}
 			if err := repo.SaveAlignment(ctx, asset.id, "fixture", "fixture-model", "golden-align-"+asset.id, "{}", domain.AlignmentResult{Words: words}); err != nil {

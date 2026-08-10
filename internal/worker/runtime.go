@@ -234,9 +234,12 @@ func validateArtifact(artifact ArtifactUpload) error {
 	if strings.TrimSpace(artifact.Type) == "" || strings.TrimSpace(artifact.ProfileHash) == "" || strings.TrimSpace(artifact.Path) == "" {
 		return fmt.Errorf("worker derived artifact is incomplete")
 	}
-	info, err := os.Stat(artifact.Path)
+	info, err := os.Lstat(artifact.Path)
 	if err != nil {
-		return fmt.Errorf("stat derived artifact: %w", err)
+		return fmt.Errorf("lstat derived artifact: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("derived artifact is a symlink: %s", artifact.Path)
 	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("derived artifact is not a regular file: %s", artifact.Path)
@@ -259,9 +262,8 @@ func (d *FFmpegDeriver) Derive(ctx context.Context, job remote.WorkerJob, source
 	if d == nil {
 		return nil, fmt.Errorf("FFmpeg deriver is not configured")
 	}
-	profile := d.Plan.Profile()
-	thumbnail := filepath.Join(outputDir, "thumbnail-"+d.Plan.Mode+".jpg")
-	proxy := filepath.Join(outputDir, "proxy-"+d.Plan.Mode+".mp4")
+	thumbnailStage := filepath.Join(outputDir, ".derive-thumbnail.tmp.jpg")
+	proxyStage := filepath.Join(outputDir, ".derive-proxy.tmp.mp4")
 
 	// One probe covers the preview plan for both renders below and the
 	// audio-stream check that used to run its own separate probe; a Worker
@@ -271,15 +273,25 @@ func (d *FFmpegDeriver) Derive(ctx context.Context, job remote.WorkerJob, source
 	previewPlan := media.PreviewPlanForProbeResult(probe, probeErr, sourcePath)
 
 	renderer := media.NewPreviewRenderer("").WithReadRate(job.ReadRate)
-	if err := renderer.RenderThumbnail(ctx, sourcePath, thumbnail, d.Plan, previewPlan); err != nil {
+	thumbnailPlan, err := renderer.RenderThumbnail(ctx, sourcePath, thumbnailStage, d.Plan, previewPlan)
+	if err != nil {
 		return nil, err
 	}
-	if err := renderer.RenderProxy(ctx, sourcePath, proxy, d.Plan, previewPlan); err != nil {
+	thumbnail := filepath.Join(outputDir, "thumbnail-"+thumbnailPlan.Mode+".jpg")
+	if err := media.PublishDerivedOutput(thumbnailStage, thumbnail); err != nil {
+		return nil, err
+	}
+	proxyPlan, err := renderer.RenderProxy(ctx, sourcePath, proxyStage, d.Plan, previewPlan)
+	if err != nil {
+		return nil, err
+	}
+	proxy := filepath.Join(outputDir, "proxy-"+proxyPlan.Mode+".mp4")
+	if err := media.PublishDerivedOutput(proxyStage, proxy); err != nil {
 		return nil, err
 	}
 	artifacts := []ArtifactUpload{
-		{Type: "thumbnail", ProfileHash: "thumb-" + profile, Path: thumbnail},
-		{Type: "proxy", ProfileHash: "proxy-720-" + profile, Path: proxy},
+		{Type: "thumbnail", ProfileHash: "thumb-" + thumbnailPlan.Profile(), Path: thumbnail},
+		{Type: "proxy", ProfileHash: "proxy-720-" + proxyPlan.Profile(), Path: proxy},
 	}
 	if probeErr != nil {
 		return nil, probeErr

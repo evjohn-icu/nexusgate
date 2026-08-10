@@ -32,8 +32,17 @@ func (s *Scanner) Scan(ctx context.Context, root domain.LibraryRoot) (domain.Sca
 
 	err := filepath.WalkDir(root.Path, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			result.Errors = append(result.Errors, walkErr.Error())
+			if path == root.Path {
+				result.Errors = append(result.Errors, fmt.Sprintf("walk root: %v", walkErr))
+			} else if supportedVideo(path) {
+				result.Errors = append(result.Errors, fmt.Sprintf("stat file: %s: %v", path, walkErr))
+			} else {
+				result.Errors = append(result.Errors, fmt.Sprintf("walk entry: %s: %v", path, walkErr))
+			}
 			return nil
+		}
+		if path == root.Path {
+			result.RootReachable = true
 		}
 		if err := ctx.Err(); err != nil {
 			return err
@@ -44,7 +53,7 @@ func (s *Scanner) Scan(ctx context.Context, root domain.LibraryRoot) (domain.Sca
 
 		info, err := entry.Info()
 		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("stat %s: %v", path, err))
+			result.Errors = append(result.Errors, fmt.Sprintf("stat file: %s: %v", path, err))
 			return nil
 		}
 		relative, err := filepath.Rel(root.Path, path)
@@ -53,19 +62,18 @@ func (s *Scanner) Scan(ctx context.Context, root domain.LibraryRoot) (domain.Sca
 			return nil
 		}
 		relative = filepath.ToSlash(relative)
-		seen = append(seen, relative)
-
 		fingerprint, err := QuickFingerprint(path, info.Size())
 		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("fingerprint %s: %v", path, err))
+			result.Errors = append(result.Errors, fmt.Sprintf("fingerprint file: %s: %v", path, err))
 			return nil
 		}
 
 		scanned, err := s.repo.UpsertScannedFile(ctx, root, relative, path, info, fingerprint)
 		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("persist %s: %v", path, err))
+			result.Errors = append(result.Errors, fmt.Sprintf("persist file: %s: %v", path, err))
 			return nil
 		}
+		seen = append(seen, relative)
 		if scanned.Created {
 			result.Discovered++
 		} else {
@@ -89,6 +97,7 @@ func (s *Scanner) Scan(ctx context.Context, root domain.LibraryRoot) (domain.Sca
 	// have every asset in it marked missing by the walk of an empty
 	// directory. The scanner reports; the service reconciles.
 	result.SeenRelativePaths = seen
+	result.Complete = result.RootReachable && len(result.Errors) == 0
 	return result, nil
 }
 

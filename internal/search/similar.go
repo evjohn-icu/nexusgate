@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"errors"
+	"math"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
 )
@@ -55,6 +56,9 @@ func (s *Service) SimilarByText(ctx context.Context, query string, limit int) ([
 		limit = DefaultLimit
 	}
 	queryVector := vectors[0]
+	if err := validateQueryEmbedding(queryVector); err != nil {
+		return nil, err
+	}
 	scored := make([]Candidate, 0, len(rows))
 	for _, row := range rows {
 		// A stale-model row (dimension mismatch) is skipped entirely, not
@@ -63,6 +67,9 @@ func (s *Service) SimilarByText(ctx context.Context, query string, limit int) ([
 			continue
 		}
 		similarity := embeddingCosine(queryVector, row.Vector)
+		if similarity <= 0 || math.IsNaN(similarity) || math.IsInf(similarity, 0) {
+			continue
+		}
 		candidate := toCandidate(row.Shot)
 		candidate.Signals[SignalTextEmbedding] = similarity
 		candidate.Score = similarity

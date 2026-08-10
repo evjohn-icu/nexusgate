@@ -4,10 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/evjohn-icu/timingdex/internal/app"
 	"github.com/evjohn-icu/timingdex/internal/config"
@@ -123,7 +125,7 @@ type chainEnv struct {
 func newChainEnv(t *testing.T) *chainEnv {
 	t.Helper()
 	ctx := context.Background()
-	dir := t.TempDir()
+	dir := secureDataDir(t)
 	repo, err := sqlite.Open(filepath.Join(dir, "e2e.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -427,6 +429,7 @@ func runCoreChain(t *testing.T, family Fixture) {
 		domain.JobSpeechGate: boolToInt(family.hasAudio()),
 		domain.JobTranscribe: boolToInt(family.transcribes()),
 		domain.JobAnalyze:    1,
+		domain.JobIndex:      1,
 	}
 	// A missing map key reads as 0, so the first pass catches a chain that
 	// skipped a required stage and the second catches a chain that ran an
@@ -442,6 +445,107 @@ func runCoreChain(t *testing.T, family Fixture) {
 			t.Fatalf("executed job types = %v, want %v", types, want)
 		}
 	}
+}
+
+// TestDuplicateCopyFullPipeline proves that a byte-identical copy with a new
+// mtime follows the existing asset identity through every paid pipeline stage.
+// The second scan may add a live location, but it must not mint or rerun work.
+func TestDuplicateCopyFullPipeline(t *testing.T) {
+	ctx := context.Background()
+	env := newChainEnv(t)
+
+	clipA := generateClip(t, env.root.Path, "clip-a.mp4", ClipOpts{DurationS: 3, Width: 320, Height: 240, AudioSource: AudioSilence})
+	first, err := env.service.ScanLibraryRoot(ctx, env.root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Discovered != 1 || len(first.ChangedAssetIDs) != 1 {
+		t.Fatalf("first scan = %+v, want one discovered and changed asset", first)
+	}
+	assets, err := env.repo.ListAssets(ctx, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assets) != 1 {
+		t.Fatalf("assets after first scan = %d, want 1", len(assets))
+	}
+	assetID := assets[0].ID
+
+	if _, err := env.pipeline.RunUntilIdle(ctx); err != nil {
+		t.Fatalf("first pipeline: %v", err)
+	}
+	shotsBefore, err := env.repo.ListAssetShots(ctx, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shotsBefore) == 0 {
+		t.Fatal("first pipeline committed no shots")
+	}
+	probeJobsBefore := countJobsOfType(t, env.repo, assetID, domain.JobProbe)
+	deriveJobsBefore := countJobsOfType(t, env.repo, assetID, domain.JobDerive)
+	if probeJobsBefore != 1 || deriveJobsBefore != 1 {
+		t.Fatalf("first pipeline jobs probe=%d derive=%d, want 1/1", probeJobsBefore, deriveJobsBefore)
+	}
+	if countModelRuns(t, env.repo, assetID) != 1 {
+		t.Fatal("first pipeline model_runs != 1")
+	}
+
+	copyPath := filepath.Join(env.root.Path, "second", "clip-copy.mp4")
+	copyFile(t, clipA, copyPath)
+	newMtime := time.Now().Add(2 * time.Hour)
+	if err := os.Chtimes(copyPath, newMtime, newMtime); err != nil {
+		t.Fatal(err)
+	}
+	second, err := env.service.ScanLibraryRoot(ctx, env.root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Discovered != 0 || second.Linked != 2 {
+		t.Fatalf("duplicate-copy scan = %+v, want no new asset and two linked locations", second)
+	}
+	assets, err = env.repo.ListAssets(ctx, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assets) != 1 || assets[0].ID != assetID {
+		t.Fatalf("assets after duplicate copy = %+v, want original asset %q", assets, assetID)
+	}
+	if _, err := env.pipeline.RunUntilIdle(ctx); err != nil {
+		t.Fatalf("duplicate-copy pipeline: %v", err)
+	}
+	if got := countJobsOfType(t, env.repo, assetID, domain.JobProbe); got != probeJobsBefore {
+		t.Fatalf("probe jobs after duplicate copy = %d, want unchanged %d", got, probeJobsBefore)
+	}
+	if got := countJobsOfType(t, env.repo, assetID, domain.JobDerive); got != deriveJobsBefore {
+		t.Fatalf("derive jobs after duplicate copy = %d, want unchanged %d", got, deriveJobsBefore)
+	}
+	if got := countModelRuns(t, env.repo, assetID); got != 1 {
+		t.Fatalf("model_runs after duplicate copy = %d, want 1", got)
+	}
+	shotsAfter, err := env.repo.ListAssetShots(ctx, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(shotsAfter, shotsBefore) {
+		t.Fatalf("canonical shots changed after duplicate copy:\nbefore=%+v\nafter=%+v", shotsBefore, shotsAfter)
+	}
+
+	hits, err := env.repo.SearchShots(ctx, "car", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0].AssetID != assetID {
+		t.Fatalf("search did not return duplicate-copy asset %q: %+v", assetID, hits)
+	}
+}
+
+func countJobsOfType(t *testing.T, repo *sqlite.Repository, assetID string, typ domain.JobType) int {
+	t.Helper()
+	var count int
+	if err := repo.DB().QueryRowContext(context.Background(), `SELECT COUNT(*) FROM jobs WHERE asset_id=? AND job_type=?`, assetID, string(typ)).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
 }
 
 // jobTypes lists the types of the jobs this asset's chain ran, in a stable

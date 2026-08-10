@@ -1,14 +1,100 @@
 package worker
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/evjohn-icu/timingdex/internal/domain"
 	"github.com/evjohn-icu/timingdex/internal/media"
 	"github.com/evjohn-icu/timingdex/internal/remote"
 )
+
+type runtimeTestClient struct {
+	job      *remote.WorkerJob
+	uploads  []ArtifactUpload
+	complete domain.JobState
+}
+
+func (c *runtimeTestClient) Heartbeat(context.Context, string, string, remote.WorkerCapabilities) error {
+	return nil
+}
+func (c *runtimeTestClient) Lease(context.Context, string) (*remote.WorkerJob, error) {
+	job := c.job
+	c.job = nil
+	return job, nil
+}
+func (c *runtimeTestClient) UploadArtifact(_ context.Context, _ string, _ string, artifact ArtifactUpload) error {
+	c.uploads = append(c.uploads, artifact)
+	return nil
+}
+func (c *runtimeTestClient) Complete(_ context.Context, _ string, _ string, state domain.JobState, _ string) error {
+	c.complete = state
+	return nil
+}
+
+func TestFFmpegDeriverFallbackUploadsSoftwareProfiles(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "footage")
+	cache := filepath.Join(dir, "cache")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "clip.mp4"), []byte("source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ffprobe := []byte("#!/bin/sh\nprintf '%s' '{\"format\":{\"duration\":\"1\"},\"streams\":[{\"codec_type\":\"video\"}]}'\n")
+	ffmpeg := []byte("#!/bin/sh\nout=\"\"; for arg in \"$@\"; do out=\"$arg\"; done; case \" $* \" in *\" h264_nvenc \"*|*\" -hwaccel \"*) exit 1;; esac; printf derived > \"$out\"\n")
+	for name, content := range map[string][]byte{"ffprobe": ffprobe, "ffmpeg": ffmpeg} {
+		if err := os.WriteFile(filepath.Join(bin, name), content, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldPath := os.Getenv("PATH")
+	if err := os.Setenv("PATH", bin+string(os.PathListSeparator)+oldPath); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })
+	client := &runtimeTestClient{job: &remote.WorkerJob{JobID: "job-1", AssetID: "asset-1", RootID: "root-1", RelativePath: "clip.mp4", ModifiedNS: 1, JobType: domain.JobDerive}}
+	runtime := NewRuntime(client, Config{Token: "token", CacheDir: cache, Mounts: map[string]string{"root-1": root}}, NewFFmpegDeriver(media.HardwarePlan{Mode: "cuda", DecoderArgs: []string{"-hwaccel", "cuda"}, EncoderArgs: []string{"-c:v", "h264_nvenc"}, AllowFallback: true}), remote.WorkerCapabilities{})
+	worked, err := runtime.RunOnce(context.Background())
+	if err != nil || !worked {
+		t.Fatalf("RunOnce worked=%t err=%v", worked, err)
+	}
+	if client.complete != domain.JobSucceeded {
+		t.Fatalf("complete state=%q", client.complete)
+	}
+	if len(client.uploads) != 2 {
+		t.Fatalf("uploads=%d, want 2: %+v", len(client.uploads), client.uploads)
+	}
+	for _, want := range []struct{ typ, profile, path string }{{"thumbnail", "thumb-software-h264-x264-v1", "thumbnail-software.jpg"}, {"proxy", "proxy-720-software-h264-x264-v1", "proxy-software.mp4"}} {
+		var found bool
+		for _, upload := range client.uploads {
+			if upload.Type == want.typ {
+				found = true
+				if upload.ProfileHash != want.profile || !strings.HasSuffix(upload.Path, want.path) {
+					t.Errorf("upload=%+v, want profile=%q path suffix=%q", upload, want.profile, want.path)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("missing %s upload", want.typ)
+		}
+	}
+	assetDir := filepath.Join(cache, "artifacts", "asset-1")
+	for _, name := range []string{"thumbnail-cuda.jpg", "proxy-cuda.mp4", ".derive-thumbnail.tmp.jpg", ".derive-proxy.tmp.mp4"} {
+		if _, err := os.Stat(filepath.Join(assetDir, name)); !os.IsNotExist(err) {
+			t.Errorf("unexpected file %s: %v", name, err)
+		}
+	}
+}
 
 // A container that gains /dev/dri after a template edit must pick that up on
 // its next restart without losing what an operator declared by hand at
@@ -70,6 +156,21 @@ func TestValidateArtifactRejectsZeroByteFile(t *testing.T) {
 	}
 	if err := validateArtifact(ArtifactUpload{Type: "thumbnail", ProfileHash: "thumb-v1", Path: okPath}); err != nil {
 		t.Fatalf("validateArtifact must accept a non-empty regular file: %v", err)
+	}
+}
+
+func TestValidateArtifactRejectsSymlink(t *testing.T) {
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "target.jpg")
+	if err := os.WriteFile(target, []byte("usable"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(tmp, "link.jpg")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateArtifact(ArtifactUpload{Type: "thumbnail", ProfileHash: "thumb-v1", Path: link}); err == nil {
+		t.Fatal("validateArtifact must reject a symlink")
 	}
 }
 

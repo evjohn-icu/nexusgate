@@ -35,7 +35,7 @@ func (r *Repository) UpsertShotTextEmbeddings(ctx context.Context, rows []search
 	}
 	defer stmt.Close()
 	for _, row := range rows {
-		if row.Shot.ID == "" || row.Model == "" {
+		if row.Shot.ID == "" || row.Model == "" || !validVector(row.Vector) {
 			return fmt.Errorf("embedding row needs shot_id and model")
 		}
 		if _, err := stmt.ExecContext(ctx, row.Shot.ID, row.Model, encodeVectorBlob(row.Vector), row.SourceTextHash, now); err != nil {
@@ -51,7 +51,7 @@ func (r *Repository) UpsertShotTextEmbeddings(ctx context.Context, rows []search
 // superseded model never get scored against a query embedded by the current
 // one.
 func (r *Repository) ListShotTextEmbeddings(ctx context.Context, model string) ([]search.ShotEmbeddingRow, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT relative_path FROM asset_locations WHERE asset_id=s.asset_id AND is_primary=1 LIMIT 1),''),e.model,e.vector_blob,e.source_text_hash FROM shot_text_embeddings e JOIN asset_shots s ON s.id=e.shot_id WHERE e.model=? ORDER BY e.shot_id`, model)
+	rows, err := r.db.QueryContext(ctx, `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),''),e.model,e.vector_blob,e.source_text_hash FROM shot_text_embeddings e JOIN asset_shots s ON s.id=e.shot_id WHERE e.model=? ORDER BY e.shot_id`, model)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +71,10 @@ func (r *Repository) ListShotTextEmbeddings(ctx context.Context, model string) (
 		if filename != "" {
 			row.Shot.Filename = filepath.Base(filename)
 		}
-		row.Vector = decodeVectorBlob(blob)
+		row.Vector, err = decodeVectorBlob(blob)
+		if err != nil {
+			return nil, fmt.Errorf("decode embedding for shot %s: %w", row.Shot.ID, err)
+		}
 		out = append(out, row)
 	}
 	return out, rows.Err()
@@ -157,10 +160,31 @@ func encodeVectorBlob(vector []float32) []byte {
 	return blob
 }
 
-func decodeVectorBlob(blob []byte) []float32 {
+func decodeVectorBlob(blob []byte) ([]float32, error) {
+	if len(blob)%4 != 0 {
+		return nil, fmt.Errorf("vector blob length %d is not divisible by 4", len(blob))
+	}
 	vector := make([]float32, len(blob)/4)
 	for i := range vector {
 		vector[i] = math.Float32frombits(binary.LittleEndian.Uint32(blob[4*i:]))
 	}
-	return vector
+	if !validVector(vector) {
+		return nil, fmt.Errorf("vector blob contains non-finite or zero-norm values")
+	}
+	return vector, nil
+}
+
+func validVector(vector []float32) bool {
+	if len(vector) == 0 {
+		return false
+	}
+	var norm float64
+	for _, value := range vector {
+		v := float64(value)
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return false
+		}
+		norm += v * v
+	}
+	return !math.IsNaN(norm) && !math.IsInf(norm, 0) && norm > 0
 }

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -46,7 +48,10 @@ func (r *fakeUpsertOnlyRepo) UpsertProviderChannel(_ context.Context, channel do
 // UNIQUE(channel_id, label) (migration 0013) to catch it after the fact.
 func TestSaveProviderChannelRejectsDuplicateLabelBeforeAnySecretIsStored(t *testing.T) {
 	ctx := context.Background()
-	dataDir := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.Mkdir(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	secrets, err := secretstore.Open(dataDir, "test-admin-token")
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +104,10 @@ func TestSaveProviderChannelRejectsDuplicateLabelBeforeAnySecretIsStored(t *test
 // same-length contract the API and patch handlers rely on.
 func TestSaveProviderChannelShortMemberKeysSliceLeavesTrailingMembersUnchanged(t *testing.T) {
 	ctx := context.Background()
-	dataDir := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.Mkdir(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	secrets, err := secretstore.Open(dataDir, "test-admin-token")
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +167,10 @@ func (r *fakeUpsertErrorRepo) UpsertProviderChannel(_ context.Context, channel d
 // channel pointing at them and stayed in the encrypted store forever.
 func TestSaveProviderChannelCleansUpOrphanedSecretsOnUpsertFailure(t *testing.T) {
 	ctx := context.Background()
-	dataDir := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.Mkdir(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	secrets, err := secretstore.Open(dataDir, "test-admin-token")
 	if err != nil {
 		t.Fatal(err)
@@ -226,7 +237,10 @@ func (r *fakeChannelRepo) UpsertProviderChannel(_ context.Context, channel domai
 
 func testServiceWithChannel(t *testing.T, channel domain.ProviderChannel, repo *fakeChannelRepo) (*Service, *secretstore.Store) {
 	t.Helper()
-	dataDir := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.Mkdir(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	secrets, err := secretstore.Open(dataDir, "test-admin-token")
 	if err != nil {
 		t.Fatal(err)
@@ -420,7 +434,10 @@ func TestUpdateProviderChannelRemovesOrphanedSecretOnMemberRemoval(t *testing.T)
 // is covered by TestUpdateProviderChannelRemovesOrphanedSecretOnMemberRemoval.
 func TestSaveProviderChannelAssignsDistinctSecretRefsPerMember(t *testing.T) {
 	ctx := context.Background()
-	dataDir := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.Mkdir(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	secrets, err := secretstore.Open(dataDir, "test-admin-token")
 	if err != nil {
 		t.Fatal(err)

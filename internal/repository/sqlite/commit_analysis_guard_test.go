@@ -15,15 +15,15 @@ func TestCommitAnalysisRejectsFailedRun(t *testing.T) {
 	ctx := context.Background()
 	repo, assetID := setupModelRunsTest(t)
 
-	runID, _, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-guard-failed", "v1", "v1", `{}`)
+	runID, _, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-guard-failed", "v1", "v1", `{}`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.FailModelRun(ctx, runID, "MODEL_ERROR", "test failure", `{}`); err != nil {
+	if err := repo.FailModelRun(ctx, runID, "MODEL_ERROR", "test failure", `{}`, "", ""); err != nil {
 		t.Fatal(err)
 	}
 
-	err = repo.CommitAnalysisWithShots(ctx, assetID, runID, "v1", domain.StructuredAnalysis{AssetType: "b_roll", Summary: "must not write"}, nil)
+	err = repo.CommitAnalysisWithShots(ctx, assetID, runID, "v1", domain.StructuredAnalysis{AssetType: "b_roll", Summary: "must not write"}, nil, "", "")
 	if err == nil {
 		t.Fatal("CommitAnalysisWithShots with a failed run must return an error")
 	}
@@ -68,21 +68,21 @@ func TestCommitAnalysisRejectsCommittedRun(t *testing.T) {
 	repo, assetID := setupModelRunsTest(t)
 
 	// First commit — must succeed.
-	runID, _, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-guard-committed", "v1", "v1", `{}`)
+	runID, _, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-guard-committed", "v1", "v1", `{}`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.StageModelRun(ctx, runID, `{"response":"ok"}`, `{"asset_type":"b_roll","summary":"first commit"}`); err != nil {
+	if err := repo.StageModelRun(ctx, runID, `{"response":"ok"}`, `{"asset_type":"b_roll","summary":"first commit"}`, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	firstAnalysis := domain.StructuredAnalysis{AssetType: "b_roll", Summary: "first commit", ShotSize: "wide"}
-	if err := repo.CommitAnalysisWithShots(ctx, assetID, runID, "v1", firstAnalysis, nil); err != nil {
+	if err := repo.CommitAnalysisWithShots(ctx, assetID, runID, "v1", firstAnalysis, nil, "", ""); err != nil {
 		t.Fatalf("first commit must succeed: %v", err)
 	}
 
 	// Second commit with same run — must fail.
 	secondAnalysis := domain.StructuredAnalysis{AssetType: "talking_to_camera", Summary: "second commit overwrite attempt"}
-	err = repo.CommitAnalysisWithShots(ctx, assetID, runID, "v1", secondAnalysis, nil)
+	err = repo.CommitAnalysisWithShots(ctx, assetID, runID, "v1", secondAnalysis, nil, "", "")
 	if err == nil {
 		t.Fatal("second CommitAnalysisWithShots with a committed run must return an error")
 	}
@@ -115,7 +115,7 @@ func TestCommitAnalysisRejectsNonexistentRun(t *testing.T) {
 	ctx := context.Background()
 	repo, assetID := setupModelRunsTest(t)
 
-	err := repo.CommitAnalysis(ctx, assetID, "nonexistent-run-id", "v1", domain.StructuredAnalysis{AssetType: "b_roll", Summary: "ghost"})
+	err := repo.CommitAnalysis(ctx, assetID, "nonexistent-run-id", "v1", domain.StructuredAnalysis{AssetType: "b_roll", Summary: "ghost"}, "", "")
 	if err == nil {
 		t.Fatal("CommitAnalysis with a nonexistent run must return an error")
 	}
@@ -143,11 +143,11 @@ func TestCommitAnalysisSucceedsForValidatedRun(t *testing.T) {
 	ctx := context.Background()
 	repo, assetID := setupModelRunsTest(t)
 
-	runID, _, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-guard-validated", "v1", "v1", `{}`)
+	runID, _, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "test-provider", "test-model", "hash-guard-validated", "v1", "v1", `{}`, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.StageModelRun(ctx, runID, `{"response":"ok"}`, `{"asset_type":"b_roll","summary":"validated commit","shot_size":"wide"}`); err != nil {
+	if err := repo.StageModelRun(ctx, runID, `{"response":"ok"}`, `{"asset_type":"b_roll","summary":"validated commit","shot_size":"wide"}`, "", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -155,7 +155,7 @@ func TestCommitAnalysisSucceedsForValidatedRun(t *testing.T) {
 	shots := []domain.AssetShot{
 		{StartMS: 0, EndMS: 3000, Ordinal: 0, Description: "opening shot"},
 	}
-	if err := repo.CommitAnalysisWithShots(ctx, assetID, runID, "v1", analysis, shots); err != nil {
+	if err := repo.CommitAnalysisWithShots(ctx, assetID, runID, "v1", analysis, shots, "", ""); err != nil {
 		t.Fatalf("CommitAnalysisWithShots with a validated run must succeed: %v", err)
 	}
 

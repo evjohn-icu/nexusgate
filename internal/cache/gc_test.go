@@ -2,9 +2,13 @@ package cache
 
 import (
 	"context"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
 )
@@ -46,6 +50,20 @@ func gcFixture(t *testing.T) (cacheDir string, rebuildableBytes, scratchBytes, o
 
 	// An unclassified file is not rebuildable, not scratch, not an orphan dir.
 	writeFile(t, filepath.Join(cacheDir, "assetA", "unlisted.txt"), 7)
+	old := time.Now().Add(-10 * time.Minute)
+	for _, name := range []string{"thumbnail-sw.jpg", "proxy-sw.mp4", "audio.m4a"} {
+		if err := os.Chtimes(filepath.Join(cacheDir, "assetA", name), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := filepath.WalkDir(cacheDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		return os.Chtimes(path, old, old)
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	return cacheDir, rebuildableBytes, scratchBytes, orphanBytes
 }
@@ -204,6 +222,72 @@ func TestGCMissingCacheDirIsEmpty(t *testing.T) {
 	}
 	if result.RemovedFiles != 0 || result.FreedBytes != 0 {
 		t.Errorf("missing cache dir = %d files, %d bytes; want empty", result.RemovedFiles, result.FreedBytes)
+	}
+}
+
+func TestGCCompleteRebuildableInventoryIsNotReportCapped(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "cache")
+	now := time.Now().UTC()
+	for i := 0; i < 27; i++ {
+		id := fmt.Sprintf("asset-%02d", i)
+		writeFile(t, filepath.Join(dir, id, "proxy-sw.mp4"), 1)
+		old := now.Add(-10 * time.Minute)
+		if err := os.Chtimes(filepath.Join(dir, id, "proxy-sw.mp4"), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := make([]string, 27)
+	for i := range want {
+		want[i] = fmt.Sprintf("asset-%02d", i)
+	}
+	for _, dry := range []bool{true, false} {
+		result, err := GC(dir, GCOptions{DryRun: dry, RemoveRebuildable: true, Now: now})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(result.RemovedRebuildableAssetIDs, want) {
+			t.Fatalf("dry=%v ids = %v, want %v", dry, result.RemovedRebuildableAssetIDs, want)
+		}
+		if len(result.Removed) != reportLimit || !result.RemovedTruncated {
+			t.Fatalf("dry=%v report = %d truncated=%v", dry, len(result.Removed), result.RemovedTruncated)
+		}
+		if result.RemovedFiles != 27 {
+			t.Fatalf("dry=%v files = %d", dry, result.RemovedFiles)
+		}
+		if dry {
+			for _, id := range want {
+				if _, err := os.Stat(filepath.Join(dir, id, "proxy-sw.mp4")); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+}
+
+func TestGCProtectedYoungAndNonRebuildableDoNotEnterInventory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "cache")
+	now := time.Now().UTC()
+	old := now.Add(-10 * time.Minute)
+	writeFile(t, filepath.Join(dir, "active", "proxy-sw.mp4"), 2)
+	writeFile(t, filepath.Join(dir, "young", "proxy-sw.mp4"), 3)
+	writeFile(t, filepath.Join(dir, "old", "proxy-sw.mp4"), 4)
+	writeFile(t, filepath.Join(dir, "old", "scratch", "x"), 5)
+	writeFile(t, filepath.Join(dir, "orphan", "odd.bin"), 6)
+	for _, id := range []string{"active", "old"} {
+		p := filepath.Join(dir, id, "proxy-sw.mp4")
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := GC(dir, GCOptions{DryRun: true, RemoveRebuildable: true, ProtectedAssetIDs: map[string]struct{}{"active": {}}, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result.RemovedRebuildableAssetIDs, []string{"old"}) {
+		t.Fatalf("ids = %v", result.RemovedRebuildableAssetIDs)
+	}
+	if result.SkippedActiveFiles != 1 || result.SkippedYoungFiles != 1 {
+		t.Fatalf("skips = %+v", result)
 	}
 }
 

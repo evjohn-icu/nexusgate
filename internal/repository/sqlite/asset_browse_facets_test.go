@@ -37,7 +37,7 @@ func seedFacetFixtures(t *testing.T, repo *Repository, rootID string, fixtures [
 		if err := repo.SaveMediaMetadata(ctx, fx.id, domain.MediaMetadata{DurationMS: fx.durationMS}, "facet-fixture"); err != nil {
 			t.Fatal(err)
 		}
-		runID, _, err := repo.CreateModelRun(ctx, fx.id, "vision", "fixture", "fixture-model", "hash-"+fx.id, "facet-prompt-v1", "asset-analysis/v1", "{}")
+		runID, _, err := repo.CreateModelRun(ctx, fx.id, "vision", "fixture", "fixture-model", "hash-"+fx.id, "facet-prompt-v1", "asset-analysis/v1", "{}", "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -50,10 +50,10 @@ func seedFacetFixtures(t *testing.T, repo *Repository, rootID string, fixtures [
 			UsableAs:     fx.usableAs,
 			Summary:      "facet fixture " + fx.id,
 		}
-		if err := repo.StageModelRun(ctx, runID, "{}", "{}"); err != nil {
+		if err := repo.StageModelRun(ctx, runID, "{}", "{}", "", ""); err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.CommitAnalysisWithShots(ctx, fx.id, runID, "asset-analysis/v1", analysis, nil); err != nil {
+		if err := repo.CommitAnalysisWithShots(ctx, fx.id, runID, "asset-analysis/v1", analysis, nil, "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}

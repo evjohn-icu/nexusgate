@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
 )
@@ -15,7 +14,7 @@ import (
 // from the structural check GetAssetCollection already performs. The API
 // classifier maps it to 404; an operator seeing it has typed or been handed
 // an identifier that no longer names a collection.
-var ErrCollectionNotFound = errors.New("collection not found")
+var ErrCollectionNotFound = domain.ErrCollectionNotFound
 
 // The shot-basket methods are thin wrappers over the repository: the rules
 // they enforce (a shot may be pinned once per collection, the reorder list
@@ -58,7 +57,7 @@ func (s *Service) requireCollection(ctx context.Context, collectionID string) er
 		return err
 	}
 	if collection == nil {
-		return ErrCollectionNotFound
+		return domain.ErrCollectionNotFound
 	}
 	return nil
 }

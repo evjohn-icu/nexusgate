@@ -66,6 +66,9 @@ func RouteIntent(q SearchQuery) SearchIntent {
 var creativePhrases = []string{"给我找", "帮我找", "找点", "找几个", "来几个", "来点", "创意", "creative"}
 
 func isCreativePhrase(lower string) bool {
+	// This is intent classification only. Contains is useful for recognizing a
+	// request embedded in natural language, but it must not be reused as speech
+	// evidence; speech claims are validated exactly by the evidence gate.
 	for _, phrase := range creativePhrases {
 		if strings.Contains(lower, phrase) {
 			return true

@@ -106,7 +106,7 @@ func generateSceneChangeClip(t testing.TB, outDir, name string, first, second Cl
 // the migrations, exactly as the Hub does on first start.
 func openE2ERepo(t *testing.T) (*sqlite.Repository, string) {
 	t.Helper()
-	dataDir := t.TempDir()
+	dataDir := secureDataDir(t)
 	repo, err := sqlite.Open(filepath.Join(dataDir, "timingdex.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +116,15 @@ func openE2ERepo(t *testing.T) (*sqlite.Repository, string) {
 		t.Fatal(err)
 	}
 	return repo, dataDir
+}
+
+func secureDataDir(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "data")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 // newE2EService wires the runnable half of the edge tests in the same shape

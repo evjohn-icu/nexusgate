@@ -68,7 +68,7 @@ func newExportFixture(t *testing.T, name string, fps float64, withMetadata bool)
 	if err := repo.ReplaceAssetShots(ctx, assets[0].ID, "", []domain.AssetShot{
 		{ID: "opening-a", StartMS: 0, EndMS: 4000, Description: "城市夜景开场"},
 		{ID: "closing-b", StartMS: 10000, EndMS: 14000, Description: "城市街道人流"},
-	}); err != nil {
+	}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})

@@ -196,55 +196,48 @@ const JobDeferProviderRouteExhausted = string(JobFailureCategoryProviderRouteExh
 // category must be one spelling.
 const JobDeferDiskSpaceLow = string(JobFailureCategoryDiskSpaceLow)
 
-// JobDeferBudgetExhausted is the DeferReason recorded when a job is parked
-// because the operator's configured daily or monthly provider budget is spent
-// for the period: the cost_ledger sum for the day or month is at or past the
-// throttle's DailyBudget/MonthlyBudget. The spend is about the period, not
-// about the job — the next attempt would present identical inputs to the same
-// paid call at the same spent budget — so it is deferred on wall-clock time
-// instead of retried, and the attempt this lease spent is handed back. The
-// job auto-resumes once the period rolls over (next day 00:05 UTC, or the 1st
-// of the next month).
-//
-// Like JobDeferDiskSpaceLow, it is the budget category constant spelled as an
-// untyped string, for the same reason: the reason and the category must be
-// one spelling.
+// JobDeferBudgetExhausted is retained for persisted legacy records; advisory
+// cost guides no longer produce this deferral reason.
 const JobDeferBudgetExhausted = string(JobFailureCategoryBudgetExhausted)
 
 type MediaMetadata struct {
-	DurationMS         int64      `json:"duration_ms"`
-	Width              int        `json:"width"`
-	Height             int        `json:"height"`
-	FPS                float64    `json:"fps"`
-	VideoCodec         string     `json:"video_codec"`
-	AudioCodec         string     `json:"audio_codec"`
-	HasAudio           bool       `json:"has_audio"`
-	Orientation        string     `json:"orientation"`
-	CapturedAt         *time.Time `json:"captured_at,omitempty"`
-	CaptureVendor      string     `json:"capture_vendor,omitempty"`
-	CameraMake         string     `json:"camera_make,omitempty"`
-	CameraModel        string     `json:"camera_model,omitempty"`
-	CameraSerial       string     `json:"camera_serial,omitempty"`
-	LensModel          string     `json:"lens_model,omitempty"`
-	Reel               string     `json:"reel,omitempty"`
-	Clip               string     `json:"clip,omitempty"`
-	SourceTimecode     string     `json:"source_timecode,omitempty"`
-	Latitude           *float64   `json:"latitude,omitempty"`
-	Longitude          *float64   `json:"longitude,omitempty"`
-	PixelFormat        string     `json:"pixel_format,omitempty"`
-	BitDepth           int        `json:"bit_depth,omitempty"`
-	ColorSpace         string     `json:"color_space,omitempty"`
-	ColorTransfer      string     `json:"color_transfer,omitempty"`
-	ColorPrimaries     string     `json:"color_primaries,omitempty"`
-	SourceColor        string     `json:"source_color,omitempty"`
-	ColorProfile       string     `json:"color_profile,omitempty"`
-	RawFormat          string     `json:"raw_format,omitempty"`
-	PreviewStatus      string     `json:"preview_status,omitempty"`
-	PreviewRenderMode  string     `json:"preview_render_mode,omitempty"`
-	PreviewAvailable   bool       `json:"preview_available"`
-	PreviewRequiresLUT bool       `json:"preview_requires_lut,omitempty"`
-	FFProbeRaw         string     `json:"ffprobe_raw"`
-	ExifToolRaw        string     `json:"exiftool_raw"`
+	DurationMS            int64      `json:"duration_ms"`
+	Width                 int        `json:"width"`
+	Height                int        `json:"height"`
+	FPS                   float64    `json:"fps"`
+	VideoCodec            string     `json:"video_codec"`
+	AudioCodec            string     `json:"audio_codec"`
+	HasAudio              bool       `json:"has_audio"`
+	Orientation           string     `json:"orientation"`
+	CapturedAt            *time.Time `json:"captured_at,omitempty"`
+	CaptureTimeSource     string     `json:"capture_time_source,omitempty"`
+	CaptureTimeConfidence float64    `json:"capture_time_confidence,omitempty"`
+	CaptureVendor         string     `json:"capture_vendor,omitempty"`
+	CameraMake            string     `json:"camera_make,omitempty"`
+	CameraModel           string     `json:"camera_model,omitempty"`
+	CameraSerial          string     `json:"camera_serial,omitempty"`
+	LensModel             string     `json:"lens_model,omitempty"`
+	Reel                  string     `json:"reel,omitempty"`
+	Clip                  string     `json:"clip,omitempty"`
+	SourceTimecode        string     `json:"source_timecode,omitempty"`
+	Latitude              *float64   `json:"latitude,omitempty"`
+	Longitude             *float64   `json:"longitude,omitempty"`
+	LocationSource        string     `json:"location_source,omitempty"`
+	LocationPrecision     string     `json:"location_precision,omitempty"`
+	PixelFormat           string     `json:"pixel_format,omitempty"`
+	BitDepth              int        `json:"bit_depth,omitempty"`
+	ColorSpace            string     `json:"color_space,omitempty"`
+	ColorTransfer         string     `json:"color_transfer,omitempty"`
+	ColorPrimaries        string     `json:"color_primaries,omitempty"`
+	SourceColor           string     `json:"source_color,omitempty"`
+	ColorProfile          string     `json:"color_profile,omitempty"`
+	RawFormat             string     `json:"raw_format,omitempty"`
+	PreviewStatus         string     `json:"preview_status,omitempty"`
+	PreviewRenderMode     string     `json:"preview_render_mode,omitempty"`
+	PreviewAvailable      bool       `json:"preview_available"`
+	PreviewRequiresLUT    bool       `json:"preview_requires_lut,omitempty"`
+	FFProbeRaw            string     `json:"ffprobe_raw"`
+	ExifToolRaw           string     `json:"exiftool_raw"`
 }
 
 type DerivedArtifact struct {

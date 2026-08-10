@@ -25,7 +25,8 @@ ARG TIMINGDEX_GID=10001
 # usable without host media-tool installations.
 RUN apt-get update \
     && apt-get install --no-install-recommends --yes \
-        ca-certificates \
+         ca-certificates \
+         curl \
         ffmpeg \
         libimage-exiftool-perl \
     && rm -rf /var/lib/apt/lists/* \

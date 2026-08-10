@@ -23,7 +23,7 @@ import (
 func openTestDriveHub(t *testing.T, ids ...string) (*sqlite.Repository, *Service, []string) {
 	t.Helper()
 	ctx := context.Background()
-	dir := t.TempDir()
+	dir := secureDataDir(t)
 	repo, err := sqlite.Open(filepath.Join(dir, "test-drive.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +69,7 @@ func openTestDriveHub(t *testing.T, ids ...string) (*sqlite.Repository, *Service
 // model_runs, and the seed exists for its shots, not for a run.
 func seedTestDriveShots(t *testing.T, repo *sqlite.Repository, assetID string, shots []domain.AssetShot) {
 	t.Helper()
-	if err := repo.ReplaceAssetShots(context.Background(), assetID, "", shots); err != nil {
+	if err := repo.ReplaceAssetShots(context.Background(), assetID, "", shots, "", ""); err != nil {
 		t.Fatal(err)
 	}
 }

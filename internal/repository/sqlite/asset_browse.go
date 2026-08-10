@@ -170,7 +170,7 @@ COALESCE(cm.model,''), COALESCE(cm.region_label,''),
 COALESCE((SELECT session_id FROM asset_shoot_sessions ass WHERE ass.asset_id=a.id ORDER BY ass.is_primary DESC LIMIT 1),''),
 COALESCE(cm.source_color,''), COALESCE(cm.color_profile,''), COALESCE(cm.raw_format,''), COALESCE(cm.preview_status,'')
 FROM assets a
-LEFT JOIN asset_locations al ON al.asset_id=a.id AND al.is_primary=1
+LEFT JOIN asset_locations al ON al.id=(SELECT l.id FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=a.id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1)
 LEFT JOIN media_metadata m ON m.asset_id=a.id
 LEFT JOIN capture_metadata cm ON cm.asset_id=a.id
 LEFT JOIN asset_analysis an ON an.asset_id=a.id

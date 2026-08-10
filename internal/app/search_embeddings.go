@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	"github.com/evjohn-icu/timingdex/internal/providers"
@@ -70,7 +71,7 @@ func (s *Service) ensureShotTextEmbeddings(ctx context.Context, assetID string) 
 		return
 	}
 	slog.Debug("shot text embedding: incremental embed", "asset_id", assetID, "shots", len(changed))
-	if err := embedShotDocuments(ctx, store, adapter, changed); err != nil {
+	if _, err := embedShotDocuments(ctx, store, adapter, changed); err != nil {
 		// Never fail the job: log and move on. The full rebuild command
 		// (timingdex search rebuild-embeddings) can repair the gap.
 		slog.Warn("shot text embedding: embed failed (analysis job unaffected)", "asset_id", assetID, "error", err)
@@ -116,10 +117,11 @@ func (s *Service) RebuildShotTextEmbeddings(ctx context.Context) (int, error) {
 			end = len(changed)
 		}
 		batch := changed[start:end]
-		if err := embedShotDocuments(ctx, store, adapter, batch); err != nil {
+		persisted, err := embedShotDocuments(ctx, store, adapter, batch)
+		if err != nil {
 			return total, err
 		}
-		total += len(batch)
+		total += persisted
 	}
 	return total, nil
 }
@@ -129,21 +131,36 @@ func (s *Service) RebuildShotTextEmbeddings(ctx context.Context) (int, error) {
 // (the adapter's contract): that is the expected no-op state, not an error —
 // the caller logs nothing and moves on, and the rebuild command reports zero
 // embeddings so an operator knows there is nothing to build.
-func embedShotDocuments(ctx context.Context, store search.ShotStore, embedder search.TextEmbedder, docs []search.ShotSearchDocument) error {
+func embedShotDocuments(ctx context.Context, store search.ShotStore, embedder search.TextEmbedder, docs []search.ShotSearchDocument) (int, error) {
 	texts := make([]string, len(docs))
 	for i, doc := range docs {
 		texts[i] = search.ShotTextSource(doc)
 	}
 	vectors, err := embedder.Embed(ctx, texts)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if len(vectors) == 0 {
 		// Embedding not configured: nothing to persist, nothing failed.
-		return nil
+		return 0, nil
 	}
 	if len(vectors) != len(docs) {
-		return errors.New("embedding provider returned fewer vectors than inputs")
+		return 0, errors.New("embedding provider returned fewer vectors than inputs")
+	}
+	for _, vector := range vectors {
+		if len(vector) == 0 {
+			return 0, nil
+		}
+		var norm float64
+		for _, value := range vector {
+			if math.IsNaN(value) || math.IsInf(value, 0) {
+				break
+			}
+			norm += value * value
+		}
+		if norm == 0 {
+			return 0, nil
+		}
 	}
 	rows := make([]search.ShotEmbeddingRow, 0, len(docs))
 	for i, doc := range docs {
@@ -154,7 +171,10 @@ func embedShotDocuments(ctx context.Context, store search.ShotStore, embedder se
 			SourceTextHash: search.ShotTextSourceHash(doc),
 		})
 	}
-	return store.UpsertShotTextEmbeddings(ctx, rows)
+	if err := store.UpsertShotTextEmbeddings(ctx, rows); err != nil {
+		return 0, err
+	}
+	return len(rows), nil
 }
 
 // domainShotForEmbedding builds the minimal shot row an embedding row needs

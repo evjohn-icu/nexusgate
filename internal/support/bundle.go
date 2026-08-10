@@ -32,6 +32,12 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
+const (
+	maxBundleEntryBytes    = 4 << 20
+	maxBundleTotalBytes    = 8 << 20
+	bundleTruncationMarker = "\n[TRUNCATED: support bundle limit reached]\n"
+)
+
 // Bundle is the digest written as bundle.json inside the archive. The full
 // detail lives in Report (itself path-sanitized); the top-level fields are
 // the one-glance summary an operator sees before opening the report.
@@ -82,7 +88,7 @@ func Generate(ctx context.Context, report domain.DoctorReport, cfg config.Config
 		return fmt.Errorf("sanitize config: %w", err)
 	}
 
-	var doctorText bytes.Buffer
+	var doctorText limitedBuffer
 	if err := source.Doctor(ctx, &doctorText); err != nil {
 		return fmt.Errorf("run doctor: %w", err)
 	}
@@ -108,10 +114,14 @@ func Generate(ctx context.Context, report domain.DoctorReport, cfg config.Config
 	if err != nil {
 		return fmt.Errorf("encode sanitized config: %w", err)
 	}
+	doctor := SanitizePathText(doctorText.String())
+	if doctorText.truncated {
+		doctor += bundleTruncationMarker
+	}
 	return writeZip(outPath, []zipEntry{
 		{name: "bundle.json", data: bundleJSON},
-		{name: "doctor.txt", data: []byte(SanitizePathText(doctorText.String()))},
-		{name: "config.sanitized.json", data: configJSON},
+		{name: "doctor.txt", data: boundEntry([]byte(doctor))},
+		{name: "config.sanitized.json", data: boundEntry(configJSON)},
 	})
 }
 
@@ -251,26 +261,32 @@ func sanitizeConfigValue(node any) {
 				continue
 			}
 			if pathConfigKey[strings.ToLower(key)] {
-				if text, ok := child.(string); ok && text != "" && filepath.IsAbs(text) {
-					v[key] = filepath.Base(text)
+				if text, ok := child.(string); ok && text != "" {
+					v[key] = sanitizeConfigPath(text)
 				}
+				sanitizeConfigValue(child)
 				continue
 			}
 			sanitizeConfigValue(child)
 		}
 	case []any:
 		for i := range v {
-			// A bare absolute path inside a list (e.g. an ffmpeg args array
-			// carrying an input path) leaks the Hub box's layout the same way
-			// a command field does. filepath.IsAbs keeps URLs out — nothing
-			// with a scheme matches.
-			if text, ok := v[i].(string); ok && filepath.IsAbs(text) {
-				v[i] = filepath.Base(text)
+			// A bare absolute path inside a list (e.g. an ffmpeg args array)
+			// must be sanitized independently of the host operating system.
+			if text, ok := v[i].(string); ok {
+				v[i] = sanitizeConfigPath(text)
 				continue
 			}
 			sanitizeConfigValue(v[i])
 		}
 	}
+}
+
+func sanitizeConfigPath(text string) string {
+	if filepath.IsAbs(text) || isWindowsAbsolute(text) {
+		return crossPlatformBase(text)
+	}
+	return text
 }
 
 // absPathToken matches a whole absolute path inside prose: a POSIX path
@@ -280,7 +296,7 @@ func sanitizeConfigValue(node any) {
 // never the start of a POSIX path token here. The path itself runs to the
 // next whitespace or prose punctuation, so "/mnt/nas/root: cifs" keeps its
 // colon.
-var absPathToken = regexp.MustCompile(`(^|[\s(\[])(/[^ \t\n,;:)\]]+|[A-Za-z]:\\[^ \t\n,;)\]]+)`)
+var absPathToken = regexp.MustCompile(`(^|[\s(\[])(/[^ \t\n,;:)\]]+|[A-Za-z]:[\\/][^ \t\n,;)\]]+)`)
 
 // SanitizePathText reduces every absolute path appearing in prose to its
 // basename: "/mnt/nas/footage: cifs" becomes "footage: cifs" and "ffmpeg:
@@ -292,11 +308,46 @@ func SanitizePathText(text string) string {
 	return absPathToken.ReplaceAllStringFunc(text, func(match string) string {
 		sub := absPathToken.FindStringSubmatch(match)
 		prefix, path := sub[1], sub[2]
-		if filepath.IsAbs(path) || (len(path) >= 3 && path[1] == ':' && path[2] == '\\') {
-			return prefix + filepath.Base(path)
+		if filepath.IsAbs(path) || isWindowsAbsolute(path) {
+			return prefix + crossPlatformBase(path)
 		}
 		return match
 	})
+}
+
+func isWindowsAbsolute(value string) bool {
+	return len(value) >= 3 && ((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= 'A' && value[0] <= 'Z')) && value[1] == ':' && (value[2] == '\\' || value[2] == '/')
+}
+
+func crossPlatformBase(value string) string {
+	return filepath.Base(strings.ReplaceAll(value, "\\", "/"))
+}
+
+type limitedBuffer struct {
+	bytes.Buffer
+	truncated bool
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	remaining := maxBundleEntryBytes - b.Len()
+	if remaining <= 0 {
+		b.truncated = true
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		_, _ = b.Buffer.Write(p[:remaining])
+		b.truncated = true
+		return len(p), nil
+	}
+	return b.Buffer.Write(p)
+}
+
+func boundEntry(data []byte) []byte {
+	if len(data) <= maxBundleEntryBytes {
+		return data
+	}
+	limit := maxBundleEntryBytes - len(bundleTruncationMarker)
+	return append(append([]byte(nil), data[:limit]...), []byte(bundleTruncationMarker)...)
 }
 
 type zipEntry struct {
@@ -309,25 +360,49 @@ type zipEntry struct {
 // state produce byte-identical archives.
 func writeZip(outPath string, entries []zipEntry) error {
 	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
-	file, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	var total int
+	for i := range entries {
+		entries[i].data = boundEntry(entries[i].data)
+		total += len(entries[i].data)
+	}
+	if total > maxBundleTotalBytes {
+		return fmt.Errorf("support bundle exceeds %d-byte entry limit", maxBundleTotalBytes)
+	}
+	file, err := os.CreateTemp(filepath.Dir(outPath), ".timingdex-support-*.tmp")
 	if err != nil {
-		return fmt.Errorf("create %s: %w", outPath, err)
+		return fmt.Errorf("create temporary archive: %w", err)
+	}
+	tmpPath := file.Name()
+	defer os.Remove(tmpPath)
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return err
 	}
 	writer := zip.NewWriter(file)
 	for _, entry := range entries {
 		w, err := writer.Create(entry.name)
 		if err != nil {
-			file.Close()
+			_ = file.Close()
 			return fmt.Errorf("create %s in archive: %w", entry.name, err)
 		}
 		if _, err := w.Write(entry.data); err != nil {
-			file.Close()
+			_ = file.Close()
 			return fmt.Errorf("write %s in archive: %w", entry.name, err)
 		}
 	}
 	if err := writer.Close(); err != nil {
-		file.Close()
+		_ = file.Close()
 		return fmt.Errorf("finalize archive: %w", err)
 	}
-	return file.Close()
+	if err := file.Close(); err != nil {
+		return err
+	}
+	info, err := os.Stat(tmpPath)
+	if err != nil {
+		return err
+	}
+	if info.Size() > maxBundleTotalBytes {
+		return fmt.Errorf("support bundle exceeds %d-byte archive limit", maxBundleTotalBytes)
+	}
+	return os.Rename(tmpPath, outPath)
 }

@@ -30,6 +30,23 @@ available unless the API returned it.
    accepts it back in a response body and there is no reason for it to appear
    in transcript output.
 
+The capability contract is version `v0.14`. Its current action and route
+allowlist is:
+
+- `allowed_actions`: `inspect_readiness`, `search_shots`, `create_draft_plan`,
+  `inspect_plan`, `revise_draft_plan`
+- Agent-token write routes: `POST /api/v1/repurpose/plans` and
+  `POST /api/v1/repurpose/plans/{id}/revisions`
+- `denied_actions`: `approve_plan`, `run_pipeline`, `read_provider_keys`,
+  `access_original_media_paths`, `export_timeline`, `manage_tags`,
+  `manage_collections`, `manage_webdav_accounts`, `manage_webdav_spaces`,
+  `manage_roots`, `manage_workers`, `manage_provider_channels`,
+  `manage_pipeline_throttle`, `manage_library_summary`
+
+These values must match `GET /api/v1/agent/capabilities`; do not infer an
+additional permission from a route being readable. Read-only route details and
+field semantics are in [the API contract](references/api-contract.md).
+
 ## Workflow
 
 ### Via MCP (recommended when the agent supports MCP)
@@ -56,16 +73,21 @@ and provider keys are never read.
 ### Inspect readiness
 
 1. Read `/api/v1/health`, `/api/v1/hardware` and `/api/v1/jobs?limit=100`.
-2. Summarize pending/running/failed work plainly. A failed or unfinished job is
+2. Read `/api/v1/cost/summary` and `/api/v1/pipeline/throttle` when reporting
+   cost context: use `today_estimate`/`month_estimate` for accumulated estimates
+   and `throttle.daily_cost_guide`/`throttle.monthly_cost_guide` for advisory
+   settings.
+3. Summarize pending/running/failed work plainly. A failed or unfinished job is
    evidence that the library may be incomplete, not a reason to invent results.
-3. Do not call the pipeline-run endpoint. It is intentionally outside this
+4. Do not call the pipeline-run endpoint. It is intentionally outside this
    Skill’s allowlist because it may trigger cost and long-running work.
 
 ### Find material
 
 1. Translate the user’s brief into a short retrieval query.
 2. Call `/api/v1/search/shots/hybrid?q=<url-encoded-query>&limit=20`.
-3. If useful, call `/api/v1/shots/{shot-id}/similar?limit=10` or
+3. For structured search, use `POST /api/v1/search/shots`; if useful, call
+   `/api/v1/shots/{shot-id}/similar?limit=10` or
    `/api/v1/discover/rare-shots?limit=20`.
 4. Report each proposed clip as `asset_id`, `shot_id`, `start_ms`, `end_ms`,
    score and API-provided reasons. State “no match” when the result is empty.

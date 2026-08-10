@@ -33,7 +33,7 @@ func seedShotForDoctorHealth(t *testing.T, repo *Repository, assetID, shotID str
 	}
 	if err := repo.ReplaceAssetShots(ctx, assetID, "", []domain.AssetShot{
 		{ID: shotID, AssetID: assetID, Ordinal: 0, StartMS: 0, EndMS: 1000, Description: "seeded shot"},
-	}); err != nil {
+	}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 }

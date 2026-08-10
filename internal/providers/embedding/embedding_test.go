@@ -3,8 +3,10 @@ package embedding
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/evjohn-icu/timingdex/internal/providers/common"
@@ -39,5 +41,28 @@ func TestOpenAICompatibleEmbeddingFixture(t *testing.T) {
 	}
 	if len(vectors) != 2 || len(vectors[1]) != 2 {
 		t.Fatalf("vectors=%v", vectors)
+	}
+}
+
+func TestOpenAIEmbeddingRejectsInvalidResponses(t *testing.T) {
+	cases := map[string]string{
+		"duplicate index": `{"data":[{"index":0,"embedding":[1,0]},{"index":0,"embedding":[0,1]}]}`,
+		"missing index":   `{"data":[{"index":0,"embedding":[1,0]},{"index":2,"embedding":[0,1]}]}`,
+		"negative index":  `{"data":[{"index":-1,"embedding":[1,0]},{"index":1,"embedding":[0,1]}]}`,
+		"zero vector":     `{"data":[{"index":0,"embedding":[0,0]},{"index":1,"embedding":[0,0]}]}`,
+		"nan vector":      `{"data":[{"index":0,"embedding":[1,NaN]},{"index":1,"embedding":[0,1]}]}`,
+		"infinite vector": `{"data":[{"index":0,"embedding":[1,Infinity]},{"index":1,"embedding":[0,1]}]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(w, strings.NewReader(body))
+			}))
+			defer server.Close()
+			provider := &Provider{Endpoint: common.Endpoint{BaseURL: server.URL}, ModelName: "test"}
+			if _, err := provider.Embed(context.Background(), []string{"a", "b"}); err == nil {
+				t.Fatal("invalid response must be rejected")
+			}
+		})
 	}
 }

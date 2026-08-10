@@ -77,7 +77,7 @@ func TestWorkerArtifactUploadPersistsOnHubAndRejectsNonOwner(t *testing.T) {
 		t.Fatalf("lease job=%+v err=%v", job, err)
 	}
 
-	service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), CacheDir: t.TempDir(), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	service, err := app.NewService(repo, config.Config{DataDir: secureTestDataDir(t), CacheDir: t.TempDir(), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
 	if err != nil {
 		t.Fatal(err)
 	}

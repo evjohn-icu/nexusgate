@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -28,6 +27,7 @@ var workerPlatforms = map[string]struct {
 func (s *Server) registerWorkerSetupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /worker-setup", s.workerSetupPage)
 	mux.HandleFunc("GET /api/v1/hub/worker-setup/context", s.requireTrustedRead(s.workerSetupContext))
+	mux.HandleFunc("GET /api/v1/admin/hub/worker-setup/library-roots", s.requireHubAdmin(s.workerSetupLibraryRoots))
 	mux.HandleFunc("GET /api/v1/hub/worker-binaries/{platform}", s.requireTrustedRead(s.workerServeBinary))
 	mux.HandleFunc("POST /api/v1/hub/worker-setup/script", s.requireHubAdmin(s.workerGenerateScript))
 }
@@ -52,7 +52,6 @@ func (s *Server) workerSetupContext(w http.ResponseWriter, r *http.Request) {
 			fingerprint = fp
 		}
 	}
-
 	roots, err := s.service.ListLibraryRoots(r.Context())
 	if err != nil {
 		roots = []domain.LibraryRoot{}
@@ -71,22 +70,47 @@ func (s *Server) workerSetupContext(w http.ResponseWriter, r *http.Request) {
 		availableBinaries[key] = entry
 	}
 
-	type rootEntry struct {
-		ID   string `json:"id"`
-		Path string `json:"path"`
-	}
-	rootList := make([]rootEntry, 0, len(roots))
-	for _, root := range roots {
-		rootList = append(rootList, rootEntry{ID: root.ID, Path: root.Path})
-	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
 		"hub_url":            hubURL,
 		"fingerprint":        fingerprint,
 		"tls":                tlsActive,
-		"library_roots":      rootList,
+		"library_roots":      rootReferences(roots),
 		"available_binaries": availableBinaries,
 	})
+}
+
+func rootReferences(roots []domain.LibraryRoot) []workerSetupRootReference {
+	refs := make([]workerSetupRootReference, 0, len(roots))
+	for _, root := range roots {
+		refs = append(refs, workerSetupRootReference{ID: root.ID})
+	}
+	return refs
+}
+
+type workerSetupRootReference struct {
+	ID string `json:"id"`
+}
+
+type workerSetupRootDetail struct {
+	ID   string `json:"id"`
+	Path string `json:"path"`
+}
+
+type workerSetupLibraryRootsResponse struct {
+	LibraryRoots []workerSetupRootDetail `json:"library_roots"`
+}
+
+func (s *Server) workerSetupLibraryRoots(w http.ResponseWriter, r *http.Request) {
+	roots, err := s.service.ListLibraryRoots(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	details := make([]workerSetupRootDetail, 0, len(roots))
+	for _, root := range roots {
+		details = append(details, workerSetupRootDetail{ID: root.ID, Path: root.Path})
+	}
+	writeJSON(w, http.StatusOK, workerSetupLibraryRootsResponse{LibraryRoots: details})
 }
 
 func (s *Server) workerServeBinary(w http.ResponseWriter, r *http.Request) {
@@ -113,8 +137,7 @@ func (s *Server) workerGenerateScript(w http.ResponseWriter, r *http.Request) {
 		Mounts       []workerMount `json:"mounts"`
 		CacheDir     string        `json:"cache_dir"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
+	if !decodeStrictJSON(w, r, &req, 1<<20) {
 		return
 	}
 
@@ -327,8 +350,8 @@ async function json(url,opt){opt=opt||{};var r=await fetch(url,{...opt,headers:a
 function goStep(n){for(var i=1;i<=4;i++){document.getElementById('step-'+i).className='step'+(i===n?' active':'');document.querySelectorAll('.step-nav div')[i-1].className=(i===n?'active':'')}}
 function renderBinaries(){var html=[],bins=ctx.available_binaries||{},order=['linux-amd64','linux-arm64','windows-amd64'];for(var i=0;i<order.length;i++){var key=order[i],bin=bins[key]||{},name=key,exists=!!bin.exists,size=bin.size_bytes||0;html.push('<div class="binary-card"><div class="'+(exists?'avail':'unavail')+'">'+(exists?'\u2713 可用':'&times; 不可用')+'</div><div>'+esc(name)+'</div><div class="size">'+(exists?formatSize(size):'未上传')+'</div></div>')}document.getElementById('binary-grid').innerHTML=html.join('')}
 function formatSize(b){if(b<1024)return b+' B';if(b<1048576)return(b/1024).toFixed(1)+' KB';return(b/1048576).toFixed(1)+' MB'}
-function renderMounts(){var panel=document.getElementById('mounts-panel'),roots=ctx.library_roots||[];if(!roots.length){panel.innerHTML='<div class="muted">暂无素材目录。请先在启动配置中添加。</div>';return}var html=[];for(var i=0;i<roots.length;i++){var r=roots[i];html.push('<div class="mount-row"><div><div class="path">'+esc(r.id)+'<br>'+esc(r.path)+'</div></div><div><label style="font-size:12px;color:#bfcae0;font-weight:800;display:block;margin-bottom:3px">Worker 本地路径</label><input class="mount-path" data-root-id="'+esc(r.id)+'" type="text" placeholder="/mnt/footage/'+esc(r.id)+'"></div></div>')}panel.innerHTML=html.join('')}
-async function init(){try{ctx=await json('/api/v1/hub/worker-setup/context');var hubInfo=document.getElementById('hub-info');hubInfo.innerHTML='<div class="info-line"><span class="info-label">Hub URL</span><span class="info-value">'+esc(ctx.hub_url)+'</span></div><div class="info-line"><span class="info-label">TLS</span><span class="info-value '+(ctx.tls?'tls-on':'tls-off')+'">'+(ctx.tls?'已启用':'未启用')+'</span></div>'+(ctx.fingerprint?'<div class="info-line"><span class="info-label">证书指纹</span><span class="fingerprint">'+esc(ctx.fingerprint)+'</span></div>':'')+'<div class="info-line"><span class="info-label">素材目录</span><span class="info-value">'+(ctx.library_roots||[]).length+' 个</span></div>';renderBinaries();renderMounts()}catch(e){document.getElementById('hub-info').innerHTML='<div class="muted">无法获取环境信息：'+esc(e.message)+'</div>'}}
+ function renderMounts(){var panel=document.getElementById('mounts-panel'),roots=ctx.library_roots||[];if(!roots.length){panel.innerHTML='<div class="muted">暂无素材目录。请先在启动配置中添加。</div>';return}var html=[];for(var i=0;i<roots.length;i++){var r=roots[i],label=r.path?esc(r.path):'路径需管理员 Token';html.push('<div class="mount-row"><div><div class="path">'+esc(r.id)+'<br>'+label+'</div></div><div><label style="font-size:12px;color:#bfcae0;font-weight:800;display:block;margin-bottom:3px">Worker 本地路径</label><input aria-label="Worker 本地路径" class="mount-path" data-root-id="'+esc(r.id)+'" type="text" placeholder="/mnt/footage/'+esc(r.id)+'"></div></div>')}panel.innerHTML=html.join('')}
+async function init(){try{var contextResponse=await fetch('/api/v1/hub/worker-setup/context');if(!contextResponse.ok)throw new Error(await apiErrMsg(contextResponse));ctx=await contextResponse.json();var detailWarning='';var t=adminToken();if(t){try{var rootsResponse=await fetch('/api/v1/admin/hub/worker-setup/library-roots',{headers:{Authorization:'Bearer '+t}});if(!rootsResponse.ok)throw new Error('admin detail request failed');var details=await rootsResponse.json();ctx.library_roots=details.library_roots||[]}catch(_){detailWarning='<div class="muted">管理员路径详情加载失败，已保留脱敏素材目录。</div>'}}var hubInfo=document.getElementById('hub-info');hubInfo.innerHTML='<div class="info-line"><span class="info-label">Hub URL</span><span class="info-value">'+esc(ctx.hub_url)+'</span></div><div class="info-line"><span class="info-label">TLS</span><span class="info-value '+(ctx.tls?'tls-on':'tls-off')+'">'+(ctx.tls?'已启用':'未启用')+'</span></div>'+(ctx.fingerprint?'<div class="info-line"><span class="info-label">证书指纹</span><span class="fingerprint">'+esc(ctx.fingerprint)+'</span></div>':'')+'<div class="info-line"><span class="info-label">素材目录</span><span class="info-value">'+(ctx.library_roots||[]).length+' 个</span></div>'+detailWarning;renderBinaries();renderMounts()}catch(e){document.getElementById('hub-info').innerHTML='<div class="muted">无法获取环境信息：'+esc(e.message)+'</div>'}}
 async function generateScript(){var btn=document.getElementById('gen-btn');btn.disabled=true;btn.textContent='正在生成…';try{var t=adminToken();if(!t){alert('请先在顶部填入 Hub 管理 Token');btn.disabled=false;btn.textContent='生成配对 Token 并安装脚本';return}var pairing=await json('/api/v1/hub/worker-pairings',{method:'POST'});pairingToken=pairing.token;var platform=document.getElementById('platform').value;var name=document.getElementById('worker-name').value.trim();var cacheDir=document.getElementById('cache-dir').value.trim();var mountInputs=document.querySelectorAll('.mount-path');var mounts=[];for(var i=0;i<mountInputs.length;i++){var path=mountInputs[i].value.trim();if(path){mounts.push({root_id:mountInputs[i].getAttribute('data-root-id'),path:path})}}var body=JSON.stringify({platform:platform,name:name,pairing_token:pairingToken,mounts:mounts,cache_dir:cacheDir});var script=await fetch('/api/v1/hub/worker-setup/script',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:body});if(!script.ok)throw new Error(await apiErrMsg(script));var scriptText=await script.text();document.getElementById('script-area').innerHTML='<button class="copy-btn" onclick="copyScript()" id="copy-btn">复制脚本</button><div class="script-box" id="script-output">'+esc(scriptText)+'</div><div class="hint">脚本中包含一次性配对 Token，使用后即失效。请在目标 Worker 机器上执行。</div><div class="step-actions"><button class="nav-btn primary" onclick="goStep(4)">查看启动说明 →</button></div>'}catch(e){document.getElementById('script-area').innerHTML='<div class="muted" style="color:#ffb7ac">生成失败：'+esc(e.message)+'</div><div class="center"><button class="primary" onclick="generateScript()">重试</button></div>'}finally{btn.disabled=false}}
 function copyScript(){var el=document.getElementById('script-output');if(!el)return;var range=document.createRange();range.selectNode(el);window.getSelection().removeAllRanges();window.getSelection().addRange(range);try{document.execCommand('copy');var btn=document.getElementById('copy-btn');btn.textContent='已复制'}catch(e){}}init();
 </script></body></html>`

@@ -6,11 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/evjohn-icu/timingdex/internal/cache"
+	"github.com/evjohn-icu/timingdex/internal/cachecoord"
 	"github.com/evjohn-icu/timingdex/internal/config"
 	sqliterepo "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 )
@@ -26,7 +27,7 @@ import (
 // disagree about what exists.
 func runCacheCommand(ctx context.Context, repo *sqliterepo.Repository, cfg config.Config, args []string) error {
 	if len(args) < 1 {
-		return errors.New("usage: timingdex cache inspect|gc|verify")
+		return errors.New("usage: timingdex cache inspect|gc|verify|repair-derived")
 	}
 	switch args[0] {
 	case "inspect":
@@ -35,9 +36,95 @@ func runCacheCommand(ctx context.Context, repo *sqliterepo.Repository, cfg confi
 		return runCacheGC(ctx, repo, cfg, args[1:])
 	case "verify":
 		return runCacheVerify(ctx, repo, cfg, args[1:])
+	case "repair-derived":
+		return runCacheRepairDerived(ctx, repo, cfg, args[1:])
 	default:
-		return errors.New("usage: timingdex cache inspect|gc|verify")
+		return errors.New("usage: timingdex cache inspect|gc|verify|repair-derived")
 	}
+}
+
+func runCacheRepairDerived(ctx context.Context, repo *sqliterepo.Repository, cfg config.Config, args []string) error {
+	flags := flag.NewFlagSet("cache repair-derived", flag.ContinueOnError)
+	invalidate := flags.Bool("invalidate-hardware-profiles", false, "remove hardware-produced thumbnail/proxy files and rows")
+	yes := flags.Bool("yes", false, "delete and enqueue re-derive jobs")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if !*invalidate {
+		return errors.New("usage: timingdex cache repair-derived --invalidate-hardware-profiles [--yes]")
+	}
+	prefixes := []string{"thumb-hw-", "proxy-720-hw-"}
+	var files []string
+	var bytes int64
+	err := filepath.WalkDir(cfg.CacheDir, func(p string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			if d.Name() == "sources" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		if !(strings.HasPrefix(name, "thumbnail-") && strings.HasSuffix(name, ".jpg") || strings.HasPrefix(name, "proxy-") && strings.HasSuffix(name, ".mp4")) {
+			return nil
+		}
+		mode := strings.TrimSuffix(strings.TrimPrefix(name, "thumbnail-"), ".jpg")
+		if strings.HasPrefix(name, "proxy-") {
+			mode = strings.TrimSuffix(strings.TrimPrefix(name, "proxy-"), ".mp4")
+		}
+		if mode == "software" || mode == "" {
+			return nil
+		}
+		info, statErr := d.Info()
+		if statErr != nil {
+			return statErr
+		}
+		files = append(files, p)
+		bytes += info.Size()
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("scan derived cache: %w", err)
+	}
+	matching, err := repo.MatchingDerivedArtifactsByProfilePrefixes(ctx, prefixes)
+	if err != nil {
+		return fmt.Errorf("find hardware artifact rows: %w", err)
+	}
+	assets := make([]string, 0, len(matching))
+	seen := make(map[string]bool)
+	for _, artifact := range matching {
+		if !seen[artifact.AssetID] {
+			seen[artifact.AssetID] = true
+			assets = append(assets, artifact.AssetID)
+		}
+	}
+	if !*yes {
+		fmt.Printf("would remove %d hardware-derived file(s), %s, and %d DB row(s) across %d asset(s)\n", len(files), humanBytes(bytes), len(matching), len(assets))
+		fmt.Println("dry run: nothing deleted; re-run with --yes to repair")
+		return nil
+	}
+	if _, err := repo.DeleteDerivedArtifactsByProfilePrefixes(ctx, prefixes); err != nil {
+		return fmt.Errorf("delete hardware artifact rows: %w", err)
+	}
+	for _, p := range files {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", p, err)
+		}
+	}
+	var enqueued int
+	for _, assetID := range assets {
+		ok, err := repo.EnqueueRederive(ctx, assetID)
+		if err != nil {
+			return err
+		}
+		if ok {
+			enqueued++
+		}
+	}
+	fmt.Printf("removed %d hardware-derived file(s), %s; enqueued %d re-derive job(s)\n", len(files), humanBytes(bytes), enqueued)
+	return nil
 }
 
 func runCacheInspect(ctx context.Context, repo *sqliterepo.Repository, cfg config.Config, args []string) error {
@@ -70,11 +157,10 @@ func runCacheInspect(ctx context.Context, repo *sqliterepo.Repository, cfg confi
 	fmt.Printf("%-14s %-8s %6s\n", "scratch", countLabel(stats.ScratchCount, "files"), humanBytes(stats.ScratchBytes))
 	fmt.Printf("%-14s %-8s %6s\n", "orphans", countLabel(len(orphans), "dirs"), humanBytes(orphanBytes))
 	fmt.Printf("%-14s %-8s %6s\n", "database", "-", humanBytes(dbBytes))
-	fmt.Printf("%-14s %-8s %6s\n", "total derived", "-", humanBytes(stats.TotalBytes))
-	// Everything except the database is regenerable: derived artifacts come
-	// back from a pipeline re-run, staging copies re-arrive on demand, and
-	// orphan directories are stale by definition.
-	fmt.Printf("可安全释放（可重建）: %s\n", humanBytes(stats.TotalBytes))
+	fmt.Printf("%-14s %-8s %6s\n", "total cache", countLabel(stats.TotalFiles, "files"), humanBytes(stats.TotalBytes))
+	fmt.Printf("%-14s %-8s %6s\n", "rebuildable", "-", humanBytes(stats.RebuildableBytes))
+	fmt.Printf("%-14s %-8s %6s\n", "unclassified", countLabel(stats.OrphanCount, "files"), humanBytes(stats.OrphanBytes))
+	fmt.Printf("可安全释放（仅可重建）: %s\n", humanBytes(stats.RebuildableBytes))
 	return nil
 }
 
@@ -122,6 +208,22 @@ func runCacheGC(ctx context.Context, repo *sqliterepo.Repository, cfg config.Con
 		// category deletes nothing — the operator must say what goes.
 		*scratch, *rebuildable, *orphans = true, true, true
 	}
+	protected := map[string]struct{}(nil)
+	if *yes && selected {
+		lock, err := cachecoord.AcquireExclusive(cfg.DataDir)
+		if err != nil {
+			return fmt.Errorf("acquire cache maintenance lock: %w", err)
+		}
+		defer lock.Release()
+		live, err := repo.ListLiveJobAssetIDs(ctx, time.Now().UTC())
+		if err != nil {
+			return fmt.Errorf("list live job assets: %w", err)
+		}
+		protected = make(map[string]struct{}, len(live))
+		for _, id := range live {
+			protected[id] = struct{}{}
+		}
+	}
 	var orphanDirs []cache.OrphanDir
 	if *orphans {
 		var err error
@@ -135,6 +237,7 @@ func runCacheGC(ctx context.Context, repo *sqliterepo.Repository, cfg config.Con
 		RemoveScratch:     *scratch,
 		RemoveRebuildable: *rebuildable,
 		RemoveOrphans:     orphanDirs,
+		ProtectedAssetIDs: protected,
 	})
 	if err != nil {
 		return err
@@ -147,7 +250,7 @@ func runCacheGC(ctx context.Context, repo *sqliterepo.Repository, cfg config.Con
 	// committed analysis are left to their own in-flight chain.
 	var enqueued, skipped int
 	if *rebuildable && *yes && selected {
-		for _, assetID := range removedRebuildableAssetIDs(result.Removed) {
+		for _, assetID := range result.RemovedRebuildableAssetIDs {
 			enqueuedJob, enqueueErr := repo.EnqueueRederive(ctx, assetID)
 			if enqueueErr != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("enqueue re-derive %s: %v", assetID, enqueueErr))
@@ -172,6 +275,15 @@ func runCacheGC(ctx context.Context, repo *sqliterepo.Repository, cfg config.Con
 		for _, rel := range result.Removed {
 			fmt.Printf("  %s\n", rel)
 		}
+		if result.RemovedTruncated {
+			fmt.Printf("  showing first 20 of %d\n", result.RemovedFiles)
+		}
+	}
+	if result.SkippedActiveFiles > 0 {
+		fmt.Printf("skipped active: %d file(s), %s\n", result.SkippedActiveFiles, humanBytes(result.SkippedActiveBytes))
+	}
+	if result.SkippedYoungFiles > 0 {
+		fmt.Printf("skipped young: %d file(s), %s\n", result.SkippedYoungFiles, humanBytes(result.SkippedYoungBytes))
 	}
 	if !*yes || !selected {
 		fmt.Println("dry run: nothing deleted; re-run with --yes to delete")
@@ -186,37 +298,6 @@ func runCacheGC(ctx context.Context, repo *sqliterepo.Repository, cfg config.Con
 	}
 	fmt.Println("安全提示：可重建内容可安全删除；数据库/密钥/原片不受影响。")
 	return nil
-}
-
-// removedRebuildableAssetIDs extracts the distinct per-asset ids from a GC
-// result's removed paths, in first-seen order. A rebuildable artifact lives
-// at <assetID>/thumbnail-*.jpg, <assetID>/proxy-*.mp4 or <assetID>/audio*.m4a
-// — exactly two path segments whose basename the cache package classifies as
-// rebuildable. Anything else (scratch dirs, orphan dirs, unclassified files)
-// is not a rebuildable artifact and contributes no asset.
-func removedRebuildableAssetIDs(removed []string) []string {
-	seen := make(map[string]struct{}, len(removed))
-	var ids []string
-	for _, rel := range removed {
-		rel = filepath.ToSlash(rel)
-		dir, name := path.Split(rel)
-		if dir == "" || strings.Contains(dir, "/") {
-			continue // not a single-level per-asset directory
-		}
-		if !cache.IsRebuildableArtifactName(name) {
-			continue
-		}
-		assetID := strings.TrimSuffix(dir, "/")
-		if assetID == "" {
-			continue
-		}
-		if _, ok := seen[assetID]; ok {
-			continue
-		}
-		seen[assetID] = struct{}{}
-		ids = append(ids, assetID)
-	}
-	return ids
 }
 
 // runCacheVerify reports DB-row-versus-file consistency: derived_artifacts

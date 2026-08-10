@@ -139,7 +139,7 @@ func DefaultOptions() Options {
 		Selection:      DefaultSelectionOptions(),
 		GateFact:       true,
 		Fusion:         nil, // RRF with k=60
-		ProfileVersion: "v2-profile-1",
+		ProfileVersion: "v2-profile-2",
 	}
 }
 

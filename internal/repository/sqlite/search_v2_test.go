@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -42,6 +43,82 @@ func TestSearchV2LexicalFlatEqualsLegacy(t *testing.T) {
 			if diffAbs(hit.LexicalScore, legacyScore) > 1e-12 {
 				t.Fatalf("%q: flat lexical score for %s = %v, legacy = %v", q, hit.ID, hit.LexicalScore, legacyScore)
 			}
+		}
+	}
+}
+
+func TestSearchV2OffsetPaginationAgainstSQLite(t *testing.T) {
+	repo, ids := seedGoldenCorpus(t)
+	ctx := context.Background()
+	ids = seedOneAsset(t, repo, ids, goldenAssetSpec{
+		id: "asset-pagination-burst", analysis: domain.StructuredAnalysis{Summary: "pagination match"},
+		shots: []goldenShotSpec{
+			{startMS: 0, endMS: 1000, description: "pagination match footage"},
+			{startMS: 30_000, endMS: 31_000, description: "pagination match footage"},
+			{startMS: 60_000, endMS: 61_000, description: "pagination match footage"},
+		}, session: "session-pagination",
+	})
+	for i := 0; i < 3; i++ {
+		ids = seedOneAsset(t, repo, ids, goldenAssetSpec{
+			id: fmt.Sprintf("asset-pagination-%d", i), analysis: domain.StructuredAnalysis{Summary: "pagination match"},
+			shots: []goldenShotSpec{{startMS: int64(i) * 1000, endMS: int64(i+1) * 1000, description: "pagination match footage"}},
+		})
+	}
+	svc := search.NewService(repo, search.DefaultOptions())
+	page := func(limit, offset int, diversity float64) []string {
+		t.Helper()
+		response, err := svc.Search(ctx, search.SearchRequest{Query: "pagination match", Limit: limit, Offset: offset, Diversity: diversity})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make([]string, 0, len(response.Results))
+		for _, result := range response.Results {
+			out = append(out, result.ShotID)
+		}
+		return out
+	}
+	withoutDiversity := page(4, 0, 0)
+	for _, id := range withoutDiversity {
+		if id == "" {
+			t.Fatal("pagination result has empty shot ID")
+		}
+	}
+	withDiversity := page(4, 0, 0.6)
+	for _, tc := range []struct {
+		diversity float64
+		all       []string
+	}{
+		{0, withoutDiversity}, {0.6, withDiversity},
+	} {
+		diversity := tc.diversity
+		all := tc.all
+		first := page(2, 0, diversity)
+		second := page(2, 2, diversity)
+		if len(all) < 4 || len(second) != 2 {
+			t.Fatalf("diversity=%v all=%v second=%v", diversity, all, second)
+		}
+		if all[2] != second[0] || all[3] != second[1] {
+			t.Fatalf("diversity=%v page2=%v, want ranks 3-4 of %v", diversity, second, all)
+		}
+		seen := map[string]bool{}
+		for _, id := range all {
+			if seen[id] {
+				t.Fatalf("diversity=%v full page contains duplicate ID: %v", diversity, all)
+			}
+			seen[id] = true
+		}
+		pageSeen := map[string]bool{}
+		for _, id := range first {
+			if pageSeen[id] {
+				t.Fatalf("diversity=%v page1 contains duplicate ID: %v", diversity, first)
+			}
+			pageSeen[id] = true
+		}
+		for _, id := range second {
+			if pageSeen[id] {
+				t.Fatalf("diversity=%v pages are not disjoint/unique: all=%v second=%v", diversity, all, second)
+			}
+			pageSeen[id] = true
 		}
 	}
 }
@@ -100,6 +177,145 @@ func TestSearchV2TranscriptWholeWordDiscipline(t *testing.T) {
 	}
 }
 
+func TestSearchV2TranscriptRequiresExactPhrase(t *testing.T) {
+	repo, _ := seedSearchV2Corpus(t)
+	defer repo.Close()
+	ids := seedOneAsset(t, repo, map[string]string{}, goldenAssetSpec{
+		id: "asset-speech-hard-negatives", analysis: domain.StructuredAnalysis{Summary: "speech"},
+		shots: []goldenShotSpec{{startMS: 0, endMS: 10_000, description: "partial"}, {startMS: 10_000, endMS: 20_000, description: "reordered"}, {startMS: 20_000, endMS: 30_000, description: "ascii"}},
+		transcriptWords: []goldenTranscriptWord{
+			{startMS: 100, endMS: 200, text: "我们", confidence: 1},
+			{startMS: 10_100, endMS: 10_200, text: "出发", confidence: 1}, {startMS: 10_200, endMS: 10_300, text: "我们", confidence: 1},
+			{startMS: 20_100, endMS: 20_200, text: "carefree", confidence: 1},
+		},
+	})
+	hits, err := repo.TranscriptRankedShots(context.Background(), "我们出发", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("partial/reordered phrase candidates must not score, got %+v", hits)
+	}
+	_ = ids
+}
+
+func TestSearchV2TranscriptExactPhraseOnlyScores(t *testing.T) {
+	repo, ids := seedSearchV2Corpus(t)
+	defer repo.Close()
+	hits, err := repo.TranscriptRankedShots(context.Background(), "我们明天出发", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].ID != ids["asset-speech-quote:0"] {
+		t.Fatalf("only exact phrase should score, got %+v", hits)
+	}
+}
+
+func TestSearchV2TranscriptPhrasePrefilterSurvivesPartialSaturation(t *testing.T) {
+	repo, _ := seedSearchV2Corpus(t)
+	defer repo.Close()
+	ids := map[string]string{}
+	for i := 0; i < 101; i++ {
+		id := fmt.Sprintf("asset-partial-%03d", i)
+		ids = seedOneAsset(t, repo, ids, goldenAssetSpec{
+			id: id, analysis: domain.StructuredAnalysis{Summary: "partial"},
+			shots: []goldenShotSpec{{startMS: 0, endMS: 10_000, description: "partial"}},
+			transcriptWords: []goldenTranscriptWord{
+				{startMS: 100, endMS: 200, text: "我们", confidence: 1},
+				{startMS: 300, endMS: 400, text: "我们", confidence: 1},
+				{startMS: 500, endMS: 600, text: "我们", confidence: 1},
+				{startMS: 700, endMS: 800, text: "我们", confidence: 1},
+				{startMS: 900, endMS: 1000, text: "我们", confidence: 1},
+			},
+		})
+	}
+	ids = seedOneAsset(t, repo, ids, goldenAssetSpec{
+		id: "asset-exact-after-partials", analysis: domain.StructuredAnalysis{Summary: "exact"},
+		shots: []goldenShotSpec{{startMS: 0, endMS: 10_000, description: "exact"}},
+		transcriptWords: []goldenTranscriptWord{
+			{startMS: 100, endMS: 200, text: "我们", confidence: 1},
+			{startMS: 300, endMS: 400, text: "明天", confidence: 1},
+			{startMS: 500, endMS: 600, text: "出发", confidence: 1},
+		},
+	})
+	hits, err := repo.TranscriptRankedShots(context.Background(), "我们明天出发", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].ID != ids["asset-exact-after-partials:0"] {
+		t.Fatalf("exact phrase must survive partial-token saturation, got %+v", hits)
+	}
+}
+
+func TestSearchV2TranscriptTieOrderingIsDeterministic(t *testing.T) {
+	repo, _ := seedSearchV2Corpus(t)
+	defer repo.Close()
+	ids := map[string]string{}
+	for _, id := range []string{"asset-tie-b", "asset-tie-a"} {
+		ids = seedOneAsset(t, repo, ids, goldenAssetSpec{
+			id: id, analysis: domain.StructuredAnalysis{Summary: "tie"},
+			shots:           []goldenShotSpec{{startMS: 0, endMS: 10_000, description: "tie"}},
+			transcriptWords: []goldenTranscriptWord{{startMS: 100, endMS: 200, text: "唯一", confidence: 1}},
+		})
+	}
+	var want []string
+	for run := 0; run < 5; run++ {
+		hits, err := repo.TranscriptRankedShots(context.Background(), "唯一", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(hits) < 2 {
+			t.Fatalf("run %d returned nondeterministic order: %+v", run, hits)
+		}
+		got := []string{hits[0].ID, hits[1].ID}
+		if run == 0 {
+			want = got
+		} else if got[0] != want[0] || got[1] != want[1] {
+			t.Fatalf("run %d returned nondeterministic order: %+v", run, hits)
+		}
+	}
+}
+
+func TestSearchV2EvidenceConflictThroughService(t *testing.T) {
+	repo, _ := seedSearchV2Corpus(t)
+	defer repo.Close()
+	ids := seedOneAsset(t, repo, map[string]string{}, goldenAssetSpec{
+		id: "asset-evidence-conflict", analysis: domain.StructuredAnalysis{Summary: "person"},
+		shots: []goldenShotSpec{{startMS: 0, endMS: 10_000, description: "no people", objects: []string{"person"}}},
+	})
+	svc := search.NewService(repo, search.DefaultOptions())
+	response, err := svc.Search(context.Background(), search.SearchRequest{Query: "person", Mode: "semantic", Limit: 10, IncludeEvidence: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conflictResult *search.ResultItem
+	for i := range response.Results {
+		if response.Results[i].ShotID == ids["asset-evidence-conflict:0"] {
+			conflictResult = &response.Results[i]
+			break
+		}
+	}
+	if conflictResult == nil {
+		t.Fatalf("conflict shot missing from results=%+v", response.Results)
+	}
+	e := evidenceForSearchValue(conflictResult.Evidence, "person")
+	if e == nil || e.State != search.EvidenceContradicted {
+		t.Fatalf("evidence=%+v", e)
+	}
+	if len(e.Sources) != 2 || e.Sources[0] != search.SourceObjects || e.Sources[1] != search.SourceDescription {
+		t.Fatalf("sources=%v", e.Sources)
+	}
+}
+
+func evidenceForSearchValue(evidence []search.Evidence, value string) *search.Evidence {
+	for i := range evidence {
+		if evidence[i].Value == value {
+			return &evidence[i]
+		}
+	}
+	return nil
+}
+
 func TestSearchV2MetadataChannel(t *testing.T) {
 	repo, ids := seedSearchV2Corpus(t)
 	ctx := context.Background()
@@ -119,6 +335,69 @@ func TestSearchV2MetadataChannel(t *testing.T) {
 	}
 	if hits[0].MetadataScore != 1.0 {
 		t.Fatalf("filename match must score 1.0, got %v", hits[0].MetadataScore)
+	}
+}
+
+func TestSearchV2MetadataChannelLargeCorpus(t *testing.T) {
+	repo, err := Open(filepath.Join(t.TempDir(), "metadata-large.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	ctx := context.Background()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := formatTime(time.Now().UTC())
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO library_roots(id,path,created_at,updated_at) VALUES('large-root','/large',?,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 1200; i++ {
+		id := fmt.Sprintf("large-%04d", i)
+		if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,?)`, id, id, 1, "discovered", now, now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.db.ExecContext(ctx, `INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,exists_now,is_primary,last_seen_at) VALUES(?,?,?,?,?,0,1,1,?)`, "loc-"+id, id, "large-root", id+"-car.mov", "/large/"+id+"-car.mov", now); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.ReplaceAssetShots(ctx, id, "", []domain.AssetShot{{ID: "shot-" + id, AssetID: id, Ordinal: 0, EndMS: 1, Description: "test"}}, "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := repo.MetadataRankedShots(ctx, "car", 1200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1200 {
+		t.Fatalf("large metadata result length = %d, want 1200", len(first))
+	}
+	repeat, err := repo.MetadataRankedShots(ctx, "car", 1200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repeat) != len(first) {
+		t.Fatalf("repeated metadata result length = %d, want %d", len(repeat), len(first))
+	}
+	for i, hit := range first {
+		want := fmt.Sprintf("large-%04d", i)
+		if hit.AssetID != want || hit.Ordinal != 0 {
+			t.Fatalf("result %d = asset %s ordinal %d, want %s/0", i, hit.AssetID, hit.Ordinal, want)
+		}
+		if repeat[i].ID != hit.ID || repeat[i].AssetID != hit.AssetID || repeat[i].Ordinal != hit.Ordinal {
+			t.Fatalf("repeated metadata result differs at %d", i)
+		}
+	}
+	second, err := repo.MetadataRankedShots(ctx, "car", 37)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 37 {
+		t.Fatalf("limited metadata result length = %d, want 37", len(second))
+	}
+	for i := range second {
+		if second[i].ID != first[i].ID {
+			t.Fatalf("nondeterministic result at %d: %s vs %s", i, second[i].ID, first[i].ID)
+		}
 	}
 }
 
@@ -270,12 +549,12 @@ func seedOneAsset(t *testing.T, repo *Repository, ids map[string]string, asset g
 	if _, err := repo.db.ExecContext(ctx, `INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,last_seen_at) VALUES(?,?,?,?,?,0,?)`, "loc-"+asset.id, asset.id, root.ID, "clips/"+asset.id+".MOV", "clips/"+asset.id+".MOV", now); err != nil {
 		t.Fatal(err)
 	}
-	runID, _, err := repo.CreateModelRun(ctx, asset.id, "vision", "fixture", "fixture-model", "golden-"+asset.id, "footage-analysis-v4", "asset-analysis/v2", "{}")
+	runID, _, err := repo.CreateModelRun(ctx, asset.id, "vision", "fixture", "fixture-model", "golden-"+asset.id, "footage-analysis-v4", "asset-analysis/v2", "{}", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	parsed, _ := jsonMarshal(asset.analysis)
-	if err := repo.StageModelRun(ctx, runID, `{"golden":true}`, string(parsed)); err != nil {
+	if err := repo.StageModelRun(ctx, runID, `{"golden":true}`, string(parsed), "", ""); err != nil {
 		t.Fatal(err)
 	}
 	shots := make([]domain.AssetShot, 0, len(asset.shots))
@@ -286,7 +565,7 @@ func seedOneAsset(t *testing.T, repo *Repository, ids map[string]string, asset g
 			Tags: spec.tags, Objects: spec.objects, Actions: spec.actions, Mood: spec.mood,
 		})
 	}
-	if err := repo.CommitAnalysisWithShots(ctx, asset.id, runID, "asset-analysis/v2", asset.analysis, shots); err != nil {
+	if err := repo.CommitAnalysisWithShots(ctx, asset.id, runID, "asset-analysis/v2", asset.analysis, shots, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if len(asset.transcriptWords) > 0 {
@@ -297,7 +576,7 @@ func seedOneAsset(t *testing.T, repo *Repository, ids map[string]string, asset g
 			words = append(words, domain.AlignmentWord{StartMS: w.startMS, EndMS: w.endMS, Text: w.text, Confidence: &confidence})
 			joined += w.text + " "
 		}
-		if err := repo.SaveTranscript(ctx, asset.id, "fixture", "fixture-model", "golden-transcript-"+asset.id, domain.Transcript{Language: "zh", Text: joined}); err != nil {
+		if err := repo.SaveTranscript(ctx, asset.id, "fixture", "fixture-model", "golden-transcript-"+asset.id, domain.Transcript{Language: "zh", Text: joined}, "", ""); err != nil {
 			t.Fatal(err)
 		}
 		if err := repo.SaveAlignment(ctx, asset.id, "fixture", "fixture-model", "golden-align-"+asset.id, "{}", domain.AlignmentResult{Words: words}); err != nil {

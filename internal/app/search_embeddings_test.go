@@ -79,7 +79,7 @@ func openEmbeddingTestRepo(t *testing.T) (*sqlite.Repository, []domain.ShotSearc
 		{ID: "shot-1", AssetID: "asset-1", Ordinal: 0, StartMS: 0, EndMS: 5000, Description: "red car crossing"},
 		{ID: "shot-2", AssetID: "asset-1", Ordinal: 1, StartMS: 5000, EndMS: 10_000, Description: "empty parking lot"},
 	}
-	if err := repo.ReplaceAssetShots(ctx, "asset-1", "", shots); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, "asset-1", "", shots, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	committed, err := repo.ListAssetShots(ctx, "asset-1")
@@ -129,7 +129,7 @@ func TestEnsureShotTextEmbeddingsWritesChangedShots(t *testing.T) {
 	// A changed shot (reanalysis wrote a new description) gets re-embedded.
 	changed := committed[0].AssetShot
 	changed.Description = "blue van crossing"
-	if err := repo.ReplaceAssetShots(ctx, "asset-1", "", []domain.AssetShot{changed, committed[1].AssetShot}); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, "asset-1", "", []domain.AssetShot{changed, committed[1].AssetShot}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	svc.ensureShotTextEmbeddings(ctx, "asset-1")
@@ -219,6 +219,39 @@ func TestRebuildShotTextEmbeddingsIncremental(t *testing.T) {
 		t.Fatalf("new model must have both shots, got %d", len(newRows))
 	}
 	_ = committed
+}
+
+type zeroVectorEmbedder struct{}
+
+func (zeroVectorEmbedder) Name() string  { return "zero" }
+func (zeroVectorEmbedder) Model() string { return "zero-v1" }
+func (zeroVectorEmbedder) Embed(_ context.Context, texts []string) ([][]float64, error) {
+	return make([][]float64, len(texts)), nil
+}
+
+func TestRebuildShotTextEmbeddingsReportsPersistedCount(t *testing.T) {
+	repo, _ := openEmbeddingTestRepo(t)
+	svc := &Service{repo: repo, embedder: testEmbedder{}}
+	count, err := svc.RebuildShotTextEmbeddings(context.Background())
+	if err != nil || count != 2 {
+		t.Fatalf("rebuild count = %d, err=%v; want persisted count 2", count, err)
+	}
+}
+
+func TestRebuildShotTextEmbeddingsZeroVectorIsNoOp(t *testing.T) {
+	repo, _ := openEmbeddingTestRepo(t)
+	svc := &Service{repo: repo, embedder: zeroVectorEmbedder{}}
+	count, err := svc.RebuildShotTextEmbeddings(context.Background())
+	if err != nil || count != 0 {
+		t.Fatalf("zero-vector rebuild = %d, err=%v; want 0, nil", count, err)
+	}
+	rows, err := repo.ListShotTextEmbeddings(context.Background(), "zero-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("zero-vector provider must persist nothing, got %d", len(rows))
+	}
 }
 
 type switchedModelEmbedder struct{ testEmbedder }

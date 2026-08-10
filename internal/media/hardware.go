@@ -98,6 +98,12 @@ type HardwarePlan struct {
 	Env []string
 }
 
+// SoftwareFallback is the plan that actually produced an artifact after an
+// accelerated attempt was unavailable.
+func (p HardwarePlan) SoftwareFallback() HardwarePlan {
+	return planFor("software", "", false, p.BitrateKbps)
+}
+
 // Profile names the derived artifact so a software proxy is never mislabelled
 // as a hardware one. It deliberately ignores Env: iHD and i965 are two ways of
 // reaching the same VAAPI encoder on the same GPU, so folding the driver name

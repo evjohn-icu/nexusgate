@@ -19,7 +19,7 @@ import (
 // (INSERT OR IGNORE dedup would otherwise swallow the reanalysis wholesale).
 // When the new job runs, CreateModelRun's own dedup key differs on input
 // hash, so a fresh run is produced and CommitAnalysisWithShots switches the
-// canonical rows to it; JobIndex then rebuilds FTS and vectors.
+// canonical rows to it; JobIndex then rebuilds the asset-level FTS row.
 func (r *Repository) EnqueueReanalysis(ctx context.Context, assetID, reason string) error {
 	// Analyze requires the proxy and the media metadata; the transcript is
 	// optional (the stage handles a nil transcript, and an untimed one is

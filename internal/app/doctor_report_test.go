@@ -22,7 +22,10 @@ import (
 // only real SQL can produce (see CLAUDE.md's note on in-memory fakes).
 func newDoctorHub(t *testing.T) (*Service, *sqlite.Repository, config.Config) {
 	t.Helper()
-	dataDir := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.Mkdir(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	cfg := config.Config{
 		DataDir:      dataDir,
 		CacheDir:     filepath.Join(dataDir, "cache"),
@@ -110,7 +113,7 @@ func TestDoctorReportSeededLibrary(t *testing.T) {
 	if err := repo.ReplaceAssetShots(ctx, "asset-seeded", "", []domain.AssetShot{
 		{ID: "shot-a", AssetID: "asset-seeded", Ordinal: 0, StartMS: 0, EndMS: 1000, Description: "red car"},
 		{ID: "shot-b", AssetID: "asset-seeded", Ordinal: 1, StartMS: 1000, EndMS: 2000, Description: "dog park"},
-	}); err != nil {
+	}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	// Embed only one of the two shots, so the distinct-shot count can be

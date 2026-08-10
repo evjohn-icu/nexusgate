@@ -11,6 +11,7 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	"github.com/evjohn-icu/timingdex/internal/nleexport"
 	"github.com/evjohn-icu/timingdex/internal/providerchannels"
+	"github.com/evjohn-icu/timingdex/internal/search"
 )
 
 // APIError is the machine-readable error body every API failure answers with.
@@ -86,6 +87,8 @@ func apiErrorFromError(err error) (int, APIError) {
 		}
 	}
 	switch {
+	case errors.Is(err, search.ErrSearchPaginationWindow):
+		return http.StatusBadRequest, APIError{Code: "invalid_request", Message: truncateMessage(err.Error(), maxAPIErrorMessageBytes)}
 	case errors.Is(err, domain.ErrJobLeaseLost), errors.Is(err, app.ErrWorkerArtifactLease):
 		return http.StatusConflict, APIError{Code: "job_lease_lost", Message: "job lease no longer held", Retryable: true}
 	case errors.Is(err, domain.ErrPermanentFailure):

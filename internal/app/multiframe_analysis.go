@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/evjohn-icu/timingdex/internal/cachecoord"
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	videoanalysis "github.com/evjohn-icu/timingdex/internal/domain/video_analysis"
 	"github.com/evjohn-icu/timingdex/internal/media"
@@ -52,7 +53,7 @@ func (p *Pipeline) multiframeRouteOf() *multiframeRoute {
 // from the detector identity and the sampler, so a detector swap or threshold
 // change re-keys the analysis instead of reusing a cached run — the detector
 // IS part of what produced the shots, exactly as the model is.
-func (p *Pipeline) analyzeWithDetector(ctx context.Context, j *domain.Job, m *domain.MediaMetadata, route *multiframeRoute) error {
+func (p *Pipeline) analyzeWithDetector(ctx context.Context, j *domain.Job, m *domain.MediaMetadata, route *multiframeRoute, worker string) error {
 	proxy, err := p.repo.GetArtifact(ctx, j.AssetID, "proxy")
 	if err != nil {
 		return err
@@ -67,7 +68,7 @@ func (p *Pipeline) analyzeWithDetector(ctx context.Context, j *domain.Job, m *do
 	detectorName := p.shotDetector.Name()
 	runHash := hashStrings(j.InputHash, "multiframe-analysis-v1", detectorName, media.FrameSamplingBoundaryAware)
 	reqJSON := multiframeRequestJSON(j.AssetID, proxy.LocalPath, detectorName, media.FrameSamplingBoundaryAware)
-	runID, cached, err := p.repo.CreateModelRun(ctx, j.AssetID, "vision", route.analyzer.Name(), route.analyzer.Model(), runHash, "multiframe-analysis-v1", "asset-analysis/v2", reqJSON)
+	runID, cached, err := p.repo.CreateModelRun(ctx, j.AssetID, "vision", route.analyzer.Name(), route.analyzer.Model(), runHash, "multiframe-analysis-v1", "asset-analysis/v2", reqJSON, j.ID, worker)
 	if err != nil {
 		return err
 	}
@@ -76,9 +77,16 @@ func (p *Pipeline) analyzeWithDetector(ctx context.Context, j *domain.Job, m *do
 	}
 	raws := make([]json.RawMessage, 0, 32)
 
-	bounds, err := p.shotDetector.Detect(ctx, proxy.LocalPath, m.DurationMS)
+	cacheLock, err := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
 	if err != nil {
-		_ = p.repo.FailModelRun(ctx, runID, "provider_error", err.Error(), "")
+		return err
+	}
+	bounds, err := p.shotDetector.Detect(ctx, proxy.LocalPath, m.DurationMS)
+	_ = cacheLock.Release()
+	if err != nil {
+		if failErr := p.failModelRun(ctx, runID, "provider_error", err.Error(), "", j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 	// A boundary set that violates the timingdex-owned rules is a verdict on
@@ -87,39 +95,59 @@ func (p *Pipeline) analyzeWithDetector(ctx context.Context, j *domain.Job, m *do
 	// permanent, exactly like a model answer that fails validation.
 	normalized, err := shotdetect.Normalize(bounds, m.DurationMS)
 	if err != nil {
-		_ = p.repo.FailModelRun(ctx, runID, "validation_error", err.Error(), "")
+		if failErr := p.failModelRun(ctx, runID, "validation_error", err.Error(), "", j, worker); failErr != nil {
+			return failErr
+		}
 		return domain.Permanent(err)
 	}
 
+	cacheLock, err = cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+	if err != nil {
+		return err
+	}
 	summary, summaryRaw, err := p.summaryCall(ctx, route.analyzer, proxy, transcript, m, normalized)
+	_ = cacheLock.Release()
 	raws = append(raws, rawMessage(summaryRaw))
 	if err != nil {
-		_ = p.repo.FailModelRun(ctx, runID, "provider_error", err.Error(), joinRaw(raws))
+		if failErr := p.failModelRun(ctx, runID, "provider_error", err.Error(), joinRaw(raws), j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 	a := summary.ToStructuredAnalysis()
 	a, err = normalize.ValidateAndNormalize(a)
 	if err != nil {
-		_ = p.repo.FailModelRun(ctx, runID, "validation_error", err.Error(), joinRaw(raws))
+		if failErr := p.failModelRun(ctx, runID, "validation_error", err.Error(), joinRaw(raws), j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 
+	cacheLock, err = cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+	if err != nil {
+		return err
+	}
 	shots, metas, raws2, err := p.refineShots(ctx, j.AssetID, runID, proxy, transcript, m, route.analyzer, normalized)
+	_ = cacheLock.Release()
 	raws = append(raws, raws2...)
 	if err != nil {
-		_ = p.repo.FailModelRun(ctx, runID, "provider_error", err.Error(), joinRaw(raws))
+		if failErr := p.failModelRun(ctx, runID, "provider_error", err.Error(), joinRaw(raws), j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 	if err := validateAnalysisShots(shots, m.DurationMS); err != nil {
-		_ = p.repo.FailModelRun(ctx, runID, "validation_error", err.Error(), joinRaw(raws))
+		if failErr := p.failModelRun(ctx, runID, "validation_error", err.Error(), joinRaw(raws), j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 	foldShotMetadata(&a, metas)
 	parsed, _ := json.Marshal(a)
-	if err := p.repo.StageModelRun(ctx, runID, joinRaw(raws), string(parsed)); err != nil {
+	if err := p.repo.StageModelRun(ctx, runID, joinRaw(raws), string(parsed), j.ID, worker); err != nil {
 		return err
 	}
-	return p.repo.CommitAnalysisWithShots(ctx, j.AssetID, runID, "asset-analysis/v2", a, shots)
+	return p.repo.CommitAnalysisWithShots(ctx, j.AssetID, runID, "asset-analysis/v2", a, shots, j.ID, worker)
 }
 
 // analyzeTwoPass runs the no-detector fallback: pass 1 is the existing VLM
@@ -128,7 +156,7 @@ func (p *Pipeline) analyzeWithDetector(ctx context.Context, j *domain.Job, m *do
 // pass 2 refines every shot through the multiframe analyzer and replaces the
 // shot rows. A failed pass 2 leaves pass 1's results intact — degradation,
 // not loss.
-func (p *Pipeline) analyzeTwoPass(ctx context.Context, j *domain.Job, m *domain.MediaMetadata, route *multiframeRoute) error {
+func (p *Pipeline) analyzeTwoPass(ctx context.Context, j *domain.Job, m *domain.MediaMetadata, route *multiframeRoute, worker string) error {
 	proxy, err := p.repo.GetArtifact(ctx, j.AssetID, "proxy")
 	if err != nil {
 		return err
@@ -145,7 +173,7 @@ func (p *Pipeline) analyzeTwoPass(ctx context.Context, j *domain.Job, m *domain.
 	// video route would produce them. It runs first so a pass-1 failure needs
 	// no refinement run of its own to fail — the asset simply keeps whatever
 	// committed analysis it had.
-	if err := p.analyzeAssetVideo(ctx, j, m, route.video, proxy.LocalPath); err != nil {
+	if err := p.analyzeAssetVideo(ctx, j, m, route.video, proxy.LocalPath, worker); err != nil {
 		return err
 	}
 
@@ -154,7 +182,7 @@ func (p *Pipeline) analyzeTwoPass(ctx context.Context, j *domain.Job, m *domain.
 	// a different pass-1 output.
 	runHash := hashStrings(j.InputHash, "multiframe-refinement-v1")
 	reqJSON := multiframeRequestJSON(j.AssetID, proxy.LocalPath, "vlm-window-analysis", media.FrameSamplingBoundaryAware)
-	runID, cached, err := p.repo.CreateModelRun(ctx, j.AssetID, "vision", route.analyzer.Name(), route.analyzer.Model(), runHash, "multiframe-refinement-v1", "asset-analysis/v2", reqJSON)
+	runID, cached, err := p.repo.CreateModelRun(ctx, j.AssetID, "vision", route.analyzer.Name(), route.analyzer.Model(), runHash, "multiframe-refinement-v1", "asset-analysis/v2", reqJSON, j.ID, worker)
 	if err != nil {
 		return err
 	}
@@ -166,26 +194,29 @@ func (p *Pipeline) analyzeTwoPass(ctx context.Context, j *domain.Job, m *domain.
 		return err
 	}
 	raws := make([]json.RawMessage, 0, len(passOneShots))
+	cacheLock, err := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+	if err != nil {
+		return err
+	}
 	refined, _, raws2, err := p.refineShots(ctx, j.AssetID, runID, proxy, transcript, m, route.analyzer, shotsToBounds(passOneShots))
+	_ = cacheLock.Release()
 	raws = append(raws, raws2...)
 	if err != nil {
-		_ = p.repo.FailModelRun(ctx, runID, "provider_error", err.Error(), joinRaw(raws))
+		if failErr := p.failModelRun(ctx, runID, "provider_error", err.Error(), joinRaw(raws), j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
 	if err := validateAnalysisShots(refined, m.DurationMS); err != nil {
-		_ = p.repo.FailModelRun(ctx, runID, "validation_error", err.Error(), joinRaw(raws))
+		if failErr := p.failModelRun(ctx, runID, "validation_error", err.Error(), joinRaw(raws), j, worker); failErr != nil {
+			return failErr
+		}
 		return err
 	}
-	if err := p.repo.StageModelRun(ctx, runID, joinRaw(raws), ""); err != nil {
+	if err := p.repo.StageModelRun(ctx, runID, joinRaw(raws), "", j.ID, worker); err != nil {
 		return err
 	}
-	if err := p.repo.ReplaceAssetShots(ctx, j.AssetID, runID, refined); err != nil {
-		return err
-	}
-	// The refinement run's shots are canonical now; its record must say so.
-	// The asset-level analysis stays with the pass-1 run, which is why this
-	// commit marker exists without a CommitAnalysis call.
-	if err := p.repo.MarkModelRunCommitted(ctx, runID); err != nil {
+	if err := p.repo.CommitShotRefinement(ctx, j.AssetID, runID, refined, j.ID, worker); err != nil {
 		return err
 	}
 	p.afterShotsCommitted(ctx, j.AssetID)

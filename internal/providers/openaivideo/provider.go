@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -107,9 +106,9 @@ func (p *Provider) Analyze(ctx context.Context, input videoanalysis.Input) (vide
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return videoanalysis.Result{}, "", common.ReadError(resp)
+		return videoanalysis.Result{}, "", common.ReadErrorWithSecret(resp, p.Endpoint.APIKey)
 	}
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := common.ReadBody(resp.Body)
 	if err != nil {
 		return videoanalysis.Result{}, "", err
 	}
@@ -121,13 +120,13 @@ func (p *Provider) Analyze(ctx context.Context, input videoanalysis.Input) (vide
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(raw, &response); err != nil || len(response.Choices) == 0 {
-		return videoanalysis.Result{}, string(raw), fmt.Errorf("decode OpenAI-compatible video response: missing choices")
+		return videoanalysis.Result{}, common.RedactString(string(raw), p.Endpoint.APIKey), common.Errorf(p.Endpoint.APIKey, "decode OpenAI-compatible video response: missing choices: %s", string(raw))
 	}
 	result, err := decodeUnified(response.Choices[0].Message.Content)
 	if err != nil {
-		return videoanalysis.Result{}, string(raw), err
+		return videoanalysis.Result{}, common.RedactString(string(raw), p.Endpoint.APIKey), common.RedactError(err, p.Endpoint.APIKey)
 	}
-	return result, string(raw), nil
+	return result, common.RedactString(string(raw), p.Endpoint.APIKey), nil
 }
 
 func inputVideoURL(input videoanalysis.Input) (string, error) {

@@ -1,10 +1,46 @@
 package search
 
 import (
+	"context"
 	"testing"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
 )
+
+func TestEvidenceMixedPolarityKeepsBothAndGateExcludesObserved(t *testing.T) {
+	q := SearchQuery{
+		Intent:  IntentFact,
+		Must:    []Constraint{{Type: ConstraintObject, Value: "person"}},
+		MustNot: []Constraint{{Type: ConstraintObject, Value: "person"}},
+	}
+	observed := Candidate{ShotID: "observed", Objects: []string{"person"}, Signals: map[string]float64{}}
+
+	evidence := evaluateConstraints(q, observed, nil)
+	if len(evidence) != 2 {
+		t.Fatalf("mixed-polarity query must retain both evidence entries, got %+v", evidence)
+	}
+	if evidence[0].Negated || !evidence[1].Negated {
+		t.Fatalf("evidence order must remain positive then negated, got %+v", evidence)
+	}
+	if evidence[0].Constraint != ConstraintObject || evidence[1].Constraint != ConstraintObject {
+		t.Fatalf("evidence constraints = %+v, want object for both polarities", evidence)
+	}
+
+	survivors, _, err := NewEvidenceGate(DefaultOptions()).Gate(
+		context.Background(), &fakeStore{}, q, []Candidate{observed}, true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(survivors) != 0 {
+		t.Fatalf("gate must exclude the forbidden-object shot, got %+v", survivors)
+	}
+
+	verdict := evidenceForGate(q, evidence)
+	if !verdict.observedMustNot {
+		t.Fatalf("negated evidence must mark the observed forbidden object: %+v", verdict)
+	}
+}
 
 func TestEvidenceConfirmedFromStructuredFields(t *testing.T) {
 	q := Compile("汽车经过街道")
@@ -114,6 +150,71 @@ func TestEvidenceSpeechPhraseFromTranscript(t *testing.T) {
 	}
 	if len(speech.Sources) == 0 || speech.Sources[0] != SourceTranscript {
 		t.Fatalf("speech evidence must cite transcript, got %+v", speech.Sources)
+	}
+}
+
+func TestCreativeIntentDoesNotCreateSpeechEvidence(t *testing.T) {
+	q := Compile("给我找点雨")
+	if q.Intent != IntentCreative {
+		t.Fatalf("intent = %s, want creative", q.Intent)
+	}
+	if q.SpeechPhrase != "" {
+		t.Fatalf("creative query unexpectedly compiled speech phrase %q", q.SpeechPhrase)
+	}
+
+	// The transcript contains the creative query term as part of a longer
+	// utterance. It may be a retrieval hit, but without a speech constraint it
+	// cannot be reported as speech evidence.
+	c := Candidate{ShotID: "s1", Description: "creative sample", Signals: map[string]float64{}}
+	spans := []domain.AlignmentWord{{StartMS: 100, EndMS: 200, Text: "雨天出发"}}
+	evidence := evaluateConstraints(q, c, spans)
+	rain := evidenceForValue(evidence, "rain")
+	if rain == nil || rain.State != EvidenceUnknown {
+		t.Fatalf("partial transcript phrase must not support creative query evidence: %+v", rain)
+	}
+	for _, evidence := range evidence {
+		for _, source := range evidence.Sources {
+			if evidence.Constraint == ConstraintSpeech || source == SourceTranscript {
+				t.Fatalf("creative partial phrase produced speech evidence: %+v", evidence)
+			}
+		}
+	}
+}
+
+func TestEvidenceConflictPrecedence(t *testing.T) {
+	tests := []struct {
+		name      string
+		query     string
+		candidate Candidate
+		negated   bool
+		value     string
+		state     EvidenceState
+		sources   []EvidenceSource
+	}{
+		{"structured and description negation", "person", Candidate{Objects: []string{"person"}, Description: "no people"}, false, "person", EvidenceContradicted, []EvidenceSource{SourceObjects, SourceDescription}},
+		{"structured and positive description", "person", Candidate{Objects: []string{"person"}, Description: "a person"}, false, "person", EvidenceConfirmed, []EvidenceSource{SourceObjects, SourceDescription}},
+		{"description negation only", "person", Candidate{Description: "no people"}, false, "person", EvidenceContradicted, []EvidenceSource{SourceDescription}},
+		{"negated structured plus absence", "没有人的海边", Candidate{Objects: []string{"person"}, Description: "no people"}, true, "person", EvidenceConfirmed, []EvidenceSource{SourceObjects, SourceDescription}},
+		{"negated description mention", "没有人的海边", Candidate{Description: "a person"}, true, "person", EvidencePossible, []EvidenceSource{SourceDescription}},
+		{"negated absence only", "没有人的海边", Candidate{Description: "no people"}, true, "person", EvidenceUnknown, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := Compile(tt.query)
+			got := evaluateConstraints(q, tt.candidate, nil)
+			e := evidenceForValue(got, tt.value)
+			if e == nil || e.State != tt.state || e.Negated != tt.negated {
+				t.Fatalf("evidence=%+v, want state=%s negated=%v", e, tt.state, tt.negated)
+			}
+			if len(e.Sources) != len(tt.sources) {
+				t.Fatalf("sources=%v, want %v", e.Sources, tt.sources)
+			}
+			for i := range tt.sources {
+				if e.Sources[i] != tt.sources[i] {
+					t.Fatalf("sources=%v, want %v", e.Sources, tt.sources)
+				}
+			}
+		})
 	}
 }
 

@@ -1,9 +1,20 @@
 package domain
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
+
+func TestPipelineThrottleUnmarshalNewCostGuidesTakePrecedence(t *testing.T) {
+	var throttle PipelineThrottle
+	if err := json.Unmarshal([]byte(`{"daily_cost_guide":0,"monthly_cost_guide":12.5,"daily_budget":50,"monthly_budget":75}`), &throttle); err != nil {
+		t.Fatal(err)
+	}
+	if throttle.DailyCostGuide != 0 || throttle.MonthlyCostGuide != 12.5 {
+		t.Fatalf("new cost-guide fields must win, including explicit zero: %+v", throttle)
+	}
+}
 
 func TestPipelineThrottle_OffPeakOpenAt(t *testing.T) {
 	// All tests use a single reference date. The clock-only comparison makes day/month/year irrelevant.

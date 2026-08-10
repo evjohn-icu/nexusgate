@@ -84,3 +84,37 @@ func TestNewRejectsUnknownSourceStagingMode(t *testing.T) {
 		t.Fatal("unknown staging mode should be rejected")
 	}
 }
+
+func TestCopyRejectsSymlinkDestination(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "source.mov")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cacheDir := t.TempDir()
+	destinationDir := filepath.Join(cacheDir, "sources", "asset-1")
+	if err := os.MkdirAll(destinationDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(destinationDir, "input-v1.mov")
+	target := filepath.Join(t.TempDir(), "outside.mov")
+	if err := os.WriteFile(target, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, destination); err != nil {
+		t.Fatal(err)
+	}
+	stager, err := New("copy", cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stager.Stage(context.Background(), sourcePath, "asset-1", "input-v1"); err == nil {
+		t.Fatal("staging should reject a symlink destination")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "outside" {
+		t.Fatalf("symlink target changed to %q", got)
+	}
+}

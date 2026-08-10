@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -160,5 +161,59 @@ func TestReadErrorSmallBodyUntruncated(t *testing.T) {
 	}
 	if strings.Contains(se.Error(), "boom") == false {
 		t.Fatalf("Error() = %q, want it to carry the body", se.Error())
+	}
+}
+
+func TestReadErrorWithSecretStatusMatrix(t *testing.T) {
+	const secret = "sk-echoed-key"
+	for _, code := range []int{400, 401, 402, 403, 404, 408, 429, 500, 502, 503} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			body := strings.Repeat("x", maxErrorBodyBytes) + secret + strings.Repeat("y", maxErrorBodyBytes)
+			err := ReadErrorWithSecret(&http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(body))}, secret)
+			var status *StatusError
+			if !errors.As(err, &status) || status.StatusCode != code {
+				t.Fatalf("status = %+v, err=%v", status, err)
+			}
+			if strings.Contains(err.Error(), secret) || strings.Contains(status.Body, secret) {
+				t.Fatalf("secret leaked: %v / %q", err, status.Body)
+			}
+			if len(err.Error()) > maxErrorBodyBytes+128 {
+				t.Fatalf("error was not bounded: %d", len(err.Error()))
+			}
+		})
+	}
+}
+
+type testNetError struct{}
+
+func (testNetError) Error() string   { return "network secret" }
+func (testNetError) Timeout() bool   { return true }
+func (testNetError) Temporary() bool { return true }
+
+func TestRedactErrorPreservesClassification(t *testing.T) {
+	secret := "secret"
+	for _, tc := range []struct {
+		name string
+		in   error
+		is   error
+		as   func(error) bool
+	}{
+		{"cancel", context.Canceled, context.Canceled, nil},
+		{"deadline", context.DeadlineExceeded, context.DeadlineExceeded, nil},
+		{"eof", io.ErrUnexpectedEOF, io.ErrUnexpectedEOF, nil},
+		{"network", testNetError{}, nil, func(err error) bool { var n net.Error; return errors.As(err, &n) && n.Timeout() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := RedactError(fmt.Errorf("wrapped: %w", tc.in), secret)
+			if tc.is != nil && !errors.Is(err, tc.is) {
+				t.Fatalf("errors.Is(%v) = false", tc.is)
+			}
+			if tc.as != nil && !tc.as(err) {
+				t.Fatal("errors.As classification was lost")
+			}
+			if errors.Unwrap(err) != nil {
+				t.Fatal("redacted error exposes its cause")
+			}
+		})
 	}
 }

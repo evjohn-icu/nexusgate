@@ -25,7 +25,7 @@ func seedReanalysisAsset(t *testing.T, repo *Repository, suffix string) string {
 	if _, err := repo.db.ExecContext(ctx, `INSERT INTO media_metadata(asset_id,ffprobe_json,exiftool_json,normalized_json,probe_version,updated_at) VALUES(?,'{}','{}',?,'test',?)`, assetID, `{"duration_ms":600000}`, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SaveTranscript(ctx, assetID, "qwen", "qwen3-asr-flash", "thash-"+suffix, domain.Transcript{Language: "zh", Text: "text " + suffix}); err != nil {
+	if err := repo.SaveTranscript(ctx, assetID, "qwen", "qwen3-asr-flash", "thash-"+suffix, domain.Transcript{Language: "zh", Text: "text " + suffix}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	return assetID
@@ -142,17 +142,17 @@ func TestReanalysisKeepsOldModelRunAuditable(t *testing.T) {
 
 	commitRun := func(inputHash, summary string) string {
 		t.Helper()
-		runID, _, err := repo.CreateModelRun(ctx, assetID, "vision", "fixture", "fixture-model", inputHash, "footage-analysis-v4", "asset-analysis/v2", `{"asset_id":"`+assetID+`"}`)
+		runID, _, err := repo.CreateModelRun(ctx, assetID, "vision", "fixture", "fixture-model", inputHash, "footage-analysis-v4", "asset-analysis/v2", `{"asset_id":"`+assetID+`"}`, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
 		analysis := domain.StructuredAnalysis{Summary: summary, AssetType: "b_roll", Quality: "usable"}
 		parsed, _ := json.Marshal(analysis)
-		if err := repo.StageModelRun(ctx, runID, `{"raw":true}`, string(parsed)); err != nil {
+		if err := repo.StageModelRun(ctx, runID, `{"raw":true}`, string(parsed), "", ""); err != nil {
 			t.Fatal(err)
 		}
 		shots := []domain.AssetShot{{AssetID: assetID, SourceRunID: runID, Ordinal: 0, StartMS: 0, EndMS: 5_000, Description: summary}}
-		if err := repo.CommitAnalysisWithShots(ctx, assetID, runID, "asset-analysis/v2", analysis, shots); err != nil {
+		if err := repo.CommitAnalysisWithShots(ctx, assetID, runID, "asset-analysis/v2", analysis, shots, "", ""); err != nil {
 			t.Fatal(err)
 		}
 		return runID
@@ -256,6 +256,103 @@ func TestHasCommittedAnalysis(t *testing.T) {
 	}
 	if got {
 		t.Fatal("asset with only metadata must not be committed")
+	}
+}
+
+func TestRebuildAllSearchRepairsMissingStaleRowsAndIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepo(t)
+	assetID := seedCommittedAsset(t, repo, "rebuild-all")
+	if err := repo.RebuildSearch(ctx, assetID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `UPDATE asset_analysis SET summary='fresh rebuild term' WHERE asset_id=?`, assetID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `DELETE FROM asset_search WHERE asset_id=?`, assetID); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt, failures, err := repo.RebuildAllSearch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebuilt != 1 || len(failures) != 0 {
+		t.Fatalf("rebuild result = %d, %v; want 1 and no failures", rebuilt, failures)
+	}
+	if hits, err := repo.Search(ctx, "fresh rebuild term", 10); err != nil || len(hits) != 1 {
+		t.Fatalf("repaired asset search = %v, err=%v", hits, err)
+	}
+	rebuilt, failures, err = repo.RebuildAllSearch(ctx)
+	if err != nil || rebuilt != 1 || len(failures) != 0 {
+		t.Fatalf("idempotent rebuild result = %d, %v, err=%v", rebuilt, failures, err)
+	}
+}
+
+func TestRebuildAllSearchContinuesAfterBrokenAsset(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepo(t)
+	seedCommittedAsset(t, repo, "rebuild-good")
+	broken := seedCommittedAsset(t, repo, "rebuild-broken")
+	if _, err := repo.db.ExecContext(ctx, `DELETE FROM asset_locations WHERE asset_id=?`, broken); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt, failures, err := repo.RebuildAllSearch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebuilt != 2 || len(failures) != 0 {
+		t.Fatalf("rebuild result = %d, %v; want two successes and no failures", rebuilt, failures)
+	}
+	if hits, err := repo.Search(ctx, "summary", 10); err != nil || len(hits) != 2 {
+		t.Fatalf("assets were not rebuilt after missing locations: hits=%v err=%v", hits, err)
+	}
+}
+
+func TestRebuildAllSearchRemovesRowsWithoutCanonicalEvidence(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepo(t)
+	assetID := seedCommittedAsset(t, repo, "rebuild-orphan")
+	if err := repo.RebuildSearch(ctx, assetID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `DELETE FROM asset_analysis WHERE asset_id=?; DELETE FROM transcripts WHERE asset_id=?`, assetID, assetID); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt, failures, err := repo.RebuildAllSearch(ctx)
+	if err != nil || rebuilt != 0 || len(failures) != 0 {
+		t.Fatalf("rebuild result = %d, %v, err=%v; want cleanup only", rebuilt, failures, err)
+	}
+	var rows int
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM asset_search WHERE asset_id=?`, assetID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("stale asset search rows remain: %d", rows)
+	}
+	var mappings int
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM asset_search_rowids WHERE asset_id=?`, assetID).Scan(&mappings); err != nil {
+		t.Fatal(err)
+	}
+	if mappings != 0 {
+		t.Fatalf("stale asset search mappings remain: %d", mappings)
+	}
+}
+
+func TestRebuildAllSearchUsesLastKnownFilenameWithoutLocation(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepo(t)
+	assetID := seedCommittedAsset(t, repo, "rebuild-no-location")
+	if _, err := repo.db.ExecContext(ctx, `DELETE FROM asset_locations WHERE asset_id=?`, assetID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RebuildSearch(ctx, assetID); err == nil {
+		t.Fatal("RebuildSearch should still require a live primary location")
+	}
+	if rebuilt, failures, err := repo.RebuildAllSearch(ctx); err != nil || rebuilt != 1 || len(failures) != 0 {
+		t.Fatalf("rebuild result = %d, %v, err=%v; want one fallback rebuild", rebuilt, failures, err)
+	}
+	if hits, err := repo.Search(ctx, "summary", 10); err != nil || len(hits) != 1 || hits[0] != assetID {
+		t.Fatalf("canonical analysis is not searchable without location: hits=%v err=%v", hits, err)
 	}
 }
 

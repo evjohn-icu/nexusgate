@@ -221,24 +221,56 @@ export TIMINGDEX_DATA_DIR="$PWD/.timingdex-dev"
 ./timingdex doctor                        # check ffmpeg, hardware profile, paths
 ./timingdex root add /path/to/footage     # read-only; nothing is written there
 ./timingdex root scan <root-id>           # enqueues idempotent jobs
+./timingdex search rebuild                # rebuild asset-level FTS from canonical rows
 ./timingdex search rebuild-embeddings     # re-embed all shots (after a model switch)
+./timingdex cache inspect                 # report cache categories and rebuildable space
+./timingdex cache verify                  # compare derived-artifact rows with cache files
+./timingdex cache gc --rebuildable --yes  # delete rebuildable artifacts and enqueue re-derive
 ./timingdex serve                         # HTTPS by default; prints the Worker fingerprint
 ```
 
-Then open the browser UI and run the queue from `/progress`.
+Then open the browser UI and run the queue from `/progress`. Analysis commits shot-level
+FTS immediately; the successor `JobIndex` rebuilds the asset-level FTS row.
 
 Everything lives under `$TIMINGDEX_DATA_DIR`: `timingdex.db`, optional
 `config.json`, `cache/`, `admin-token`, `agent-token`, `provider-secrets/`.
 Deleting that directory is how you reset.
 
-On first start the Hub generates `admin-token` (mode `0600`). Use it only for Hub
-management calls; never put it in Worker configuration or browser storage.
+On first start the Hub generates and persists the raw `admin-token` (exact mode
+`0600`) so the same bearer credential can be recovered after a Hub restart. The
+data directory is exact mode `0700`; the token must be a regular, non-symlink
+file with exact mode `0600`. The Hub fails closed rather than repairing an unsafe
+directory or token file. Use the token only for Hub management calls; never put
+it in Worker configuration or browser storage.
 
 If jobs failed because a provider was not configured yet, configure it and then:
 
 ```bash
 ./timingdex pipeline retry-failed
 ```
+
+### Maintenance commands
+
+`timingdex search rebuild` repairs all asset-level FTS rows from canonical data.
+It is separate from `search rebuild-embeddings`, which rebuilds the shot text
+embedding rows after an embedding-model change and never reruns VLM analysis.
+
+Cache maintenance is intentionally explicit:
+
+- `timingdex cache inspect` reports artifact classes, orphan directories and
+  rebuildable space.
+- `timingdex cache verify` reports missing derived files and cache files without
+  database rows. Source staging under `cache/sources/` is excluded by design.
+- `timingdex cache gc [--scratch] [--rebuildable] [--orphans] [--yes]` removes
+  only the named disposable categories. Without `--yes` it is a dry run; with
+  `--rebuildable --yes`, completed assets are queued for re-derive.
+- `timingdex cache repair-derived --invalidate-hardware-profiles [--yes]`
+  removes hardware-derived thumbnail/proxy rows and files and, with `--yes`,
+  queues re-derive jobs. Without `--yes` it only reports what would change.
+- `timingdex secrets rekey` rotates the encrypted provider-secret store's data
+  key, re-encrypts all secrets and keeps the previous key at
+  `provider-secrets/store.key.pre-rekey`. The operation is journaled and
+  recovers interrupted file replacement on the next open.
 
 Neither an exhausted attempt budget nor a permanent failure is undone by
 re-scanning, so this is the way back.
@@ -259,6 +291,12 @@ page memory only — never in browser storage.
 | `/workers` | Paired node status, stage/progress, retry history, optional derive routing. |
 | `/worker-setup` | Generates an install script for a new Worker. |
 | `/setup` | Startup configuration help. |
+
+The settings page also exposes optional daily and monthly cost guides. They are
+operator references for the append-only post-call estimate ledger, never billing
+records or enforced provider caps. Exceeding a guide does not pause, reject or
+defer analysis or transcription; the cost summary reports `today_estimate` and
+`month_estimate` in the configured channel unit.
 
 ## Limiting disk load
 
@@ -643,6 +681,9 @@ timingdex worker enroll --hub https://nas:8787 --fingerprint <fingerprint> \
 timingdex worker run
 ```
 
+`provider_operations` is enrollment-time trust; heartbeats cannot grant provider
+access. Re-enroll to change it.
+
 ### Windows: tray icon
 
 ```bash
@@ -756,10 +797,11 @@ These are load-bearing, not aspirational.
 - **Provider keys** live only in the encrypted, Hub-only `provider-secrets/`
   store. Never in SQLite, API responses, browser storage, Worker config, logs or
   error strings.
-- **Administrator token** (`admin-token`, `0600`) gates every mutating and
-  administrative route, compared in constant time. New write endpoints default to
-  gated.
-- **Agent token** (`agent-token`, `0600`) is a strictly narrower credential: it is
+- **Administrator token** (`admin-token`, exact `0600`) is a raw bearer credential
+  reused across restarts and gates every mutating and administrative route,
+  compared in constant time. New write endpoints default to gated.
+- **Agent token** (`agent-token`, exact `0600`) follows the same raw-token file
+  contract and restart reuse. It is a strictly narrower credential: it is
   accepted on exactly two routes — create and revise a *draft* Repurpose plan —
   and refused everywhere else. Plan approval and pipeline runs stay
   administrator-only, so `approval_mode: human_required` is enforced by access
@@ -843,6 +885,7 @@ timingdex-eval score --corpus ./corpus --data-dir ./eval --labels qwen3vl-4b,gem
 `CHANGELOG.md` records what changed and, more usefully, which boundary each change
 moved. Each release also has a version-scoped document under `docs/`:
 
+- [v0.30 — review-fix round goal and operations](docs/v0.30-review-fix-round.md)
 - [v0.21 — unattended inspection, quota-exhausted waiting, and timeline export](docs/v0.21-unattended-and-export.md)
 - [v0.21 — model provider deployment](docs/v0.21-provider-deployment.md)
 - [v0.21 — retrieval and search](docs/v0.21-retrieval-and-search.md)

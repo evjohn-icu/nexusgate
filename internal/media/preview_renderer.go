@@ -163,17 +163,18 @@ func escapeFilterValue(value string) string {
 	return strings.NewReplacer("\\", "\\\\", "'", "\\'", ":", "\\:", ",", "\\,").Replace(filepath.ToSlash(filepath.Clean(value)))
 }
 
-func (r *PreviewRenderer) RenderThumbnail(ctx context.Context, src, dst string, hardware HardwarePlan, sourcePlan PreviewRenderPlan) error {
+func (r *PreviewRenderer) RenderThumbnail(ctx context.Context, src, dst string, hardware HardwarePlan, sourcePlan PreviewRenderPlan) (HardwarePlan, error) {
+	actual := hardware
 	if err := rejectSourceOverwrite(src, dst); err != nil {
-		return err
+		return hardware, err
 	}
 	resolved, err := r.ResolvePlan(sourcePlan)
 	if err != nil {
-		return err
+		return hardware, err
 	}
 	filter, err := r.VideoFilter(resolved, thumbnailScaleFilter)
 	if err != nil {
-		return err
+		return hardware, err
 	}
 	// The thumbnail seeks into the clip for a frame that represents it; a
 	// hardcoded 1-second seek produces "no packets" on sub-second sources
@@ -187,47 +188,61 @@ func (r *PreviewRenderer) RenderThumbnail(ctx context.Context, src, dst string, 
 			seek = "0"
 		}
 	}
-	return atomicFFmpegOutput(dst, func(out string) error {
+	err = atomicFFmpegOutput(dst, func(out string) error {
 		args := append([]string{"-hide_banner", "-loglevel", "error", "-y", "-ss", seek}, hardware.DecoderArgs...)
 		args = append(args, "-i", src, "-frames:v", "1", "-vf", filter, out)
-		return runWithFallback(ctx, "thumbnail", args, hardware, func() []string {
+		produced, err := runWithFallback(ctx, "thumbnail", args, hardware, func() []string {
 			return []string{"-hide_banner", "-loglevel", "error", "-y", "-ss", seek, "-i", src, "-frames:v", "1", "-vf", filter, out}
 		})
+		if err != nil {
+			return err
+		}
+		actual = produced
+		return nil
 	})
+	if err != nil {
+		return hardware, err
+	}
+	// The producer identity is captured by the command wrapper below.
+	return actual, nil
 }
 
-func (r *PreviewRenderer) RenderProxy(ctx context.Context, src, dst string, hardware HardwarePlan, sourcePlan PreviewRenderPlan) error {
+func (r *PreviewRenderer) RenderProxy(ctx context.Context, src, dst string, hardware HardwarePlan, sourcePlan PreviewRenderPlan) (HardwarePlan, error) {
+	actual := hardware
 	if err := rejectSourceOverwrite(src, dst); err != nil {
-		return err
+		return hardware, err
 	}
 	resolved, err := r.ResolvePlan(sourcePlan)
 	if err != nil {
-		return err
+		return hardware, err
 	}
 	baseFilter := proxyScaleFilter
 	filter, err := r.VideoFilter(resolved, baseFilter+hardware.ProxyFilter)
 	if err != nil {
-		return err
+		return hardware, err
 	}
 	softwareFilter, err := r.VideoFilter(resolved, baseFilter)
 	if err != nil {
-		return err
+		return hardware, err
 	}
 	// The proxy is the one derive step that reads the whole source, so it is
 	// where a rate cap actually relieves the disk. The thumbnail decodes a
 	// single frame and is deliberately left unthrottled.
 	rate := readRateArgs(r.ReadRate)
-	return atomicFFmpegOutput(dst, func(out string) error {
+	err = atomicFFmpegOutput(dst, func(out string) error {
 		args := append([]string{"-hide_banner", "-loglevel", "error", "-y"}, hardware.DecoderArgs...)
 		args = append(args, rate...)
 		args = append(args, "-i", src, "-vf", filter)
 		args = append(args, hardware.EncoderArgs...)
 		args = append(args, "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", out)
-		return runWithFallback(ctx, "proxy", args, hardware, func() []string {
+		produced, err := runWithFallback(ctx, "proxy", args, hardware, func() []string {
 			fallback := append([]string{"-hide_banner", "-loglevel", "error", "-y"}, rate...)
 			return append(fallback, "-i", src, "-vf", softwareFilter, "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", out)
 		})
+		actual = produced
+		return err
 	})
+	return actual, err
 }
 
 func rejectSourceOverwrite(src, dst string) error {
