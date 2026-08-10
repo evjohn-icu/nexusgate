@@ -262,6 +262,12 @@ page memory only — never in browser storage.
 | `/worker-setup` | Generates an install script for a new Worker. |
 | `/setup` | Startup configuration help. |
 
+The settings page also exposes optional daily and monthly cost guides. They are
+operator references for the append-only post-call estimate ledger, never billing
+records or enforced provider caps. Exceeding a guide does not pause, reject or
+defer analysis or transcription; the cost summary reports `today_estimate` and
+`month_estimate` in the configured channel unit.
+
 ## Limiting disk load
 
 By default the pipeline reads source media as fast as the bus allows, and a

@@ -196,19 +196,8 @@ const JobDeferProviderRouteExhausted = string(JobFailureCategoryProviderRouteExh
 // category must be one spelling.
 const JobDeferDiskSpaceLow = string(JobFailureCategoryDiskSpaceLow)
 
-// JobDeferBudgetExhausted is the DeferReason recorded when a job is parked
-// because the operator's configured daily or monthly provider budget is spent
-// for the period: the cost_ledger sum for the day or month is at or past the
-// throttle's DailyBudget/MonthlyBudget. The spend is about the period, not
-// about the job — the next attempt would present identical inputs to the same
-// paid call at the same spent budget — so it is deferred on wall-clock time
-// instead of retried, and the attempt this lease spent is handed back. The
-// job auto-resumes once the period rolls over (next day 00:05 UTC, or the 1st
-// of the next month).
-//
-// Like JobDeferDiskSpaceLow, it is the budget category constant spelled as an
-// untyped string, for the same reason: the reason and the category must be
-// one spelling.
+// JobDeferBudgetExhausted is retained for persisted legacy records; advisory
+// cost guides no longer produce this deferral reason.
 const JobDeferBudgetExhausted = string(JobFailureCategoryBudgetExhausted)
 
 type MediaMetadata struct {

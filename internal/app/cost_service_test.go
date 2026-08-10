@@ -139,7 +139,7 @@ func TestCostSummaryAggregatesTodayAndMonth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.Today != 4.75 || summary.Month != 6.75 {
+	if summary.TodayEstimate != 4.75 || summary.MonthEstimate != 6.75 {
 		t.Fatalf("summary = %+v, want today 4.75 month 6.75", summary)
 	}
 }

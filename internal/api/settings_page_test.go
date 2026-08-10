@@ -119,8 +119,8 @@ func TestThrottleValidationRejectionsLeaveStoredValueIntact(t *testing.T) {
 		"not json":                     `{`,
 		"negative deferral":            `{"defer_above_bytes":-5}`,
 		"negative free space floor":    `{"minimum_free_space_bytes":-5}`,
-		"negative daily budget":        `{"daily_budget":-5}`,
-		"negative monthly budget":      `{"monthly_budget":-5}`,
+		"negative daily cost guide":    `{"daily_cost_guide":-5}`,
+		"negative monthly cost guide":  `{"monthly_cost_guide":-5}`,
 	} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, hubAdminRequest(service, http.MethodPut, "/api/v1/pipeline/throttle", strings.NewReader(payload)))
@@ -193,15 +193,15 @@ func TestSettingsDiskSpaceProtectionRoundTripsInGB(t *testing.T) {
 	}
 }
 
-// The cost-budget panel shares the throttle's save/load endpoints, so its
+// The cost-guide panel shares the throttle's save/load endpoints, so its
 // values must survive an admin write and a tokenless read exactly like the
 // disk panel's — and the page must render both fields.
-func TestSettingsBudgetPanelRoundTrips(t *testing.T) {
-	service := throttleTestService(t, "settings-budget.db")
+func TestSettingsCostGuidePanelRoundTrips(t *testing.T) {
+	service := throttleTestService(t, "settings-cost-guide.db")
 	handler := NewServer("", service).Handler()
 
 	const daily, monthly = 25.5, 300
-	body := fmt.Sprintf(`{"daily_budget":%v,"monthly_budget":%v}`, daily, monthly)
+	body := fmt.Sprintf(`{"daily_cost_guide":%v,"monthly_cost_guide":%v}`, daily, monthly)
 	saved := httptest.NewRecorder()
 	handler.ServeHTTP(saved, hubAdminRequest(service, http.MethodPut, "/api/v1/pipeline/throttle", strings.NewReader(body)))
 	if saved.Code != http.StatusOK {
@@ -213,8 +213,8 @@ func TestSettingsBudgetPanelRoundTrips(t *testing.T) {
 	if err := json.Unmarshal(saved.Body.Bytes(), &stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored.Throttle.DailyBudget != daily || stored.Throttle.MonthlyBudget != monthly {
-		t.Fatalf("save did not round-trip the budgets: %+v", stored.Throttle)
+	if stored.Throttle.DailyCostGuide != daily || stored.Throttle.MonthlyCostGuide != monthly {
+		t.Fatalf("save did not round-trip the cost guides: %+v", stored.Throttle)
 	}
 
 	read := httptest.NewRecorder()
@@ -225,19 +225,19 @@ func TestSettingsBudgetPanelRoundTrips(t *testing.T) {
 	if err := json.Unmarshal(read.Body.Bytes(), &stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored.Throttle.DailyBudget != daily || stored.Throttle.MonthlyBudget != monthly {
-		t.Fatalf("the LAN read must show the persisted budgets: %+v", stored.Throttle)
+	if stored.Throttle.DailyCostGuide != daily || stored.Throttle.MonthlyCostGuide != monthly {
+		t.Fatalf("the LAN read must show the persisted cost guides: %+v", stored.Throttle)
 	}
 
 	page := httptest.NewRecorder()
 	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/settings", nil))
 	for _, marker := range []string{
-		"成本预算", // the panel itself
-		"daily-budget",
-		"monthly-budget",
-		"daily_budget", // the field both directions carry
-		"monthly_budget",
-		"00:05 UTC", // the reset moment the note promises
+		"成本参考", // the panel itself
+		"daily-cost-guide",
+		"monthly-cost-guide",
+		"daily_cost_guide", // the field both directions carry
+		"monthly_cost_guide",
+		"不会限制或推迟", // guides never park work
 	} {
 		if !strings.Contains(page.Body.String(), marker) {
 			t.Fatalf("settings page is missing %q", marker)

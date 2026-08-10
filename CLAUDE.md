@@ -160,7 +160,19 @@ CreateModelRun (immutable cache, dedup by input hash)
 Failed, malformed or out-of-range responses stay in `model_runs`. The same shape governs the
 Tag Curator (`AI raw tags → normalize → unresolved pool → staged proposals → human approve →
 canonical catalog`) and Repurpose plans (immutable revisions; approval is human-only and
-locks the plan). Agents may draft; humans approve.
+ locks the plan). Agents may draft; humans approve.
+
+### Cost Guides
+
+`PipelineThrottle.DailyCostGuide` and `MonthlyCostGuide` are advisory operator
+references only. They never gate or defer `JobTranscribe` or `JobAnalyze`.
+`cost_ledger` is append-only and records post-commit estimates in the channel's
+relative unit; it is never a billing record. The API uses
+`daily_cost_guide`/`monthly_cost_guide` and reports `today_estimate`/
+`month_estimate`. Legacy `daily_budget`/`monthly_budget` request fields are
+accepted for one version and normalized to the guide fields, but new responses
+never emit the old names. The persisted `budget_exhausted` category remains
+readable for historical jobs and is no longer produced.
 
 ### Provider layer
 

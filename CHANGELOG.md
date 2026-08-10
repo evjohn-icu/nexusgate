@@ -7,6 +7,17 @@
   Added offline `timingdex search rebuild` to repair all assets with canonical analysis or
   successful transcripts; it never re-runs models.
 
+## v0.30.0-alpha — 2026-08-10（成本参考值）
+
+- 成本配置改名为每日 / 每月成本参考值（`daily_cost_guide`、
+  `monthly_cost_guide`）。它们是运营观察指标，不是调用上限；分析和转写
+  不会因为账本累计超过参考值而暂停或推迟。
+- 成本账本继续在模型提交后追加事后估算，明确为成本参考而非账单记录；汇总
+  API 字段为 `today_estimate` 与 `month_estimate`。
+- 设置 API 在一个版本内兼容读取旧的 `daily_budget` 与 `monthly_budget` 字段，
+  但响应和页面只使用新的成本参考命名。历史 `budget_exhausted` 持久化类别保留，
+  新流程不再产生。
+
 ## v0.28.1-alpha — 2026-08-09（发布前修复）
 
 - **修复 `RebuildAutomaticShootSessions` 多 location asset 撞

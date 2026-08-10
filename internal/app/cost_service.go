@@ -13,8 +13,8 @@ import (
 // estimates for the current UTC day and the current UTC month, in the
 // channels' configured relative unit. It is a guide, never a billing record.
 type CostSummary struct {
-	Today float64 `json:"today"`
-	Month float64 `json:"month"`
+	TodayEstimate float64 `json:"today_estimate"`
+	MonthEstimate float64 `json:"month_estimate"`
 }
 
 // costDayLayout is the UTC calendar-day shape the ledger attributes estimates
@@ -117,7 +117,7 @@ func (s *Service) CostSummary(ctx context.Context) (CostSummary, error) {
 	if err != nil {
 		return CostSummary{}, err
 	}
-	return CostSummary{Today: today, Month: month}, nil
+	return CostSummary{TodayEstimate: today, MonthEstimate: month}, nil
 }
 
 // recordAnalysisCostEstimate is the pipeline-side wrapper NewService wires as

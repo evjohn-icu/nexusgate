@@ -60,13 +60,6 @@ type PipelineRepository interface {
 	RequeueFailedJobsByCategory(context.Context, string) (int, error)
 	ResumeDeferredJobs(context.Context, string) (int, error)
 	GetPipelineThrottle(context.Context) (domain.PipelineThrottle, error)
-	// CostEstimateForDay and CostEstimateForMonth read the cost_ledger sums
-	// the budget gate (throttle.DailyBudget / MonthlyBudget) defers on. Day
-	// is a UTC calendar day "YYYY-MM-DD"; yearMonth a UTC "YYYY-MM" prefix.
-	// Both are one indexed aggregate per heavy job, which is the whole
-	// enforcement the gate needs.
-	CostEstimateForDay(context.Context, string) (float64, error)
-	CostEstimateForMonth(context.Context, string) (float64, error)
 	// PipelineThrottleConfigured reports whether the settings row exists. It
 	// is the difference between "0 = the default" and "0 = the operator
 	// explicitly disabled the check": without it, a settings-page 0 could not
@@ -314,30 +307,6 @@ func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 					return executed, deferErr
 				}
 				slog.Warn("cache volume below the configured free-space floor; job deferred", "job", job.ID, "job_type", job.Type, "resume_at", resumeAt.Format(time.RFC3339), "min_free_bytes", p.minFreeBytes)
-				continue
-			}
-			// The configured daily or monthly provider budget is spent for
-			// the period — budgetGateErr parked the job before any paid call
-			// ran. The spend is about the period, not the job, so no attempt
-			// is spent; the park runs to the period boundary (next day 00:05
-			// UTC, or the 1st of next month), where the ledger resets and the
-			// gate re-evaluates. Hot-retrying would just re-hit the same
-			// gate; the long park is the point, not a side effect.
-			if errors.Is(err, errBudgetExhausted) {
-				var be *budgetExhaustedErr
-				errors.As(err, &be)
-				resumeAt := nextBudgetReset(time.Now())
-				if be != nil {
-					resumeAt = be.resetAt
-				}
-				if deferErr := p.repo.DeferJob(ctx, job.ID, worker, resumeAt, domain.JobDeferBudgetExhausted, err.Error()); deferErr != nil {
-					if isLeaseLostErr(deferErr) {
-						slog.Warn("job lease reclaimed before it could be deferred; discarding", "job", job.ID, "job_type", job.Type)
-						continue
-					}
-					return executed, deferErr
-				}
-				slog.Warn("provider budget exhausted; job deferred", "job", job.ID, "job_type", job.Type, "resume_at", resumeAt.Format(time.RFC3339))
 				continue
 			}
 			// An actual disk-full failure — not the preflight's verdict but the
@@ -596,9 +565,6 @@ func classifyJobFailure(err error) domain.JobFailureCategory {
 	if errors.Is(err, errDiskSpaceLow) || isNoSpaceErr(err) {
 		return domain.JobFailureCategoryDiskSpaceLow
 	}
-	if errors.Is(err, errBudgetExhausted) {
-		return domain.JobFailureCategoryBudgetExhausted
-	}
 	if errors.Is(err, providerchannels.ErrRouteExhausted) {
 		return domain.JobFailureCategoryProviderRouteExhausted
 	}
@@ -696,103 +662,6 @@ func (p *Pipeline) diskSpaceErr(floor int64) error {
 	}
 	if free < floor {
 		return fmt.Errorf("cache volume free space %d bytes below the configured minimum of %d bytes: %w", free, floor, errDiskSpaceLow)
-	}
-	return nil
-}
-
-// ledgerDayLayout is the UTC calendar-day shape the cost ledger attributes
-// estimates to (YYYY-MM-DD, zero-padded), the same shape the sqlite layer's
-// CostEstimateForDay/Month read. Month keys are a zero-padded "YYYY-MM"
-// prefix of it.
-const ledgerDayLayout = "2006-01-02"
-
-// budgetResetMinuteOffset is the minute past midnight UTC at which the budget
-// gate re-arms. Not 00:00: the ledger day key flips at midnight, and a job
-// deferred moments before it would otherwise wake into the rollover instant;
-// five minutes later the new period's ledger exists and the gate re-evaluates
-// against it cleanly.
-const budgetResetMinuteOffset = 5
-
-// nextBudgetReset is when the daily budget gate re-arms: the next 00:05 UTC.
-// Fixed-point for the whole day, so every job parked by today's gate resumes
-// at the same instant and the queue drains as one wave.
-func nextBudgetReset(now time.Time) time.Time {
-	next := time.Date(now.Year(), now.Month(), now.Day(), 0, budgetResetMinuteOffset, 0, 0, time.UTC)
-	if !next.After(now) {
-		next = next.AddDate(0, 0, 1)
-	}
-	return next
-}
-
-// nextMonthBudgetReset is when the monthly budget gate re-arms: the 1st of
-// the next month at 00:05 UTC.
-func nextMonthBudgetReset(now time.Time) time.Time {
-	next := time.Date(now.Year(), now.Month(), 1, 0, budgetResetMinuteOffset, 0, 0, time.UTC)
-	return next.AddDate(0, 1, 0)
-}
-
-// errBudgetExhausted is the sentinel a cloud stage returns when the budget
-// gate found the day's or month's ledger sum at or past the configured
-// budget. RunUntilIdle parks the job on wall-clock time the same way it parks
-// one on a full disk — no attempt is spent, because the spend is about the
-// period, not the job. execute wraps the sentinel with the spend facts and
-// the re-arm time; classification is by errors.Is, never by that text.
-var errBudgetExhausted = errors.New("budget exhausted")
-
-// budgetExhaustedErr is what budgetGateErr returns. The reset time rides on
-// the wrapper because it is a fact about the gate's verdict — which budget
-// was spent decides when the job may run again — and classification stays
-// errors.Is on the sentinel.
-type budgetExhaustedErr struct {
-	resetAt time.Time
-	spent   float64
-	budget  float64
-	period  string // "day" or "month"
-}
-
-func (e *budgetExhaustedErr) Error() string {
-	return fmt.Sprintf("%s budget exhausted: %.2f of %.2f spent; resuming %s", e.period, e.spent, e.budget, e.resetAt.Format(time.RFC3339))
-}
-
-func (e *budgetExhaustedErr) Unwrap() error { return errBudgetExhausted }
-
-// budgetGateErr reports whether a cloud call may proceed: nil means run, an
-// error wrapping errBudgetExhausted means the configured daily or monthly
-// budget is spent and the job must be parked until the period rolls over. It
-// guards only the paid stages (analyze, transcribe) — derive and the rest of
-// the chain cost no provider money, so no budget applies. The comparison is
-// >=: the gate sees spend already in the ledger, never the spend the next
-// call will add (estimates are recorded after a call commits), so a job is
-// held once the period's sum is at or past the budget.
-//
-// When both budgets are spent the monthly park wins: a daily park would only
-// re-hit the monthly gate the next day, so the shorter deferral buys nothing.
-//
-// A ledger read failure reads as "unknown", never as "blocked", for the same
-// reason the disk probe fails open: a false blocker would park every heavy
-// job in the queue while the operator hunts a database problem that does not
-// exist. Overspend is visible on the cost summary; a stalled queue is not.
-// The check is two indexed aggregates per heavy job — nothing worth caching.
-func (p *Pipeline) budgetGateErr(ctx context.Context, throttle domain.PipelineThrottle) error {
-	if throttle.DailyBudget <= 0 && throttle.MonthlyBudget <= 0 {
-		return nil
-	}
-	now := time.Now().UTC()
-	if throttle.MonthlyBudget > 0 {
-		month, err := p.repo.CostEstimateForMonth(ctx, now.Format(ledgerDayLayout)[:7])
-		if err != nil {
-			slog.Warn("cost ledger month sum unreadable; running without the monthly budget gate", "error", err)
-		} else if month >= throttle.MonthlyBudget {
-			return &budgetExhaustedErr{resetAt: nextMonthBudgetReset(now), spent: month, budget: throttle.MonthlyBudget, period: "month"}
-		}
-	}
-	if throttle.DailyBudget > 0 {
-		day, err := p.repo.CostEstimateForDay(ctx, now.Format(ledgerDayLayout))
-		if err != nil {
-			slog.Warn("cost ledger day sum unreadable; running without the daily budget gate", "error", err)
-		} else if day >= throttle.DailyBudget {
-			return &budgetExhaustedErr{resetAt: nextBudgetReset(now), spent: day, budget: throttle.DailyBudget, period: "day"}
-		}
 	}
 	return nil
 }
@@ -952,9 +821,6 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		if err := p.diskSpaceErr(diskFloor); err != nil {
 			return err
 		}
-		if err := p.budgetGateErr(ctx, throttle); err != nil {
-			return err
-		}
 		a, err := p.repo.GetArtifact(ctx, j.AssetID, "audio")
 		if err != nil {
 			return err
@@ -997,9 +863,7 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		if err := p.diskSpaceErr(diskFloor); err != nil {
 			return err
 		}
-		// No budgetGateErr here, deliberately: alignment runs a local
-		// os/exec provider (externalalign) and costs no Provider money, so a
-		// spent daily/monthly budget must not park it until the next period.
+		// Alignment is local work and has no provider cost estimate.
 		a, err := p.repo.GetArtifact(ctx, j.AssetID, "audio")
 		if err != nil {
 			return err
@@ -1025,9 +889,6 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		return p.repo.EnqueueJob(ctx, j.AssetID, domain.JobAnalyze, hashStrings(j.InputHash, "analyze-v1"), 30)
 	case domain.JobAnalyze:
 		if err := p.diskSpaceErr(diskFloor); err != nil {
-			return err
-		}
-		if err := p.budgetGateErr(ctx, throttle); err != nil {
 			return err
 		}
 		if p.videoProvider == nil {
