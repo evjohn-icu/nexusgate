@@ -93,7 +93,8 @@ func singleJob(t *testing.T, repo *indexFailureRepo, pipeline *Pipeline, settled
 		if settled(jobs[0]) || time.Now().After(deadline) {
 			return jobs[0]
 		}
-		time.Sleep(100 * time.Millisecond)
+		// Retry backoffs are the synchronization point; keep polling cheap.
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
