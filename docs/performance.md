@@ -41,9 +41,27 @@ go test ./internal/search/ -bench . -benchmem -benchtime 1s -run '^$'
 
 ## Measurements
 
-Machine: AMD Ryzen 5 5600X (12 threads), Go 1.26.4, linux/amd64. Single
-threaded engine timings; total run ~16 s (the 100k search benchmark is one
-~6 s iteration — the machine was not slow, the corpus is just large).
+Current run: 2026-08-10; `uname -m`: `x86_64`; CPU: AMD Ryzen 5 5600X
+6-Core Processor (12 logical CPUs); `go version`: `go1.26.4 linux/amd64`.
+Single-threaded engine timings; total run ~27 s (the 100k search benchmark is
+one ~8.7 s iteration — the corpus is just large).
+
+### Current run
+
+| benchmark | ns/op | MB/s | B/op | allocs/op |
+| --- | --- | --- | --- | --- |
+| `BenchmarkSearch1k` | 113.7 ms | — | 13.5 MB | 139,143 |
+| `BenchmarkSearch10k` | 801.6 ms | — | 137.2 MB | 1,390,270 |
+| `BenchmarkSearch100k` | 8.72 s | — | 1.38 GB | 13,901,176 |
+| `BenchmarkEmbeddingFullScan1k` | 900.5 µs | 1,137 | 485 kB | 2,003 |
+| `BenchmarkEmbeddingFullScan10k` | 53.6 ms | 191 | 4.8 MB | 20,003 |
+| `BenchmarkEmbeddingFullScan100k` | 458.5 ms | 223 | 48.0 MB | 200,003 |
+| `BenchmarkCompile` | 49.0 µs | — | 876 B | 14 |
+
+### Historical baseline
+
+The table below is retained for comparison only. It was measured on the same
+machine and toolchain, but without a recorded run date.
 
 | benchmark | ns/op | MB/s | B/op | allocs/op |
 | --- | --- | --- | --- | --- |
@@ -57,39 +75,41 @@ threaded engine timings; total run ~16 s (the 100k search benchmark is one
 
 ## Interpretation
 
-**Search is linear in the candidate pool, and the pool is capped in
-production.** ×10 corpus → ×10.0–10.2 time. The per-candidate cost is
-~60 µs, dominated by the evidence gate's vocabulary scans (a
+**Search is broadly linear in the candidate pool, and the pool is capped in
+production.** ×10 corpus → ×7.0–10.9 time in this run; the 1k result is a
+short, noisy sample, while the 10k → 100k step is ~10.9×. The large-corpus
+per-candidate cost is ~87 µs, dominated by the evidence gate's vocabulary scans (a
 `Canonicalize` pass per constraint per field). The real SQLite store hands
-the engine ≤200 candidates per channel, so a production search costs
-roughly 200 × 60 µs ≈ 12 ms of engine time plus the SQLite retrieval —
+the engine ≤200 candidates per channel, so a production search costs roughly
+200 × 87 µs ≈ 17 ms of engine time plus the SQLite retrieval —
 comfortable for an interactive UI, with allocation volume in the MBs rather
 than the 1.36 GB/op the full-library sweep shows.
 
 **The embedding scan is the production-relevant measurement**, and it is
-comfortably SQLite-first: 100k shots × 256-dim = 102 MB of vectors scanned
-in 43.6 ms (~2.4 GB/s, alloc-free math; the B/op is the candidate
-conversion for rows above the 0.8 cutoff cluster). Linear in N·D (413 µs →
-4.12 ms → 43.6 ms). The known O(N·D) hot spot is real but far from the
-boundary.
+still SQLite-first but has materially less headroom: 100k shots × 256-dim =
+102 MB of vectors scanned in 458.5 ms (~223 MB/s, alloc-free math; the B/op
+is the candidate conversion for rows above the 0.8 cutoff cluster). Linear in
+N·D at the larger scales (53.6 ms → 458.5 ms). The known O(N·D) hot spot is
+real and should be watched as libraries grow.
 
-**The ANN threshold is 2 s at 100k** — the point where a full cosine scan
-would start feeling like a pipeline stall. Current headroom is ~46×; even a
-million-shot library would land near ~0.4 s, still inside the envelope.
+**The ANN threshold remains 2 s** — the point where a full cosine scan would
+start feeling like a pipeline stall — but current headroom is only ~4.4×. At
+the measured rate, a million-shot library would take roughly 4.6 s, so ANN
+becomes relevant well before that scale if this throughput persists.
 
-**Compile is off the critical path**: 5.7 µs for a typical Chinese query
+**Compile is off the critical path**: 49.0 µs for a typical Chinese query
 (fact, negation, speech, creative, shot-id — all panic-safe, pinned by
 `compiler_panic_test.go`).
 
 ## Recommendation
 
 Keep the SQLite-first full scan for now. The measurements say a 100k-shot
-library is 44 ms per embedding query — no ANN needed this round, no vector
+library is 459 ms per embedding query — no ANN needed this round, no vector
 DB (the v0.28 design decision stands: embeddings are derived,
 rebuildable, model-tagged, and the engine never treats them as evidence).
 
 If/when 100k+ shot libraries with embeddings become the norm **and** the
-scan approaches the ~2 s threshold (≈ 4M+ shots at current throughput, or
+scan approaches the ~2 s threshold (≈ 435k shots at current throughput, or
 significantly higher-dimensional models), plug an ANN index at the
 `TextEmbeddingRetriever` boundary (`embedding.go`, `Retrieve` → the
 `ListShotTextEmbeddings` + cosine loop). The channel already isolates the
@@ -101,7 +121,7 @@ replacement, and recall stays gated exactly as today.
 ## Re-measuring
 
 These are single-machine, single-threaded numbers; the shape (linear in N,
-~2.4 GB/s scan) matters more than the absolutes. Re-run the command above
+~223 MB/s scan) matters more than the absolutes. Re-run the command above
 on current hardware before tuning on them — and never let the embedding
 scan regress without a deliberate reason: it is the one number a library
 growth spurt will hit first.
