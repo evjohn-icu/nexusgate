@@ -48,7 +48,8 @@ jobs:
         run: go test -count=1 $(go list ./... | grep -v '/internal/e2e$')
       - name: coverage gate
         run: |
-          go test -coverprofile=coverage.out ./... > /tmp/cov-stdout.txt 2>&1
+          packages=$(go list ./... | grep -v '/internal/e2e$')
+          go test -coverprofile=coverage.out $packages > /tmp/cov-stdout.txt 2>&1
           go tool cover -func=coverage.out
           coverage=$(go tool cover -func=coverage.out | awk '/^total:/{print $NF}' | tr -d '()%')
           echo "Total statement coverage: ${coverage}%"
