@@ -45,6 +45,9 @@ export TIMINGDEX_DATA_DIR="$PWD/.timingdex-dev"
 ./timingdex root add /path/to/footage && ./timingdex root list
 ./timingdex root scan <root-id>     # enqueues idempotent jobs
 ./timingdex pipeline run            # leases and runs jobs until the queue is idle
+./timingdex search rebuild          # rebuilds the asset search index
+./timingdex search rebuild-embeddings
+./timingdex cache inspect|gc|verify|repair-derived
 ./timingdex serve                   # HTTPS by default; prints the Worker pinning fingerprint
 ```
 
@@ -80,7 +83,7 @@ then `timingdex worker run`; its config defaults to `~/.timingdex/worker.json`.
 
 Jobs form a chain, not a scheduler graph: each `Pipeline.execute` case enqueues its successor
 with a hash derived from the previous `InputHash`, so the whole chain is idempotent and
-resumable.
+resumable. The `analyze` stage enqueues `JobIndex` as its successor.
 
 ```
 probe → derive → speech_gate → transcribe → [align] → analyze → index
@@ -88,6 +91,9 @@ probe → derive → speech_gate → transcribe → [align] → analyze → inde
 ```
 
 Two rules live in `internal/app/pipeline.go` and are easy to break:
+
+- Canonical writes are lease-bound at the write boundary: repository writes carry both the
+  leased `jobID` and its `owner`, and compare-and-swap the active lease before committing.
 
 - `isRetryableJobError` decides retry vs. permanent failure, and **nothing about that
   decision reads message text**. Provider HTTP failures are classified by status: `errors.As`
@@ -138,6 +144,10 @@ gate says a shot *contains* something (`confirmed`/`possible`/`contradicted`/`un
 `embeddingCutoffFraction`) is a retrieval signal, never evidence; the pipeline embeds
 changed shots after each analysis commit, and `timingdex search rebuild-embeddings`
 rebuilds all rows — the model-switch entry, and it never re-runs VLM analysis. The
+search profile is `v2-profile-2`. Speech phrases are validated as a complete ordered phrase
+within one shot: ASCII components use whole-word matching, CJK segmentation is tolerated,
+spans cannot be reused, adjacent components may be at most 1500ms apart, and matches never
+cross shot boundaries. The
 legacy GET hybrid endpoint is served by the same engine via
 `search.Service.LegacySearch`, pinned by `TestSearchV2CompatMatchesLegacy`. The
 regression floor is `TestRetrievalGolden` + `TestSearchV2Benchmark` (72 queries, six
@@ -153,7 +163,7 @@ CreateModelRun (immutable cache, dedup by input hash)
   → provider call → FailModelRun on provider/validation error
   → normalize.ValidateAndNormalize + validateAnalysisShots
   → StageModelRun (raw + parsed)
-  → CommitAnalysisWithShots (single transaction)
+  → CommitAnalysisWithShots (single transaction, lease-bound by jobID/owner)
   → RebuildSearch (FTS5)
 ```
 
@@ -233,8 +243,15 @@ These invariants are the point of several packages — preserve them when editin
 ### Database migrations
 
 `internal/repository/sqlite/migrations/NNNN_*.sql`, `go:embed`-ed and applied in filename
-order inside a transaction, tracked in `schema_migrations`. Add a new numbered file; never
-edit an applied one.
+order inside a transaction, tracked in `schema_migrations`. The current migration ceiling is
+`0033_asset_probe_identity.sql`; the newest migrations are:
+
+- `0030_asset_location_primary.sql`
+- `0031_model_run_retryable_dedup.sql`
+- `0032_collection_shot_positions.sql`
+- `0033_asset_probe_identity.sql`
+
+Add a new numbered file; never edit an applied one.
 
 ### Browser UI
 
