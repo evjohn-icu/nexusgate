@@ -564,8 +564,8 @@ func TestWorkerCompleteJobRejectsTrailingBytes(t *testing.T) {
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("trailing bytes within limit: got %d, want 400; body=%s", resp.Code, resp.Body.String())
 	}
-	if !strings.Contains(resp.Body.String(), "trailing content") {
-		t.Fatalf("trailing bytes: body should mention trailing content; body=%s", resp.Body.String())
+	if !strings.Contains(resp.Body.String(), "invalid request body") {
+		t.Fatalf("trailing bytes: body should mention invalid request body; body=%s", resp.Body.String())
 	}
 }
 
@@ -659,8 +659,8 @@ func TestWorkerHeartbeatRejectsTrailingBytes(t *testing.T) {
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("trailing bytes heartbeat within limit: got %d, want 400; body=%s", resp.Code, resp.Body.String())
 	}
-	if !strings.Contains(resp.Body.String(), "trailing content") {
-		t.Fatalf("trailing bytes heartbeat: body should mention trailing content; body=%s", resp.Body.String())
+	if !strings.Contains(resp.Body.String(), "invalid request body") {
+		t.Fatalf("trailing bytes heartbeat: body should mention invalid request body; body=%s", resp.Body.String())
 	}
 }
 
@@ -802,8 +802,8 @@ func TestWorkerCompleteJobRejectsSmallTrailingByte(t *testing.T) {
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("small trailing byte: got %d, want 400; body=%s", resp.Code, resp.Body.String())
 	}
-	if !strings.Contains(resp.Body.String(), "trailing content") {
-		t.Fatalf("small trailing byte: body should mention trailing content; body=%s", resp.Body.String())
+	if !strings.Contains(resp.Body.String(), "invalid request body") {
+		t.Fatalf("small trailing byte: body should mention invalid request body; body=%s", resp.Body.String())
 	}
 }
 
@@ -852,8 +852,8 @@ func TestWorkerCompleteJobRejectsSecondJSONValue(t *testing.T) {
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("second JSON value: got %d, want 400; body=%s", resp.Code, resp.Body.String())
 	}
-	if !strings.Contains(resp.Body.String(), "trailing content") {
-		t.Fatalf("second JSON value: body should mention trailing content; body=%s", resp.Body.String())
+	if !strings.Contains(resp.Body.String(), "invalid request body") {
+		t.Fatalf("second JSON value: body should mention invalid request body; body=%s", resp.Body.String())
 	}
 }
 
@@ -899,8 +899,8 @@ func TestWorkerHeartbeatRejectsSmallTrailingByte(t *testing.T) {
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("small trailing byte heartbeat: got %d, want 400; body=%s", resp.Code, resp.Body.String())
 	}
-	if !strings.Contains(resp.Body.String(), "trailing content") {
-		t.Fatalf("small trailing byte heartbeat: body should mention trailing content; body=%s", resp.Body.String())
+	if !strings.Contains(resp.Body.String(), "invalid request body") {
+		t.Fatalf("small trailing byte heartbeat: body should mention invalid request body; body=%s", resp.Body.String())
 	}
 }
 
@@ -946,8 +946,8 @@ func TestWorkerProgressRejectsSecondJSONValue(t *testing.T) {
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("progress second JSON: got %d, want 400; body=%s", resp.Code, resp.Body.String())
 	}
-	if !strings.Contains(resp.Body.String(), "trailing content") {
-		t.Fatalf("progress second JSON: body should mention trailing content; body=%s", resp.Body.String())
+	if !strings.Contains(resp.Body.String(), "invalid request body") {
+		t.Fatalf("progress second JSON: body should mention invalid request body; body=%s", resp.Body.String())
 	}
 }
 
@@ -985,8 +985,8 @@ func TestEnrollWorkerRejectsTrailingBytes(t *testing.T) {
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("enroll trailing byte: got %d, want 400; body=%s", resp.Code, resp.Body.String())
 	}
-	if !strings.Contains(resp.Body.String(), "trailing content") {
-		t.Fatalf("enroll trailing byte: body should mention trailing content; body=%s", resp.Body.String())
+	if !strings.Contains(resp.Body.String(), "invalid request body") {
+		t.Fatalf("enroll trailing byte: body should mention invalid request body; body=%s", resp.Body.String())
 	}
 }
 

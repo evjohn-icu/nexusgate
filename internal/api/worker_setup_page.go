@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -138,8 +137,7 @@ func (s *Server) workerGenerateScript(w http.ResponseWriter, r *http.Request) {
 		Mounts       []workerMount `json:"mounts"`
 		CacheDir     string        `json:"cache_dir"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
+	if !decodeStrictJSON(w, r, &req, 1<<20) {
 		return
 	}
 

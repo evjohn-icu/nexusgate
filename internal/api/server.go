@@ -348,7 +348,7 @@ func (s *Server) createWebDAVAccount(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+	if !decodeStrictJSON(w, r, &req, 1<<20) {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		return
 	}
@@ -404,7 +404,7 @@ func (s *Server) linkWebDAVAsset(w http.ResponseWriter, r *http.Request) {
 		AssetID string `json:"asset_id"`
 		Kind    string `json:"kind"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+	if !decodeStrictJSON(w, r, &req, 1<<20) {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		return
 	}
@@ -507,7 +507,7 @@ func (s *Server) saveProviderChannel(w http.ResponseWriter, r *http.Request) {
 			MaxInflight int    `json:"max_inflight"`
 		} `json:"members"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&input); err != nil {
+	if !decodeStrictJSON(w, r, &input, 1<<20) {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid provider channel"})
 		return
 	}
@@ -557,7 +557,7 @@ func (s *Server) saveProviderChannel(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateProviderChannel(w http.ResponseWriter, r *http.Request) {
 	var patch app.ProviderChannelUpdate
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&patch); err != nil {
+	if !decodeStrictJSON(w, r, &patch, 1<<20) {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid provider channel update"})
 		return
 	}
@@ -634,8 +634,7 @@ func (s *Server) enrollWorker(w http.ResponseWriter, r *http.Request) {
 		PairingToken string `json:"pairing_token"`
 		remote.WorkerRegistration
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
-	if !decodeStrictJSON(w, r, &request) {
+	if !decodeStrictJSON(w, r, &request, 32<<10) {
 		return
 	}
 	if strings.TrimSpace(request.PairingToken) == "" {
@@ -660,8 +659,7 @@ func (s *Server) workerHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request remote.WorkerHeartbeat
-	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
-	if !decodeStrictJSON(w, r, &request) {
+	if !decodeStrictJSON(w, r, &request, 16<<10) {
 		return
 	}
 	if err := s.service.HeartbeatWorker(r.Context(), worker.ID, request.Version, request.Capabilities); err != nil {
@@ -708,8 +706,7 @@ func (s *Server) workerCompleteJob(w http.ResponseWriter, r *http.Request) {
 		State   domain.JobState `json:"state"`
 		Message string          `json:"message"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
-	if !decodeStrictJSON(w, r, &request) {
+	if !decodeStrictJSON(w, r, &request, 32<<10) {
 		return
 	}
 	// Validate state before calling the service so an invalid state is a
@@ -741,8 +738,7 @@ func (s *Server) workerProgress(w http.ResponseWriter, r *http.Request) {
 		Event    string  `json:"event"`
 		Message  string  `json:"message"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
-	if !decodeStrictJSON(w, r, &request) {
+	if !decodeStrictJSON(w, r, &request, 16<<10) {
 		return
 	}
 	if err := s.service.RecordWorkerJobProgress(r.Context(), r.PathValue("id"), worker.ID, strings.TrimSpace(request.Stage), request.Progress, strings.TrimSpace(request.Event), strings.TrimSpace(request.Message)); err != nil {
@@ -1097,7 +1093,7 @@ func (s *Server) createRoot(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Path string `json:"path"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request); err != nil || request.Path == "" {
+	if !decodeStrictJSON(w, r, &request, 1<<20) || request.Path == "" {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		return
 	}
@@ -1154,7 +1150,7 @@ func (s *Server) inspectRoot(w http.ResponseWriter, r *http.Request) {
 		Path       string `json:"path"`
 		Mountpoint string `json:"mountpoint"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&request); err != nil || strings.TrimSpace(request.Path) == "" {
+	if !decodeStrictJSON(w, r, &request, 4<<10) || strings.TrimSpace(request.Path) == "" {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		return
 	}
@@ -1329,14 +1325,14 @@ func writeError(w http.ResponseWriter, err error) {
 	writeErrorEnvelope(w, err)
 }
 
-// decodeStrictJSON decodes exactly one JSON value from r.Body (already
-// wrapped with http.MaxBytesReader by the caller) and rejects any trailing
+// decodeStrictJSON decodes exactly one bounded JSON value from r.Body and rejects any trailing
 // bytes — including bytes already buffered inside json.Decoder that a
 // separate drainBody would miss. A successful second Decode (non-EOF) or a
 // non-EOF decode error both indicate trailing content: *http.MaxBytesError
 // → 413, anything else → 400.
-func decodeStrictJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(r.Body)
+func decodeStrictJSON(w http.ResponseWriter, r *http.Request, v any, maxBytes int64) bool {
+	body := http.MaxBytesReader(w, r.Body, maxBytes)
+	dec := json.NewDecoder(body)
 	if err := dec.Decode(v); err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
@@ -1350,19 +1346,62 @@ func decodeStrictJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	// bytes json.Decoder buffered from the underlying reader.
 	var dummy struct{}
 	if err := dec.Decode(&dummy); err == nil {
+		if _, drainErr := io.ReadAll(body); drainErr != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(drainErr, &maxBytesErr) {
+				writeAPIError(w, http.StatusRequestEntityTooLarge, APIError{Code: "request_body_too_large", Message: "request body too large"})
+				return false
+			}
+		}
 		// Another JSON value parsed successfully — trailing content.
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "request body has trailing content"})
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		return false
 	} else if !errors.Is(err, io.EOF) {
+		if _, drainErr := io.ReadAll(body); drainErr != nil {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(drainErr, &maxBytesErr) {
+				writeAPIError(w, http.StatusRequestEntityTooLarge, APIError{Code: "request_body_too_large", Message: "request body too large"})
+				return false
+			}
+		}
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			writeAPIError(w, http.StatusRequestEntityTooLarge, APIError{Code: "request_body_too_large", Message: "request body too large"})
 		} else {
-			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "request body has trailing content"})
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		}
 		return false
 	}
 	return true
+}
+
+// decodeOptionalStrictJSON preserves the historical empty-body behavior for
+// the two pipeline control endpoints while keeping non-empty bodies strict.
+func decodeOptionalStrictJSON(w http.ResponseWriter, r *http.Request, v any, maxBytes int64) (present, ok bool) {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBytes))
+	if err := dec.Decode(v); err != nil {
+		if errors.Is(err, io.EOF) {
+			return false, true
+		}
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeAPIError(w, http.StatusRequestEntityTooLarge, APIError{Code: "request_body_too_large", Message: "request body too large"})
+		} else {
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
+		}
+		return true, false
+	}
+	var dummy struct{}
+	if err := dec.Decode(&dummy); err != io.EOF {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeAPIError(w, http.StatusRequestEntityTooLarge, APIError{Code: "request_body_too_large", Message: "request body too large"})
+		} else {
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
+		}
+		return true, false
+	}
+	return true, true
 }
 
 func requestLogger(next http.Handler) http.Handler {
@@ -1455,7 +1494,7 @@ func (s *Server) setWorkerJobAssignment(w http.ResponseWriter, r *http.Request) 
 		WorkerID string                      `json:"worker_id"`
 		Mode     remote.WorkerAssignmentMode `json:"mode"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&input); err != nil {
+	if !decodeStrictJSON(w, r, &input, 16<<10) {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid worker assignment"})
 		return
 	}
@@ -1569,7 +1608,7 @@ func (s *Server) storageOverview(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) savePipelineThrottle(w http.ResponseWriter, r *http.Request) {
 	var throttle domain.PipelineThrottle
-	if err := json.NewDecoder(io.LimitReader(r.Body, 8<<10)).Decode(&throttle); err != nil {
+	if !decodeStrictJSON(w, r, &throttle, 8<<10) {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid throttle payload"})
 		return
 	}
@@ -1600,8 +1639,7 @@ func (s *Server) retryFailedJobs(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Category string `json:"category"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 8<<10)).Decode(&req); err != nil && err != io.EOF {
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
+	if _, ok := decodeOptionalStrictJSON(w, r, &req, 8<<10); !ok {
 		return
 	}
 	var (
@@ -1630,8 +1668,7 @@ func (s *Server) resumeDeferredJobs(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Reason string `json:"reason"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 8<<10)).Decode(&req); err != nil && err != io.EOF {
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
+	if _, ok := decodeOptionalStrictJSON(w, r, &req, 8<<10); !ok {
 		return
 	}
 	var (
@@ -1703,8 +1740,7 @@ func (s *Server) searchShots(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) searchShotsV2(w http.ResponseWriter, r *http.Request) {
 	var req search.SearchRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText("invalid request body: "+err.Error(), 300)})
+	if !decodeStrictJSON(w, r, &req, 1<<20) {
 		return
 	}
 	if strings.TrimSpace(req.Query) == "" {
@@ -1960,7 +1996,7 @@ func (s *Server) listCollectionAssets(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) saveCollection(w http.ResponseWriter, r *http.Request) {
 	var collection domain.AssetCollection
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&collection); err != nil {
+	if !decodeStrictJSON(w, r, &collection, 64<<10) {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid collection"})
 		return
 	}
@@ -2010,8 +2046,7 @@ func (s *Server) addCollectionShot(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ShotID string `json:"shot_id"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
-	if !decodeStrictJSON(w, r, &body) {
+	if !decodeStrictJSON(w, r, &body, 64<<10) {
 		return
 	}
 	body.ShotID = strings.TrimSpace(body.ShotID)
@@ -2057,8 +2092,7 @@ func (s *Server) reorderCollectionShots(w http.ResponseWriter, r *http.Request) 
 	var body struct {
 		ShotIDs []string `json:"shot_ids"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
-	if !decodeStrictJSON(w, r, &body) {
+	if !decodeStrictJSON(w, r, &body, 64<<10) {
 		return
 	}
 	if err := s.service.ReorderCollectionShots(r.Context(), r.PathValue("id"), body.ShotIDs); err != nil {
@@ -2372,7 +2406,7 @@ func (s *Server) reviewTagProposal(w http.ResponseWriter, r *http.Request) {
 		Action string `json:"action"`
 		Note   string `json:"note"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+	if !decodeStrictJSON(w, r, &req, 1<<20) {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		return
 	}
@@ -2405,7 +2439,7 @@ func (s *Server) generateLibrarySummary(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) createRepurposePlan(w http.ResponseWriter, r *http.Request) {
 	var brief domain.RepurposeBrief
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&brief); err != nil || strings.TrimSpace(brief.Brief) == "" {
+	if !decodeStrictJSON(w, r, &brief, 1<<20) || strings.TrimSpace(brief.Brief) == "" {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "brief is required"})
 		return
 	}
@@ -2444,7 +2478,7 @@ func (s *Server) reviseRepurposePlan(w http.ResponseWriter, r *http.Request) {
 		Sections   []domain.PlanSection `json:"sections"`
 		EditorNote string               `json:"editor_note"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request); err != nil {
+	if !decodeStrictJSON(w, r, &request, 1<<20) {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		return
 	}
