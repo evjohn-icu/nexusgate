@@ -182,6 +182,49 @@ func TestCollectionShotReorderAssignsPositions(t *testing.T) {
 	}
 }
 
+func TestCollectionShotRemoveCompactsPositionsBeforeAppend(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "basket-remove-compact.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	collection, err := repo.SaveAssetCollection(ctx, domain.AssetCollection{Name: "移除压紧"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"shot-rm-a", "shot-rm-b", "shot-rm-c"} {
+		seedShotBasketFixture(t, repo, "asset-"+id, id, 0, 1000)
+		if err := repo.AddShotToCollection(ctx, collection.ID, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.RemoveShotFromCollection(ctx, collection.ID, "shot-rm-b"); err != nil {
+		t.Fatal(err)
+	}
+	shots, err := repo.ListCollectionShots(ctx, collection.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shots) != 2 || shots[0].ShotID != "shot-rm-a" || shots[0].Position != 0 || shots[1].ShotID != "shot-rm-c" || shots[1].Position != 1 {
+		t.Fatalf("after middle removal=%+v, want positions 0 and 1", shots)
+	}
+	seedShotBasketFixture(t, repo, "asset-rm-d", "shot-rm-d", 0, 1000)
+	if err := repo.AddShotToCollection(ctx, collection.ID, "shot-rm-d"); err != nil {
+		t.Fatal(err)
+	}
+	shots, err = repo.ListCollectionShots(ctx, collection.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shots) != 3 || shots[2].ShotID != "shot-rm-d" || shots[2].Position != 2 {
+		t.Fatalf("after append=%+v, want new shot at position 2", shots)
+	}
+}
+
 func TestCollectionSummaryCountsShotsAndDuration(t *testing.T) {
 	ctx := context.Background()
 	repo, err := Open(filepath.Join(t.TempDir(), "basket-summary.db"))

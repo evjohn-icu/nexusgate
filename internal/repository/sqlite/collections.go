@@ -278,6 +278,40 @@ func (r *Repository) RemoveShotFromCollection(ctx context.Context, collectionID,
 	if _, err = conn.ExecContext(ctx, `DELETE FROM collection_shots WHERE collection_id=? AND shot_id=?`, collectionID, shotID); err != nil {
 		return err
 	}
+	var remaining, maxPosition int
+	if err = conn.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(MAX(position),-1) FROM collection_shots WHERE collection_id=?`, collectionID).Scan(&remaining, &maxPosition); err != nil {
+		return err
+	}
+	if remaining > 0 {
+		if _, err = conn.ExecContext(ctx, `UPDATE collection_shots SET position=position+? WHERE collection_id=?`, maxPosition+1, collectionID); err != nil {
+			return err
+		}
+		rows, queryErr := conn.QueryContext(ctx, `SELECT shot_id FROM collection_shots WHERE collection_id=? ORDER BY position ASC, shot_id ASC`, collectionID)
+		if queryErr != nil {
+			return queryErr
+		}
+		var ordered []string
+		for rows.Next() {
+			var id string
+			if err = rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			ordered = append(ordered, id)
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		if err = rows.Close(); err != nil {
+			return err
+		}
+		for position, id := range ordered {
+			if _, err = conn.ExecContext(ctx, `UPDATE collection_shots SET position=? WHERE collection_id=? AND shot_id=?`, position, collectionID, id); err != nil {
+				return err
+			}
+		}
+	}
 	if _, err = conn.ExecContext(ctx, `COMMIT`); err != nil {
 		return err
 	}
