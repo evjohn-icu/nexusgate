@@ -66,9 +66,9 @@ func matchSpeechComponents(cs []speechComponent, spans []domain.AlignmentWord, p
 					return false
 				}
 				joined += strings.ToLower(spans[i].Text)
+				previous = &spans[i]
 				pos = i + 1
 				if joined == component.text {
-					previous = &spans[i]
 					break
 				}
 				if !strings.HasPrefix(component.text, joined) {

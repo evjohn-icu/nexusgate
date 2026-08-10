@@ -19,6 +19,8 @@ func TestMatchAlignedSpeechPhrase(t *testing.T) {
 	}{
 		{"cjk sequence", "我们明天", speechSpans(sw(0, 100, "我们明天")), true},
 		{"cjk split", "我们明天", speechSpans(sw(0, 100, "我"), sw(100, 200, "们"), sw(200, 300, "明"), sw(300, 400, "天")), true},
+		{"cjk split gap over limit", "我们", speechSpans(sw(0, 100, "我"), sw(5000, 5100, "们")), false},
+		{"cjk split gap at limit", "我们", speechSpans(sw(0, 100, "我"), sw(1600, 1700, "们")), true},
 		{"cjk packed", "我们明天", speechSpans(sw(0, 100, "我们"), sw(100, 200, "明天")), true},
 		{"cjk extra token rejected", "明天", speechSpans(sw(0, 100, "明天出发")), false},
 		{"cjk phrase extra token rejected", "我们明天", speechSpans(sw(0, 100, "我们明天出发")), false},
