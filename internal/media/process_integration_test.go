@@ -24,7 +24,7 @@ func TestGenerateProxyFallsBackFromUnavailableHardware(t *testing.T) {
 	}
 	dst := filepath.Join(dir, "proxy.mp4")
 	plan := planFor("cuda", "", true, 500)
-	if err := GenerateProxy(context.Background(), src, dst, plan); err != nil {
+	if _, err := GenerateProxy(context.Background(), src, dst, plan); err != nil {
 		t.Fatalf("proxy generation with fallback: %v", err)
 	}
 	info, err := os.Stat(dst)
@@ -52,7 +52,7 @@ func TestGenerateProxyKeepsDimensionsEvenAcrossAspectRatios(t *testing.T) {
 				t.Skipf("test fixture cannot be encoded by local ffmpeg: %v: %s", err, output)
 			}
 			dst := filepath.Join(dir, "proxy.mp4")
-			if err := GenerateProxy(context.Background(), src, dst, planFor("", "", true, 0)); err != nil {
+			if _, err := GenerateProxy(context.Background(), src, dst, planFor("", "", true, 0)); err != nil {
 				t.Fatalf("proxy generation for %s: %v", size, err)
 			}
 			probe, err := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", dst).Output()

@@ -7,6 +7,79 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
+func (r *Repository) MatchingDerivedArtifactsByProfilePrefixes(ctx context.Context, prefixes []string) ([]domain.DerivedArtifact, error) {
+	if len(prefixes) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(prefixes))
+	args := make([]any, len(prefixes))
+	for i, prefix := range prefixes {
+		placeholders[i] = "profile_hash LIKE ?"
+		args[i] = prefix + "%"
+	}
+	query := `SELECT id,asset_id,artifact_type,profile_hash,local_path,size_bytes FROM derived_artifacts WHERE artifact_type IN ('thumbnail','proxy') AND (` + strings.Join(placeholders, " OR ") + `) ORDER BY asset_id,artifact_type`
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var artifacts []domain.DerivedArtifact
+	for rows.Next() {
+		var a domain.DerivedArtifact
+		if err := rows.Scan(&a.ID, &a.AssetID, &a.Type, &a.ProfileHash, &a.LocalPath, &a.SizeBytes); err != nil {
+			return nil, err
+		}
+		artifacts = append(artifacts, a)
+	}
+	return artifacts, rows.Err()
+}
+
+// DeleteDerivedArtifactsByProfilePrefixes removes only the requested preview
+// rows. Files are owned by the cache command and are deleted separately.
+func (r *Repository) DeleteDerivedArtifactsByProfilePrefixes(ctx context.Context, prefixes []string) ([]string, error) {
+	if len(prefixes) == 0 {
+		return nil, nil
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	placeholders := make([]string, len(prefixes))
+	args := make([]any, len(prefixes))
+	for i, prefix := range prefixes {
+		placeholders[i] = "profile_hash LIKE ?"
+		args[i] = prefix + "%"
+	}
+	query := `SELECT DISTINCT asset_id FROM derived_artifacts WHERE artifact_type IN ('thumbnail','proxy') AND (` + strings.Join(placeholders, " OR ") + `)`
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	var assets []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		assets = append(assets, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	deleteQuery := `DELETE FROM derived_artifacts WHERE artifact_type IN ('thumbnail','proxy') AND (` + strings.Join(placeholders, " OR ") + `)`
+	if _, err := tx.ExecContext(ctx, deleteQuery, args...); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return assets, nil
+}
+
 // ListDerivedArtifacts returns every derived_artifacts row. It backs the
 // cache-health commands (`timingdex cache gc`, `timingdex cache verify`),
 // which need the full row inventory to decide what on disk is orphaned and

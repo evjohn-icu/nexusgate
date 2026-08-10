@@ -35,9 +35,95 @@ func runCacheCommand(ctx context.Context, repo *sqliterepo.Repository, cfg confi
 		return runCacheGC(ctx, repo, cfg, args[1:])
 	case "verify":
 		return runCacheVerify(ctx, repo, cfg, args[1:])
+	case "repair-derived":
+		return runCacheRepairDerived(ctx, repo, cfg, args[1:])
 	default:
 		return errors.New("usage: timingdex cache inspect|gc|verify")
 	}
+}
+
+func runCacheRepairDerived(ctx context.Context, repo *sqliterepo.Repository, cfg config.Config, args []string) error {
+	flags := flag.NewFlagSet("cache repair-derived", flag.ContinueOnError)
+	invalidate := flags.Bool("invalidate-hardware-profiles", false, "remove hardware-produced thumbnail/proxy files and rows")
+	yes := flags.Bool("yes", false, "delete and enqueue re-derive jobs")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if !*invalidate {
+		return errors.New("usage: timingdex cache repair-derived --invalidate-hardware-profiles [--yes]")
+	}
+	prefixes := []string{"thumb-hw-", "proxy-720-hw-"}
+	var files []string
+	var bytes int64
+	err := filepath.WalkDir(cfg.CacheDir, func(p string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			if d.Name() == "sources" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		if !(strings.HasPrefix(name, "thumbnail-") && strings.HasSuffix(name, ".jpg") || strings.HasPrefix(name, "proxy-") && strings.HasSuffix(name, ".mp4")) {
+			return nil
+		}
+		mode := strings.TrimSuffix(strings.TrimPrefix(name, "thumbnail-"), ".jpg")
+		if strings.HasPrefix(name, "proxy-") {
+			mode = strings.TrimSuffix(strings.TrimPrefix(name, "proxy-"), ".mp4")
+		}
+		if mode == "software" || mode == "" {
+			return nil
+		}
+		info, statErr := d.Info()
+		if statErr != nil {
+			return statErr
+		}
+		files = append(files, p)
+		bytes += info.Size()
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("scan derived cache: %w", err)
+	}
+	matching, err := repo.MatchingDerivedArtifactsByProfilePrefixes(ctx, prefixes)
+	if err != nil {
+		return fmt.Errorf("find hardware artifact rows: %w", err)
+	}
+	assets := make([]string, 0, len(matching))
+	seen := make(map[string]bool)
+	for _, artifact := range matching {
+		if !seen[artifact.AssetID] {
+			seen[artifact.AssetID] = true
+			assets = append(assets, artifact.AssetID)
+		}
+	}
+	if !*yes {
+		fmt.Printf("would remove %d hardware-derived file(s), %s, and %d DB row(s) across %d asset(s)\n", len(files), humanBytes(bytes), len(matching), len(assets))
+		fmt.Println("dry run: nothing deleted; re-run with --yes to repair")
+		return nil
+	}
+	if _, err := repo.DeleteDerivedArtifactsByProfilePrefixes(ctx, prefixes); err != nil {
+		return fmt.Errorf("delete hardware artifact rows: %w", err)
+	}
+	for _, p := range files {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", p, err)
+		}
+	}
+	var enqueued int
+	for _, assetID := range assets {
+		ok, err := repo.EnqueueRederive(ctx, assetID)
+		if err != nil {
+			return err
+		}
+		if ok {
+			enqueued++
+		}
+	}
+	fmt.Printf("removed %d hardware-derived file(s), %s; enqueued %d re-derive job(s)\n", len(files), humanBytes(bytes), enqueued)
+	return nil
 }
 
 func runCacheInspect(ctx context.Context, repo *sqliterepo.Repository, cfg config.Config, args []string) error {

@@ -724,12 +724,20 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		base := filepath.Join(p.cacheDir, j.AssetID)
 		// Keep profiles in separate cache paths: a proxy created by software x264
 		// must never be relabelled as an NVENC/QSV/VideoToolbox result.
-		thumb := filepath.Join(base, "thumbnail-"+p.hardware.Mode+".jpg")
-		proxy := filepath.Join(base, "proxy-"+p.hardware.Mode+".mp4")
-		_, thumbStatErr := os.Stat(thumb)
-		_, proxyStatErr := os.Stat(proxy)
-		needThumb := os.IsNotExist(thumbStatErr)
-		needProxy := os.IsNotExist(proxyStatErr)
+		requestedThumb := filepath.Join(base, "thumbnail-"+p.hardware.Mode+".jpg")
+		requestedProxy := filepath.Join(base, "proxy-"+p.hardware.Mode+".mp4")
+		software := p.hardware.SoftwareFallback()
+		softwareThumb := filepath.Join(base, "thumbnail-"+software.Mode+".jpg")
+		softwareProxy := filepath.Join(base, "proxy-"+software.Mode+".mp4")
+		thumbPlan, proxyPlan := p.hardware, p.hardware
+		thumb, proxy := requestedThumb, requestedProxy
+		if !media.UsableDerivedFile(requestedThumb) && media.UsableDerivedFile(softwareThumb) {
+			thumb, thumbPlan = softwareThumb, software
+		}
+		if !media.UsableDerivedFile(requestedProxy) && media.UsableDerivedFile(softwareProxy) {
+			proxy, proxyPlan = softwareProxy, software
+		}
+		needThumb, needProxy := !media.UsableDerivedFile(thumb), !media.UsableDerivedFile(proxy)
 
 		m, err := p.repo.GetMediaMetadata(ctx, j.AssetID)
 		if err != nil {
@@ -752,20 +760,32 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 			}
 			renderer := media.NewPreviewRenderer("").WithReadRate(readRate)
 			if needThumb {
-				if err := renderer.RenderThumbnail(ctx, sourcePath, thumb, p.hardware, previewPlan); err != nil {
+				staged := filepath.Join(base, ".derive-thumbnail.tmp.jpg")
+				actual, err := renderer.RenderThumbnail(ctx, sourcePath, staged, p.hardware, previewPlan)
+				if err != nil {
+					return err
+				}
+				thumbPlan, thumb = actual, filepath.Join(base, "thumbnail-"+actual.Mode+".jpg")
+				if err := media.PublishDerivedOutput(staged, thumb); err != nil {
 					return err
 				}
 			}
 			if needProxy {
-				if err := renderer.RenderProxy(ctx, sourcePath, proxy, p.hardware, previewPlan); err != nil {
+				staged := filepath.Join(base, ".derive-proxy.tmp.mp4")
+				actual, err := renderer.RenderProxy(ctx, sourcePath, staged, p.hardware, previewPlan)
+				if err != nil {
+					return err
+				}
+				proxyPlan, proxy = actual, filepath.Join(base, "proxy-"+actual.Mode+".mp4")
+				if err := media.PublishDerivedOutput(staged, proxy); err != nil {
 					return err
 				}
 			}
 		}
-		if err := saveArtifact(p.repo, ctx, j.AssetID, "thumbnail", "thumb-"+p.hardware.Profile(), thumb, j.ID, worker); err != nil {
+		if err := saveArtifact(p.repo, ctx, j.AssetID, "thumbnail", "thumb-"+thumbPlan.Profile(), thumb, j.ID, worker); err != nil {
 			return err
 		}
-		if err := saveArtifact(p.repo, ctx, j.AssetID, "proxy", "proxy-720-"+p.hardware.Profile(), proxy, j.ID, worker); err != nil {
+		if err := saveArtifact(p.repo, ctx, j.AssetID, "proxy", "proxy-720-"+proxyPlan.Profile(), proxy, j.ID, worker); err != nil {
 			return err
 		}
 		if m != nil && m.HasAudio {

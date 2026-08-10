@@ -352,18 +352,18 @@ func parseBitDepth(raw, pixelFormat string) int {
 	return 0
 }
 
-func GenerateThumbnail(ctx context.Context, src, dst string, plan HardwarePlan) error {
+func GenerateThumbnail(ctx context.Context, src, dst string, plan HardwarePlan) (HardwarePlan, error) {
 	previewPlan, err := previewPlanForSource(ctx, src)
 	if err != nil {
-		return err
+		return plan, err
 	}
 	return NewPreviewRenderer("").RenderThumbnail(ctx, src, dst, plan, previewPlan)
 }
 
-func GenerateProxy(ctx context.Context, src, dst string, plan HardwarePlan) error {
+func GenerateProxy(ctx context.Context, src, dst string, plan HardwarePlan) (HardwarePlan, error) {
 	previewPlan, err := previewPlanForSource(ctx, src)
 	if err != nil {
-		return err
+		return plan, err
 	}
 	return NewPreviewRenderer("").RenderProxy(ctx, src, dst, plan, previewPlan)
 }
@@ -412,8 +412,7 @@ func ExtractAudio(ctx context.Context, src, dst string, readRate float64) error 
 	return atomicFFmpegOutput(dst, func(out string) error {
 		args := append([]string{"-hide_banner", "-loglevel", "error", "-y"}, readRateArgs(readRate)...)
 		args = append(args, "-i", src, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "64k", out)
-		cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-		if raw, err := cmd.CombinedOutput(); err != nil {
+		if raw, err := runFFmpeg(ctx, nil, args...); err != nil {
 			return fmt.Errorf("audio: %w: %s", err, truncateStderr(raw))
 		}
 		return nil
@@ -441,38 +440,90 @@ func atomicFFmpegOutput(dst string, produce func(outputPath string) error) error
 		return err
 	}
 	temporaryPath := temporary.Name()
+	if info, err := os.Lstat(temporaryPath); err != nil || !info.Mode().IsRegular() {
+		_ = temporary.Close()
+		_ = os.Remove(temporaryPath)
+		if err != nil {
+			return fmt.Errorf("lstat ffmpeg temporary output: %w", err)
+		}
+		return fmt.Errorf("ffmpeg temporary output is not a regular file")
+	}
 	if err := temporary.Close(); err != nil {
 		_ = os.Remove(temporaryPath)
 		return err
 	}
 	defer os.Remove(temporaryPath)
 
+	if info, err := os.Lstat(temporaryPath); err != nil || !info.Mode().IsRegular() {
+		if err != nil {
+			return fmt.Errorf("recheck ffmpeg temporary output: %w", err)
+		}
+		return fmt.Errorf("ffmpeg temporary output was replaced")
+	}
 	if err := produce(temporaryPath); err != nil {
 		return err
+	}
+	if !UsableDerivedFile(temporaryPath) {
+		return fmt.Errorf("ffmpeg produced an empty or non-regular output")
 	}
 	return os.Rename(temporaryPath, dst)
 }
 
-func runWithFallback(ctx context.Context, label string, args []string, plan HardwarePlan, software func() []string) error {
+var runFFmpeg = func(ctx context.Context, env []string, args ...string) ([]byte, error) {
+	command := exec.CommandContext(ctx, "ffmpeg", args...)
+	if len(env) > 0 {
+		command.Env = append(os.Environ(), env...)
+	}
+	return command.CombinedOutput()
+}
+
+func runWithFallback(ctx context.Context, label string, args []string, plan HardwarePlan, software func() []string) (HardwarePlan, error) {
 	// The accelerated attempt runs with the plan's environment, which is how a
 	// probed libva driver reaches the encode; the software fallback below is
 	// deliberately left on the plain environment.
-	hardwareCommand := exec.CommandContext(ctx, "ffmpeg", args...)
-	if len(plan.Env) > 0 {
-		hardwareCommand.Env = append(os.Environ(), plan.Env...)
-	}
-	out, err := hardwareCommand.CombinedOutput()
+	out, err := runFFmpeg(ctx, plan.Env, args...)
 	if err == nil {
-		return nil
+		return plan, nil
 	}
 	if plan.Mode != "software" && plan.AllowFallback {
-		fallbackOut, fallbackErr := exec.CommandContext(ctx, "ffmpeg", software()...).CombinedOutput()
+		fallbackOut, fallbackErr := runFFmpeg(ctx, nil, software()...)
 		if fallbackErr == nil {
-			return nil
+			return plan.SoftwareFallback(), nil
 		}
-		return fmt.Errorf("%s hardware %s failed: %s; software fallback failed: %w: %s", label, plan.Mode, truncateStderr(out), fallbackErr, truncateStderr(fallbackOut))
+		return plan, fmt.Errorf("%s hardware %s failed: %s; software fallback failed: %w: %s", label, plan.Mode, truncateStderr(out), fallbackErr, truncateStderr(fallbackOut))
 	}
-	return fmt.Errorf("%s (%s): %w: %s", label, plan.Mode, err, truncateStderr(out))
+	return plan, fmt.Errorf("%s (%s): %w: %s", label, plan.Mode, err, truncateStderr(out))
+}
+
+// PublishDerivedOutput atomically moves a staged, non-empty derived file into
+// place. The staged file is removed on every failure and an empty file is never
+// published.
+func PublishDerivedOutput(staged, final string) error {
+	if !UsableDerivedFile(staged) {
+		_ = os.Remove(staged)
+		return fmt.Errorf("staged derived output is empty or not regular")
+	}
+	if info, err := os.Lstat(final); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		_ = os.Remove(staged)
+		return fmt.Errorf("refusing to publish through symlink: %s", final)
+	} else if err != nil && !os.IsNotExist(err) {
+		_ = os.Remove(staged)
+		return fmt.Errorf("lstat derived output: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(final), 0o700); err != nil {
+		_ = os.Remove(staged)
+		return err
+	}
+	if err := os.Rename(staged, final); err != nil {
+		_ = os.Remove(staged)
+		return err
+	}
+	return nil
+}
+
+func UsableDerivedFile(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular() && info.Size() > 0
 }
 
 const mostlySilentThreshold = 0.80
