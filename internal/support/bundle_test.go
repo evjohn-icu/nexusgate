@@ -290,6 +290,46 @@ func TestSanitizePathTextIsCrossPlatformAndPreservesURLs(t *testing.T) {
 	}
 }
 
+func TestSupportBundleRedactsLegacyProviderSecretsInSanitizedConfig(t *testing.T) {
+	const apiKey = "legacy-provider-api-key-secret"
+	const headerValue = "legacy-extra-header-secret"
+	cfg := config.Config{Providers: config.ProvidersConfig{
+		StepFun: config.ProviderConfig{
+			APIKey:       apiKey,
+			APIKeyEnv:    "STEP_API_KEY",
+			ExtraHeaders: map[string]string{"X-Provider-Key": headerValue},
+		},
+	}}
+
+	out := filepath.Join(t.TempDir(), "bundle.zip")
+	if err := Generate(context.Background(), domain.DoctorReport{}, cfg, fakeBundleSource{}, out); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	files := readZip(t, out)
+	raw := files["config.sanitized.json"]
+	if strings.Contains(string(raw), apiKey) || strings.Contains(string(raw), headerValue) {
+		t.Fatalf("config.sanitized.json leaked legacy provider secret: %s", raw)
+	}
+
+	var sanitized map[string]any
+	if err := json.Unmarshal(raw, &sanitized); err != nil {
+		t.Fatalf("parse config.sanitized.json: %v", err)
+	}
+	providers, ok := sanitized["providers"].(map[string]any)
+	if !ok {
+		t.Fatalf("providers has unexpected shape: %T", sanitized["providers"])
+	}
+	stepfun, ok := providers["stepfun"].(map[string]any)
+	if !ok {
+		t.Fatalf("providers.stepfun has unexpected shape: %T", providers["stepfun"])
+	}
+	for _, key := range []string{"api_key", "api_key_env", "extra_headers"} {
+		if got := stepfun[key]; got != "***" {
+			t.Errorf("providers.stepfun.%s = %v, want ***", key, got)
+		}
+	}
+}
+
 func readZip(t *testing.T, path string) map[string][]byte {
 	t.Helper()
 	file, err := os.Open(path)
