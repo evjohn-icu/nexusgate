@@ -72,7 +72,7 @@ func seed(ctx context.Context, repo *sqlite.Repository, rootPath string) error {
 	if _, err := db.ExecContext(ctx, `INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,exists_now,is_primary,last_seen_at) VALUES(?,?,?,?,?,1,1,1,?)`, "location-fixture", "asset-fixture", root.ID, `"><img src=x onerror=window.__xss=1>.mp4`, `/tmp/fixture.mp4`, now); err != nil {
 		return err
 	}
-	if err := repo.ReplaceAssetShots(ctx, "asset-fixture", "run-fixture", []domain.AssetShot{{ID: "shot-fixture", AssetID: "asset-fixture", SourceRunID: "run-fixture", Ordinal: 0, StartMS: 0, EndMS: 5000, Description: `"><img src=x onerror=window.__xss=1>`, Tags: []string{`"><img src=x onerror=window.__xss=1>`}, Objects: []string{"camera"}, Confidence: .9, CreatedAt: time.Now().UTC()}}); err != nil {
+	if err := repo.ReplaceAssetShots(ctx, "asset-fixture", "", []domain.AssetShot{{ID: "shot-fixture", AssetID: "asset-fixture", Ordinal: 0, StartMS: 0, EndMS: 5000, Description: `"><img src=x onerror=window.__xss=1>`, Tags: []string{`"><img src=x onerror=window.__xss=1>`}, Objects: []string{"camera"}, Confidence: .9, CreatedAt: time.Now().UTC()}}); err != nil {
 		return err
 	}
 	collection, err := repo.SaveAssetCollection(ctx, domain.AssetCollection{ID: "collection-fixture", Name: `"><img src=x onerror=window.__xss=1>`, Description: `"><img src=x onerror=window.__xss=1>`, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
