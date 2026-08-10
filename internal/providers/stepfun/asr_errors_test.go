@@ -64,6 +64,15 @@ func TestASRErrorPaths(t *testing.T) {
 			wantContains: "stepfun SSE error: model overloaded",
 		},
 		{
+			name: "SSE error event bounds echoed secret",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`data: {"type":"error","message":"` + strings.Repeat("diagnostic ", 300) + apiKey + `"}` + "\n\n"))
+			},
+			wantContains: "stepfun SSE error: diagnostic",
+		},
+		{
 			name: "SSE no transcript text",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")

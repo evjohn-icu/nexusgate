@@ -3,6 +3,7 @@ package volcasr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -84,6 +85,38 @@ func TestASRErrorPaths(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), apiKey) {
 			t.Fatalf("error text leaks API key: %q", err.Error())
+		}
+		var status *common.StatusError
+		if !errors.As(err, &status) || strings.Contains(status.Body, apiKey) || strings.Contains(status.Error(), apiKey) || len(status.Body) > 2048+len("…(truncated)") {
+			t.Fatalf("status error was not preserved safely: %v", err)
+		}
+	})
+
+	t.Run("error field containing key is redacted and bounded", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, err := websocket.Accept(w, r, nil)
+			if err != nil {
+				t.Fatalf("accept: %v", err)
+				return
+			}
+			defer conn.Close(websocket.StatusNormalClosure, "done")
+			if _, _, err = conn.Read(context.Background()); err != nil {
+				return
+			}
+			payload, _ := json.Marshal(map[string]any{"code": 1, "message": strings.Repeat("field ", 500) + apiKey})
+			if err := conn.Write(context.Background(), websocket.MessageBinary, buildFrame(1, 0, 1, gzipBytes(payload))); err != nil {
+				t.Errorf("write: %v", err)
+			}
+		}))
+		defer server.Close()
+		asr := &ASR{URL: "ws" + strings.TrimPrefix(server.URL, "http"), APIKey: apiKey, TimeoutSeconds: 5}
+		_, err := asr.Transcribe(context.Background(), common.TranscribeRequest{AudioPath: audioPath, Language: "zh"})
+		if err == nil || strings.Contains(err.Error(), apiKey) || len(err.Error()) > 2048+128 {
+			t.Fatalf("unsafe error: %v", err)
+		}
+		var status *common.StatusError
+		if !errors.As(err, &status) || strings.Contains(status.Body, apiKey) || strings.Contains(status.Error(), apiKey) || len(status.Body) > 2048+len("…(truncated)") {
+			t.Fatalf("unsafe status error: %v", err)
 		}
 	})
 

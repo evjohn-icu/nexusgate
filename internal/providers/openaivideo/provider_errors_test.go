@@ -47,6 +47,15 @@ func TestProviderErrorPaths(t *testing.T) {
 			wantContains: "upstream error",
 		},
 		{
+			name: "bounded echoed secret",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write([]byte(strings.Repeat("diagnostic ", 300) + apiKey))
+			},
+			wantStatus:   502,
+			wantContains: "diagnostic",
+		},
+		{
 			name: "malformed JSON with 200",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
@@ -91,6 +100,9 @@ func TestProviderErrorPaths(t *testing.T) {
 				}
 				if se.HTTPStatusCode() != tt.wantStatus {
 					t.Fatalf("HTTPStatusCode() = %d, want %d", se.HTTPStatusCode(), tt.wantStatus)
+				}
+				if strings.Contains(se.Body, apiKey) || len(se.Body) > 2048+len("…(truncated)") {
+					t.Fatalf("status body leaked or was not bounded: len=%d body=%q", len(se.Body), se.Body)
 				}
 			} else {
 				if errors.As(err, &se) {
