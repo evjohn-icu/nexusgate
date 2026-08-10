@@ -234,9 +234,12 @@ func validateArtifact(artifact ArtifactUpload) error {
 	if strings.TrimSpace(artifact.Type) == "" || strings.TrimSpace(artifact.ProfileHash) == "" || strings.TrimSpace(artifact.Path) == "" {
 		return fmt.Errorf("worker derived artifact is incomplete")
 	}
-	info, err := os.Stat(artifact.Path)
+	info, err := os.Lstat(artifact.Path)
 	if err != nil {
-		return fmt.Errorf("stat derived artifact: %w", err)
+		return fmt.Errorf("lstat derived artifact: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("derived artifact is a symlink: %s", artifact.Path)
 	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("derived artifact is not a regular file: %s", artifact.Path)

@@ -73,6 +73,21 @@ func TestValidateArtifactRejectsZeroByteFile(t *testing.T) {
 	}
 }
 
+func TestValidateArtifactRejectsSymlink(t *testing.T) {
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "target.jpg")
+	if err := os.WriteFile(target, []byte("usable"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(tmp, "link.jpg")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateArtifact(ArtifactUpload{Type: "thumbnail", ProfileHash: "thumb-v1", Path: link}); err == nil {
+		t.Fatal("validateArtifact must reject a symlink")
+	}
+}
+
 // A Worker that fell back to software must not keep whatever accelerator it
 // happened to enroll with — the Hub would otherwise keep routing GPU work to
 // a node that cannot do it.

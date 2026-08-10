@@ -463,6 +463,16 @@ func atomicFFmpegOutput(dst string, produce func(outputPath string) error) error
 	if err := produce(temporaryPath); err != nil {
 		return err
 	}
+	// Recheck after the external producer returns. This closes the ordinary
+	// replacement window; a hostile same-directory actor could still race the
+	// final rename, so the residual TOCTOU is bounded by the directory mode and
+	// platform rename semantics rather than claimed away.
+	if info, err := os.Lstat(temporaryPath); err != nil || !info.Mode().IsRegular() {
+		if err != nil {
+			return fmt.Errorf("lstat ffmpeg output after render: %w", err)
+		}
+		return fmt.Errorf("ffmpeg output was replaced before publish")
+	}
 	if !UsableDerivedFile(temporaryPath) {
 		return fmt.Errorf("ffmpeg produced an empty or non-regular output")
 	}

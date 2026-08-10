@@ -26,7 +26,7 @@ import (
 // disagree about what exists.
 func runCacheCommand(ctx context.Context, repo *sqliterepo.Repository, cfg config.Config, args []string) error {
 	if len(args) < 1 {
-		return errors.New("usage: timingdex cache inspect|gc|verify")
+		return errors.New("usage: timingdex cache inspect|gc|verify|repair-derived")
 	}
 	switch args[0] {
 	case "inspect":
@@ -38,7 +38,7 @@ func runCacheCommand(ctx context.Context, repo *sqliterepo.Repository, cfg confi
 	case "repair-derived":
 		return runCacheRepairDerived(ctx, repo, cfg, args[1:])
 	default:
-		return errors.New("usage: timingdex cache inspect|gc|verify")
+		return errors.New("usage: timingdex cache inspect|gc|verify|repair-derived")
 	}
 }
 
