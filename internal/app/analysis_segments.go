@@ -21,7 +21,7 @@ import (
 // around its inline budget, validation, and the canonical commit. The plain
 // route passes the whole router (fallbacks stay intact); the two-pass
 // multiframe fallback reuses it for pass 1 with the route's video member.
-func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *domain.MediaMetadata, provider videoproviders.VideoUnderstandingProvider, sourcePath string) error {
+func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *domain.MediaMetadata, provider videoproviders.VideoUnderstandingProvider, sourcePath, worker string) error {
 	reqJSON := fmt.Sprintf(`{"asset_id":%q,"path":%q}`, j.AssetID, sourcePath)
 	// v4 of the prompt and v2 of the schema change shot semantics: a shot
 	// that did not observe an object/action/mood keeps empty lists instead
@@ -29,7 +29,7 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 	// objects/actions/mood. The version bump is what breaks CreateModelRun's
 	// cache so an old run can never satisfy a new analysis.
 	providerName, modelName, promptVersion := provider.Name(), provider.Model(), "footage-analysis-v4"
-	runID, cached, err := p.repo.CreateModelRun(ctx, j.AssetID, "vision", providerName, modelName, j.InputHash, promptVersion, "asset-analysis/v2", reqJSON)
+	runID, cached, err := p.repo.CreateModelRun(ctx, j.AssetID, "vision", providerName, modelName, j.InputHash, promptVersion, "asset-analysis/v2", reqJSON, j.ID, worker)
 	if err != nil {
 		return err
 	}
@@ -96,7 +96,7 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 	raw = rawResult
 	err = providerErr
 	if err != nil {
-		_ = p.repo.FailModelRun(ctx, runID, "provider_error", err.Error(), raw)
+		_ = p.failModelRun(ctx, runID, "provider_error", err.Error(), raw, j, worker)
 		return err
 	}
 	// The model has been paid and has answered; nothing from here to the
@@ -108,19 +108,19 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 	a = result.ToStructuredAnalysis()
 	a, err = normalize.ValidateAndNormalize(a)
 	if err != nil {
-		_ = p.repo.FailModelRun(ctx, runID, "validation_error", err.Error(), "")
+		_ = p.failModelRun(ctx, runID, "validation_error", err.Error(), "", j, worker)
 		return err
 	}
 	shots := result.ToAssetShots(j.AssetID, runID)
 	if err := validateAnalysisShots(shots, m.DurationMS); err != nil {
-		_ = p.repo.FailModelRun(ctx, runID, "validation_error", err.Error(), raw)
+		_ = p.failModelRun(ctx, runID, "validation_error", err.Error(), raw, j, worker)
 		return err
 	}
 	parsed, _ := json.Marshal(a)
-	if err := p.repo.StageModelRun(ctx, runID, raw, string(parsed)); err != nil {
+	if err := p.repo.StageModelRun(ctx, runID, raw, string(parsed), j.ID, worker); err != nil {
 		return err
 	}
-	if err := p.repo.CommitAnalysisWithShots(ctx, j.AssetID, runID, "asset-analysis/v2", a, shots); err != nil {
+	if err := p.repo.CommitAnalysisWithShots(ctx, j.AssetID, runID, "asset-analysis/v2", a, shots, j.ID, worker); err != nil {
 		return err
 	}
 	// The run is canonical; record its estimate against the serving

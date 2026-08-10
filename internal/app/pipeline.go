@@ -69,16 +69,18 @@ type PipelineRepository interface {
 	JobSummary(context.Context) (domain.JobSummary, error)
 	RebuildSearch(context.Context, string) error
 	Search(context.Context, string, int) ([]string, error)
-	CreateModelRun(context.Context, string, string, string, string, string, string, string, string) (string, bool, error)
-	FailModelRun(context.Context, string, string, string, string) error
-	StageModelRun(context.Context, string, string, string) error
-	CommitAnalysis(context.Context, string, string, string, domain.StructuredAnalysis) error
-	CommitAnalysisWithShots(context.Context, string, string, string, domain.StructuredAnalysis, []domain.AssetShot) error
+	CreateModelRun(context.Context, string, string, string, string, string, string, string, string, ...string) (string, bool, error)
+	FailModelRun(context.Context, string, string, string, string, ...string) error
+	StageModelRun(context.Context, string, string, string, ...string) error
+	CommitAnalysis(context.Context, string, string, string, domain.StructuredAnalysis, ...string) error
+	CommitAnalysisWithShots(context.Context, string, string, string, domain.StructuredAnalysis, []domain.AssetShot, ...string) error
 	SyncAnalysisTags(context.Context, string, string, domain.StructuredAnalysis) error
 	ReplaceAssetShots(context.Context, string, string, []domain.AssetShot) error
 	CommitShotRefinement(context.Context, string, string, []domain.AssetShot) error
+	ReplaceAssetShots(context.Context, string, string, []domain.AssetShot, ...string) error
+	CommitShotRefinement(context.Context, string, string, []domain.AssetShot, ...string) error
 	GetSpeechClassification(context.Context, string) (*domain.SpeechClassification, error)
-	SaveTranscript(context.Context, string, string, string, string, domain.Transcript) error
+	SaveTranscript(context.Context, string, string, string, string, domain.Transcript, ...string) error
 	GetTranscript(context.Context, string) (*domain.Transcript, error)
 	GetAlignmentWords(context.Context, string) ([]domain.AlignmentWord, error)
 	GetProviderFile(context.Context, string, string, string, string) (*domain.ProviderFile, error)
@@ -92,7 +94,7 @@ type PipelineRepository interface {
 	// rebuild, never a new model run.
 	HasCommittedAnalysis(context.Context, string) (bool, error)
 	ListAssetShots(context.Context, string) ([]domain.AssetShot, error)
-	MarkModelRunCommitted(context.Context, string) error
+	MarkModelRunCommitted(context.Context, string, ...string) error
 }
 
 type Pipeline struct {
@@ -128,6 +130,14 @@ type Pipeline struct {
 	// nil when no cost tracking is wired (tests, minimal setups), in which
 	// case recordCostEstimate is a no-op.
 	costEstimator func(ctx context.Context, capability, provider, model, assetID string, durationMS int64)
+}
+
+func (p *Pipeline) failModelRun(ctx context.Context, runID, code, message, raw string, j *domain.Job, worker string) error {
+	err := p.repo.FailModelRun(ctx, runID, code, message, raw, j.ID, worker)
+	if errors.Is(err, domain.ErrJobLeaseLost) {
+		return nil
+	}
+	return err
 }
 
 func NewPipeline(repo PipelineRepository, cacheDir string, asr providers.ASR, asrFallback providers.ASR, videoProvider videoproviders.VideoUnderstandingProvider, alignment providers.Alignment, shotDetector shotdetect.Detector, hardware media.HardwarePlan, sourceStager *staging.SourceStager, deferral time.Duration, minFreeBytes int64) *Pipeline {
@@ -837,7 +847,7 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		if err != nil {
 			return err
 		}
-		if err := p.repo.SaveTranscript(ctx, j.AssetID, providerUsed.Name(), providerUsed.Model(), j.InputHash, t); err != nil {
+		if err := p.repo.SaveTranscript(ctx, j.AssetID, providerUsed.Name(), providerUsed.Model(), j.InputHash, t, j.ID, worker); err != nil {
 			return err
 		}
 		// The transcript is canonical; record the ASR estimate against the
@@ -905,9 +915,9 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		var analyzeErr error
 		if route != nil {
 			if p.shotDetector != nil {
-				analyzeErr = p.analyzeWithDetector(ctx, &j, m, route)
+				analyzeErr = p.analyzeWithDetector(ctx, &j, m, route, worker)
 			} else if route.video != nil {
-				analyzeErr = p.analyzeTwoPass(ctx, &j, m, route)
+				analyzeErr = p.analyzeTwoPass(ctx, &j, m, route, worker)
 			} else {
 				// A frame-only endpoint cannot produce its own boundaries and no
 				// fallback can either: the deployment is missing one of the two
@@ -916,7 +926,7 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 				analyzeErr = domain.Permanent(fmt.Errorf("multiframe video provider %q requires a shot detector (providers.shot_detection) or a video-capable fallback provider (providers.vision_fallback)", route.analyzer.Name()))
 			}
 		} else {
-			analyzeErr = p.analyzeAssetVideo(ctx, &j, m, p.videoProvider, sourcePath)
+			analyzeErr = p.analyzeAssetVideo(ctx, &j, m, p.videoProvider, sourcePath, worker)
 		}
 		if analyzeErr != nil {
 			return analyzeErr

@@ -1624,7 +1624,7 @@ func (r *Repository) deleteFromSearchIndexTx(ctx context.Context, tx *sql.Tx, as
 	return err
 }
 
-func (r *Repository) ReplaceAssetShots(ctx context.Context, assetID, sourceRunID string, shots []domain.AssetShot) error {
+func (r *Repository) ReplaceAssetShots(ctx context.Context, assetID, sourceRunID string, shots []domain.AssetShot, lease ...string) error {
 	if err := validateAssetShots(shots); err != nil {
 		return err
 	}
@@ -1635,6 +1635,49 @@ func (r *Repository) ReplaceAssetShots(ctx context.Context, assetID, sourceRunID
 	defer tx.Rollback()
 	if err := r.replaceAssetShotsTx(ctx, tx, assetID, sourceRunID, shots); err != nil {
 		return err
+	}
+	jobID, owner := leaseParams(lease)
+	if err := leaseGuard(ctx, tx, jobID, assetID, owner); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	r.clearSemanticVectorCache()
+	return nil
+}
+
+// CommitShotRefinement replaces the canonical shot set and commits the
+// refinement run as one transaction. The lease assertion follows all writes,
+// so a stale refinement cannot leave either shots or model-run state behind.
+func (r *Repository) CommitShotRefinement(ctx context.Context, assetID, runID string, shots []domain.AssetShot, lease ...string) error {
+	if err := validateAssetShots(shots); err != nil {
+		return err
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := r.replaceAssetShotsTx(ctx, tx, assetID, runID, shots); err != nil {
+		return err
+	}
+	jobID, owner := leaseParams(lease)
+	if err := leaseGuard(ctx, tx, jobID, assetID, owner); err != nil {
+		return err
+	}
+	now := formatTime(time.Now().UTC())
+	res, err := tx.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND asset_id=? AND state='validated' AND (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?))`, now, runID, assetID, jobID, jobID, assetID, owner, now)
+	if err != nil {
+		return err
+	}
+	if n, e := res.RowsAffected(); e != nil {
+		return e
+	} else if n != 1 {
+		if jobID != "" {
+			return leaseLostErr(jobID, owner)
+		}
+		return domain.Permanent(fmt.Errorf("%w: run %s state is not validated", domain.ErrCommitRunNotValidated, runID))
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -2575,7 +2618,41 @@ func nullString(v string) any {
 // Repository methods, which own the SQL.
 func (r *Repository) DB() *sql.DB { return r.db }
 
-func (r *Repository) CreateModelRun(ctx context.Context, assetID, capability, provider, model, inputHash, promptVersion, schemaVersion, requestJSON string) (string, bool, error) {
+func leaseParams(args []string) (string, string) {
+	if len(args) >= 2 {
+		return args[len(args)-2], args[len(args)-1]
+	}
+	return "", ""
+}
+
+func leaseGuard(ctx context.Context, exec interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, jobID, assetID, owner string) error {
+	if jobID == "" && owner == "" {
+		return nil
+	}
+	now := formatTime(time.Now().UTC())
+	res, err := exec.ExecContext(ctx, `UPDATE jobs SET updated_at=updated_at WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?`, jobID, assetID, owner, now)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return leaseLostErr(jobID, owner)
+	}
+	return nil
+}
+
+func (r *Repository) CreateModelRun(ctx context.Context, assetID, capability, provider, model, inputHash, promptVersion, schemaVersion, requestJSON string, lease ...string) (string, bool, error) {
+	jobID, owner := leaseParams(lease)
+	if jobID != "" || owner != "" {
+		if err := leaseGuard(ctx, r.db, jobID, assetID, owner); err != nil {
+			return "", false, err
+		}
+	}
 	var existingID, state string
 	err := r.db.QueryRowContext(ctx, `SELECT id,state FROM model_runs WHERE capability=? AND provider=? AND model=? AND input_hash=? AND prompt_version=? AND schema_version=? AND state != 'failed'`, capability, provider, model, inputHash, promptVersion, schemaVersion).Scan(&existingID, &state)
 	if err == nil {
@@ -2589,12 +2666,27 @@ func (r *Repository) CreateModelRun(ctx context.Context, assetID, capability, pr
 	return id, false, err
 }
 
-func (r *Repository) FailModelRun(ctx context.Context, runID, code, message, raw string) error {
-	res, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='failed',raw_response=?,error_code=?,error_message=?,finished_at=? WHERE id=? AND state='running'`, raw, code, message, formatTime(time.Now()), runID)
+func (r *Repository) FailModelRun(ctx context.Context, runID, code, message, raw string, lease ...string) error {
+	jobID, owner := leaseParams(lease)
+	assetID := ""
+	if err := r.db.QueryRowContext(ctx, `SELECT asset_id FROM model_runs WHERE id=?`, runID).Scan(&assetID); err != nil {
+		return err
+	}
+	res, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='failed',raw_response=?,error_code=?,error_message=?,finished_at=? WHERE id=? AND (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?))`, raw, code, message, formatTime(time.Now()), runID, jobID, jobID, assetID, owner, formatTime(time.Now().UTC()))
 	if err != nil {
 		return err
 	}
-	return modelRunTransitionResult(res, domain.ErrModelRunNotRunning, runID)
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 && jobID != "" {
+		return leaseLostErr(jobID, owner)
+	}
+	if n != 1 {
+		return domain.Permanent(fmt.Errorf("%w: run %s", domain.ErrModelRunNotRunning, runID))
+	}
+	return nil
 }
 
 // MarkModelRunCommitted advances a validated run to committed without writing
@@ -2602,63 +2694,53 @@ func (r *Repository) FailModelRun(ctx context.Context, runID, code, message, raw
 // refinement run replaces only the shot rows (ReplaceAssetShots) while the
 // asset-level analysis stays attributed to the run that produced it, so its
 // run record needs the same state transition on its own.
-func (r *Repository) MarkModelRunCommitted(ctx context.Context, runID string) error {
-	res, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND state='validated'`, formatTime(time.Now()), runID)
+func (r *Repository) MarkModelRunCommitted(ctx context.Context, runID string, lease ...string) error {
+	jobID, owner := leaseParams(lease)
+	assetID := ""
+	if err := r.db.QueryRowContext(ctx, `SELECT asset_id FROM model_runs WHERE id=?`, runID).Scan(&assetID); err != nil {
+		return err
+	}
+	res, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND state='validated' AND (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?))`, formatTime(time.Now()), runID, jobID, jobID, assetID, owner, formatTime(time.Now().UTC()))
 	if err != nil {
 		return err
 	}
-	return modelRunTransitionResult(res, domain.ErrCommitRunNotValidated, runID)
-}
-
-func (r *Repository) StageModelRun(ctx context.Context, runID, raw, parsed string) error {
-	res, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='validated',raw_response=?,parsed_json=?,validation_errors=NULL,finished_at=? WHERE id=? AND state='running'`, raw, parsed, formatTime(time.Now()), runID)
-	if err != nil {
-		return err
-	}
-	return modelRunTransitionResult(res, domain.ErrModelRunNotRunning, runID)
-}
-
-func modelRunTransitionResult(res sql.Result, sentinel error, runID string) error {
 	n, err := res.RowsAffected()
 	if err != nil {
 		return err
 	}
+	if n != 1 && jobID != "" {
+		return leaseLostErr(jobID, owner)
+	}
 	if n != 1 {
-		return domain.Permanent(fmt.Errorf("%w: run %s", sentinel, runID))
+		return domain.Permanent(fmt.Errorf("%w: run %s", domain.ErrCommitRunNotValidated, runID))
 	}
 	return nil
 }
 
-// CommitShotRefinement makes refined shots visible only if this run is still
-// validated. The state guard and shot replacement share one transaction so a
-// stale refinement cannot leave canonical shots partially replaced.
-func (r *Repository) CommitShotRefinement(ctx context.Context, assetID, runID string, shots []domain.AssetShot) error {
-	if err := validateAssetShots(shots); err != nil {
+func (r *Repository) StageModelRun(ctx context.Context, runID, raw, parsed string, lease ...string) error {
+	jobID, owner := leaseParams(lease)
+	assetID := ""
+	if err := r.db.QueryRowContext(ctx, `SELECT asset_id FROM model_runs WHERE id=?`, runID).Scan(&assetID); err != nil {
 		return err
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	res, err := r.db.ExecContext(ctx, `UPDATE model_runs SET state='validated',raw_response=?,parsed_json=?,validation_errors=NULL,finished_at=? WHERE id=? AND (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?))`, raw, parsed, formatTime(time.Now()), runID, jobID, jobID, assetID, owner, formatTime(time.Now().UTC()))
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	if err := r.replaceAssetShotsTx(ctx, tx, assetID, runID, shots); err != nil {
-		return err
-	}
-	res, err := tx.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND state='validated'`, formatTime(time.Now()), runID)
+	n, err := res.RowsAffected()
 	if err != nil {
 		return err
 	}
-	if err := modelRunTransitionResult(res, domain.ErrCommitRunNotValidated, runID); err != nil {
-		return err
+	if n != 1 && jobID != "" {
+		return leaseLostErr(jobID, owner)
 	}
-	if err := tx.Commit(); err != nil {
-		return err
+	if n != 1 {
+		return domain.Permanent(fmt.Errorf("%w: run %s", domain.ErrModelRunNotRunning, runID))
 	}
-	r.clearSemanticVectorCache()
 	return nil
 }
 
-func (r *Repository) CommitAnalysis(ctx context.Context, assetID, runID, schemaVersion string, a domain.StructuredAnalysis) error {
+func (r *Repository) CommitAnalysis(ctx context.Context, assetID, runID, schemaVersion string, a domain.StructuredAnalysis, lease ...string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -2666,6 +2748,22 @@ func (r *Repository) CommitAnalysis(ctx context.Context, assetID, runID, schemaV
 	defer tx.Rollback()
 	if err := r.commitAnalysisTx(ctx, tx, assetID, runID, schemaVersion, a); err != nil {
 		return err
+	}
+	jobID, owner := leaseParams(lease)
+	now := formatTime(time.Now().UTC())
+	res, err := tx.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND state='validated' AND (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?))`, now, runID, jobID, jobID, assetID, owner, now)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		if jobID != "" {
+			return leaseLostErr(jobID, owner)
+		}
+		return domain.Permanent(fmt.Errorf("%w: run %s state is not validated", domain.ErrCommitRunNotValidated, runID))
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -2677,7 +2775,7 @@ func (r *Repository) CommitAnalysis(ctx context.Context, assetID, runID, schemaV
 // CommitAnalysisWithShots makes a validated model result visible as one unit:
 // whole-asset analysis, AI tag links, time-bounded shots, FTS, and local
 // discovery vectors either all change or all keep their prior trusted state.
-func (r *Repository) CommitAnalysisWithShots(ctx context.Context, assetID, runID, schemaVersion string, a domain.StructuredAnalysis, shots []domain.AssetShot) error {
+func (r *Repository) CommitAnalysisWithShots(ctx context.Context, assetID, runID, schemaVersion string, a domain.StructuredAnalysis, shots []domain.AssetShot, lease ...string) error {
 	if err := validateAssetShots(shots); err != nil {
 		return err
 	}
@@ -2694,6 +2792,23 @@ func (r *Repository) CommitAnalysisWithShots(ctx context.Context, assetID, runID
 	}
 	if err := r.replaceAssetShotsTx(ctx, tx, assetID, runID, shots); err != nil {
 		return err
+	}
+	jobID, owner := leaseParams(lease)
+	if err := leaseGuard(ctx, tx, jobID, assetID, owner); err != nil {
+		return err
+	}
+	now := formatTime(time.Now().UTC())
+	res, err := tx.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND state='validated' AND (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?))`, now, runID, jobID, jobID, assetID, owner, now)
+	if err != nil {
+		return err
+	}
+	if n, e := res.RowsAffected(); e != nil {
+		return e
+	} else if n != 1 {
+		if jobID != "" {
+			return leaseLostErr(jobID, owner)
+		}
+		return domain.Permanent(fmt.Errorf("%w: run %s state is not validated", domain.ErrCommitRunNotValidated, runID))
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -2731,13 +2846,6 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(asset_id) DO UPDATE 
 	if err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE model_runs SET state='committed',committed_at=? WHERE id=? AND state='validated'`, formatTime(time.Now()), runID)
-	if err != nil {
-		return err
-	}
-	if err := modelRunTransitionResult(res, domain.ErrCommitRunNotValidated, runID); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -2750,12 +2858,26 @@ func (r *Repository) GetSpeechClassification(ctx context.Context, assetID string
 	return &c, err
 }
 
-func (r *Repository) SaveTranscript(ctx context.Context, assetID, provider, model, inputHash string, t domain.Transcript) error {
+func (r *Repository) SaveTranscript(ctx context.Context, assetID, provider, model, inputHash string, t domain.Transcript, lease ...string) error {
 	segments, _ := json.Marshal(t.Segments)
-	_, err := r.db.ExecContext(ctx, `INSERT INTO transcripts(id,asset_id,provider,model,input_hash,language,full_text,segments_json,raw_response,status,created_at)
-VALUES(?,?,?,?,?,?,?,?,?,'succeeded',?) ON CONFLICT(asset_id,input_hash) DO UPDATE SET language=excluded.language,full_text=excluded.full_text,segments_json=excluded.segments_json,raw_response=excluded.raw_response,status='succeeded'`,
-		idgen.New(), assetID, provider, model, inputHash, t.Language, t.Text, string(segments), t.RawResponse, formatTime(time.Now().UTC()))
-	return err
+	jobID, owner := leaseParams(lease)
+	now := formatTime(time.Now().UTC())
+	res, err := r.db.ExecContext(ctx, `INSERT INTO transcripts(id,asset_id,provider,model,input_hash,language,full_text,segments_json,raw_response,status,created_at)
+SELECT ?,?,?,?,?,?,?,?,?, 'succeeded',? WHERE (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?)) ON CONFLICT(asset_id,input_hash) DO UPDATE SET language=excluded.language,full_text=excluded.full_text,segments_json=excluded.segments_json,raw_response=excluded.raw_response,status='succeeded'`,
+		idgen.New(), assetID, provider, model, inputHash, t.Language, t.Text, string(segments), t.RawResponse, now, jobID, jobID, assetID, owner, now)
+	if err != nil {
+		return err
+	}
+	if jobID != "" {
+		n, e := res.RowsAffected()
+		if e != nil {
+			return e
+		}
+		if n != 1 {
+			return leaseLostErr(jobID, owner)
+		}
+	}
+	return nil
 }
 
 func (r *Repository) GetTranscript(ctx context.Context, assetID string) (*domain.Transcript, error) {
