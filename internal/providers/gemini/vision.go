@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -120,7 +119,7 @@ func (v *Vision) PrepareVideo(ctx context.Context, req common.PrepareVideoReques
 	if uploadResp.StatusCode/100 != 2 {
 		return common.PreparedVideo{}, common.ReadErrorWithSecret(uploadResp, v.Endpoint.APIKey)
 	}
-	raw, err := io.ReadAll(uploadResp.Body)
+	raw, err := common.ReadBody(uploadResp.Body)
 	if err != nil {
 		return common.PreparedVideo{}, err
 	}
@@ -238,7 +237,7 @@ func (v *Vision) analyzeNative(ctx context.Context, req videoanalysis.Input, pro
 	if resp.StatusCode/100 != 2 {
 		return videoanalysis.Result{}, "", common.ReadErrorWithSecret(resp, v.Endpoint.APIKey)
 	}
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := common.ReadBody(resp.Body)
 	if err != nil {
 		return videoanalysis.Result{}, "", err
 	}
@@ -286,7 +285,7 @@ func (v *Vision) analyzeOpenAI(ctx context.Context, req videoanalysis.Input, pro
 	if resp.StatusCode/100 != 2 {
 		return videoanalysis.Result{}, "", common.ReadErrorWithSecret(resp, v.Endpoint.APIKey)
 	}
-	raw, _ := io.ReadAll(resp.Body)
+	raw, _ := common.ReadBody(resp.Body)
 	var x struct {
 		Choices []struct {
 			Message struct {

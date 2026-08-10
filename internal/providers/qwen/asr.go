@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -73,7 +72,7 @@ func (a *ASR) Transcribe(ctx context.Context, req common.TranscribeRequest) (dom
 	if resp.StatusCode/100 != 2 {
 		return domain.Transcript{}, common.ReadErrorWithSecret(resp, a.Endpoint.APIKey)
 	}
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := common.ReadBody(resp.Body)
 	if err != nil {
 		return domain.Transcript{}, err
 	}

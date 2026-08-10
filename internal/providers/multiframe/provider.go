@@ -14,7 +14,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -190,7 +189,7 @@ func (p *Provider) chat(ctx context.Context, content []any) (string, string, err
 	if resp.StatusCode/100 != 2 {
 		return "", "", common.ReadErrorWithSecret(resp, p.Endpoint.APIKey)
 	}
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := common.ReadBody(resp.Body)
 	if err != nil {
 		return "", "", err
 	}

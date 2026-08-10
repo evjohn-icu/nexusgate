@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/evjohn-icu/timingdex/internal/providers/common"
@@ -69,7 +68,7 @@ func (p *Provider) Embed(ctx context.Context, inputs []string) ([][]float64, err
 	if resp.StatusCode/100 != 2 {
 		return nil, common.ReadErrorWithSecret(resp, p.Endpoint.APIKey)
 	}
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := common.ReadBody(resp.Body)
 	if err != nil {
 		return nil, err
 	}

@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -109,7 +108,7 @@ func (p *Provider) Analyze(ctx context.Context, input videoanalysis.Input) (vide
 	if resp.StatusCode/100 != 2 {
 		return videoanalysis.Result{}, "", common.ReadErrorWithSecret(resp, p.Endpoint.APIKey)
 	}
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := common.ReadBody(resp.Body)
 	if err != nil {
 		return videoanalysis.Result{}, "", err
 	}

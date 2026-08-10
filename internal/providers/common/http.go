@@ -79,6 +79,10 @@ func (e Endpoint) NewRequest(ctx context.Context, method, path string, body any)
 // keeps an echoed Provider API key from being persisted in full.
 const maxErrorBodyBytes = 2048
 
+// maxProviderBodyBytes prevents a successful relay response from turning into
+// an unbounded allocation before its diagnostic or raw response is redacted.
+const maxProviderBodyBytes = 4 << 20
+
 // StatusError carries the upstream HTTP status alongside the message so the
 // pipeline can classify a failure without matching on error text. Most 4xx are
 // deterministic setup errors; retrying one only spends paid quota again. The
@@ -104,9 +108,18 @@ func (e *StatusError) Error() string {
 func (e *StatusError) HTTPStatusCode() int { return e.StatusCode }
 
 func ReadError(resp *http.Response) error {
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes+1))
+	b, _ := ReadBody(resp.Body)
+	if len(b) > maxErrorBodyBytes+1 {
+		b = b[:maxErrorBodyBytes+1]
+	}
 	body := BoundedString(strings.TrimSpace(string(b)))
 	return &StatusError{StatusCode: resp.StatusCode, Body: body}
+}
+
+// ReadBody reads a provider response with a finite upper bound. Callers that
+// persist or display the result should additionally use BoundedString.
+func ReadBody(body io.Reader) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(body, maxProviderBodyBytes+1))
 }
 
 // ReadErrorWithSecret keeps provider response text useful without allowing an

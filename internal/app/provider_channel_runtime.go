@@ -1233,10 +1233,9 @@ func supportedChannelProvider(capability providerchannels.Capability, name strin
 	}
 }
 
-// redactedError carries a redacted message plus (optionally) a redacted copy
-// of a *common.StatusError found in the original chain. The provider key must
-// not survive anywhere in the returned chain, including inside a wrapped
-// *common.StatusError whose Body is the upstream response -- a relay may echo
+// redactError delegates provider error sanitization to the shared helper. The
+// provider key must not survive anywhere in the returned chain, including
+// inside a status body from a relay that echoed the request.
 func redactError(err error, secret string) error { return common.RedactError(err, secret) }
 
 func redactString(value, secret string) string {

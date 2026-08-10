@@ -288,7 +288,7 @@ func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 			// for an outage, and each of those attempts is a paid call.
 			if errors.Is(err, providerchannels.ErrRouteExhausted) {
 				resumeAt := time.Now().Add(p.routeDeferral)
-				if deferErr := p.repo.DeferJob(ctx, job.ID, worker, resumeAt, domain.JobDeferProviderRouteExhausted, err.Error()); deferErr != nil {
+				if deferErr := p.repo.DeferJob(ctx, job.ID, worker, resumeAt, domain.JobDeferProviderRouteExhausted, persistedErrorMessage(err)); deferErr != nil {
 					if isLeaseLostErr(deferErr) {
 						slog.Warn("job lease reclaimed before it could be deferred; discarding", "job", job.ID, "job_type", job.Type)
 						continue
@@ -307,7 +307,7 @@ func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 			// whole queue down with a full disk.
 			if errors.Is(err, errDiskSpaceLow) {
 				resumeAt := time.Now().Add(diskSpaceRetryDelay)
-				if deferErr := p.repo.DeferJob(ctx, job.ID, worker, resumeAt, domain.JobDeferDiskSpaceLow, err.Error()); deferErr != nil {
+				if deferErr := p.repo.DeferJob(ctx, job.ID, worker, resumeAt, domain.JobDeferDiskSpaceLow, persistedErrorMessage(err)); deferErr != nil {
 					if isLeaseLostErr(deferErr) {
 						slog.Warn("job lease reclaimed before it could be deferred; discarding", "job", job.ID, "job_type", job.Type)
 						continue
@@ -338,7 +338,7 @@ func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 				continue
 			}
 			if isRetryableJobError(err) && job.AttemptCount < job.MaxAttempts {
-				if retryErr := p.repo.RetryJob(ctx, job.ID, worker, classifyJobFailure(err), err.Error(), retryDelay(job.AttemptCount)); retryErr != nil {
+				if retryErr := p.repo.RetryJob(ctx, job.ID, worker, classifyJobFailure(err), persistedErrorMessage(err), retryDelay(job.AttemptCount)); retryErr != nil {
 					if isLeaseLostErr(retryErr) {
 						slog.Warn("job lease reclaimed before it could be retried; discarding", "job", job.ID, "job_type", job.Type)
 						continue
@@ -355,7 +355,7 @@ func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 			// category rides into jobs.last_error_code with the message, so the
 			// issues view can aggregate this terminal failure without parsing
 			// prose.
-			_ = p.repo.FailJobTerminally(ctx, job.ID, worker, classifyJobFailure(err), err.Error())
+			_ = p.repo.FailJobTerminally(ctx, job.ID, worker, classifyJobFailure(err), persistedErrorMessage(err))
 			if err := sleepContext(ctx, throttle.CooldownAt(time.Now())); err != nil {
 				return executed, err
 			}

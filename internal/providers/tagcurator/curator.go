@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -128,7 +127,7 @@ func (p *Provider) completeJSON(ctx context.Context, system, user string) (strin
 	if resp.StatusCode/100 != 2 {
 		return "", common.ReadErrorWithSecret(resp, p.Endpoint.APIKey)
 	}
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := common.ReadBody(resp.Body)
 	if err != nil {
 		return "", err
 	}
