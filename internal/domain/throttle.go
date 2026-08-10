@@ -64,20 +64,23 @@ type PipelineThrottle struct {
 // MarshalJSON emits only the advisory guide names.
 func (t *PipelineThrottle) UnmarshalJSON(data []byte) error {
 	type throttleJSON PipelineThrottle
-	var value struct {
-		throttleJSON
-		DailyBudget   *float64 `json:"daily_budget"`
-		MonthlyBudget *float64 `json:"monthly_budget"`
+	var fields struct {
+		DailyCostGuide   *float64 `json:"daily_cost_guide"`
+		MonthlyCostGuide *float64 `json:"monthly_cost_guide"`
+		DailyBudget      *float64 `json:"daily_budget"`
+		MonthlyBudget    *float64 `json:"monthly_budget"`
 	}
-	if err := json.Unmarshal(data, &value); err != nil {
+	if err := json.Unmarshal(data, (*throttleJSON)(t)); err != nil {
 		return err
 	}
-	*t = PipelineThrottle(value.throttleJSON)
-	if value.DailyBudget != nil && t.DailyCostGuide == 0 {
-		t.DailyCostGuide = *value.DailyBudget
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
 	}
-	if value.MonthlyBudget != nil && t.MonthlyCostGuide == 0 {
-		t.MonthlyCostGuide = *value.MonthlyBudget
+	if fields.DailyCostGuide == nil && fields.DailyBudget != nil {
+		t.DailyCostGuide = *fields.DailyBudget
+	}
+	if fields.MonthlyCostGuide == nil && fields.MonthlyBudget != nil {
+		t.MonthlyCostGuide = *fields.MonthlyBudget
 	}
 	return nil
 }
