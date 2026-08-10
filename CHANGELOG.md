@@ -17,6 +17,52 @@
 - 设置 API 在一个版本内兼容读取旧的 `daily_budget` 与 `monthly_budget` 字段，
   但响应和页面只使用新的成本参考命名。历史 `budget_exhausted` 持久化类别保留，
   新流程不再产生。
+- **缓存维护 CLI**：新增 `timingdex cache inspect`、`gc`、`verify` 与
+  `repair-derived`。`inspect` 汇总各类缓存、孤儿目录和可重建空间；`verify`
+  双向核对数据库 artifact 行与文件；`gc` 只处理明确指定的 scratch、可重建
+  派生物或孤儿目录，默认仅预览，实际删除必须 `--yes`。数据库、Provider 密钥、
+  原片和 `cache/sources/` 始终受保护；删除可重建派生物会为已完成分析的素材
+  重新排队派生，不会重新计费模型调用。`repair-derived` 可按硬件 profile
+  清除错误派生结果并重新派生，dry-run 不产生副作用，维护期间协调并发 pipeline。
+- **分析提交与 model run 一致性**：model run 的创建、阶段转换和 canonical
+  analysis/shots 写入均受 lease 所有权保护，失去 lease 的执行者不能覆盖新持有者
+  的结果，也不会留下可重复的 model run。迁移 0031 让失败 run 可重试，并以
+  capability/provider/model/input/prompt/schema 组合去重非失败 run；对已有数据的
+  重建可安全执行。
+- **搜索索引维护**：分析成功后幂等地排队 `JobIndex`，`timingdex search rebuild`
+  可离线重建拥有 canonical analysis 或成功 transcript 的资产索引，失败会传播而
+  不是静默吞掉 I/O 错误，且不会重新运行模型。元数据通道采用稳定排序；分页会
+  正确覆盖 `offset+limit` 的候选窗口，不会因为前页偏移而提前截断结果。
+- **Embedding 防护**：文本 embedding 拒绝维度错误、非有限值和无效向量，重建
+  计数只报告实际写入的 shot；embedding provider 的响应与 metadata 通道均有界，
+  embedding 仍只是 retrieval 信号而不是 evidence。`timingdex search
+  rebuild-embeddings` 继续只重建 embedding 层，不重跑 VLM analysis。
+- **Evidence 与短语匹配**：检索中的 CJK 短语改为按完整短语、顺序和可接受的
+  分词边界匹配，部分或乱序 token 只能参与召回，不能升级为 evidence；证据冲突时
+  显式否定优先于正向结构化观察，结果保持 `contradicted`，不会把沉默误报为缺失
+  内容。
+- **素材位置与采集元数据**：迁移 0030 为每个 asset 强制一个 canonical primary
+  location，并按文件存在性与 root 健康状态确定优先级；迁移 0033 保存稳定的
+  probe 文件修改时间，完整扫描才执行删除/重现协调，移动或重新出现的文件不会
+  因路径变化产生错误身份。重新探测时保留更强的采集时间来源和置信度，capture
+  metadata merge 会保留冲突信息而不以较弱来源覆盖较强来源。
+- **Collections 顺序约束**：迁移 0032 将已有 collection shot positions
+  重排为从零开始的连续序列，并加上 collection 内 position 唯一约束；追加和删除
+  在原子操作中维护顺序，不再产生重复或空洞位置。
+- **Worker 信任边界**：heartbeat 不再用自动探测结果覆盖 enrollment 时声明的
+  `provider_operations`；心跳只能更新运行时能力，不能凭空授予 Provider 访问权。
+  WebDAV 请求改为使用 request-local handler，消除并发请求之间共享 Prefix/FileSystem
+  状态造成的竞态与跨空间响应风险。
+- **密钥与凭证安全**：secretstore rekey 改为带 journal 的原子流程，分阶段写入、
+  崩溃恢复，并在失败时保留可恢复状态；旧数据密钥备份到
+  `provider-secrets/store.key.pre-rekey`。Hub/Worker token 与 Worker config 文件
+  现在对非 regular file、symlink 和不安全权限 fail closed，父目录权限也收紧，
+  保存后原子验证。Worker provider proxy 会清除 URL 中的 userinfo/query/fragment、
+  所有 extra-header 值及请求体中的 Provider 凭证，同时保留可分类的错误状态；
+  下游错误写入 job 时也有界，避免上游回显把密钥持久化。
+- **API 输入边界**：JSON 请求采用有界读取和严格尾部解码，尾随 JSON、未消费内容
+  与超大 body 不再被静默接受；路由 inventory/coverage 测试覆盖 catch-all，避免
+  新增 endpoint 遗漏认证或方法边界。
 
 ## v0.28.2 — 2026-08-10
 
