@@ -110,6 +110,8 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 		{http.MethodGet, "/api/v1/hub/worker-setup/context", "trusted", "none", http.StatusForbidden},
 		{http.MethodGet, "/api/v1/hub/worker-binaries/linux-amd64", "trusted", "none", http.StatusForbidden},
 		{http.MethodPost, "/api/v1/hub/worker-setup/script", "admin", "JSON", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/unknown", "catch-all", "none", http.StatusNotFound},
+		{http.MethodPost, "/api/v1/unknown", "catch-all", "none", http.StatusNotFound},
 	}
 	for _, tt := range tests {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
