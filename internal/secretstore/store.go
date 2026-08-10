@@ -322,6 +322,12 @@ func (s *Store) Rekey() error {
 	}
 	j := rekeyJournalData{State: "prepared", CiphertextPath: s.path, CiphertextExisted: ciphertextExisted, KeyPath: keyPath, SnapshotCiphertext: oldCipherSnapshot, SnapshotKey: oldKeySnapshot, StagedCiphertext: cipherTemp, StagedKey: keyTemp}
 	if err := writeJournal(journalPath, j, s.ops); err != nil {
+		// No canonical file has been renamed yet. Remove the journal before its
+		// snapshots so a post-rename journal-write failure cannot leave Open
+		// with an unrecoverable prepared record.
+		if removeErr := s.ops.remove(journalPath); removeErr != nil && !os.IsNotExist(removeErr) {
+			return fmt.Errorf("rekey: write journal: %w; preserve recovery journal: %v", err, removeErr)
+		}
 		_ = s.ops.remove(cipherTemp)
 		_ = s.ops.remove(keyTemp)
 		cleanup()

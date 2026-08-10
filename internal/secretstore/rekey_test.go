@@ -108,6 +108,25 @@ func TestRekeyFailureAfterCiphertextDirectorySyncRecoversOnOpen(t *testing.T) {
 	assertCanonicalBytes(t, dir, oldCiphertext, oldKey)
 }
 
+func TestRekeyPreparedJournalWriteFailureLeavesCanonicalFilesUntouched(t *testing.T) {
+	store, dir, oldCiphertext, oldKey := rekeyFixture(t)
+	var syncs int
+	store.ops = failingRekeyOps(t, func(_, _ string) bool { return false }, func(_ string) bool {
+		syncs++
+		return syncs == 4 // prepared journal directory sync, after its rename
+	})
+	if err := store.Rekey(); err == nil {
+		t.Fatal("Rekey succeeded")
+	}
+	if _, err := Open(dir, "hub-admin-token-for-test"); err != nil {
+		t.Fatalf("Open after prepared journal failure: %v", err)
+	}
+	assertCanonicalBytes(t, dir, oldCiphertext, oldKey)
+	if _, err := os.Stat(filepath.Join(dir, "provider-secrets", rekeyJournal)); !os.IsNotExist(err) {
+		t.Fatalf("prepared journal remains after failed write: %v", err)
+	}
+}
+
 func TestRekeyFailureAfterKeyRenameRecoversOnOpen(t *testing.T) {
 	store, dir, oldCiphertext, oldKey := rekeyFixture(t)
 	store.ops = failingRekeyOps(t, func(_, destination string) bool { return filepath.Base(destination) == keyFilename }, func(string) bool { return false })
