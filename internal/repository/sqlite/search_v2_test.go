@@ -306,10 +306,20 @@ func TestSearchV2MetadataChannelLargeCorpus(t *testing.T) {
 	if len(first) != 1200 {
 		t.Fatalf("large metadata result length = %d, want 1200", len(first))
 	}
+	repeat, err := repo.MetadataRankedShots(ctx, "car", 1200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repeat) != len(first) {
+		t.Fatalf("repeated metadata result length = %d, want %d", len(repeat), len(first))
+	}
 	for i, hit := range first {
 		want := fmt.Sprintf("large-%04d", i)
 		if hit.AssetID != want || hit.Ordinal != 0 {
 			t.Fatalf("result %d = asset %s ordinal %d, want %s/0", i, hit.AssetID, hit.Ordinal, want)
+		}
+		if repeat[i].ID != hit.ID || repeat[i].AssetID != hit.AssetID || repeat[i].Ordinal != hit.Ordinal {
+			t.Fatalf("repeated metadata result differs at %d", i)
 		}
 	}
 	second, err := repo.MetadataRankedShots(ctx, "car", 37)

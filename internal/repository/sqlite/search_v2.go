@@ -181,7 +181,7 @@ func (r *Repository) MetadataRankedShots(ctx context.Context, q string, limit in
 			ascii[token] = true
 		}
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT a.id,COALESCE(l.relative_path,'') FROM assets a LEFT JOIN asset_locations l ON l.id=(SELECT l2.id FROM asset_locations l2 JOIN library_roots lr ON lr.id=l2.root_id WHERE l2.asset_id=a.id AND l2.is_primary=1 AND l2.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l2.last_seen_at DESC,lr.created_at,lr.id,l2.relative_path,l2.id LIMIT 1)`)
+	rows, err := r.db.QueryContext(ctx, `SELECT a.id,COALESCE(l.relative_path,'') FROM assets a LEFT JOIN asset_locations l ON l.id=(SELECT l2.id FROM asset_locations l2 JOIN library_roots lr ON lr.id=l2.root_id WHERE l2.asset_id=a.id AND l2.is_primary=1 AND l2.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY a.id,l2.last_seen_at DESC,lr.created_at,lr.id,l2.relative_path,l2.id LIMIT 1) ORDER BY a.id`)
 	if err != nil {
 		return nil, err
 	}
