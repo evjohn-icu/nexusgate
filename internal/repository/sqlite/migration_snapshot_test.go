@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // preSnapshotFiles lists the pre-migration snapshot files that exist beside a
@@ -240,5 +242,179 @@ func TestMigrationSnapshotRestoresCorruptedDatabase(t *testing.T) {
 	}
 	if applied == 0 {
 		t.Fatal("restored database has no schema_migrations rows after re-migration")
+	}
+}
+
+func TestMigrationSnapshotSameSizeCorruptionIsReplaced(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "timingdex.db")
+	repo, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { repo.Close() })
+	if err := repo.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	removeNewestMigration(t, repo)
+	snapshotPath, err := repo.preMigrationSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(snapshotPath, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Preserve the file length while destroying SQLite's file header. This is
+	// deterministic: Open/Ping must reject the candidate before replacement.
+	garbage := make([]byte, 16)
+	for i := range garbage {
+		garbage[i] = 0xAA
+	}
+	if _, err := f.WriteAt(garbage, 0); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Do not let a sidecar preserve the pre-corruption database during the
+	// validation open; the candidate itself must be rejected.
+	_ = os.Remove(snapshotPath + "-wal")
+	_ = os.Remove(snapshotPath + "-shm")
+	afterCorruption, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterCorruption) != len(before) {
+		t.Fatalf("corrupting snapshot changed its size from %d to %d", len(before), len(afterCorruption))
+	}
+	if err := validateSnapshot(snapshotPath); err == nil {
+		t.Fatal("same-size corrupt snapshot passed integrity validation")
+	}
+	if _, err := repo.preMigrationSnapshot(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(replacement) == string(afterCorruption) {
+		t.Fatalf("same-size corrupt snapshot was not replaced (first bytes %x)", replacement[:16])
+	}
+	if err := validateSnapshot(snapshotPath); err != nil {
+		t.Fatalf("replaced snapshot integrity_check: %v", err)
+	}
+}
+
+func TestMigrationSnapshotUsesConsistentWALState(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "timingdex.db")
+	repo, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { repo.Close() })
+	if err := repo.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	removeNewestMigration(t, repo)
+	for _, path := range preSnapshotFiles(t, dir, "timingdex.db") {
+		if err := os.Remove(filepath.Join(dir, path)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := repo.db.Exec(`CREATE TABLE wal_snapshot_test (value TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.Exec(`INSERT INTO wal_snapshot_test(value) VALUES('committed in WAL')`); err != nil {
+		t.Fatal(err)
+	}
+	snapshotPath, err := repo.preMigrationSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup, err := Open(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backup.Close()
+	var value string
+	if err := backup.db.QueryRow(`SELECT value FROM wal_snapshot_test`).Scan(&value); err != nil {
+		t.Fatal(err)
+	}
+	if value != "committed in WAL" {
+		t.Fatalf("snapshot WAL value = %q", value)
+	}
+}
+
+func TestConcurrentMigrateAppliesEachMigrationOnce(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "timingdex.db")
+	first, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Open(dbPath)
+	if err != nil {
+		first.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { first.Close(); second.Close() })
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	oldHook := migrationPauseAfterLock
+	migrationPauseAfterLock = func() {
+		once.Do(func() {
+			close(locked)
+			<-release
+		})
+	}
+	t.Cleanup(func() { migrationPauseAfterLock = oldHook })
+	results := make(chan error, 2)
+	go func() { results <- first.Migrate(context.Background()) }()
+	select {
+	case <-locked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first migrator did not acquire migration lock")
+	}
+	go func() { results <- second.Migrate(context.Background()) }()
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	for i := 0; i < 2; i++ {
+		if err := <-results; err != nil {
+			t.Fatalf("concurrent Migrate: %v", err)
+		}
+	}
+	var count int
+	if err := first.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := fs.ReadDir(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
+			want++
+		}
+	}
+	if count != want {
+		t.Fatalf("schema_migrations count = %d, want %d", count, want)
+	}
+	if err := first.IntegrityCheck(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err := first.firstPendingMigration(context.Background()); err != nil {
+		t.Fatal(err)
+	} else if pending != "" {
+		t.Fatalf("first pending migration = %q, want empty", pending)
 	}
 }
