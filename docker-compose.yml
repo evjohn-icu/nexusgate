@@ -70,7 +70,7 @@ services:
         read_only: true
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "case \"$${TIMINGDEX_TLS_MODE:-auto}\" in off) curl -sf http://localhost:8787/api/v1/health ;; *) curl -ksf https://localhost:8787/api/v1/health ;; esac || exit 1"]
+      test: ["CMD-SHELL", "case \"$${TIMINGDEX_TLS_MODE:-auto}\" in [oO][fF][fF]) curl -sf http://localhost:8787/api/v1/health ;; *) curl -ksf https://localhost:8787/api/v1/health ;; esac || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

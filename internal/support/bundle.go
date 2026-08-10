@@ -261,26 +261,32 @@ func sanitizeConfigValue(node any) {
 				continue
 			}
 			if pathConfigKey[strings.ToLower(key)] {
-				if text, ok := child.(string); ok && text != "" && filepath.IsAbs(text) {
-					v[key] = filepath.Base(text)
+				if text, ok := child.(string); ok && text != "" {
+					v[key] = sanitizeConfigPath(text)
 				}
+				sanitizeConfigValue(child)
 				continue
 			}
 			sanitizeConfigValue(child)
 		}
 	case []any:
 		for i := range v {
-			// A bare absolute path inside a list (e.g. an ffmpeg args array
-			// carrying an input path) leaks the Hub box's layout the same way
-			// a command field does. filepath.IsAbs keeps URLs out — nothing
-			// with a scheme matches.
-			if text, ok := v[i].(string); ok && filepath.IsAbs(text) {
-				v[i] = filepath.Base(text)
+			// A bare absolute path inside a list (e.g. an ffmpeg args array)
+			// must be sanitized independently of the host operating system.
+			if text, ok := v[i].(string); ok {
+				v[i] = sanitizeConfigPath(text)
 				continue
 			}
 			sanitizeConfigValue(v[i])
 		}
 	}
+}
+
+func sanitizeConfigPath(text string) string {
+	if filepath.IsAbs(text) || isWindowsAbsolute(text) {
+		return crossPlatformBase(text)
+	}
+	return text
 }
 
 // absPathToken matches a whole absolute path inside prose: a POSIX path

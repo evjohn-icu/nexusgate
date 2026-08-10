@@ -68,8 +68,9 @@ func TestSupportBundleRedactsSecretsAndBasenames(t *testing.T) {
 			},
 			Alignment: config.AlignmentConfig{
 				Command: "/opt/timingdex/bin/timingdex-align",
-				Args:    []string{"-i", "/mnt/nas/clips"},
+				Args:    []string{"-i", "/mnt/nas/clips", `C:\Users\ev\clips\input.mp4`, "https://example.test/media/input.mp4"},
 			},
+			ShotDetection: config.ShotDetectionConfig{Args: []string{`D:\Footage\nested\cut.mp4`}},
 		},
 		HubTLS:   config.HubTLSConfig{Mode: "files", CertificateFile: "/etc/timingdex/tls.crt", KeyFile: "/etc/timingdex/tls.key"},
 		Hardware: media.HardwareConfig{Mode: "auto", Device: "/dev/dri/renderD128", AllowFallback: true, ProxyBitrateKbps: 1800},
@@ -145,8 +146,12 @@ func TestSupportBundleRedactsSecretsAndBasenames(t *testing.T) {
 	if got := align["command"]; got != "timingdex-align" {
 		t.Errorf("config.sanitized.json alignment.command = %v, want basename timingdex-align", got)
 	}
-	if args, ok := align["args"].([]any); !ok || len(args) != 2 || args[0] != "-i" || args[1] != "clips" {
-		t.Errorf("config.sanitized.json alignment.args = %v, want [-i clips] (absolute path basenamed)", args)
+	if args, ok := align["args"].([]any); !ok || len(args) != 4 || args[0] != "-i" || args[1] != "clips" || args[2] != "input.mp4" || args[3] != "https://example.test/media/input.mp4" {
+		t.Errorf("config.sanitized.json alignment.args = %v, want cross-platform basenames with URL preserved", args)
+	}
+	shot := sanitized["providers"].(map[string]any)["shot_detection"].(map[string]any)
+	if args, ok := shot["args"].([]any); !ok || len(args) != 1 || args[0] != "cut.mp4" {
+		t.Errorf("config.sanitized.json shot_detection.args = %v, want [cut.mp4]", args)
 	}
 	tls := sanitized["hub_tls"].(map[string]any)
 	if got := tls["certificate_file"]; got != "tls.crt" {
