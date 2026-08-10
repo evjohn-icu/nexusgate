@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/evjohn-icu/timingdex/internal/config"
 	"github.com/evjohn-icu/timingdex/internal/domain"
@@ -13,6 +15,19 @@ import (
 	videoproviders "github.com/evjohn-icu/timingdex/internal/providers/video"
 	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 )
+
+type failIndexEnqueueOnceRepo struct {
+	*sqlite.Repository
+	failed bool
+}
+
+func (r *failIndexEnqueueOnceRepo) EnqueueJob(ctx context.Context, assetID string, typ domain.JobType, inputHash string, priority int) error {
+	if typ == domain.JobIndex && !r.failed {
+		r.failed = true
+		return errors.New("injected index enqueue failure")
+	}
+	return r.Repository.EnqueueJob(ctx, assetID, typ, inputHash, priority)
+}
 
 // reanalysisVideoProvider answers analyze and tags its response so the test
 // can tell which run's shots landed in the canonical tables.
@@ -162,6 +177,95 @@ func TestReanalysisProducesNewCanonicalRunKeepsOldAuditable(t *testing.T) {
 	if len(hits) != 1 {
 		t.Fatalf("search not rebuilt for reanalysis: %+v", hits)
 	}
+}
+
+func TestCachedAnalysisStillEnqueuesIndex(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	repo, err := sqlite.Open(filepath.Join(dir, "cached-analysis.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	footage := filepath.Join(dir, "footage")
+	if err := os.MkdirAll(footage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := repo.CreateLibraryRoot(ctx, footage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetID := seedAnalyzeReadyAsset(t, repo, root, "cached")
+	analyzeHash := hashStrings("cached", "analyze")
+	runID, cached, err := repo.CreateModelRun(ctx, assetID, "vision", "fixture-video", "fixture-v", analyzeHash, "footage-analysis-v4", "asset-analysis/v2", `{}`)
+	if err != nil || cached {
+		t.Fatalf("seed run id=%q cached=%v err=%v", runID, cached, err)
+	}
+	if err := repo.StageModelRun(ctx, runID, `{}`, `{"summary":"cached"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CommitAnalysisWithShots(ctx, assetID, runID, "asset-analysis/v2", domain.StructuredAnalysis{Summary: "cached"}, []domain.AssetShot{{StartMS: 0, EndMS: 1000, Description: "cached shot"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.EnqueueJob(ctx, assetID, domain.JobAnalyze, analyzeHash, 30); err != nil {
+		t.Fatal(err)
+	}
+	pipeline := NewPipeline(repo, t.TempDir(), nil, nil, &reanalysisVideoProvider{label: "unused"}, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
+	if _, err := pipeline.RunUntilIdle(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertSingleIndexJob(t, repo, assetID, analyzeHash)
+}
+
+func TestIndexEnqueueRetryDeduplicatesSuccessor(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	repo, err := sqlite.Open(filepath.Join(dir, "index-retry.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	footage := filepath.Join(dir, "footage")
+	if err := os.MkdirAll(footage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := repo.CreateLibraryRoot(ctx, footage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetID := seedAnalyzeReadyAsset(t, repo, root, "index-retry")
+	analyzeHash := hashStrings("retry", "analyze")
+	wrapped := &failIndexEnqueueOnceRepo{Repository: repo}
+	if err := repo.EnqueueJob(ctx, assetID, domain.JobAnalyze, analyzeHash, 30); err != nil {
+		t.Fatal(err)
+	}
+	pipeline := NewPipeline(wrapped, t.TempDir(), nil, nil, &reanalysisVideoProvider{label: "retry"}, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
+	for i := 0; i < 20; i++ {
+		if _, err := pipeline.RunUntilIdle(ctx); err != nil {
+			t.Fatal(err)
+		}
+		jobs, err := repo.ListJobs(ctx, 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ready := true
+		for _, job := range jobs {
+			if job.AssetID == assetID && (job.State != domain.JobSucceeded && (job.Type == domain.JobAnalyze || job.Type == domain.JobIndex)) {
+				ready = false
+			}
+		}
+		if ready {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	assertSingleIndexJob(t, repo, assetID, analyzeHash)
 }
 
 // Selector resolution: --asset validates existence, --root resolves every

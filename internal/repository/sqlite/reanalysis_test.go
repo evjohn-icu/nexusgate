@@ -288,6 +288,26 @@ func TestRebuildAllSearchRepairsMissingStaleRowsAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRebuildAllSearchContinuesAfterBrokenAsset(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepo(t)
+	good := seedCommittedAsset(t, repo, "rebuild-good")
+	broken := seedCommittedAsset(t, repo, "rebuild-broken")
+	if _, err := repo.db.ExecContext(ctx, `DELETE FROM asset_locations WHERE asset_id=?`, broken); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt, failures, err := repo.RebuildAllSearch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebuilt != 1 || len(failures) != 1 || failures[0] == "" {
+		t.Fatalf("rebuild result = %d, %v; want one success and one per-asset failure", rebuilt, failures)
+	}
+	if hits, err := repo.Search(ctx, "summary", 10); err != nil || len(hits) != 1 || hits[0] != good {
+		t.Fatalf("good asset was not rebuilt after broken asset: hits=%v err=%v", hits, err)
+	}
+}
+
 // seedCommittedAsset creates an asset that looks exactly like one whose
 // analysis chain completed: primary location, media metadata, derived
 // artifacts, and canonical asset_analysis + asset_shots rows (each backed by
