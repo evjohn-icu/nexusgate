@@ -266,6 +266,20 @@ func (r *Repository) Migrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// SQLite ignores PRAGMA foreign_keys changes inside a transaction.  The
+	// model_runs rebuild drops a table referenced by canonical rows, so disable
+	// enforcement on the dedicated migration connection before starting the
+	// batch. The check after re-enabling enforcement catches damaged
+	// relationships before startup continues.
+	if _, err := lockConn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		return err
+	}
+	foreignKeysRestored := false
+	defer func() {
+		if !foreignKeysRestored {
+			_, _ = lockConn.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`)
+		}
+	}()
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
 			continue
@@ -289,6 +303,17 @@ func (r *Repository) Migrate(ctx context.Context) error {
 		return err
 	}
 	committed = true
+	if _, err := lockConn.ExecContext(ctx, `PRAGMA foreign_keys=ON`); err != nil {
+		return err
+	}
+	foreignKeysRestored = true
+	var violations int
+	if err := lockConn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&violations); err != nil {
+		return err
+	}
+	if violations != 0 {
+		return fmt.Errorf("migration left %d foreign key violations", violations)
+	}
 	return r.ensureCJKBigramFTS(ctx)
 }
 

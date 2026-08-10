@@ -1,5 +1,3 @@
-PRAGMA foreign_keys=OFF;
-
 CREATE TABLE model_runs_new (
     id TEXT PRIMARY KEY,
     asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
@@ -55,4 +53,3 @@ ALTER TABLE asset_analysis_new RENAME TO asset_analysis;
 CREATE INDEX idx_model_runs_asset ON model_runs(asset_id, capability, state);
 CREATE INDEX idx_model_runs_cache ON model_runs(capability, input_hash, state);
 CREATE UNIQUE INDEX idx_model_runs_dedup ON model_runs(capability, provider, model, input_hash, prompt_version, schema_version) WHERE state != 'failed';
-PRAGMA foreign_keys=ON;

@@ -42,6 +42,22 @@ func TestModelRunMigration0031UpgradeAndForeignKeys(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	now := formatTime(time.Now())
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO library_roots(id,path,created_at,updated_at) VALUES('populated-root','/populated',?,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES('populated-asset','populated-fingerprint',42,'analyzed',?,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO model_runs(id,asset_id,capability,provider,model,input_hash,prompt_version,schema_version,state,request_json,raw_response,parsed_json,validation_errors,error_code,error_message,token_input,token_output,started_at,finished_at,committed_at) VALUES('populated-run','populated-asset','vision','provider','model','populated-hash','p1','s1','committed','{"request":true}','{"raw":true}','{"parsed":true}',NULL,NULL,NULL,11,22,?,?,?)`, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO asset_analysis(asset_id,source_run_id,schema_version,asset_type,shot_size,camera_motion,audio_type,lighting,people_count,has_speech,quality,summary,scene_tags_json,subjects_json,mood_tags_json,usable_as_json,quality_flags_json,extra_tags_json,editorial_reason,updated_at) VALUES('populated-asset','populated-run','s1','b-roll','wide','static','none','daylight',2,0,'good','preserved summary','["scene"]','["subject"]','["mood"]','["use"]','["quality"]','["extra"]','reason',?)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO asset_shots(id,asset_id,source_run_id,ordinal,start_ms,end_ms,description,tags_json,objects_json,actions_json,mood_json,confidence,created_at) VALUES('populated-shot','populated-asset','populated-run',3,100,900,'preserved shot','["tag"]','["object"]','["action"]','["mood"]',0.75,?)`, now); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := repo.Migrate(ctx); err != nil {
 		t.Fatal(err)
@@ -54,7 +70,26 @@ func TestModelRunMigration0031UpgradeAndForeignKeys(t *testing.T) {
 		t.Fatalf("foreign key violations after 0031 migration: %d", violations)
 	}
 
-	now := formatTime(time.Now())
+	var runState, requestJSON, rawResponse, parsedJSON string
+	var tokenInput, tokenOutput int
+	if err := repo.db.QueryRowContext(ctx, `SELECT state,request_json,raw_response,parsed_json,token_input,token_output FROM model_runs WHERE id='populated-run'`).Scan(&runState, &requestJSON, &rawResponse, &parsedJSON, &tokenInput, &tokenOutput); err != nil {
+		t.Fatal(err)
+	}
+	if runState != "committed" || requestJSON != `{"request":true}` || rawResponse != `{"raw":true}` || parsedJSON != `{"parsed":true}` || tokenInput != 11 || tokenOutput != 22 {
+		t.Fatalf("populated model run changed: state=%s request=%s raw=%s parsed=%s tokens=%d/%d", runState, requestJSON, rawResponse, parsedJSON, tokenInput, tokenOutput)
+	}
+	var analysisSummary, shotDescription string
+	var shotRunID, analysisRunID string
+	if err := repo.db.QueryRowContext(ctx, `SELECT source_run_id,summary FROM asset_analysis WHERE asset_id='populated-asset'`).Scan(&analysisRunID, &analysisSummary); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.db.QueryRowContext(ctx, `SELECT source_run_id,description FROM asset_shots WHERE id='populated-shot'`).Scan(&shotRunID, &shotDescription); err != nil {
+		t.Fatal(err)
+	}
+	if analysisRunID != "populated-run" || analysisSummary != "preserved summary" || shotRunID != "populated-run" || shotDescription != "preserved shot" {
+		t.Fatalf("populated relationships changed: analysis=%s/%s shot=%s/%s", analysisRunID, analysisSummary, shotRunID, shotDescription)
+	}
+
 	if _, err := repo.db.ExecContext(ctx, `INSERT INTO library_roots(id,path,created_at,updated_at) VALUES('migration-root','/migration',?,?)`, now, now); err != nil {
 		t.Fatal(err)
 	}
