@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- v0.30 review-fix round 的目标与升级/运维检查见
+  [`docs/v0.30-review-fix-round.md`](docs/v0.30-review-fix-round.md)。各领域细节仍见
+  成本参考值、部署、Worker setup 路径脱敏和 Search evidence correctness 文档。
 - Analysis now enqueues an idempotent `JobIndex` successor after every successful analyzer
   path, keeping asset-level FTS in sync without rebuilding it inside the canonical commit.
   Added offline `timingdex search rebuild` to repair all assets with canonical analysis or
