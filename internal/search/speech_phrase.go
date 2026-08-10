@@ -67,7 +67,7 @@ func matchSpeechComponents(cs []speechComponent, spans []domain.AlignmentWord, p
 				}
 				joined += strings.ToLower(spans[i].Text)
 				pos = i + 1
-				if strings.Contains(joined, component.text) {
+				if joined == component.text {
 					previous = &spans[i]
 					break
 				}
@@ -75,7 +75,7 @@ func matchSpeechComponents(cs []speechComponent, spans []domain.AlignmentWord, p
 					return false
 				}
 			}
-			if previous == nil || !strings.Contains(joined, component.text) {
+			if previous == nil || joined != component.text {
 				return false
 			}
 			continue
