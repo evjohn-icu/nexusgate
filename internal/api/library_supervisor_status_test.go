@@ -25,7 +25,7 @@ func newSupervisorHandler(t *testing.T, supervisor config.LibrarySupervisorConfi
 	if err := repo.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}, LibrarySupervisor: supervisor})
+	service, err := app.NewService(repo, config.Config{DataDir: secureTestDataDir(t), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}, LibrarySupervisor: supervisor})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -123,7 +123,7 @@ type chainEnv struct {
 func newChainEnv(t *testing.T) *chainEnv {
 	t.Helper()
 	ctx := context.Background()
-	dir := t.TempDir()
+	dir := secureDataDir(t)
 	repo, err := sqlite.Open(filepath.Join(dir, "e2e.db"))
 	if err != nil {
 		t.Fatal(err)

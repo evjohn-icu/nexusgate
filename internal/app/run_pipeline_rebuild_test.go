@@ -34,7 +34,7 @@ func (r *countingRebuildRepo) RebuildAutomaticShootSessions(context.Context, str
 func newCountingRebuildService(t *testing.T) (*Service, *countingRebuildRepo, string) {
 	t.Helper()
 	ctx := context.Background()
-	dir := t.TempDir()
+	dir := secureDataDir(t)
 	repo, err := sqlite.Open(filepath.Join(dir, "rebuild.db"))
 	if err != nil {
 		t.Fatal(err)

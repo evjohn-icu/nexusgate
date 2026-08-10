@@ -108,7 +108,7 @@ func TestProviderChannelCreateNonValidationFailureNotEchoed(t *testing.T) {
 		t.Fatal(err)
 	}
 	stub := &upsertFailingRepo{Repository: repo, err: errors.New(sentinel)}
-	service, err := app.NewService(stub, config.Config{DataDir: t.TempDir(), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	service, err := app.NewService(stub, config.Config{DataDir: secureTestDataDir(t), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -45,7 +45,7 @@ func TestWorkerCompleteJobRejectsInvalidState(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -111,7 +111,7 @@ func TestWorkerCompleteJobReportsLeaseLostAs409(t *testing.T) {
 	}
 
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -151,7 +151,7 @@ func TestSetWorkerJobAssignmentRejectsInvalidMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -186,7 +186,7 @@ func TestSetWorkerJobAssignmentRejectsEmptyWorkerIDForNonAnyMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -219,7 +219,7 @@ func TestSetWorkerJobAssignmentRejectsNonExistentJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -251,7 +251,7 @@ func TestSaveCollectionRejectsEmptyName(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -286,7 +286,7 @@ func TestSaveCollectionRejectsTooLongName(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -318,7 +318,7 @@ func TestSaveCollectionRejectsTooLongDescription(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -351,7 +351,7 @@ func TestServeArtifactRejectsPathOutsideDataDir(t *testing.T) {
 	if err := repo.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	dataDir := t.TempDir()
+	dataDir := secureTestDataDir(t)
 	evilPath := dataDir + "-evil/secret.txt"
 	if err := os.MkdirAll(filepath.Dir(evilPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -462,7 +462,7 @@ func TestServeArtifactServesValidPathInsideDataDir(t *testing.T) {
 	if err := repo.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	dataDir := t.TempDir()
+	dataDir := secureTestDataDir(t)
 	cacheDir := filepath.Join(dataDir, "cache")
 	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -543,7 +543,7 @@ func TestWorkerCompleteJobRejectsTrailingBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -593,7 +593,7 @@ func TestWorkerCompleteJobRejectsOversizedBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -639,7 +639,7 @@ func TestWorkerHeartbeatRejectsTrailingBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -688,7 +688,7 @@ func TestWorkerProgressRejectsOversizedBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -733,7 +733,7 @@ func TestWorkerProgressRejectsTrailingBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -782,7 +782,7 @@ func TestWorkerCompleteJobRejectsSmallTrailingByte(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -832,7 +832,7 @@ func TestWorkerCompleteJobRejectsSecondJSONValue(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -881,7 +881,7 @@ func TestWorkerHeartbeatRejectsSmallTrailingByte(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -928,7 +928,7 @@ func TestWorkerProgressRejectsSecondJSONValue(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -967,7 +967,7 @@ func TestEnrollWorkerRejectsTrailingBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -1003,7 +1003,7 @@ func TestAgentCapabilitiesDeniedActionsCoverAllAdminRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -1053,7 +1053,7 @@ func TestAgentTokenCannotAccessNewAdminActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {
@@ -1100,7 +1100,7 @@ func TestServeArtifactServesFromCacheDirOutsideDataDir(t *testing.T) {
 	}
 
 	// Separate DataDir and CacheDir — CacheDir is not under DataDir.
-	dataDir := t.TempDir()
+	dataDir := secureTestDataDir(t)
 	cacheDir := t.TempDir()
 
 	assetID := scanOneAsset(t, repo, "cache-outside-clip.mov")
@@ -1165,7 +1165,7 @@ func TestSaveCollectionRejectsDuplicateName(t *testing.T) {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{
-		DataDir:  t.TempDir(),
+		DataDir:  secureTestDataDir(t),
 		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
 	})
 	if err != nil {

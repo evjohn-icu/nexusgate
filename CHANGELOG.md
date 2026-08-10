@@ -26,6 +26,11 @@
   failures instead of returning an empty list. The wizard keeps the admin token in
   page memory while loading those details.
 - Bumped the agent API contract version to `v0.14` for the changed read contract.
+- **Token and credential file hardening**: Hub admin/agent tokens and Worker
+  configs now use raw bearer tokens in exact-mode files, reuse them across
+  restarts, reject symlinks/non-regular files/insecure permissions, and commit
+  atomically with post-verification and parent-directory fsync. Corrected the
+  access-control specification so only pairing/node token digests are stored.
 
 ## v0.28.1-alpha — 2026-08-09（发布前修复）
 

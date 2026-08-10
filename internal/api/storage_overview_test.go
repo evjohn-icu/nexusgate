@@ -22,7 +22,7 @@ import (
 // (database, cache classification) are observable rather than zeroed.
 func storageOverviewService(t *testing.T, dbName string) (*app.Service, *sqlite.Repository, string) {
 	t.Helper()
-	dataDir := t.TempDir()
+	dataDir := secureTestDataDir(t)
 	repo, err := sqlite.Open(filepath.Join(dataDir, dbName))
 	if err != nil {
 		t.Fatal(err)

@@ -22,7 +22,10 @@ import (
 // only real SQL can produce (see CLAUDE.md's note on in-memory fakes).
 func newDoctorHub(t *testing.T) (*Service, *sqlite.Repository, config.Config) {
 	t.Helper()
-	dataDir := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.Mkdir(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	cfg := config.Config{
 		DataDir:      dataDir,
 		CacheDir:     filepath.Join(dataDir, "cache"),

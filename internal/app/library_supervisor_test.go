@@ -488,7 +488,7 @@ func TestSupervisorReattemptsUnavailableRootAfterNPasses(t *testing.T) {
 func newSupervisedLibrary(t *testing.T, supervisor config.LibrarySupervisorConfig) (*Service, *sqlite.Repository, string) {
 	t.Helper()
 	ctx := context.Background()
-	dir := t.TempDir()
+	dir := secureDataDir(t)
 	repo, err := sqlite.Open(filepath.Join(dir, "supervisor.db"))
 	if err != nil {
 		t.Fatal(err)

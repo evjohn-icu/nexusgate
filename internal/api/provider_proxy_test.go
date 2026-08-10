@@ -54,7 +54,7 @@ func TestWorkerProviderProxyRequiresLeaseAndKeepsKeysServerSide(t *testing.T) {
 		t.Fatalf("lease=%+v err=%v", job, err)
 	}
 
-	service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), Providers: config.ProvidersConfig{
+	service, err := app.NewService(repo, config.Config{DataDir: secureTestDataDir(t), Providers: config.ProvidersConfig{
 		VisionPrimary: "volcengine_video",
 		VolcVideo:     config.ProviderConfig{Enabled: true, BaseURL: upstream.URL, Path: "/v1/chat/completions", APIKey: providerSecret, Model: "vision-v1", AuthHeader: "Authorization", AuthScheme: "Bearer"},
 	}})
@@ -188,7 +188,7 @@ func TestWorkerProviderProxyRejectsMediaAndOversizedBodies(t *testing.T) {
 	if err != nil || job == nil {
 		t.Fatalf("lease=%+v err=%v", job, err)
 	}
-	service, err := app.NewService(repo, config.Config{DataDir: t.TempDir(), Providers: config.ProvidersConfig{VisionPrimary: "volcengine_video", VolcVideo: config.ProviderConfig{Enabled: true, BaseURL: "https://provider.invalid", APIKey: "not-returned", Model: "vision-v1"}}})
+	service, err := app.NewService(repo, config.Config{DataDir: secureTestDataDir(t), Providers: config.ProvidersConfig{VisionPrimary: "volcengine_video", VolcVideo: config.ProviderConfig{Enabled: true, BaseURL: "https://provider.invalid", APIKey: "not-returned", Model: "vision-v1"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

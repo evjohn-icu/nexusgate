@@ -20,7 +20,7 @@ import (
 // a Router directly were green. The wiring must hand the pipeline the
 // pipelineVideo bridge (channel wrapper + legacy router).
 func TestServiceWiringExposesMultiframeRouteThroughTheBridge(t *testing.T) {
-	dir := t.TempDir()
+	dir := secureDataDir(t)
 	ctx := context.Background()
 	repo, err := sqlite.Open(filepath.Join(dir, "wiring.db"))
 	if err != nil {
@@ -69,7 +69,7 @@ func TestServiceWiringExposesMultiframeRouteThroughTheBridge(t *testing.T) {
 // a whole-video vision provider (gemini) must resolve no multiframe route, so
 // the plain analyze path — the channel wrapper — is what the pipeline uses.
 func TestServiceWiringKeepsPlainPathWithoutMultiframeProvider(t *testing.T) {
-	dir := t.TempDir()
+	dir := secureDataDir(t)
 	ctx := context.Background()
 	repo, err := sqlite.Open(filepath.Join(dir, "wiring.db"))
 	if err != nil {

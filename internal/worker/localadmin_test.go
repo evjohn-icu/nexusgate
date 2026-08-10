@@ -16,7 +16,11 @@ import (
 
 func writeWorkerConfig(t *testing.T, config Config) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "worker.json")
+	dir := filepath.Join(t.TempDir(), "config")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "worker.json")
 	if err := SaveConfig(path, config); err != nil {
 		t.Fatal(err)
 	}
@@ -256,6 +260,23 @@ func TestLocalAdminKeepsConfigPrivateAndComplete(t *testing.T) {
 	}
 	if mode := info.Mode().Perm(); mode != fs.FileMode(0o600) {
 		t.Fatalf("worker config mode=%o want 600", mode)
+	}
+}
+
+func TestLocalAdminUpdateKeepsExactConfigPermissions(t *testing.T) {
+	path := writeWorkerConfig(t, enrolledConfig())
+	admin := newTestAdmin(t, path)
+	response := httptest.NewRecorder()
+	admin.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodPut, admin.pathPrefix()+"/config", strings.NewReader(`{"hub_url":"https://nas:8787","token":"new-token"}`)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 || !info.Mode().IsRegular() {
+		t.Fatalf("mode/type=%o/%v", info.Mode().Perm(), info.Mode().IsRegular())
 	}
 }
 

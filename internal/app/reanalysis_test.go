@@ -93,7 +93,7 @@ func seedAnalyzeReadyAsset(t *testing.T, repo *sqlite.Repository, root domain.Li
 // dedup would swallow the re-run entirely.
 func TestReanalysisProducesNewCanonicalRunKeepsOldAuditable(t *testing.T) {
 	ctx := context.Background()
-	dir := t.TempDir()
+	dir := secureDataDir(t)
 	repo, err := sqlite.Open(filepath.Join(dir, "reanalysis.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -273,7 +273,7 @@ func TestIndexEnqueueRetryDeduplicatesSuccessor(t *testing.T) {
 // are rejected.
 func TestResolveReanalysisAssets(t *testing.T) {
 	ctx := context.Background()
-	dir := t.TempDir()
+	dir := secureDataDir(t)
 	repo, err := sqlite.Open(filepath.Join(dir, "resolver.db"))
 	if err != nil {
 		t.Fatal(err)

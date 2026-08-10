@@ -335,7 +335,7 @@ func TestRunSubcommandDispatch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dataDir := t.TempDir()
+			dataDir := secureTestDataDir(t)
 			t.Setenv("TIMINGDEX_DATA_DIR", dataDir)
 			t.Setenv("TIMINGDEX_TLS_MODE", "off")    // avoid auto-generating self-signed certs
 			t.Setenv("TIMINGDEX_LOG_LEVEL", "error") // suppress info output
@@ -358,7 +358,7 @@ func TestRunSubcommandDispatch(t *testing.T) {
 }
 
 func TestRunServeDispatchTLSFilesMissing(t *testing.T) {
-	dataDir := t.TempDir()
+	dataDir := secureTestDataDir(t)
 	t.Setenv("TIMINGDEX_DATA_DIR", dataDir)
 	t.Setenv("TIMINGDEX_TLS_MODE", "files")
 	t.Setenv("TIMINGDEX_TLS_CERT_FILE", filepath.Join(dataDir, "cert.pem"))
@@ -373,7 +373,7 @@ func TestRunServeDispatchTLSFilesMissing(t *testing.T) {
 }
 
 func TestRunRootAdd(t *testing.T) {
-	dataDir := t.TempDir()
+	dataDir := secureTestDataDir(t)
 	rootPath := filepath.Join(dataDir, "footage")
 	if err := os.MkdirAll(rootPath, 0o755); err != nil {
 		t.Fatal(err)

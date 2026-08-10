@@ -233,8 +233,11 @@ Everything lives under `$TIMINGDEX_DATA_DIR`: `timingdex.db`, optional
 `config.json`, `cache/`, `admin-token`, `agent-token`, `provider-secrets/`.
 Deleting that directory is how you reset.
 
-On first start the Hub generates `admin-token` (mode `0600`). Use it only for Hub
-management calls; never put it in Worker configuration or browser storage.
+On first start the Hub generates and persists the raw `admin-token` (exact mode
+`0600`) so the same bearer credential can be recovered after a Hub restart. The
+data directory is exact mode `0700`; the Hub fails closed rather than repairing
+an unsafe directory or token file. Use the token only for Hub management calls;
+never put it in Worker configuration or browser storage.
 
 If jobs failed because a provider was not configured yet, configure it and then:
 
@@ -767,10 +770,11 @@ These are load-bearing, not aspirational.
 - **Provider keys** live only in the encrypted, Hub-only `provider-secrets/`
   store. Never in SQLite, API responses, browser storage, Worker config, logs or
   error strings.
-- **Administrator token** (`admin-token`, `0600`) gates every mutating and
-  administrative route, compared in constant time. New write endpoints default to
-  gated.
-- **Agent token** (`agent-token`, `0600`) is a strictly narrower credential: it is
+- **Administrator token** (`admin-token`, exact `0600`) is a raw bearer credential
+  reused across restarts and gates every mutating and administrative route,
+  compared in constant time. New write endpoints default to gated.
+- **Agent token** (`agent-token`, exact `0600`) follows the same raw-token file
+  contract and restart reuse. It is a strictly narrower credential: it is
   accepted on exactly two routes — create and revise a *draft* Repurpose plan —
   and refused everywhere else. Plan approval and pipeline runs stay
   administrator-only, so `approval_mode: human_required` is enforced by access
