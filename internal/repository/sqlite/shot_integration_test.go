@@ -66,6 +66,72 @@ func TestAssetShotsPersistTimeRangesAndSupportSearch(t *testing.T) {
 	}
 }
 
+func TestCommitAnalysisLeavesAssetSearchForJobIndex(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepo(t)
+	assetID := "asset-index-chain"
+	now := formatTime(time.Now().UTC())
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES(?,?,100,'discovered',?,?)`, assetID, "fp-index-chain", now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO library_roots(id,path,created_at,updated_at) VALUES(?,?,?,?)`, "root-index-chain", "/tmp/index-chain", now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,exists_now,is_primary,last_seen_at) VALUES(?,?,?,?,?,?,1,1,?)`, "loc-index-chain", assetID, "root-index-chain", "clip.mov", "/tmp/index-chain/clip.mov", 1, now); err != nil {
+		t.Fatal(err)
+	}
+	runID, _, err := repo.CreateModelRun(ctx, assetID, "vision", "fixture", "model", "index-analysis", "prompt", "schema", "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.StageModelRun(ctx, runID, `{}`, `{"summary":"old asset term"}`); err != nil {
+		t.Fatal(err)
+	}
+	analysis := domain.StructuredAnalysis{Summary: "old asset term"}
+	shots := []domain.AssetShot{{AssetID: assetID, StartMS: 0, EndMS: 1000, Description: "shot term"}}
+	if err := repo.CommitAnalysisWithShots(ctx, assetID, runID, "schema", analysis, shots); err != nil {
+		t.Fatal(err)
+	}
+	var assetRows, shotRows int
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM asset_search WHERE asset_id=?`, assetID).Scan(&assetRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM asset_shot_search WHERE asset_id=?`, assetID).Scan(&shotRows); err != nil {
+		t.Fatal(err)
+	}
+	if assetRows != 0 || shotRows != 1 {
+		t.Fatalf("after commit asset_search=%d asset_shot_search=%d, want 0 and 1", assetRows, shotRows)
+	}
+	if err := repo.RebuildSearch(ctx, assetID); err != nil {
+		t.Fatal(err)
+	}
+	if hits, err := repo.Search(ctx, "old asset term", 10); err != nil || len(hits) != 1 {
+		t.Fatalf("asset search after index = %v, err=%v", hits, err)
+	}
+	if hits, err := repo.SearchShots(ctx, "shot term", 10); err != nil || len(hits) != 1 {
+		t.Fatalf("shot search after index = %v, err=%v", hits, err)
+	}
+	secondRun, _, err := repo.CreateModelRun(ctx, assetID, "vision", "fixture", "model", "index-analysis-2", "prompt", "schema", "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.StageModelRun(ctx, secondRun, `{}`, `{"summary":"new asset term"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CommitAnalysisWithShots(ctx, assetID, secondRun, "schema", domain.StructuredAnalysis{Summary: "new asset term"}, []domain.AssetShot{{AssetID: assetID, StartMS: 0, EndMS: 1000, Description: "new shot term"}}); err != nil {
+		t.Fatal(err)
+	}
+	if hits, err := repo.Search(ctx, "old asset term", 10); err != nil || len(hits) != 1 {
+		t.Fatalf("asset search before successor index = %v, err=%v; old row is expected to remain until JobIndex", hits, err)
+	}
+	if err := repo.RebuildSearch(ctx, assetID); err != nil {
+		t.Fatal(err)
+	}
+	if hits, err := repo.Search(ctx, "new asset term", 10); err != nil || len(hits) != 1 {
+		t.Fatalf("replacement asset search = %v, err=%v", hits, err)
+	}
+}
+
 func TestCJKShotSearchUsesIndexedBigramsInsteadOfSubstringScan(t *testing.T) {
 	ctx := context.Background()
 	repo, err := Open(filepath.Join(t.TempDir(), "timingdex-cjk-fts.db"))

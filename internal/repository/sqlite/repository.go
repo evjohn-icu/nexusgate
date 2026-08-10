@@ -1557,6 +1557,38 @@ func (r *Repository) RebuildSearch(ctx context.Context, assetID string) error {
 	return tx.Commit()
 }
 
+// RebuildAllSearch repairs the asset-level index from canonical analysis and
+// successful transcript rows. It deliberately continues after an individual
+// asset failure so one stale location cannot hide the rest of the repair.
+func (r *Repository) RebuildAllSearch(ctx context.Context) (int, []string, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT a.id FROM assets a WHERE EXISTS (SELECT 1 FROM asset_analysis an WHERE an.asset_id=a.id) OR EXISTS (SELECT 1 FROM transcripts t WHERE t.asset_id=a.id AND t.status='succeeded') ORDER BY a.id`)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return 0, nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, nil, err
+	}
+	rebuilt := 0
+	var failures []string
+	for _, id := range ids {
+		if err := r.RebuildSearch(ctx, id); err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", id, err))
+			continue
+		}
+		rebuilt++
+	}
+	return rebuilt, failures, nil
+}
+
 // rebuildSearchTx assumes the caller already owns the transaction, so this
 // delete+insert pair can be composed into a larger transaction later without
 // nesting BeginTx calls. RebuildSearch is currently the only caller and it

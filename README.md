@@ -221,11 +221,13 @@ export TIMINGDEX_DATA_DIR="$PWD/.timingdex-dev"
 ./timingdex doctor                        # check ffmpeg, hardware profile, paths
 ./timingdex root add /path/to/footage     # read-only; nothing is written there
 ./timingdex root scan <root-id>           # enqueues idempotent jobs
+./timingdex search rebuild                # rebuild asset-level FTS from canonical rows
 ./timingdex search rebuild-embeddings     # re-embed all shots (after a model switch)
 ./timingdex serve                         # HTTPS by default; prints the Worker fingerprint
 ```
 
-Then open the browser UI and run the queue from `/progress`.
+Then open the browser UI and run the queue from `/progress`. Analysis commits shot-level
+FTS immediately; the successor `JobIndex` rebuilds the asset-level FTS row.
 
 Everything lives under `$TIMINGDEX_DATA_DIR`: `timingdex.db`, optional
 `config.json`, `cache/`, `admin-token`, `agent-token`, `provider-secrets/`.

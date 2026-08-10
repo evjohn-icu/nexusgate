@@ -275,6 +275,7 @@ func TestMultiframeDetectorModeEndToEnd(t *testing.T) {
 	if len(analyzer.requests) != 2 || analyzer.summaryCalls != 1 {
 		t.Fatalf("summary calls = %d, shot calls = %d, want 1 and 2", analyzer.summaryCalls, len(analyzer.requests))
 	}
+	assertSingleIndexJob(t, repo, assetID, hashStrings("mf", "detector"))
 	if len(analyzer.requests[0].Frames) == 0 {
 		t.Fatal("shot call carried no frames")
 	}
@@ -360,6 +361,7 @@ func TestMultiframeTwoPassModeEndToEnd(t *testing.T) {
 	if refinedState != "committed" {
 		t.Fatalf("refinement run state = %q, want committed (its shots are canonical)", refinedState)
 	}
+	assertSingleIndexJob(t, repo, assetID, hashStrings("mf", "twopass"))
 }
 
 // A multiframe-only chain (no detector, no video-capable member) is a
@@ -443,6 +445,41 @@ func TestMultiframeRefinementFailureKeepsPassOneResults(t *testing.T) {
 	}
 	if state != "failed" {
 		t.Fatalf("refinement run state = %q, want failed", state)
+	}
+	assertNoIndexJob(t, repo, assetID)
+}
+
+func assertSingleIndexJob(t *testing.T, repo *sqlite.Repository, assetID, analyzeHash string) {
+	t.Helper()
+	jobs, err := repo.ListJobs(context.Background(), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var indexes []domain.Job
+	for _, job := range jobs {
+		if job.AssetID == assetID && job.Type == domain.JobIndex {
+			indexes = append(indexes, job)
+		}
+	}
+	if len(indexes) != 1 {
+		t.Fatalf("index jobs = %d, want exactly 1: %+v", len(indexes), indexes)
+	}
+	want := hashStrings(analyzeHash, "index-v1")
+	if indexes[0].InputHash != want {
+		t.Fatalf("index hash = %q, want %q", indexes[0].InputHash, want)
+	}
+}
+
+func assertNoIndexJob(t *testing.T, repo *sqlite.Repository, assetID string) {
+	t.Helper()
+	jobs, err := repo.ListJobs(context.Background(), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range jobs {
+		if job.AssetID == assetID && job.Type == domain.JobIndex {
+			t.Fatalf("failed analysis enqueued index job: %+v", job)
+		}
 	}
 }
 

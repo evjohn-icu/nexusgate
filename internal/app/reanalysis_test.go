@@ -105,6 +105,7 @@ func TestReanalysisProducesNewCanonicalRunKeepsOldAuditable(t *testing.T) {
 	if _, err := pipeline.RunUntilIdle(ctx); err != nil {
 		t.Fatal(err)
 	}
+	assertSingleIndexJob(t, repo, assetID, hashStrings("first", "analyze"))
 	shots, err := repo.ListAssetShots(ctx, assetID)
 	if err != nil {
 		t.Fatal(err)
@@ -129,6 +130,19 @@ func TestReanalysisProducesNewCanonicalRunKeepsOldAuditable(t *testing.T) {
 	}
 	if _, err := pipeline.RunUntilIdle(ctx); err != nil {
 		t.Fatal(err)
+	}
+	jobs, err := repo.ListJobs(ctx, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var indexHashes []string
+	for _, job := range jobs {
+		if job.AssetID == assetID && job.Type == domain.JobIndex {
+			indexHashes = append(indexHashes, job.InputHash)
+		}
+	}
+	if len(indexHashes) != 2 || indexHashes[0] == indexHashes[1] {
+		t.Fatalf("reanalysis index hashes = %v, want two distinct hashes", indexHashes)
 	}
 	shots, err = repo.ListAssetShots(ctx, assetID)
 	if err != nil {

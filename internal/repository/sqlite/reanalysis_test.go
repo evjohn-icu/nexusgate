@@ -259,6 +259,35 @@ func TestHasCommittedAnalysis(t *testing.T) {
 	}
 }
 
+func TestRebuildAllSearchRepairsMissingStaleRowsAndIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	repo := openTestRepo(t)
+	assetID := seedCommittedAsset(t, repo, "rebuild-all")
+	if err := repo.RebuildSearch(ctx, assetID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `UPDATE asset_analysis SET summary='fresh rebuild term' WHERE asset_id=?`, assetID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `DELETE FROM asset_search WHERE asset_id=?`, assetID); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt, failures, err := repo.RebuildAllSearch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebuilt != 1 || len(failures) != 0 {
+		t.Fatalf("rebuild result = %d, %v; want 1 and no failures", rebuilt, failures)
+	}
+	if hits, err := repo.Search(ctx, "fresh rebuild term", 10); err != nil || len(hits) != 1 {
+		t.Fatalf("repaired asset search = %v, err=%v", hits, err)
+	}
+	rebuilt, failures, err = repo.RebuildAllSearch(ctx)
+	if err != nil || rebuilt != 1 || len(failures) != 0 {
+		t.Fatalf("idempotent rebuild result = %d, %v, err=%v", rebuilt, failures, err)
+	}
+}
+
 // seedCommittedAsset creates an asset that looks exactly like one whose
 // analysis chain completed: primary location, media metadata, derived
 // artifacts, and canonical asset_analysis + asset_shots rows (each backed by

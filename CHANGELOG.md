@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Analysis now enqueues an idempotent `JobIndex` successor after every successful analyzer
+  path, keeping asset-level FTS in sync without rebuilding it inside the canonical commit.
+  Added offline `timingdex search rebuild` to repair all assets with canonical analysis or
+  successful transcripts; it never re-runs models.
+
 ## v0.28.1-alpha — 2026-08-09（发布前修复）
 
 - **修复 `RebuildAutomaticShootSessions` 多 location asset 撞

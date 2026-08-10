@@ -427,6 +427,7 @@ func runCoreChain(t *testing.T, family Fixture) {
 		domain.JobSpeechGate: boolToInt(family.hasAudio()),
 		domain.JobTranscribe: boolToInt(family.transcribes()),
 		domain.JobAnalyze:    1,
+		domain.JobIndex:      1,
 	}
 	// A missing map key reads as 0, so the first pass catches a chain that
 	// skipped a required stage and the second catches a chain that ran an

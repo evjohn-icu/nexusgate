@@ -144,16 +144,16 @@ func (f Fixture) transcribes() bool {
 }
 
 // expectedJobs is the exact chain length this family must succeed: probe,
-// derive, speech gate and analyze are universal; transcribe joins only when
-// the gate classifies speech.
+// derive, speech gate, analyze and index are universal; transcribe joins only
+// when the gate classifies speech.
 func (f Fixture) expectedJobs() int {
 	if !f.Opts.Audio {
-		return 3 // probe derive analyze
+		return 4 // probe derive analyze index
 	}
 	if f.transcribes() {
-		return 5 // probe derive speech_gate transcribe analyze
+		return 6 // probe derive speech_gate transcribe analyze index
 	}
-	return 4 // probe derive speech_gate analyze
+	return 5 // probe derive speech_gate analyze index
 }
 
 // CoreFixtures is the fixture family table. Every row is a real encoded clip

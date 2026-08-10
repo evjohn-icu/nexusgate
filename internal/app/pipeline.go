@@ -1041,25 +1041,35 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 			return domain.Permanent(fmt.Errorf("metadata missing"))
 		}
 		route := p.multiframeRouteOf()
+		var analyzeErr error
 		if route != nil {
 			if p.shotDetector != nil {
-				return p.analyzeWithDetector(ctx, &j, m, route)
+				analyzeErr = p.analyzeWithDetector(ctx, &j, m, route)
+			} else if route.video != nil {
+				analyzeErr = p.analyzeTwoPass(ctx, &j, m, route)
+			} else {
+				// A frame-only endpoint cannot produce its own boundaries and no
+				// fallback can either: the deployment is missing one of the two
+				// things the multiframe path needs. Deterministic config, same
+				// answer on retry — permanent, with the remedy spelled out.
+				analyzeErr = domain.Permanent(fmt.Errorf("multiframe video provider %q requires a shot detector (providers.shot_detection) or a video-capable fallback provider (providers.vision_fallback)", route.analyzer.Name()))
 			}
-			if route.video != nil {
-				return p.analyzeTwoPass(ctx, &j, m, route)
-			}
-			// A frame-only endpoint cannot produce its own boundaries and no
-			// fallback can either: the deployment is missing one of the two
-			// things the multiframe path needs. Deterministic config, same
-			// answer on retry — permanent, with the remedy spelled out.
-			return domain.Permanent(fmt.Errorf("multiframe video provider %q requires a shot detector (providers.shot_detection) or a video-capable fallback provider (providers.vision_fallback)", route.analyzer.Name()))
+		} else {
+			analyzeErr = p.analyzeAssetVideo(ctx, &j, m, p.videoProvider, sourcePath)
 		}
-		return p.analyzeAssetVideo(ctx, &j, m, p.videoProvider, sourcePath)
+		if analyzeErr != nil {
+			return analyzeErr
+		}
+		return p.enqueueAnalysisIndex(ctx, j)
 	case domain.JobIndex:
 		return p.repo.RebuildSearch(ctx, j.AssetID)
 	default:
 		return domain.Permanent(fmt.Errorf("unsupported job type %s", j.Type))
 	}
+}
+
+func (p *Pipeline) enqueueAnalysisIndex(ctx context.Context, j domain.Job) error {
+	return p.repo.EnqueueJob(ctx, j.AssetID, domain.JobIndex, hashStrings(j.InputHash, "index-v1"), 20)
 }
 
 func (p *Pipeline) sourcePath(ctx context.Context, location domain.AssetLocation) (string, error) {

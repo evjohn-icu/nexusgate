@@ -177,9 +177,23 @@ func run() error {
 
 	case "search":
 		if len(os.Args) < 3 {
-			return errors.New("usage: timingdex search rebuild-embeddings")
+			return errors.New("usage: timingdex search rebuild|rebuild-embeddings")
 		}
 		switch os.Args[2] {
+		case "rebuild":
+			fmt.Println("rebuilding asset search index...")
+			rebuilt, failures, err := repo.RebuildAllSearch(context.Background())
+			if err != nil {
+				return err
+			}
+			for _, failure := range failures {
+				fmt.Printf("failed: %s\n", failure)
+			}
+			fmt.Printf("rebuilt %d asset search index(es); %d failure(s)\n", rebuilt, len(failures))
+			if len(failures) > 0 {
+				return errors.New("one or more asset search indexes failed to rebuild")
+			}
+			return nil
 		case "rebuild-embeddings":
 			rebuilt, err := service.RebuildShotTextEmbeddings(context.Background())
 			if err != nil {
@@ -188,7 +202,7 @@ func run() error {
 			fmt.Printf("rebuilt %d shot text embedding(s); run `timingdex pipeline run` if jobs are queued\n", rebuilt)
 			return nil
 		default:
-			return errors.New("usage: timingdex search rebuild-embeddings")
+			return errors.New("usage: timingdex search rebuild|rebuild-embeddings")
 		}
 
 	case "doctor":
