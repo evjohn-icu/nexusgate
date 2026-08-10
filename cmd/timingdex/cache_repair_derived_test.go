@@ -114,14 +114,14 @@ func newRepairDerivedFixture(t *testing.T) repairDerivedFixture {
 	if err := repo.SaveMediaMetadata(ctx, asset.AssetID, domain.MediaMetadata{DurationMS: 1000}, "test"); err != nil {
 		t.Fatal(err)
 	}
-	runID, _, err := repo.CreateModelRun(ctx, asset.AssetID, "analysis", "hash", "provider", "model", "", "", "")
+	runID, _, err := repo.CreateModelRun(ctx, asset.AssetID, "analysis", "hash", "provider", "model", "", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.StageModelRun(ctx, runID, `{}`, `{"summary":"committed"}`); err != nil {
+	if err := repo.StageModelRun(ctx, runID, `{}`, `{"summary":"committed"}`, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.CommitAnalysis(ctx, asset.AssetID, runID, "v1", domain.StructuredAnalysis{Summary: "committed"}); err != nil {
+	if err := repo.CommitAnalysis(ctx, asset.AssetID, runID, "v1", domain.StructuredAnalysis{Summary: "committed"}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	assetDir := filepath.Join(dir, "cache", asset.AssetID)

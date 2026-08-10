@@ -101,16 +101,16 @@ func cacheGCTestRepo(t *testing.T, count int) (*sqliterepo.Repository, config.Co
 		if _, err := repo.DB().Exec(`INSERT INTO media_metadata(asset_id,ffprobe_json,exiftool_json,normalized_json,probe_version,updated_at) VALUES(?,'{}','{}',?,'test',?)`, id, `{"duration_ms":1000,"has_audio":false}`, now); err != nil {
 			t.Fatal(err)
 		}
-		runID, _, err := repo.CreateModelRun(context.Background(), id, "vision", "test", "test", "hash-"+id, "p", "s", "{}")
+		runID, _, err := repo.CreateModelRun(context.Background(), id, "vision", "test", "test", "hash-"+id, "p", "s", "{}", "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.StageModelRun(context.Background(), runID, "{}", "{}"); err != nil {
+		if err := repo.StageModelRun(context.Background(), runID, "{}", "{}", "", ""); err != nil {
 			t.Fatal(err)
 		}
 		analysis := domain.StructuredAnalysis{AssetType: "clip", ShotSize: "close", CameraMotion: "static", AudioType: "none", Lighting: "day", Quality: "fine", Summary: "summary"}
 		shot := domain.AssetShot{ID: "shot-" + id, AssetID: id, SourceRunID: runID, EndMS: 1000, Description: "shot", Confidence: 0.9}
-		if err := repo.CommitAnalysisWithShots(context.Background(), id, runID, "s", analysis, []domain.AssetShot{shot}); err != nil {
+		if err := repo.CommitAnalysisWithShots(context.Background(), id, runID, "s", analysis, []domain.AssetShot{shot}, "", ""); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := repo.DB().Exec(`INSERT INTO derived_artifacts(id,asset_id,artifact_type,profile_hash,local_path,size_bytes,created_at) VALUES(?,?,?,?,?,?,?)`, "artifact-"+id, id, "proxy", "proxy-sw", filepath.Join(cfgCacheDir(dataDir), id, "proxy-sw.mp4"), 1, now); err != nil {
