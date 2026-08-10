@@ -622,7 +622,7 @@ func (r *Repository) UpsertScannedFile(ctx context.Context, root domain.LibraryR
 	result := domain.ScannedFile{}
 	if errors.Is(err, sql.ErrNoRows) {
 		assetID = idgen.New()
-		_, err = tx.ExecContext(ctx, `INSERT INTO assets(id, quick_fingerprint, file_size, state, first_seen_at, last_seen_at) VALUES (?, ?, ?, 'discovered', ?, ?)`, assetID, fingerprint, info.Size(), formatTime(now), formatTime(now))
+		_, err = tx.ExecContext(ctx, `INSERT INTO assets(id, quick_fingerprint, file_size, probe_modified_ns, state, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, 'discovered', ?, ?)`, assetID, fingerprint, info.Size(), info.ModTime().UnixNano(), formatTime(now), formatTime(now))
 		result.Created = true
 	}
 	if err != nil {
@@ -666,6 +666,11 @@ func (r *Repository) UpsertScannedFile(ctx context.Context, root domain.LibraryR
 			return result, err
 		}
 	}
+		if locationExists && existingModifiedNS != info.ModTime().UnixNano() {
+			if _, err = tx.ExecContext(ctx, `UPDATE assets SET probe_modified_ns = ? WHERE id = ?`, info.ModTime().UnixNano(), assetID); err != nil {
+				return result, err
+			}
+		}
 	// A location that did not exist was inserted — a known asset appearing at
 	// a new path, or a brand-new asset — so it counts as changed. An existing
 	// one counts only when the mtime the probe job's input hash is derived
@@ -679,6 +684,35 @@ func (r *Repository) UpsertScannedFile(ctx context.Context, root domain.LibraryR
 	_, err = tx.ExecContext(ctx, `UPDATE assets SET state = 'discovered', last_seen_at = ?, missing_since = NULL WHERE id = ?`, formatTime(now), assetID)
 	if err != nil {
 		return result, err
+	}
+	var locationCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM asset_locations l JOIN assets a ON a.id=l.asset_id WHERE a.quick_fingerprint=? AND a.file_size=?`, fingerprint, info.Size()).Scan(&locationCount); err != nil {
+		return result, err
+	}
+	if locationCount > 1 {
+		rows, err := tx.QueryContext(ctx, `SELECT DISTINCT root_id FROM asset_locations l JOIN assets a ON a.id=l.asset_id WHERE a.quick_fingerprint=? AND a.file_size=? ORDER BY root_id`, fingerprint, info.Size())
+		if err != nil {
+			return result, err
+		}
+		var rootIDs []string
+		for rows.Next() {
+			var rootID string
+			if err := rows.Scan(&rootID); err != nil {
+				rows.Close()
+				return result, err
+			}
+			rootIDs = append(rootIDs, rootID)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return result, err
+		}
+		rows.Close()
+		var committed int
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM model_runs WHERE asset_id=? AND state='committed')`, assetID).Scan(&committed); err != nil {
+			return result, err
+		}
+		slog.Info("sampled fingerprint collision", "asset_id", assetID, "root_ids", rootIDs, "count", locationCount, "has_committed_analysis", committed == 1)
 	}
 
 	return result, tx.Commit()
@@ -829,7 +863,7 @@ func (r *Repository) GetPrimaryLocation(ctx context.Context, assetID string) (do
 	// row: the pipeline derives the probe job's input hash from them (not from
 	// the path), and asking a second time for data one join provides would be
 	// a needless round trip on the hottest pipeline path.
-	err := r.db.QueryRowContext(ctx, `SELECT l.id,l.asset_id,l.root_id,l.relative_path,l.absolute_path,COALESCE(l.file_id,''),l.modified_ns,l.exists_now,l.is_primary,l.last_seen_at,a.quick_fingerprint,a.file_size FROM asset_locations l JOIN assets a ON a.id=l.asset_id JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=? AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1`, assetID).Scan(&v.ID, &v.AssetID, &v.RootID, &v.RelativePath, &v.AbsolutePath, &v.FileID, &v.ModifiedNS, &existsNow, &primary, &last, &v.QuickFingerprint, &v.FileSize)
+	err := r.db.QueryRowContext(ctx, `SELECT l.id,l.asset_id,l.root_id,l.relative_path,l.absolute_path,COALESCE(l.file_id,''),l.modified_ns,l.exists_now,l.is_primary,l.last_seen_at,a.quick_fingerprint,a.file_size,COALESCE(a.probe_modified_ns, l.modified_ns) FROM asset_locations l JOIN assets a ON a.id=l.asset_id JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=? AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.is_primary DESC,l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1`, assetID).Scan(&v.ID, &v.AssetID, &v.RootID, &v.RelativePath, &v.AbsolutePath, &v.FileID, &v.ModifiedNS, &existsNow, &primary, &last, &v.QuickFingerprint, &v.FileSize, &v.ProbeModifiedNS)
 	if err != nil {
 		return domain.AssetLocation{}, err
 	}

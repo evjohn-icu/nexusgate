@@ -1219,6 +1219,9 @@ func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.Sc
 // one unreadable clip must not stop the library from reconciling files that
 // were genuinely deleted.
 func (s *Service) rootHealthyAfterScan(root domain.LibraryRoot, result domain.ScanResult) bool {
+	if !result.Complete || !result.RootReachable {
+		return false
+	}
 	// The scanner records the walker's error verbatim, which for the root
 	// itself carries the path directly after the kernel verb ("lstat
 	// /mnt/nas: no such file or directory", "open /mnt/nas: permission

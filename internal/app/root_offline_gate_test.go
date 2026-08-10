@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -19,7 +20,8 @@ import (
 // root state.
 type scanGateRepo struct {
 	Repository
-	root domain.LibraryRoot
+	root      domain.LibraryRoot
+	upsertErr error
 	// markMissing is the count MarkUnseenLocationsMissing reports.
 	markMissing int
 
@@ -59,6 +61,9 @@ func (r *scanGateRepo) MarkUnseenLocationsMissing(_ context.Context, _ string, s
 
 func (r *scanGateRepo) UpsertScannedFile(_ context.Context, _ domain.LibraryRoot, relativePath, _ string, _ fs.FileInfo, _ string) (domain.ScannedFile, error) {
 	r.upserted = append(r.upserted, relativePath)
+	if r.upsertErr != nil {
+		return domain.ScannedFile{}, r.upsertErr
+	}
 	return domain.ScannedFile{AssetID: "asset-" + relativePath, Created: true}, nil
 }
 
@@ -154,5 +159,29 @@ func TestScanHealthyRootReconciles(t *testing.T) {
 	// owned the call.
 	if result.Missing != repo.markMissing {
 		t.Errorf("Missing = %d, want %d (MarkUnseenLocationsMissing's return)", result.Missing, repo.markMissing)
+	}
+}
+
+func TestIncompleteScanNeverReconcilesEvenWhenRootWasHealthy(t *testing.T) {
+	rootDir := t.TempDir()
+	scanWriteVideoFile(t, filepath.Join(rootDir, "clip.mp4"))
+	repo := &scanGateRepo{root: domain.LibraryRoot{ID: "root-incomplete", Path: rootDir, HealthState: domain.RootHealthHealthy}}
+	repo.upsertErr = errors.New("persist failure")
+	service := newScanGateService(repo)
+	// The scanner's fake persist failure makes the walk reachable but incomplete.
+	result, err := service.ScanLibraryRoot(context.Background(), "root-incomplete")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Complete || repo.reconcileCalled || !repo.unavailable || repo.healthy {
+		t.Fatalf("incomplete scan verdict: complete=%v reconcile=%v unavailable=%v healthy=%v", result.Complete, repo.reconcileCalled, repo.unavailable, repo.healthy)
+	}
+}
+
+func TestRootHealthyAfterScanDoesNotTrustPriorHealth(t *testing.T) {
+	service := &Service{}
+	root := domain.LibraryRoot{Path: t.TempDir(), HealthState: domain.RootHealthHealthy}
+	if service.rootHealthyAfterScan(root, domain.ScanResult{Complete: false, RootReachable: true}) {
+		t.Fatal("prior healthy state authorized an incomplete scan")
 	}
 }

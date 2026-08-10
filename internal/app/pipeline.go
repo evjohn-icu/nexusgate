@@ -194,7 +194,7 @@ func (p *Pipeline) EnqueueAsset(ctx context.Context, assetID string) error {
 	// re-enqueue the chain — or every move would pay for a fresh analysis of
 	// identical footage. See ingest.StableAssetKey for the trade-off of
 	// collapsing byte-identical files onto one key.
-	h := ingest.StableAssetKey(loc.QuickFingerprint, loc.FileSize, loc.ModifiedNS)
+	h := ingest.StableAssetKey(loc.QuickFingerprint, loc.FileSize, loc.ProbeModifiedNS)
 	return p.repo.EnqueueJob(ctx, assetID, domain.JobProbe, h, 100)
 }
 

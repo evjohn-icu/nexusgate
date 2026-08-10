@@ -63,11 +63,14 @@ type AssetLocation struct {
 	// into the location by GetPrimaryLocation so the pipeline can derive a
 	// path-independent probe input hash from the primary location alone.
 	// They describe the content, never the path a file happens to sit at.
-	QuickFingerprint string    `json:"quick_fingerprint"`
-	FileSize         int64     `json:"file_size"`
-	Exists           bool      `json:"exists"`
-	IsPrimary        bool      `json:"is_primary"`
-	LastSeenAt       time.Time `json:"last_seen_at"`
+	QuickFingerprint string `json:"quick_fingerprint"`
+	FileSize         int64  `json:"file_size"`
+	// ProbeModifiedNS is asset-level identity state, not the mtime of this
+	// particular copy.
+	ProbeModifiedNS int64     `json:"-"`
+	Exists          bool      `json:"exists"`
+	IsPrimary       bool      `json:"is_primary"`
+	LastSeenAt      time.Time `json:"last_seen_at"`
 }
 
 type ScanResult struct {
@@ -86,6 +89,8 @@ type ScanResult struct {
 	// can enqueue only those. Hidden from JSON: ScanResult is the response body
 	// of POST /library-roots/{id}/scan and must keep its documented shape.
 	ChangedAssetIDs []string `json:"-"`
+	Complete        bool     `json:"-"`
+	RootReachable   bool     `json:"-"`
 }
 
 // ScannedFile reports what one scanned file did to the catalog, so the scanner

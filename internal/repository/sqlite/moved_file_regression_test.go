@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	"github.com/evjohn-icu/timingdex/internal/ingest"
@@ -233,6 +234,79 @@ func TestByteIdenticalDuplicateSingleAsset(t *testing.T) {
 	}
 }
 
+func TestByteIdenticalCopyAfterCommittedAnalysisKeepsProbeIdentity(t *testing.T) {
+	ctx := context.Background()
+	repo, root, rootDir := newScanRepo(t)
+	path1 := filepath.Join(rootDir, "original.mp4")
+	scanWriteVideo(t, path1)
+	first := movedScan(t, repo, root)
+	if len(first.ChangedAssetIDs) != 1 {
+		t.Fatalf("first scan changed=%v", first.ChangedAssetIDs)
+	}
+	assetID := first.ChangedAssetIDs[0]
+	loc1, err := repo.GetPrimaryLocation(ctx, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probeHash := ingest.StableAssetKey(loc1.QuickFingerprint, loc1.FileSize, loc1.ProbeModifiedNS)
+	if err := repo.EnqueueJob(ctx, assetID, domain.JobProbe, probeHash, 100); err != nil {
+		t.Fatal(err)
+	}
+	runID, _, err := repo.CreateModelRun(ctx, assetID, "video_analysis", "fixture", "model", "analysis-input", "prompt", "schema", "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.StageModelRun(ctx, runID, "{}", `{}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CommitAnalysis(ctx, assetID, runID, "schema", domain.StructuredAnalysis{AssetType: "b_roll", ShotSize: "wide", Summary: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	var runs int
+	if err := repo.db.QueryRow(`SELECT COUNT(*) FROM model_runs WHERE asset_id=?`, assetID).Scan(&runs); err != nil || runs != 1 {
+		t.Fatalf("model_runs before copy=%d err=%v, want 1", runs, err)
+	}
+
+	path2 := filepath.Join(rootDir, "copy.mp4")
+	data, err := os.ReadFile(path1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path2, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newTime := time.Now().Add(2 * time.Hour)
+	if err := os.Chtimes(path2, newTime, newTime); err != nil {
+		t.Fatal(err)
+	}
+	second := movedScan(t, repo, root)
+	if len(second.ChangedAssetIDs) != 1 || second.ChangedAssetIDs[0] != assetID || countAssets(t, repo) != 1 {
+		t.Fatalf("copy scan changed=%v assets=%d, want same asset %q", second.ChangedAssetIDs, countAssets(t, repo), assetID)
+	}
+	loc2, err := repo.GetPrimaryLocation(ctx, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loc2.ProbeModifiedNS != loc1.ProbeModifiedNS {
+		t.Fatalf("probe mtime changed across duplicate copy: %d -> %d", loc1.ProbeModifiedNS, loc2.ProbeModifiedNS)
+	}
+	if err := repo.EnqueueJob(ctx, assetID, domain.JobProbe, probeHash, 100); err != nil {
+		t.Fatal(err)
+	}
+	if got := countProbeJobs(t, repo, assetID); got != 1 {
+		t.Fatalf("probe jobs after duplicate copy=%d, want 1", got)
+	}
+	if err := repo.EnqueueJob(ctx, assetID, domain.JobProbe, probeHash, 100); err != nil {
+		t.Fatal(err)
+	}
+	if got := probeHash; got != ingest.StableAssetKey(loc2.QuickFingerprint, loc2.FileSize, loc2.ProbeModifiedNS) {
+		t.Fatalf("probe hash changed: %q -> %q", got, ingest.StableAssetKey(loc2.QuickFingerprint, loc2.FileSize, loc2.ProbeModifiedNS))
+	}
+	if err := repo.db.QueryRow(`SELECT COUNT(*) FROM model_runs WHERE asset_id=?`, assetID).Scan(&runs); err != nil || runs != 1 {
+		t.Fatalf("model_runs after copy=%d err=%v, want 1", runs, err)
+	}
+}
+
 // A case-only rename is one rename on a case-insensitive filesystem — the NAS
 // reality this covers — and even on a case-sensitive one the fingerprint keeps
 // identity. Either way: same asset, old location dies, no duplicate.
@@ -302,7 +376,7 @@ func TestProbeHashStableAcrossMove(t *testing.T) {
 	if loc1.QuickFingerprint == "" || loc1.FileSize == 0 {
 		t.Fatalf("primary location must carry the asset's fingerprint and size for the stable key: %+v", loc1)
 	}
-	key1 := ingest.StableAssetKey(loc1.QuickFingerprint, loc1.FileSize, loc1.ModifiedNS)
+	key1 := ingest.StableAssetKey(loc1.QuickFingerprint, loc1.FileSize, loc1.ProbeModifiedNS)
 	if err := repo.EnqueueJob(ctx, assetID, domain.JobProbe, key1, 100); err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +398,7 @@ func TestProbeHashStableAcrossMove(t *testing.T) {
 		t.Fatalf("a pure move changed the identity inputs: fingerprint %q->%q size %d->%d mtime %d->%d",
 			loc1.QuickFingerprint, loc2.QuickFingerprint, loc1.FileSize, loc2.FileSize, loc1.ModifiedNS, loc2.ModifiedNS)
 	}
-	key2 := ingest.StableAssetKey(loc2.QuickFingerprint, loc2.FileSize, loc2.ModifiedNS)
+	key2 := ingest.StableAssetKey(loc2.QuickFingerprint, loc2.FileSize, loc2.ProbeModifiedNS)
 	if key2 != key1 {
 		t.Fatalf("probe input hash changed across a pure move: %q -> %q", key1, key2)
 	}
