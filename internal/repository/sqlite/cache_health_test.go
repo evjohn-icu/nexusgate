@@ -122,6 +122,53 @@ func TestListDerivedArtifacts(t *testing.T) {
 	}
 }
 
+func TestMatchingAndDeletingHardwareDerivedProfiles(t *testing.T) {
+	repo := openTestRepo(t)
+	ctx := context.Background()
+	assetID := "asset-hardware-repair"
+	now := formatTime(time.Now().UTC())
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES(?,?,100,'discovered',?,?)`, assetID, "fp-hardware-repair", now, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, artifact := range []struct{ id, typ, profile string }{
+		{"hw-thumb", "thumbnail", "thumb-hw-cuda-h264-v1"},
+		{"hw-proxy", "proxy", "proxy-720-hw-cuda-h264-v1"},
+		{"software", "thumbnail", "thumb-software-h264-x264-v1"},
+		{"audio", "audio", "audio-16k-v1"},
+	} {
+		if _, err := repo.db.ExecContext(ctx, `INSERT INTO derived_artifacts(id,asset_id,artifact_type,profile_hash,local_path,size_bytes,created_at) VALUES(?,?,?,?,?,?,?)`, artifact.id, assetID, artifact.typ, artifact.profile, "/cache/"+artifact.id, 1, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	matching, err := repo.MatchingDerivedArtifactsByProfilePrefixes(ctx, []string{"thumb-hw-", "proxy-720-hw-"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matching) != 2 {
+		t.Fatalf("matching rows=%d, want 2", len(matching))
+	}
+	var count int
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM derived_artifacts`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 4 {
+		t.Fatalf("query-only matching changed row count to %d", count)
+	}
+	assets, err := repo.DeleteDerivedArtifactsByProfilePrefixes(ctx, []string{"thumb-hw-", "proxy-720-hw-"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assets) != 1 || assets[0] != assetID {
+		t.Fatalf("deleted assets=%v, want [%s]", assets, assetID)
+	}
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM derived_artifacts`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("remaining rows=%d, want software and audio", count)
+	}
+}
+
 // ListAllAssetIDs feeds OrphanDirectories: an empty table must yield no ids,
 // and every seeded asset must come back.
 func TestListAllAssetIDs(t *testing.T) {
