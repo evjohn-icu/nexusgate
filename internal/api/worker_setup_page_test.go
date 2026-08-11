@@ -58,7 +58,7 @@ func TestWorkerSetupPageRendersWithStepMarkers(t *testing.T) {
 		"GOOS=windows GOARCH=amd64",
 		"worker-binaries",
 		"/api/v1/admin/hub/worker-setup/library-roots",
-		"Authorization",
+		"X-CSRF-Token",
 		"localStorage",
 		"sessionStorage",
 	} {

@@ -37,8 +37,8 @@ indexed, searchable down to the individual shot.
 **怎么跑起来** — three steps, detailed in [Quick start](#quick-start):
 
 1. `./timingdex doctor` — check ffmpeg, the hardware profile and paths.
-2. `./timingdex root add /path/to/footage && ./timingdex root scan <root-id>` — point it at footage, enqueue jobs.
-3. `./timingdex serve` — open the browser UI and run the queue from `/progress`.
+2. `./timingdex root add /path/to/footage && ./timingdex root scan <root-id>` — point it at footage, enqueue jobs and synchronously drain the existing Pipeline.
+3. `./timingdex serve` — open the browser UI; API scans trigger the existing Pipeline in the background, while `/progress` shows execution status.
 
 ### The loop in 30 seconds
 
@@ -220,7 +220,7 @@ export TIMINGDEX_DATA_DIR="$PWD/.timingdex-dev"
 
 ./timingdex doctor                        # check ffmpeg, hardware profile, paths
 ./timingdex root add /path/to/footage     # read-only; nothing is written there
-./timingdex root scan <root-id>           # enqueues idempotent jobs
+./timingdex root scan <root-id>           # scans, enqueues, and drains the Pipeline
 ./timingdex search rebuild                # rebuild asset-level FTS from canonical rows
 ./timingdex search rebuild-embeddings     # re-embed all shots (after a model switch)
 ./timingdex cache inspect                 # report cache categories and rebuildable space
@@ -229,7 +229,7 @@ export TIMINGDEX_DATA_DIR="$PWD/.timingdex-dev"
 ./timingdex serve                         # HTTPS by default; prints the Worker fingerprint
 ```
 
-Then open the browser UI and run the queue from `/progress`. Analysis commits shot-level
+Then open the browser UI. Analysis commits shot-level
 FTS immediately; the successor `JobIndex` rebuilds the asset-level FTS row.
 
 Everything lives under `$TIMINGDEX_DATA_DIR`: `timingdex.db`, optional
@@ -277,8 +277,11 @@ re-scanning, so this is the way back.
 
 ## The browser UI
 
-Served by `timingdex serve`. Every page keeps a pasted administrator token in
-page memory only — never in browser storage.
+Served by `timingdex serve` over HTTPS by default. The browser uses a short-lived,
+memory-only Hub administrator Session in an HttpOnly cookie plus a readable CSRF
+cookie; the pasted administrator token is used only to establish that Session and
+is never stored in browser storage. CLI, Agent, and Worker clients keep their
+separate Bearer credentials.
 
 | Page | Purpose |
 | --- | --- |

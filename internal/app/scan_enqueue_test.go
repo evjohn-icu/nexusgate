@@ -193,6 +193,54 @@ func TestScanLibraryRootEnqueuesOnlyForChangedAssets(t *testing.T) {
 	}
 }
 
+// An explicit scan is also a pipeline entry point for callers that need the
+// pass to finish before they return, such as the CLI. The real SQLite queue is
+// part of this assertion: checking only the scan result would miss a broken
+// enqueue-to-pipeline handoff.
+func TestScanLibraryRootThenTryRunPipelineDrainsTheQueuedProbe(t *testing.T) {
+	ctx := context.Background()
+	service, repo, rootDir := newSupervisedLibrary(t, config.LibrarySupervisorConfig{})
+	scanWriteVideoFile(t, filepath.Join(rootDir, "clip.mp4"))
+	rootID := scanRootID(t, service)
+
+	if _, err := service.ScanLibraryRoot(ctx, rootID); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := repo.ListJobs(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 1 || queued[0].Type != domain.JobProbe {
+		t.Fatalf("queued jobs=%+v, want one probe job", queued)
+	}
+
+	ran, err := service.TryRunPipeline(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ran {
+		t.Fatal("TryRunPipeline reported that the explicit scan could not run")
+	}
+	if service.PipelineRunning() {
+		t.Fatal("synchronous TryRunPipeline left the pass marked as running")
+	}
+	jobs, err := repo.ListJobs(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) == 0 {
+		t.Fatal("pipeline pass removed the queued job record")
+	}
+	for _, job := range jobs {
+		if job.State == domain.JobRunning {
+			t.Fatalf("pipeline pass left job running: %+v", job)
+		}
+	}
+	if jobs[0].AttemptCount == 0 {
+		t.Fatalf("pipeline pass never attempted the queued probe: %+v", jobs[0])
+	}
+}
+
 // A scan of one root must never pull another root's assets into its changed
 // set, even when the other root was scanned around the same time.
 func TestScanLibraryRootChangeInOneRootDoesNotAffectAnother(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 
 // TestShellSidebarMarkup pins the sidebar shape the shell now injects: the
 // <aside> shell, the brand row the branding layer rewrites, the three
-// navigation groups of the IA (素材/创作/系统), the admin-token input every
-// page script reads, and the four status cells. It also pins the one thing
+// navigation groups of the IA (素材/创作/系统), the browser-session login
+// controls, and the four status cells. It also pins the one thing
 // the shell deliberately does NOT do — no legacy top header.
 func TestShellSidebarMarkup(t *testing.T) {
 	html := shellHeaderHTML()
@@ -21,7 +21,9 @@ func TestShellSidebarMarkup(t *testing.T) {
 		`<span class="nav-group-title">创作</span>`,
 		`<span class="nav-group-title">系统</span>`,
 		`id="admin-token"`,
-		`oninput="refreshStatus()"`,
+		`id="admin-login"`,
+		`onclick="loginAdmin()"`,
+		`id="admin-logout"`,
 		`class="status-strip" data-status-strip`,
 		`id="status-hub"`,
 		`id="status-pipeline"`,

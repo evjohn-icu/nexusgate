@@ -118,8 +118,8 @@ function translatedSummary(inspection){
   var path=(inspection&&inspection.path)||'';
   return path+' 是一个网络共享，不是本机路径。请先挂载它，再把挂载点添加为素材目录。';
 }
-function adminToken(){var el=document.getElementById('admin-token');return el?el.value.trim():''}
-function authHeaders(base){var headers=new Headers(base||{});var token=adminToken();if(token)headers.set('Authorization','Bearer '+token);return headers}
+ function csrfToken(){var prefix='__Host-timingdex_csrf=';var item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
+ function authHeaders(base){var headers=new Headers(base||{});var csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
 async function apiErrMsg(r){try{const d=await r.json();if(d&&d.error&&d.error.message)return d.error.action?(d.error.message+'（'+d.error.action+'）'):d.error.message}catch(_){}return (await r.text()).trim()}
 async function json(url,opt){opt=opt||{};var r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok)throw new Error(await apiErrMsg(r));return r.json()}
 function goStep(n){for(var i=1;i<=4;i++){document.getElementById('step-'+i).className='step'+(i===n?' active':'');document.querySelectorAll('.step-nav div')[i-1].className=(i===n?'active':'')}}
@@ -334,7 +334,8 @@ async function startScan(){
   try{
     var result=await json('/api/v1/roots/'+encodeURIComponent(addedRoot.id)+'/scan',{method:'POST'});
     var errors=(result.errors||[]);
-    el.innerHTML='<div class="hint ok">发现 '+esc(result.discovered)+' · 关联 '+esc(result.linked)+' · 缺失 '+esc(result.missing)+'</div>'+(errors.length?'<div class="hint bad">'+errors.map(esc).join('<br>')+'</div>':'');
+    var pipeline=result.pipeline_status==='started'?'已自动开始处理':(result.pipeline_status==='already_running'?'已有处理任务正在运行':'已完成扫描');
+    el.innerHTML='<div class="hint ok">发现 '+esc(result.discovered)+' · 关联 '+esc(result.linked)+' · 缺失 '+esc(result.missing)+' · '+pipeline+'</div>'+(errors.length?'<div class="hint">扫描有 '+errors.length+' 个警告：'+errors.map(esc).join('<br>')+'</div>':'')+'<div class="muted" style="margin-top:8px"><a href="/progress">查看处理进度 →</a></div>';
   }catch(e){
     el.innerHTML='<div class="hint bad">扫描失败：'+esc(e.message)+'</div>';
   }finally{

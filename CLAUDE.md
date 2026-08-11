@@ -43,7 +43,7 @@ Run locally with an isolated data dir:
 export TIMINGDEX_DATA_DIR="$PWD/.timingdex-dev"
 ./timingdex doctor
 ./timingdex root add /path/to/footage && ./timingdex root list
-./timingdex root scan <root-id>     # enqueues idempotent jobs
+./timingdex root scan <root-id>     # scans, enqueues, and synchronously drains the Pipeline
 ./timingdex pipeline run            # leases and runs jobs until the queue is idle
 ./timingdex search rebuild          # rebuilds the asset search index
 ./timingdex search rebuild-embeddings

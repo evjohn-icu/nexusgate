@@ -2,13 +2,25 @@
 
 ## Unreleased
 
+- Completed the browser/Pipeline P0 hardening: API scans still trigger queued work
+  after partial scan errors, concurrent Pipeline triggers coalesce into a joined
+  follow-up pass, and `serve` waits for background Pipeline work before closing the
+  repository. Browser administration now has bounded in-memory Sessions, login
+  throttling, sensitive-response `no-store` headers, and Worker Setup refreshes its
+  path details when the shared Session logs in or out.
+
 - v0.30 review-fix round 的目标与升级/运维检查见
   [`docs/v0.30-review-fix-round.md`](docs/v0.30-review-fix-round.md)。各领域细节仍见
   成本参考值、部署、Worker setup 路径脱敏和 Search evidence correctness 文档。
 - Analysis now enqueues an idempotent `JobIndex` successor after every successful analyzer
   path, keeping asset-level FTS in sync without rebuilding it inside the canonical commit.
   Added offline `timingdex search rebuild` to repair all assets with canonical analysis or
-  successful transcripts; it never re-runs models.
+ successful transcripts; it never re-runs models.
+- `root scan` now starts the existing single-run Pipeline after discovery: the API reports
+  whether it started or found an existing pass, while the CLI waits for its synchronous pass
+  before exiting. Browser administration now uses a short-lived HTTPS HttpOnly session with
+  same-origin Origin and CSRF checks; CLI, Agent, and Worker Bearer authentication remains
+  unchanged.
 
 ## v0.30.0-alpha — 2026-08-10（成本参考值）
 

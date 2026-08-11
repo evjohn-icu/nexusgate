@@ -20,6 +20,8 @@ TIMINGDEX_TLS_KEY_FILE=/run/timingdex/tls/hub.key
 ```
 
 Replacing the certificate changes the fingerprint, so every enrolled Worker has
-to be re-pinned. `off` is for running behind a proxy that terminates HTTPS
-itself; it disables the Hub's own TLS and, with it, the fingerprint a Worker
-would pin.
+to be re-pinned. `off` is only a controlled HTTP compatibility mode for clients
+that do not use browser Sessions; it disables the Hub's own TLS and, with it, the
+fingerprint a Worker would pin. Browser administrator Sessions require the Hub to
+receive HTTPS directly. An HTTPS termination proxy is not implicitly trusted and
+must not be used to make an HTTP Hub appear to support browser Sessions.

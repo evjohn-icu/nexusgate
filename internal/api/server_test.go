@@ -672,7 +672,7 @@ func TestWorkersPageShowsNodeAndWorkflowProgressSurfaces(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	for _, marker := range []string{"处理节点", "工作流进度", "/api/v1/hub/workers", "/api/v1/jobs", "data-workers-page", "admin-token", "生成配对 Token", "Authorization"} {
+	for _, marker := range []string{"处理节点", "工作流进度", "/api/v1/hub/workers", "/api/v1/jobs", "data-workers-page", "admin-token", "生成配对 Token", "X-CSRF-Token"} {
 		if !strings.Contains(response.Body.String(), marker) {
 			t.Fatalf("workers page missing %q", marker)
 		}
@@ -1151,6 +1151,66 @@ func hubAgentRequest(service *app.Service, method, target string, body io.Reader
 	request := httptest.NewRequest(method, target, body)
 	request.Header.Set("Authorization", "Bearer "+service.AgentToken())
 	return request
+}
+
+// POST /roots/{id}/scan must not leave the work discovered by the scan idle.
+// This uses the real SQLite repository and the real service pipeline guard; the
+// response assertion alone would not prove that the scan's queue was handed to
+// a pipeline pass.
+func TestScanRootStartsPipelineAndReportsStatus(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "scan-pipeline.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(rootPath, "fixture.mp4"), []byte("scan pipeline fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{DataDir: secureTestDataDir(t), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := service.AddLibraryRoot(ctx, rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, hubAdminRequest(service, http.MethodPost, "/api/v1/roots/"+root.ID+"/scan", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("scan status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Discovered      int    `json:"discovered"`
+		PipelineStarted bool   `json:"pipeline_started"`
+		PipelineBusy    bool   `json:"pipeline_busy"`
+		PipelineStatus  string `json:"pipeline_status"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Discovered != 1 || !body.PipelineStarted || body.PipelineBusy || body.PipelineStatus != "started" {
+		t.Fatalf("scan response=%+v, want one discovered asset and started pipeline", body)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for service.PipelineRunning() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if service.PipelineRunning() {
+		t.Fatal("background pipeline did not finish in test time")
+	}
+	jobs, err := repo.ListJobs(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) == 0 {
+		t.Fatal("scan response claimed to start a pipeline but no job was persisted")
+	}
 }
 
 // TestAgentTokenScope proves the boundary requireAgentOrAdmin is supposed to
@@ -1928,7 +1988,7 @@ func TestHandlerListsEmptyJobsAsJSONArray(t *testing.T) {
 // v0.14.1 put the admin token in front of tag curation, pipeline runs and
 // repurpose writes but only taught /workers to send it, so every write button on
 // these three pages returned 401 for several releases. Pin the plumbing: each
-// page must expose a token field and attach an Authorization header.
+// page must expose the browser session control and use the CSRF/session helper.
 func TestAdminGatedPagesCarryTokenPlumbing(t *testing.T) {
 	ctx := context.Background()
 	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "page-token.db"))
@@ -1945,9 +2005,9 @@ func TestAdminGatedPagesCarryTokenPlumbing(t *testing.T) {
 	}
 	handler := NewServer("", service).Handler()
 	for path, markers := range map[string][]string{
-		"/tags":      {"admin-token", "Authorization", "/api/v1/tags/curate"},
-		"/repurpose": {"admin-token", "Authorization", "/api/v1/repurpose/plans"},
-		"/progress":  {"admin-token", "Authorization", "/api/v1/pipeline/run"},
+		"/tags":      {"admin-token", "loginAdmin", "X-CSRF-Token", "/api/v1/tags/curate"},
+		"/repurpose": {"admin-token", "loginAdmin", "X-CSRF-Token", "/api/v1/repurpose/plans"},
+		"/progress":  {"admin-token", "loginAdmin", "X-CSRF-Token", "/api/v1/pipeline/run"},
 	} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))

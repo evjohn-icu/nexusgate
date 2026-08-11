@@ -122,6 +122,7 @@ func run() error {
 		// nothing will ever stop.
 		supervisorCtx, stopSupervisor := context.WithCancel(ctx)
 		defer stopSupervisor()
+		service.SetPipelineContext(ctx)
 		supervisorDone := make(chan struct{})
 		go func() {
 			defer close(supervisorDone)
@@ -135,19 +136,25 @@ func run() error {
 		server := api.NewTLSServer(*addr, service, certificate, key)
 		setupWebDAVDelivery(service, server, repo, cfg.DataDir)
 		serveErr := server.Run(ctx)
+		// A listen failure does not cancel the signal context. Cancel it here as
+		// well so background Pipeline work cannot outlive the failed server.
+		stop()
 		// Joined, not abandoned: the supervisor may be mid-pass, and the point
 		// of running the pipeline inline in it is that this wait is what makes
 		// "the process exited" mean "no job and no Provider call is still
 		// running".
 		stopSupervisor()
 		<-supervisorDone
+		service.WaitPipeline()
 		return serveErr
 
 	case "root":
 		if len(os.Args) < 3 {
 			return errors.New("usage: timingdex root add|list|scan ...")
 		}
-		return runRootCommand(context.Background(), service, os.Args[2:])
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		return runRootCommand(ctx, service, os.Args[2:])
 
 	case "pipeline":
 		if len(os.Args) < 3 {
@@ -160,7 +167,9 @@ func run() error {
 			if err := service.HealOnStartup(context.Background()); err != nil {
 				slog.Warn("self-heal sweep failed; stale running jobs will be reclaimed on the next lease attempt", "error", err)
 			}
-			return service.RunPipeline(context.Background())
+			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+			return service.RunPipeline(ctx)
 		case "retry-failed":
 			requeued, err := service.RequeueFailedJobs(context.Background())
 			if err != nil {
@@ -376,11 +385,25 @@ func runRootCommand(ctx context.Context, service *app.Service, args []string) er
 		}
 		result, err := service.ScanLibraryRoot(ctx, args[1])
 		if err != nil {
+			// Reconciliation may fail after this scan has queued changed assets.
+			// Keep the scan error, but do not leave the queue idle.
+			if _, pipelineErr := service.TryRunPipeline(ctx); pipelineErr != nil {
+				return fmt.Errorf("scan: %w; run pipeline after scan: %v", err, pipelineErr)
+			}
 			return err
 		}
 		fmt.Printf("discovered=%d linked=%d missing=%d errors=%d\n", result.Discovered, result.Linked, result.Missing, len(result.Errors))
 		for _, scanErr := range result.Errors {
 			fmt.Printf("warning: %s\n", scanErr)
+		}
+		ran, err := service.TryRunPipeline(ctx)
+		if err != nil {
+			return fmt.Errorf("run pipeline after scan: %w", err)
+		}
+		if ran {
+			fmt.Println("pipeline=started")
+		} else {
+			fmt.Println("pipeline=already_running")
 		}
 		return nil
 	default:

@@ -24,8 +24,8 @@ const collectionsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="
 <section id="collections" class="collections"></section>
 </main><script>
 const shotCache={};
-function adminToken(){const el=document.getElementById('admin-token');return el?el.value.trim():''}
-function authHeaders(base){const headers=new Headers(base||{});const token=adminToken();if(token)headers.set('Authorization','Bearer '+token);return headers}
+ function csrfToken(){const prefix='__Host-timingdex_csrf=';const item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
+ function authHeaders(base){const headers=new Headers(base||{});const csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
 async function apiErrMsg(r){try{const d=await r.json();if(d&&d.error&&d.error.message)return d.error.action?(d.error.message+'（'+d.error.action+'）'):d.error.message}catch(_){}return (await r.text()).trim()}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function collSay(message,ok){const el=document.getElementById('collections-status');el.className='status '+(ok?'ok':'bad');el.textContent=message}

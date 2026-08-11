@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/evjohn-icu/timingdex/internal/app"
@@ -35,6 +36,10 @@ type Server struct {
 	tlsKey              string
 	trustedReadNetworks []netip.Prefix
 	webdav              *webdavspace.Manager
+	adminSessionsMu     sync.Mutex
+	adminSessions       map[[32]byte]adminSession
+	adminLoginMu        sync.Mutex
+	adminLoginAttempts  map[string]adminLoginAttempt
 }
 
 // SetWebDAVSpaceManager attaches the on-demand WebDAV space manager. When set,
@@ -109,6 +114,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	mux.HandleFunc("POST /api/v1/auth/admin/session", s.createAdminSession)
+	mux.HandleFunc("GET /api/v1/auth/admin/session", s.currentAdminSession)
+	mux.HandleFunc("DELETE /api/v1/auth/admin/session", s.deleteAdminSession)
 	mux.HandleFunc("GET /api/v1/hardware", s.requireTrustedRead(s.hardwareReport))
 	// First-run environment snapshot for /setup; a trusted read like /health —
 	// the page shows it before anything is configured, and it reveals no key
@@ -263,6 +271,10 @@ func (s *Server) Handler() http.Handler {
 // that are wholly administrative use requireHubAdmin; routes that are public but
 // hold one privileged field call this directly to decide how much to disclose.
 func (s *Server) isHubAdmin(r *http.Request) bool {
+	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
+		_, ok := s.adminSessionForRequest(r)
+		return ok
+	}
 	const scheme = "Bearer "
 	value := strings.TrimSpace(r.Header.Get("Authorization"))
 	if !strings.HasPrefix(value, scheme) {
@@ -278,12 +290,101 @@ func (s *Server) isHubAdmin(r *http.Request) bool {
 
 func (s *Server) requireHubAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
+			if _, ok := s.adminSessionForRequest(r); !ok {
+				action := "enter_the_admin_token"
+				if s.sessionCookieValue(r) != "" {
+					action = "login_again"
+				}
+				writeAPIError(w, http.StatusUnauthorized, APIError{Code: "admin_authentication_required", Message: "Hub administrator authentication required", Action: action})
+				return
+			}
+			if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.requireSessionCSRF(w, r) {
+				return
+			}
+			next(w, r)
+			return
+		}
 		if !s.isHubAdmin(r) {
 			writeAPIError(w, http.StatusUnauthorized, APIError{Code: "admin_authentication_required", Message: "Hub administrator authentication required", Action: "enter_the_admin_token"})
 			return
 		}
 		next(w, r)
 	}
+}
+
+func (s *Server) createAdminSession(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if !s.secureBrowserRequest(r) {
+		writeAPIError(w, http.StatusForbidden, APIError{Code: "secure_session_required", Message: errSessionHTTPS.Error()})
+		return
+	}
+	if !sameRequestOrigin(r, strings.TrimSpace(r.Header.Get("Origin"))) {
+		writeAPIError(w, http.StatusForbidden, APIError{Code: "csrf_origin_failed", Message: "request origin is not allowed"})
+		return
+	}
+	var request struct {
+		Token string `json:"token"`
+	}
+	if !decodeStrictJSON(w, r, &request, 4<<10) {
+		return
+	}
+	provided := strings.TrimSpace(request.Token)
+	loginKey := adminLoginKey(r)
+	if retryAfter, limited := s.adminLoginRateLimit(loginKey, time.Now()); limited {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeAPIError(w, http.StatusTooManyRequests, APIError{Code: "admin_login_rate_limited", Message: "too many administrator login attempts", Retryable: true})
+		return
+	}
+	expected := s.service.AdminToken()
+	if provided == "" || expected == "" || len(provided) != len(expected) || subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
+		s.recordAdminLoginFailure(loginKey, time.Now())
+		writeAPIError(w, http.StatusUnauthorized, APIError{Code: "admin_authentication_required", Message: "Hub administrator authentication required", Action: "enter_the_admin_token"})
+		return
+	}
+	s.clearAdminLoginFailures(loginKey)
+	sessionValue, csrfValue, err := s.createAdminSessionRecord(time.Now())
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, APIError{Code: "session_creation_failed", Message: "could not create administrator session"})
+		return
+	}
+	setAdminSessionCookies(w, sessionValue, csrfValue)
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusCreated, map[string]any{"authenticated": true, "expires_in_seconds": int(adminSessionTTL / time.Second)})
+}
+
+func (s *Server) currentAdminSession(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
+		if !s.isHubAdmin(r) {
+			writeAPIError(w, http.StatusUnauthorized, APIError{Code: "admin_authentication_required", Message: "Hub administrator authentication required"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "source": "bearer"})
+		return
+	}
+	if _, ok := s.adminSessionForRequest(r); !ok {
+		writeAPIError(w, http.StatusUnauthorized, APIError{Code: "admin_session_expired", Message: "administrator session expired", Action: "login_again"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "source": "session"})
+}
+
+func (s *Server) deleteAdminSession(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if _, ok := s.adminSessionForRequest(r); !ok {
+		clearAdminSessionCookies(w)
+		writeAPIError(w, http.StatusUnauthorized, APIError{Code: "admin_session_expired", Message: "administrator session expired", Action: "login_again"})
+		return
+	}
+	if !s.requireSessionCSRF(w, r) {
+		return
+	}
+	s.revokeAdminSession(s.sessionCookieValue(r))
+	clearAdminSessionCookies(w)
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": false})
 }
 
 // isHubAgent reports whether the request carries the Hub agent token — a
@@ -314,6 +415,18 @@ func (s *Server) isHubAgent(r *http.Request) bool {
 // by access control rather than by prompt text alone.
 func (s *Server) requireAgentOrAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
+			if _, ok := s.adminSessionForRequest(r); !ok {
+				writeAPIError(w, http.StatusUnauthorized, APIError{Code: "agent_or_admin_authentication_required", Message: "Hub agent or administrator authentication required", Action: "login_again"})
+				return
+			}
+			if r.Method != http.MethodGet && r.Method != http.MethodHead && !s.requireSessionCSRF(w, r) {
+				return
+			}
+			next(w, r)
+			return
+		}
 		if !s.isHubAgent(r) && !s.isHubAdmin(r) {
 			writeAPIError(w, http.StatusUnauthorized, APIError{Code: "agent_or_admin_authentication_required", Message: "Hub agent or administrator authentication required", Action: "enter_the_agent_or_admin_token"})
 			return
@@ -323,6 +436,7 @@ func (s *Server) requireAgentOrAdmin(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) createWorkerPairing(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	pairing, err := s.service.CreateWorkerPairing(r.Context(), 15*time.Minute)
 	if err != nil {
 		writeError(w, err)
@@ -626,6 +740,7 @@ func (s *Server) writeProviderChannel(w http.ResponseWriter, r *http.Request, st
 }
 
 func (s *Server) enrollWorker(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	var request struct {
 		PairingToken string `json:"pairing_token"`
 		remote.WorkerRegistration
@@ -750,6 +865,7 @@ func (s *Server) workerProgress(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) workerCredential(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	worker, ok := s.authenticatedWorker(w, r)
 	if !ok {
 		return
@@ -827,6 +943,7 @@ func (s *Server) workerCredential(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) workerProviderProxy(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	worker, ok := s.authenticatedWorker(w, r)
 	if !ok {
 		return
@@ -957,6 +1074,7 @@ func (s *Server) writeWorkerArtifactResult(w http.ResponseWriter, artifact domai
 }
 
 func (s *Server) authenticatedWorker(w http.ResponseWriter, r *http.Request) (remote.Worker, bool) {
+	w.Header().Set("Cache-Control", "no-store")
 	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
 	const prefix = "Bearer "
 	if !strings.HasPrefix(authorization, prefix) {
@@ -1131,10 +1249,36 @@ type shareNotMountedResponse struct {
 func (s *Server) scanRoot(w http.ResponseWriter, r *http.Request) {
 	result, err := s.service.ScanLibraryRoot(r.Context(), r.PathValue("id"))
 	if err != nil {
+		// Scan reconciliation can fail after changed assets have already been
+		// queued. Do not strand that work merely because the scan response is an
+		// error; preserve the error for the caller and still drain the queue.
+		s.service.StartPipeline()
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	// Keep scanning synchronous, but hand the queued work to the existing
+	// single-run pipeline guard before returning. The supervisor uses
+	// TryRunPipeline after scanning all roots; an explicit root scan is the
+	// other user-facing entry point and must not leave its queue idle.
+	started := s.service.StartPipeline()
+	writeJSON(w, http.StatusOK, struct {
+		domain.ScanResult
+		PipelineStarted bool   `json:"pipeline_started"`
+		PipelineBusy    bool   `json:"pipeline_busy"`
+		PipelineStatus  string `json:"pipeline_status"`
+	}{
+		ScanResult:      result,
+		PipelineStarted: started,
+		PipelineBusy:    !started,
+		PipelineStatus:  pipelineTriggerStatus(started),
+	})
+}
+
+func pipelineTriggerStatus(started bool) string {
+	if started {
+		return "started"
+	}
+	return "already_running"
 }
 
 // inspectRoot is the read-only counterpart to createRoot: it answers whether a
@@ -2171,6 +2315,7 @@ func (s *Server) assetDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) assetCaptureLocation(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	detail, err := s.service.GetAssetDetail(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
@@ -2304,8 +2449,8 @@ func (s *Server) progressPage(w http.ResponseWriter, r *http.Request) {
 
 const progressHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · 处理进度</title><style>
 :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101827;color:#edf3ff;font:14px ui-sans-serif,system-ui,-apple-system,sans-serif}header{padding:15px 5vw;border-bottom:1px solid #293953;display:flex;gap:18px;align-items:center;background:#101827ee;position:sticky;top:0;z-index:1;backdrop-filter:blur(12px)}a{color:#b8c8ff;text-decoration:none}.brand{color:#fff;font-weight:800;margin-right:auto}.wrap{max-width:1180px;margin:auto;padding:32px 24px}.top{display:flex;justify-content:space-between;gap:18px;align-items:flex-end}.top h1{font-size:32px;margin:0;letter-spacing:-.04em}.muted{color:#aab8d0;line-height:1.5}button{background:#86a3ff;color:#091227;border:0;border-radius:9px;padding:10px 14px;font-weight:800;cursor:pointer}.console-hero{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;background:#172238;border:1px solid #2c3d5b;border-radius:14px;padding:16px 18px;margin:22px 0 14px}.hero-title{display:grid;gap:4px}.hero-job{font-size:19px;font-weight:850;color:#fff}.hero-meta{font-size:12px}.hero-actions{display:flex;gap:9px;flex-wrap:wrap}.hero-actions button{background:#31446a;color:#dbe6ff}.hero-actions button.primary{background:#86a3ff;color:#091227}.metrics{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin:24px 0}.metric,.panel{background:#172238;border:1px solid #2c3d5b;border-radius:14px}.metric{padding:16px}.number{font-size:30px;font-weight:800;letter-spacing:-.04em;margin-top:5px}.panels{display:grid;grid-template-columns:1.4fr .8fr;gap:16px}.panel{padding:18px;min-width:0;overflow-x:auto}.panel h2{margin:0 0 14px;font-size:17px}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:10px 7px;border-bottom:1px solid #2b3b55;font-size:13px;vertical-align:top}.state{border-radius:99px;padding:3px 8px;font-size:12px;font-weight:700;background:#34445e}.state.succeeded{background:#164b39;color:#9cf0c2}.state.failed{background:#612c3a;color:#ffc0c8}.state.running{background:#3a376b;color:#d8d4ff}.state.deferred{background:#5a4a1f;color:#ffdfa6}.log{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.55;color:#b9c7e3;min-height:280px;max-height:480px;overflow:auto;white-space:pre-wrap}.log div{padding:6px 0;border-bottom:1px solid #263650}@media(max-width:760px){.metrics{grid-template-columns:repeat(2,1fr)}.panels{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}header input{width:auto;max-width:260px;padding:9px 10px;border-radius:8px;border:1px solid #354764;background:#0e1728;color:#fff;font:inherit}</style></head><body><!--SHELL_HEADER--><main class="wrap"><div class="top"><div><h1>处理进度</h1><p class="muted">状态每 2.5 秒更新。右侧是本次浏览器会话的操作记录；下方作业错误来自本地任务队列。若通道内所有 API Key 都失败（多为额度用尽），作业会转入「等待额度」并在若干小时后自动重试，不消耗尝试次数。</p></div><div class="console-hero" data-console-hero aria-live="polite"><div class="hero-title"><span class="muted">正在处理</span><div class="hero-job" id="hero-job">当前没有运行中的作业</div><div class="hero-meta muted" id="hero-meta"></div></div><div class="hero-actions"><button id="run" class="primary" onclick="runPipeline()">运行待处理任务</button><button id="resume" onclick="resumeDeferred()">立即重试等待额度的作业</button><button id="retry" onclick="retryFailed()">重试失败作业</button></div></div></div><section id="supervisor" class="muted" style="margin-top:18px">无人值守巡检：正在读取…</section><section id="metrics" class="metrics"></section><section id="issues" class="panel" style="display:none;margin-bottom:16px"><h2>需处理的问题</h2><div id="issues-body" class="muted">正在读取…</div></section><section class="panels"><div class="panel"><h2>最近作业</h2><div id="jobs" class="muted">正在读取…</div></div><div class="panel"><h2>本次操作</h2><div id="log" class="log"></div></div></section></main><script>
-function adminToken(){const el=document.getElementById('admin-token');return el?el.value.trim():''}
-function authHeaders(base){const headers=new Headers(base||{});const token=adminToken();if(token)headers.set('Authorization','Bearer '+token);return headers}
+ function csrfToken(){const prefix='__Host-timingdex_csrf=';const item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
+ function authHeaders(base){const headers=new Headers(base||{});const csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
 async function apiErrMsg(r){try{const d=await r.json();if(d&&d.error&&d.error.message)return d.error.action?(d.error.message+'（'+d.error.action+'）'):d.error.message}catch(_){}return (await r.text()).trim()}
 const logEl=document.getElementById('log');let logs=[];function log(m){logs.unshift(new Date().toLocaleTimeString()+'  '+esc(m));logs=logs.slice(0,30);logEl.innerHTML=logs.map(x=>'<div>'+x+'</div>').join('')}function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function when(v){const t=new Date(v);return isNaN(t.getTime())?String(v||''):t.toLocaleString()}
 function stateCell(j){if(j.deferred_reason)return '<span class="state deferred">等待服务商额度</span>';return '<span class="state '+esc(j.state)+'">'+esc(j.terminal?j.state+'（永久，不再重试）':j.state)+'</span>'}
@@ -2348,8 +2493,8 @@ func (s *Server) repurposePage(w http.ResponseWriter, r *http.Request) {
 const repurposeWorkspaceHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · 翻新工作台</title><style>
 :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101827;color:#edf3ff;font:15px ui-sans-serif,system-ui,-apple-system,sans-serif}header{padding:15px 5vw;border-bottom:1px solid #293953;display:flex;gap:18px;align-items:center;background:#101827ee;position:sticky;top:0;z-index:2;backdrop-filter:blur(12px)}a{color:#b8c8ff;text-decoration:none}.brand{color:#fff;font-weight:800;margin-right:auto}.wrap{max-width:1200px;margin:auto;padding:38px 24px}.intro{display:grid;grid-template-columns:1.1fr .9fr;gap:22px;align-items:end}.eyebrow{color:#8da7ff;font-weight:800;font-size:12px;letter-spacing:.1em}.intro h1{font-size:clamp(32px,5vw,54px);line-height:1.02;letter-spacing:-.05em;margin:10px 0}.muted{color:#aab8d0;line-height:1.6}.form,.plan,.section{background:#172238;border:1px solid #2c3d5b;border-radius:16px}.form{padding:20px}.field{margin:11px 0}.field label{font-size:12px;color:#bfcae0;font-weight:800;display:block;margin:0 0 5px}textarea,input{width:100%;font:inherit;padding:10px;border-radius:8px;background:#0e1728;color:#fff;border:1px solid #374965}textarea{min-height:92px;resize:vertical}.row{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}button{border:0;border-radius:8px;padding:8px 11px;font:inherit;font-weight:800;cursor:pointer}.primary{margin-top:8px;background:#8ca7ff;color:#0d1830}.plan{margin-top:28px;padding:24px}.planhead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}.planhead h2{font-size:27px;margin:0;letter-spacing:-.035em}.pill{border:1px solid #465b82;color:#b8c9ff;border-radius:99px;padding:4px 9px;font-size:12px;white-space:nowrap}.section{margin-top:13px;padding:16px}.sectionhead{display:flex;justify-content:space-between;gap:12px;align-items:start}.sectionactions{display:flex;gap:7px;align-items:center}.role{font-weight:900;text-transform:capitalize}.rationale{color:#b7c5de;font-size:13px;margin:7px 0 13px}.candidate{display:grid;grid-template-columns:150px 1fr;gap:13px;background:#111b2d;border:1px solid #2a3a56;border-radius:11px;padding:10px;margin:8px 0}.candidate.selected{border-color:#91acff;background:#172747}.candidate.excluded{opacity:.55;border-style:dashed}.thumb{width:150px;aspect-ratio:16/9;object-fit:cover;background:#090f1b;border-radius:7px}.candidate b{font-size:14px}.small{font-size:12px;color:#aab8d0;margin-top:5px;line-height:1.45}.candidate-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}.select{background:#a7baff;color:#101a30}.select.on{background:#73dcad;color:#082419}.secondary{background:#2b3d5b;color:#cbd7f4}.exclude{background:#4a2f3c;color:#ffc2cb}.empty{border:1px dashed #4d607f;border-radius:10px;padding:14px;color:#b5c4df;font-size:13px}.warn{color:#ffc98d}.approve{background:#74ddb2;color:#08241b}.save{background:#8ca7ff;color:#0d1830}.error{color:#ffb5c0;margin-top:12px}.editor{margin-top:20px;border-top:1px solid #31425f;padding-top:16px}.editorbar{display:flex;justify-content:space-between;gap:12px;align-items:end}.editorbar textarea{min-height:56px}.statusline{font-size:12px;color:#9db1d2;margin-top:7px}@media(max-width:760px){.intro{grid-template-columns:1fr}.row{grid-template-columns:1fr}.candidate{grid-template-columns:1fr}.thumb{width:100%}.wrap{padding-top:28px}.editorbar{align-items:stretch;flex-direction:column}}header input{width:auto;max-width:260px;padding:9px 10px}</style></head><body><!--SHELL_HEADER--><main class="wrap"><div class="intro"><div><div class="eyebrow">REPURPOSE WORKSPACE · V0.11</div><h1>把推荐，变成你的剪辑选择。</h1><p class="muted">选择一个候选镜头、锁住关键决定、排除不适合的备选，再保存为独立 revision。原视频不会被修改。</p></div><form class="form" onsubmit="createPlan(event)"><div class="field"><label>这次要做什么？</label><textarea id="brief" required placeholder="例如：做一个 30 秒深圳城市生活宣传片，要有夜景、通勤和人文气息"></textarea></div><div class="row"><div class="field"><label>总时长（秒）</label><input id="duration" type="number" min="5" value="30"></div><div class="field"><label>风格</label><input id="style" placeholder="城市生活"></div><div class="field"><label>受众</label><input id="audience" placeholder="品牌客户"></div></div><button class="primary" id="create">生成可审核方案</button><div id="error" class="error"></div></form></div><section id="result" class="plan" aria-live="polite"><div class="muted">先写下创作需求。生成后可为每个段落选择、锁定或排除候选镜头。</div></section></main><script>
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=ms=>{ms=Math.max(0,Math.floor((ms||0)/1000));return String(Math.floor(ms/60)).padStart(2,'0')+':'+String(ms%60).padStart(2,'0')};let activePlan=null,dirty=false;
-function adminToken(){const el=document.getElementById('admin-token');return el?el.value.trim():''}
-function authHeaders(base){const headers=new Headers(base||{});const token=adminToken();if(token)headers.set('Authorization','Bearer '+token);return headers}
+ function csrfToken(){const prefix='__Host-timingdex_csrf=';const item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
+ function authHeaders(base){const headers=new Headers(base||{});const csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
 async function apiErrMsg(r){try{const d=await r.json();if(d&&d.error&&d.error.message)return d.error.action?(d.error.message+'（'+d.error.action+'）'):d.error.message}catch(_){}return (await r.text()).trim()}
 async function api(url,opt){opt=opt||{};const r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok){if(r.status===401)throw Error('需要 Hub 管理 Token：请先在顶部填入');throw Error(await apiErrMsg(r))}return r.json()}
 // Exports are fetched rather than linked because the route needs the admin
@@ -2553,6 +2698,7 @@ func (s *Server) approveRepurposePlanRevision(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) exportRepurposePlanEDL(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	planID := r.PathValue("id")
 	document, err := s.service.ExportPlanEDL(r.Context(), planID)
 	if err != nil {
@@ -2563,6 +2709,7 @@ func (s *Server) exportRepurposePlanEDL(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) exportRepurposePlanFCPXML(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	planID := r.PathValue("id")
 	document, err := s.service.ExportPlanFCPXML(r.Context(), planID)
 	if err != nil {
@@ -2619,8 +2766,8 @@ const tagsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
    content-box 220+24 padding+1 border = 245px, overlapping the 220px body gutter. */
 *{box-sizing:border-box}body{font-family:system-ui,-apple-system,sans-serif;margin:0;background:#101827;color:#edf3ff}header{position:sticky;top:0;padding:16px;background:#181818;display:flex;gap:12px;align-items:center}a{color:#8bc5ff}button{padding:8px 12px;border:0;border-radius:8px;cursor:pointer}.primary{background:#e8e8e8}.approve{background:#b8efc0}.reject{background:#efb8b8}.wrap{padding:16px;display:grid;gap:20px}.panel{background:#1b1b1b;border:1px solid #333;border-radius:12px;padding:14px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:9px;border-bottom:1px solid #333;vertical-align:top}.muted{color:#aaa;font-size:12px}.pill{display:inline-block;background:#333;padding:3px 7px;border-radius:999px;margin:2px;font-size:12px}input{flex:1;max-width:280px;padding:8px 10px;border-radius:8px;border:1px solid #444;background:#222;color:#eee;font:inherit}</style></head><body><!--SHELL_HEADER--><div class="wrap"><section class="panel"><h2>未解析标签</h2><div id="unresolved"></div></section><section class="panel"><h2>待审核提案</h2><div id="proposals"></div></section><section class="panel"><h2>Canonical Tags</h2><div id="tags"></div></section></div><script>
 const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));
-function adminToken(){const el=document.getElementById('admin-token');return el?el.value.trim():''}
-function authHeaders(base){const headers=new Headers(base||{});const token=adminToken();if(token)headers.set('Authorization','Bearer '+token);return headers}
+ function csrfToken(){const prefix='__Host-timingdex_csrf=';const item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
+ function authHeaders(base){const headers=new Headers(base||{});const csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
 async function apiErrMsg(r){try{const d=await r.json();if(d&&d.error&&d.error.message)return d.error.action?(d.error.message+'（'+d.error.action+'）'):d.error.message}catch(_){}return (await r.text()).trim()}
 async function j(url,opt){opt=opt||{};const r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok){if(r.status===401)throw new Error('需要 Hub 管理 Token：请先在顶部填入');throw new Error(await apiErrMsg(r))}return r.json()}
 async function curate(){await j('/api/v1/tags/curate',{method:'POST'});await load()}

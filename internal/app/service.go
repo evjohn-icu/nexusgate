@@ -229,8 +229,12 @@ type Service struct {
 	// every method guards it.
 	searchV2 *search.Service
 
-	pipelineMu      sync.Mutex
-	pipelineRunning bool
+	pipelineMu             sync.Mutex
+	pipelineRunning        bool
+	pipelineDrainRequested bool
+	pipelineDrainContext   context.Context
+	pipelineDone           chan struct{}
+	pipelineContext        context.Context
 
 	supervisor *LibrarySupervisor
 
@@ -336,9 +340,10 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 		pipeline: NewPipeline(repo, cfg.CacheDir, channelRuntime.asr(), channelRuntime.asrFallback(), pipelineVideoProvider, alignment, shotDetector, plan, sourceStager, time.Duration(cfg.Pipeline.ProviderRouteDeferralMinutes)*time.Minute, cfg.Pipeline.MinimumFreeSpaceBytes),
 		curator:  channelRuntime.curator(), embedder: channelRuntime.embedder(), planner: channelRuntime.planner(),
 		hardware: hardware, adminToken: adminToken, agentToken: agentToken, secrets: secrets,
-		channelRuntime: channelRuntime,
-		scanFailures:   make(map[string]map[string]int),
-		scanRootLocks:  make(map[string]*sync.Mutex),
+		channelRuntime:  channelRuntime,
+		scanFailures:    make(map[string]map[string]int),
+		scanRootLocks:   make(map[string]*sync.Mutex),
+		pipelineContext: context.Background(),
 	}
 	// Constructed for every command, started by none of them: only `serve`
 	// calls RunLibrarySupervisor, and a disabled supervisor's Run is a no-op.
@@ -1395,18 +1400,49 @@ func (s *Service) RunPipeline(ctx context.Context) error {
 	return nil
 }
 
+// SetPipelineContext binds background pipeline runs to the Hub lifecycle. The
+// HTTP handler cannot use its request context because that context is cancelled
+// as soon as the response returns; serve installs the signal context here.
+func (s *Service) SetPipelineContext(ctx context.Context) {
+	s.pipelineMu.Lock()
+	defer s.pipelineMu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.pipelineContext = ctx
+}
+
 // StartPipeline launches a background pipeline run if none is currently active.
 // It returns true when a new goroutine was started, or false if one was already
-// running. The caller never blocks — the lifecycle is detached from any HTTP
-// request context. CLI callers that need synchronous behaviour should use
-// RunPipeline instead.
+// running. A false result still records a coalesced follow-up request unless the
+// lifecycle context is already cancelled. CLI callers that need synchronous
+// behaviour should use TryRunPipeline or RunPipeline instead.
 func (s *Service) StartPipeline() bool {
-	if !s.beginPipelinePass() {
+	s.pipelineMu.Lock()
+	if s.pipelineContext != nil && s.pipelineContext.Err() != nil && !s.pipelineRunning {
+		s.pipelineMu.Unlock()
 		return false
 	}
+	if s.pipelineRunning {
+		if s.pipelineContext == nil || s.pipelineContext.Err() == nil {
+			s.pipelineDrainRequested = true
+			s.pipelineDrainContext = s.pipelineContext
+		}
+		s.pipelineMu.Unlock()
+		return false
+	}
+	s.pipelineRunning = true
+	s.pipelineDrainRequested = false
+	s.pipelineDrainContext = nil
+	s.pipelineDone = make(chan struct{})
+	ctx := s.pipelineContext
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.pipelineMu.Unlock()
 	go func() {
 		defer s.endPipelinePass()
-		if err := s.RunPipeline(context.Background()); err != nil {
+		if err := s.RunPipeline(ctx); err != nil {
 			slog.Error("pipeline run failed", "error", err)
 		}
 	}()
@@ -1422,7 +1458,7 @@ func (s *Service) StartPipeline() bool {
 // on spending Provider calls after shutdown had begun, with nothing left to
 // join it.
 func (s *Service) TryRunPipeline(ctx context.Context) (bool, error) {
-	if !s.beginPipelinePass() {
+	if !s.beginPipelinePassWithContext(ctx) {
 		return false, nil
 	}
 	defer s.endPipelinePass()
@@ -1434,19 +1470,87 @@ func (s *Service) TryRunPipeline(ctx context.Context) (bool, error) {
 // and the supervisor waking up cannot end up driving the same disk at once —
 // which would defeat the throttle rather than obey it.
 func (s *Service) beginPipelinePass() bool {
+	return s.beginPipelinePassWithContext(nil)
+}
+
+func (s *Service) beginPipelinePassWithContext(ctx context.Context) bool {
 	s.pipelineMu.Lock()
 	defer s.pipelineMu.Unlock()
 	if s.pipelineRunning {
+		if ctx != nil && ctx.Err() == nil {
+			s.pipelineDrainRequested = true
+			s.pipelineDrainContext = ctx
+		}
 		return false
 	}
 	s.pipelineRunning = true
+	s.pipelineDrainRequested = false
+	s.pipelineDone = make(chan struct{})
 	return true
 }
 
 func (s *Service) endPipelinePass() {
 	s.pipelineMu.Lock()
-	defer s.pipelineMu.Unlock()
+	done := s.pipelineDone
+	if s.pipelineDrainRequested {
+		s.pipelineDrainRequested = false
+		ctx := s.pipelineDrainContext
+		s.pipelineDrainContext = nil
+		if ctx == nil {
+			ctx = s.pipelineContext
+		}
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if ctx.Err() != nil {
+			s.pipelineRunning = false
+			s.pipelineDone = nil
+			s.pipelineMu.Unlock()
+			if done != nil {
+				close(done)
+			}
+			return
+		}
+		s.pipelineDone = make(chan struct{})
+		s.pipelineMu.Unlock()
+		if done != nil {
+			close(done)
+		}
+		go func() {
+			defer s.endPipelinePass()
+			if err := s.RunPipeline(ctx); err != nil {
+				slog.Error("pipeline follow-up run failed", "error", err)
+			}
+		}()
+		return
+	}
 	s.pipelineRunning = false
+	s.pipelineDrainRequested = false
+	s.pipelineDrainContext = nil
+	s.pipelineDone = nil
+	s.pipelineMu.Unlock()
+	if done != nil {
+		close(done)
+	}
+}
+
+// WaitPipeline joins the active pipeline pass, including any follow-up pass
+// requested while it was finishing. The lifecycle context is cancelled before
+// callers use this method, so a shutdown cannot create another drain pass.
+func (s *Service) WaitPipeline() {
+	for {
+		s.pipelineMu.Lock()
+		if !s.pipelineRunning {
+			s.pipelineMu.Unlock()
+			return
+		}
+		done := s.pipelineDone
+		s.pipelineMu.Unlock()
+		if done == nil {
+			return
+		}
+		<-done
+	}
 }
 
 // RunLibrarySupervisor blocks until ctx is cancelled, rescanning the library and

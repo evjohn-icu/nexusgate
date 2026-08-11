@@ -55,7 +55,7 @@ func shellHeaderHTML() string {
 		}
 		b.WriteString(`</div>`)
 	}
-	b.WriteString(`</nav><div class="shell-actions"><input id="admin-token" type="password" autocomplete="off" placeholder="Hub 管理 Token（仅存于本页内存）" oninput="refreshStatus()" aria-label="Hub 管理 Token"><div class="status-strip" data-status-strip aria-label="系统状态">`)
+	b.WriteString(`</nav><div class="shell-actions"><div class="shell-auth"><input id="admin-token" type="password" autocomplete="off" placeholder="Hub 管理 Token（仅用于登录）" aria-label="Hub 管理 Token"><button type="button" id="admin-login" onclick="loginAdmin()">登录</button><button type="button" id="admin-logout" onclick="logoutAdmin()" hidden>退出</button><span id="admin-session-state" class="shell-auth-state">未登录</span></div><div class="status-strip" data-status-strip aria-label="系统状态">`)
 	cells := []struct {
 		id, title, label string
 	}{
@@ -111,7 +111,7 @@ body{padding-left:220px}
 .nav-link:hover{color:#fff}
 .nav-link.active{color:#fff;font-weight:800}
 .shell-actions{display:flex;flex-direction:column;gap:12px;margin-top:auto}
-.shell-actions input{width:100%;padding:9px 11px;border:1px solid #354965;border-radius:9px;background:#111d30;color:#fff;font:inherit}
+.shell-auth{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.shell-actions input{width:100%;padding:9px 11px;border:1px solid #354965;border-radius:9px;background:#111d30;color:#fff;font:inherit}.shell-auth button{padding:8px 10px;border:1px solid #506e9d;border-radius:7px;background:#182942;color:#edf3ff;cursor:pointer}.shell-auth-state{color:#9fb0ce;font-size:11px}
 .status-strip{display:flex;gap:8px;flex-wrap:wrap}
 .status-cell{display:flex;align-items:center;gap:6px;color:#9fb0ce;text-decoration:none;border:1px solid #2b3e5b;border-radius:99px;padding:5px 11px;font-size:12px;white-space:nowrap}
 .status-cell:hover{border-color:#506e9d;color:#fff}
@@ -126,12 +126,16 @@ body{padding-left:220px}
 
 // shellScriptBlock is the shared script every page carries. It defines only
 // names no page declares, so it can be injected without clashing with a
-// page's own script block. Pages keep their own adminToken()/authHeaders()
-// helpers — they read the same #admin-token input the shell provides, so the
-// single input serves both the strip and the pages.
+// page's own script block. Browser mutations use the HttpOnly session and the
+// visible CSRF cookie; the token field exists only long enough to establish a
+// session.
 const shellScriptBlock = `<script>
 function getAdminToken(){const el=document.getElementById('admin-token');return el?el.value.trim():''}
-function shellAuthHeaders(){const headers=new Headers();const token=getAdminToken();if(token)headers.set('Authorization','Bearer '+token);return headers}
+function csrfToken(){const prefix='__Host-timingdex_csrf=';const item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
+function shellAuthHeaders(base){const headers=new Headers(base||{});const csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
+function shellSetAuthState(authenticated){const state=document.getElementById('admin-session-state'),input=document.getElementById('admin-token'),login=document.getElementById('admin-login'),logout=document.getElementById('admin-logout');if(state)state.textContent=authenticated?'已登录':'未登录';if(input)input.hidden=authenticated;if(login)login.hidden=authenticated;if(logout)logout.hidden=!authenticated}
+async function loginAdmin(){const token=getAdminToken();if(!token){shellSetAuthState(false);return}const button=document.getElementById('admin-login');if(button)button.disabled=true;try{const r=await fetch('/api/v1/auth/admin/session',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:token})});if(!r.ok)throw Error('登录失败');const input=document.getElementById('admin-token');if(input)input.value='';shellSetAuthState(true);window.dispatchEvent(new CustomEvent('timingdex:admin-auth-changed',{detail:{authenticated:true}}));refreshStatus()}catch(e){const state=document.getElementById('admin-session-state');if(state)state.textContent=e.message}finally{if(button)button.disabled=false}}
+ async function logoutAdmin(){try{await fetch('/api/v1/auth/admin/session',{method:'DELETE',credentials:'same-origin',headers:shellAuthHeaders()})}finally{shellSetAuthState(false);window.dispatchEvent(new CustomEvent('timingdex:admin-auth-changed',{detail:{authenticated:false}}));refreshStatus()}}
 function statusCell(id,state,text){const el=document.getElementById(id);if(!el)return;el.textContent=text;const cell=el.closest('.status-cell');if(cell){const dot=cell.querySelector('.dot');if(dot)dot.className='dot '+state}}
 // The old per-page headers marked the current page with nav-active; the
 // shell header derives it from the URL instead of taking an argument, so a
@@ -139,11 +143,9 @@ function statusCell(id,state,text){const el=document.getElementById(id);if(!el)r
 document.querySelectorAll('.nav-link').forEach(function(a){if(a.getAttribute('href')===location.pathname)a.classList.add('active')});
 async function refreshStatus(){
   try{const r=await fetch('/api/v1/health');statusCell('status-hub',r.ok?'ok':'err',r.ok?'Hub 正常':'Hub 异常')}catch(e){statusCell('status-hub','err','Hub 异常')}
-  try{const s=await fetch('/api/v1/jobs/summary',{headers:shellAuthHeaders()}).then(r=>r.ok?r.json():null);if(s){let state='idle',text='空闲';if(s.running>0){state='ok';text='运行中 '+s.running}else if(s.deferred>0){state='warn';text='等待额度 '+s.deferred}else if((s.failed||0)+(s.terminal||0)>0){state='err';text='失败 '+(s.failed+s.terminal)}else if(s.pending>0){text='排队 '+s.pending}statusCell('status-pipeline',state,text)}else{statusCell('status-pipeline','off','—')}}catch(e){statusCell('status-pipeline','off','—')}
-  const token=getAdminToken();
-  if(!token){statusCell('status-providers','off','需Token');statusCell('status-workers','off','需Token');return}
+  try{const s=await fetch('/api/v1/jobs/summary',{credentials:'same-origin',headers:shellAuthHeaders()}).then(r=>r.ok?r.json():null);if(s){let state='idle',text='空闲';if(s.running>0){state='ok';text='运行中 '+s.running}else if(s.deferred>0){state='warn';text='等待额度 '+s.deferred}else if((s.failed||0)+(s.terminal||0)>0){state='err';text='失败 '+(s.failed+s.terminal)}else if(s.pending>0){text='排队 '+s.pending}statusCell('status-pipeline',state,text)}else{statusCell('status-pipeline','off','—')}}catch(e){statusCell('status-pipeline','off','—')}
   try{const r=await fetch('/api/v1/admin/provider-channels/status',{headers:shellAuthHeaders()});if(r.ok){const caps=await r.json();const list=Array.isArray(caps)?caps:[];const anyData=list.some(c=>c&&c.has_runtime_data);let okN=0,degradedN=0;list.forEach(function(c){if(!c||!c.has_runtime_data||!c.snapshot||!Array.isArray(c.snapshot.channels))return;c.snapshot.channels.forEach(function(ch){if(!ch||!ch.enabled)return;if(ch.available)okN++;else degradedN++})});if(!anyData||(okN+degradedN)===0){statusCell('status-providers','off','未配置')}else if(degradedN>0){statusCell('status-providers','warn','降级 '+degradedN)}else{statusCell('status-providers','ok','正常 '+okN)}}else{statusCell('status-providers','err','异常')}}catch(e){statusCell('status-providers','off','—')}
   try{const w=await fetch('/api/v1/hub/workers',{headers:shellAuthHeaders()}).then(r=>r.ok?r.json():null);if(Array.isArray(w)){const on=w.filter(x=>x.status==='online').length;const off=w.length-on;statusCell('status-workers',off>0?'warn':'ok',on+' 在线'+(off?' / '+off+' 离线':''))}else{statusCell('status-workers','off','—')}}catch(e){statusCell('status-workers','off','—')}
 }
-refreshStatus();setInterval(refreshStatus,15000);
+fetch('/api/v1/auth/admin/session',{credentials:'same-origin'}).then(function(r){shellSetAuthState(r.ok)}).catch(function(){shellSetAuthState(false)});refreshStatus();setInterval(refreshStatus,15000);
 </script>`

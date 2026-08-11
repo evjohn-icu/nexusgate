@@ -7,7 +7,7 @@ The Playwright smoke suite runs against the offline SQLite fixture server. It ne
 | Scenario | 1280x900 | 375x812 |
 | --- | --- | --- |
 | Shell and branding on `/`, `/setup`, `/progress`, `/providers`, `/collections`, `/worker-setup`, `/workers` | yes | yes |
-| Empty browser storage and password token input | yes | yes |
+| HttpOnly admin session login/logout and empty browser storage | yes | yes |
 | No page errors and hostile text stays escaped | yes | yes |
 | Search POST includes `include_evidence`, drawer open/close | yes | yes |
 | Collection add, reorder, remove | yes | yes |
@@ -17,7 +17,7 @@ The Playwright smoke suite runs against the offline SQLite fixture server. It ne
 
 ## Token Memory Assertions
 
-Every page assertion verifies that the admin token is absent from both `localStorage` and `sessionStorage`. After a reload, the token input and any generated pairing token must be gone from page state; the suite does not accept a token restored from browser storage. The token must not appear in rendered HTML, DOM text, URLs, request URLs, request bodies, or provider-channel responses. Provider requests are inspected to ensure the key value is never sent or exposed by the browser; only the in-memory admin authorization header is permitted for admin API calls.
+Every page assertion verifies that the admin token is absent from both `localStorage` and `sessionStorage`. The token input is used only to establish the HTTPS HttpOnly admin session and is cleared immediately after login. After a reload, the token input and any generated pairing token must be gone from page state; the suite does not accept a token restored from browser storage. The token, session value, and CSRF value must not appear in rendered HTML, DOM text, URLs, request URLs, or logs. Browser mutations use the HttpOnly session plus same-origin `Origin` and `X-CSRF-Token`; CLI, Agent, and Worker Bearer headers remain separate. Provider requests are inspected to ensure the key value is never sent or exposed by the browser.
 
 Run the temporary server with `/tmp/timingdex-playwright/run-fixture.sh`, then run the scenarios with Playwright at both viewports. The scenario source is intentionally not committed.
 

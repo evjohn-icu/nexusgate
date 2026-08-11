@@ -207,7 +207,7 @@ go build -o timingdex ./cmd/timingdex
 
 ./timingdex doctor
 ./timingdex root add /path/to/footage && ./timingdex root list
-./timingdex root scan <root-id>
+./timingdex root scan <root-id>     # scans, enqueues, and drains the Pipeline
 ./timingdex pipeline run
 ./timingdex serve
 ```

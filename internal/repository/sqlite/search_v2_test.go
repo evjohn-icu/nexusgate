@@ -250,25 +250,12 @@ func TestSearchV2TranscriptPhrasePrefilterSurvivesPartialSaturation(t *testing.T
 func TestSearchV2TranscriptPhraseSurvivesTenThousandPartialSaturation(t *testing.T) {
 	repo, _ := seedSearchV2Corpus(t)
 	defer repo.Close()
-	ids := map[string]string{}
 	// 10,001 partial shots, each holding every phrase character scattered and
 	// five matched words (tscore saturates at 1.0 with five), but missing 出 so
 	// the (明天→出发) window fails: they must not occupy the bounded pool at
 	// all, let alone starve the exact shot ahead of the 10,000 cap.
-	for i := 0; i < 10_001; i++ {
-		id := fmt.Sprintf("asset-sat-%05d", i)
-		ids = seedOneAsset(t, repo, ids, goldenAssetSpec{
-			id: id, analysis: domain.StructuredAnalysis{Summary: "partial"},
-			shots: []goldenShotSpec{{startMS: 0, endMS: 10_000, description: "partial"}},
-			transcriptWords: []goldenTranscriptWord{
-				{startMS: 100, endMS: 200, text: "我", confidence: 1},
-				{startMS: 300, endMS: 400, text: "们", confidence: 1},
-				{startMS: 500, endMS: 600, text: "明", confidence: 1},
-				{startMS: 700, endMS: 800, text: "天", confidence: 1},
-				{startMS: 900, endMS: 1000, text: "发", confidence: 1},
-			},
-		})
-	}
+	seedTranscriptSaturationAssets(t, repo, 10_001)
+	ids := map[string]string{}
 	ids = seedOneAsset(t, repo, ids, goldenAssetSpec{
 		id: "asset-exact-after-saturation", analysis: domain.StructuredAnalysis{Summary: "exact"},
 		shots: []goldenShotSpec{{startMS: 0, endMS: 10_000, description: "exact"}},
@@ -284,6 +271,73 @@ func TestSearchV2TranscriptPhraseSurvivesTenThousandPartialSaturation(t *testing
 	}
 	if len(hits) != 1 || hits[0].ID != ids["asset-exact-after-saturation:0"] {
 		t.Fatalf("exact phrase must survive >10k partial saturation, got %+v", hits)
+	}
+}
+
+// seedTranscriptSaturationAssets uses one transaction and prepared statements
+// because this fixture is testing the query's bounded candidate pool, not the
+// model-run write path. The rows are the same asset/shot/alignment shape the
+// production query reads, while avoiding 10,001 full canonical commits.
+func seedTranscriptSaturationAssets(t *testing.T, repo *Repository, count int) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := repo.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	now := formatTime(time.Now().UTC())
+	if _, err := tx.ExecContext(ctx, `INSERT INTO library_roots(id,path,created_at,updated_at,health_state) VALUES(?,?,?,?, 'healthy')`, "root-transcript-saturation", "root-transcript-saturation", now, now); err != nil {
+		t.Fatal(err)
+	}
+	assetStmt, err := tx.PrepareContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES(?,?,100,'ready',?,?)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer assetStmt.Close()
+	locationStmt, err := tx.PrepareContext(ctx, `INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,last_seen_at) VALUES(?,?,?,?,?,0,?)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer locationStmt.Close()
+	shotStmt, err := tx.PrepareContext(ctx, `INSERT INTO asset_shots(id,asset_id,source_run_id,ordinal,start_ms,end_ms,description,tags_json,objects_json,actions_json,mood_json,confidence,created_at) VALUES(?,?,NULL,0,0,10000,'partial','[]','[]','[]','[]',1,?)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shotStmt.Close()
+	runStmt, err := tx.PrepareContext(ctx, `INSERT INTO alignment_runs(id,asset_id,provider,model,input_hash,state,request_json,raw_response,created_at,finished_at) VALUES(?,?,?,?,?,'succeeded','{}','{}',?,?)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runStmt.Close()
+	wordStmt, err := tx.PrepareContext(ctx, `INSERT INTO transcript_words(alignment_run_id,asset_id,ordinal,start_ms,end_ms,text,confidence) VALUES(?,?,?,?,?,?,1)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wordStmt.Close()
+	for i := 0; i < count; i++ {
+		assetID := fmt.Sprintf("asset-sat-%05d", i)
+		if _, err := assetStmt.ExecContext(ctx, assetID, "fp-"+assetID, now, now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := locationStmt.ExecContext(ctx, "loc-"+assetID, assetID, "root-transcript-saturation", "clips/"+assetID+".MOV", "clips/"+assetID+".MOV", now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := shotStmt.ExecContext(ctx, "shot-"+assetID, assetID, now); err != nil {
+			t.Fatal(err)
+		}
+		runID := "align-" + assetID
+		if _, err := runStmt.ExecContext(ctx, runID, assetID, "fixture", "fixture-model", "hash-"+assetID, now, now); err != nil {
+			t.Fatal(err)
+		}
+		for ordinal, word := range []string{"我", "们", "明", "天", "发"} {
+			if _, err := wordStmt.ExecContext(ctx, runID, assetID, ordinal, int64(100+ordinal*200), int64(200+ordinal*200), word); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 }
 

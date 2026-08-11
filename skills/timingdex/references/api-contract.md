@@ -23,6 +23,22 @@ regular, non-symlink file with exact mode 0600; the Hub reuses its value after a
 restart. Never print, log, persist elsewhere, or expect the token in an API
 response.
 
+The browser UI has a separate short-lived administrator session. It is not an
+Agent credential and is never accepted by Worker routes. `POST
+/api/v1/auth/admin/session` accepts the administrator token only over HTTPS and
+with a same-origin `Origin` header, then sets an opaque `HttpOnly` session
+cookie plus a separate readable CSRF cookie. The token is not returned or
+stored in browser storage. Browser mutation requests authenticated by that
+cookie must send the matching `X-CSRF-Token` and same-origin `Origin`; `DELETE
+/api/v1/auth/admin/session` revokes the session. Sessions are memory-only and
+expire on Hub restart. CLI, Agent, and Worker clients continue using their
+existing Bearer headers.
+
+The Hub keeps at most 64 browser Sessions in memory and applies a short login-failure
+cooldown per peer address. Session state is lost on Hub restart; it is not persisted
+in SQLite or shared across Hub processes. The default Hub URL is HTTPS, and forwarded
+headers are not used to manufacture browser trust.
+
 Every other write route — most importantly
   `POST /api/v1/repurpose/plans/{id}/revisions/{revision}/approve` and
   `POST /api/v1/pipeline/run` — accepts only the administrator token and
@@ -38,6 +54,18 @@ credential is presented, and the agent token counts. So a Skill running on the
 user's machine or LAN needs no header on reads, and one running elsewhere
 should send the agent token on every request, reads included. `/api/v1/health`
 is always reachable.
+
+## Library scan behavior
+
+`POST /api/v1/roots/{id}/scan` performs discovery and queue insertion
+synchronously, then starts the existing single-run Pipeline in the Hub
+background. The response keeps the scan counters and adds
+`pipeline_started`, `pipeline_busy`, and `pipeline_status`, where the status is
+`started` or `already_running`. These fields describe the trigger, not Pipeline
+completion; jobs and Progress remain the source of execution status. The CLI
+command `timingdex root scan <root-id>` uses the same scan path but runs the
+Pipeline synchronously before exiting. This does not enable the unattended
+`library_supervisor`, whose default remains disabled.
 
 ## Capability handshake
 

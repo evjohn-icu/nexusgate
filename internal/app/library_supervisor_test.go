@@ -276,11 +276,12 @@ func TestPipelinePassesAreMutuallyExclusive(t *testing.T) {
 	}
 	service.endPipelinePass()
 
+	service.WaitPipeline()
+	if service.PipelineRunning() {
+		t.Fatal("pipeline follow-up pass did not finish")
+	}
 	if ran, err := service.TryRunPipeline(context.Background()); !ran || err != nil {
 		t.Fatalf("ran=%v err=%v: the guard was not released", ran, err)
-	}
-	if service.PipelineRunning() {
-		t.Fatal("TryRunPipeline left the guard held after returning")
 	}
 }
 
