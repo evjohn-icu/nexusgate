@@ -3,7 +3,7 @@ package api
 import "strings"
 
 // The shared application shell. Every page composes the same left sidebar:
-// brand, one navigation (素材/创作/系统 groups), one admin-token input
+// brand, one navigation (核心/高级 groups), one admin-token input
 // (memory-only; page scripts read it through their existing getElementById
 // helpers), and the four-cell system status strip. The shell is injected by
 // shelledPage — the per-page headers this replaces were ten copies of the
@@ -41,15 +41,19 @@ func shellHeaderHTML() string {
 	var b strings.Builder
 	b.WriteString(`<aside class="shell-sidebar" data-app-shell><div class="shell-brand-row"><span class="brand">Timingdex</span><span class="shell-tagline">本地素材智能层</span></div><nav class="shell-nav" aria-label="主导航">`)
 	groups := []struct {
-		title string
-		links [][2]string // label, href
+		title    string
+		advanced bool
+		links    [][2]string // label, href
 	}{
-		{"素材", [][2]string{{"素材库", "/"}, {"收藏", "/collections"}}},
-		{"创作", [][2]string{{"翻新方案", "/repurpose"}, {"Tags", "/tags"}}},
-		{"系统", [][2]string{{"处理任务", "/progress"}, {"模型服务", "/providers"}, {"Workers", "/workers"}, {"素材目录", "/library-roots"}, {"启动配置", "/setup"}, {"设置", "/settings"}}},
+		{"核心", false, [][2]string{{"素材库", "/"}, {"收藏", "/collections"}, {"翻新方案", "/repurpose"}, {"处理进度", "/progress"}}},
+		{"高级 / 运维", true, [][2]string{{"模型服务", "/providers"}, {"Workers", "/workers"}, {"Worker Setup", "/worker-setup"}, {"素材目录", "/library-roots"}, {"Tags", "/tags"}, {"启动配置", "/setup"}, {"设置", "/settings"}}},
 	}
 	for _, g := range groups {
-		b.WriteString(`<div class="nav-group"><span class="nav-group-title">` + g.title + `</span>`)
+		className := "nav-group"
+		if g.advanced {
+			className += " nav-group-advanced"
+		}
+		b.WriteString(`<div class="` + className + `"><span class="nav-group-title">` + g.title + `</span>`)
 		for _, link := range g.links {
 			b.WriteString(`<a href="` + link[1] + `" data-nav="` + link[1] + `" class="nav-link">` + link[0] + `</a>`)
 		}
@@ -106,6 +110,7 @@ body{padding-left:220px}
 .shell-tagline{color:#93aaff;font-size:11px;font-weight:800;letter-spacing:.1em}
 .shell-nav{display:flex;flex-direction:column;gap:16px}
 .nav-group{display:flex;flex-direction:column;gap:3px}
+.nav-group-advanced{border-top:1px solid #273750;padding-top:14px}
 .nav-group-title{color:#61759b;font-size:10px;font-weight:850;letter-spacing:.1em;margin-bottom:2px}
 .nav-link{color:#b7c8eb;text-decoration:none;font-size:13px;padding:3px 6px;border-radius:6px;white-space:nowrap}
 .nav-link:hover{color:#fff}

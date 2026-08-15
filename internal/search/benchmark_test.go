@@ -56,8 +56,16 @@ func (s *benchmarkStore) ShotTranscriptSpans(context.Context, string, int64, int
 	return nil, nil
 }
 
+func (s *benchmarkStore) ShotTranscriptSpansBatch(_ context.Context, requests []TranscriptSpanRequest) (map[string][]domain.AlignmentWord, error) {
+	return make(map[string][]domain.AlignmentWord, len(requests)), nil
+}
+
 func (s *benchmarkStore) NeighborShots(context.Context, string, int) (*domain.AssetShot, *domain.AssetShot, error) {
 	return nil, nil, nil
+}
+
+func (s *benchmarkStore) NeighborShotsBatch(_ context.Context, requests []NeighborRequest) (map[string]Neighbors, error) {
+	return make(map[string]Neighbors, len(requests)), nil
 }
 
 func (s *benchmarkStore) ShotSession(context.Context, string) (string, error) {

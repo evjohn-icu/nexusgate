@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -10,6 +11,117 @@ type apiRouteInventoryEntry struct {
 	method, path, guard, body string
 	want                      int
 }
+
+var expectedRouteInventoryPatterns = strings.TrimSpace(`
+GET /api/v1/health
+POST /api/v1/auth/admin/session
+GET /api/v1/auth/admin/session
+DELETE /api/v1/auth/admin/session
+GET /api/v1/hardware
+GET /api/v1/setup/status
+GET /api/v1/agent/capabilities
+GET /favicon.ico
+GET /api/v1/roots
+POST /api/v1/hub/worker-pairings
+GET /api/v1/admin/webdav/accounts
+POST /api/v1/admin/webdav/accounts
+DELETE /api/v1/admin/webdav/accounts/{username}
+POST /api/v1/admin/webdav/spaces
+GET /api/v1/admin/webdav/spaces
+DELETE /api/v1/admin/webdav/spaces/{id}
+POST /api/v1/admin/webdav/spaces/{id}/links
+GET /api/v1/hub/workers
+GET /api/v1/admin/provider-channels
+GET /api/v1/admin/provider-channels/status
+POST /api/v1/admin/provider-channels
+PATCH /api/v1/admin/provider-channels/{id}
+POST /api/v1/admin/provider-channels/{id}/enable
+POST /api/v1/admin/provider-channels/{id}/disable
+DELETE /api/v1/admin/provider-channels/{id}
+POST /api/v1/admin/provider-channels/{id}/test
+GET /api/v1/admin/assets/{id}/capture-location
+POST /api/v1/worker/enroll
+POST /api/v1/worker/heartbeat
+POST /api/v1/worker/lease
+POST /api/v1/worker/jobs/{id}/complete
+POST /api/v1/worker/jobs/{id}/progress
+POST /api/v1/worker/jobs/{id}/credentials/{operation}
+POST /api/v1/worker/jobs/{id}/provider/{operation}
+POST /api/v1/worker/jobs/{id}/artifacts
+PUT /api/v1/worker/jobs/{id}/artifacts/{type}
+POST /api/v1/roots
+POST /api/v1/roots/{id}/scan
+POST /api/v1/roots/inspect
+GET /api/v1/roots/health
+GET /{$}
+GET /setup
+GET /progress
+GET /workers
+GET /library-roots
+GET /repurpose
+GET /tags
+GET /providers
+GET /collections
+GET /api/v1/assets
+GET /api/v1/library/processing-summary
+GET /api/v1/collections
+GET /api/v1/collections/{id}
+GET /api/v1/collections/{id}/assets
+POST /api/v1/collections
+DELETE /api/v1/collections/{id}
+GET /api/v1/collections/{id}/shots
+POST /api/v1/collections/{id}/shots
+DELETE /api/v1/collections/{id}/shots/{shot_id}
+POST /api/v1/collections/{id}/shots/reorder
+GET /api/v1/shoot-sessions
+GET /api/v1/assets/{id}
+GET /api/v1/assets/{id}/shots
+GET /api/v1/assets/{id}/thumbnail
+GET /api/v1/assets/{id}/proxy
+GET /api/v1/jobs
+GET /api/v1/jobs/summary
+GET /api/v1/cost/summary
+GET /api/v1/issues
+GET /api/v1/admin/worker-jobs/{id}
+POST /api/v1/admin/worker-jobs/{id}/assignment
+POST /api/v1/pipeline/run
+POST /api/v1/pipeline/retry-failed
+POST /api/v1/pipeline/resume-deferred
+POST /api/v1/test-drive
+GET /api/v1/test-drive/suggestions
+GET /api/v1/pipeline/supervisor
+GET /api/v1/pipeline/throttle
+PUT /api/v1/pipeline/throttle
+GET /api/v1/storage/overview
+GET /settings
+GET /api/v1/search
+GET /api/v1/search/shots
+GET /api/v1/search/shots/hybrid
+POST /api/v1/search/shots
+GET /api/v1/shots/{id}/similar
+GET /api/v1/discover/rare-shots
+GET /api/v1/tags
+GET /api/v1/tags/unresolved
+POST /api/v1/tags/curate
+POST /api/v1/tags/clusters
+GET /api/v1/tags/proposals
+POST /api/v1/tags/proposals/{id}/review
+GET /api/v1/library/summary
+POST /api/v1/library/summary/generate
+POST /api/v1/repurpose/plans
+GET /api/v1/repurpose/plans/{id}
+GET /api/v1/repurpose/plans/{id}/revisions
+POST /api/v1/repurpose/plans/{id}/revisions
+POST /api/v1/repurpose/plans/{id}/revisions/{revision}/approve
+GET /api/v1/repurpose/plans/{id}/export.edl
+GET /api/v1/repurpose/plans/{id}/export.fcpxml
+/api/v1/
+GET /worker-setup
+GET /api/v1/hub/worker-setup/context
+GET /api/v1/admin/hub/worker-setup/library-roots
+GET /api/v1/hub/worker-binaries/{platform}
+POST /api/v1/hub/worker-setup/script
+`)
 
 // Keep this table in lockstep with Handler. The body column is deliberately
 // explicit: it documents which routes are JSON, opaque provider relay data,
@@ -123,5 +235,93 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 				t.Fatalf("guard=%s body=%s status=%d, want %d", tt.guard, tt.body, w.Code, tt.want)
 			}
 		})
+	}
+}
+
+func TestAPIRouteInventoryIsComplete(t *testing.T) {
+	server := NewServer("admin-token", newErrorEnvelopeTestService(t, "route-inventory"))
+	specs := server.routeInventory()
+	if got, want := len(specs), 108; got != want {
+		t.Fatalf("route inventory contains %d routes, want %d", got, want)
+	}
+	expected := strings.Split(expectedRouteInventoryPatterns, "\n")
+	if len(expected) != len(specs) {
+		t.Fatalf("route inventory snapshot contains %d routes, want %d", len(expected), len(specs))
+	}
+	expectedPatterns := make(map[string]bool, len(expected))
+	for _, pattern := range expected {
+		expectedPatterns[pattern] = true
+	}
+
+	allowedAuth := map[routeAuthClass]bool{
+		routeAuthPublic:         true,
+		routeAuthTrustedRead:    true,
+		routeAuthHubAdmin:       true,
+		routeAuthAgentOrAdmin:   true,
+		routeAuthWorker:         true,
+		routeAuthWorkerEnroll:   true,
+		routeAuthBrowserSession: true,
+		routeAuthBrowserPage:    true,
+		routeAuthCatchAll:       true,
+	}
+	seenNames := make(map[string]bool, len(specs))
+	seenPatterns := make(map[string]bool, len(specs))
+	for _, spec := range specs {
+		if strings.TrimSpace(spec.Name) == "" {
+			t.Error("route has empty name")
+		}
+		if strings.TrimSpace(spec.Pattern) == "" {
+			t.Errorf("route %q has empty pattern", spec.Name)
+		}
+		if !allowedAuth[spec.Auth] {
+			t.Errorf("route %q has unknown auth class %q", spec.Name, spec.Auth)
+		}
+		if spec.Handler == nil {
+			t.Errorf("route %q has nil handler", spec.Name)
+		}
+		if seenNames[spec.Name] {
+			t.Errorf("duplicate route name %q", spec.Name)
+		}
+		if seenPatterns[spec.Pattern] {
+			t.Errorf("duplicate route pattern %q", spec.Pattern)
+		}
+		if !expectedPatterns[spec.Pattern] {
+			t.Errorf("route %q is missing from the route inventory snapshot", spec.Pattern)
+		}
+		seenNames[spec.Name] = true
+		seenPatterns[spec.Pattern] = true
+	}
+	for pattern := range expectedPatterns {
+		if !seenPatterns[pattern] {
+			t.Errorf("route inventory lost snapshot pattern %q", pattern)
+		}
+	}
+
+	// Registering the same inventory in a fresh ServeMux catches overlapping
+	// method/path patterns before a production request reaches them.
+	mux := http.NewServeMux()
+	server.registerRoutes(mux)
+}
+
+func TestAPIRouteInventoryAuthBoundaries(t *testing.T) {
+	server := NewServer("admin-token", newErrorEnvelopeTestService(t, "route-auth-classes"))
+	counts := make(map[routeAuthClass]int)
+	for _, spec := range server.routeInventory() {
+		counts[spec.Auth]++
+	}
+	for _, auth := range []routeAuthClass{
+		routeAuthPublic,
+		routeAuthTrustedRead,
+		routeAuthHubAdmin,
+		routeAuthAgentOrAdmin,
+		routeAuthWorker,
+		routeAuthWorkerEnroll,
+		routeAuthBrowserSession,
+		routeAuthBrowserPage,
+		routeAuthCatchAll,
+	} {
+		if counts[auth] == 0 {
+			t.Errorf("route inventory has no %q auth classification", auth)
+		}
 	}
 }

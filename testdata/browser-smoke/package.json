@@ -1,0 +1,11 @@
+{
+  "name": "timingdex-browser-smoke",
+  "private": true,
+  "version": "0.31.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1"
+  }
+}

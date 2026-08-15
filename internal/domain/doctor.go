@@ -3,9 +3,8 @@ package domain
 import "time"
 
 // Version is the product release the SYSTEM section of a DoctorReport names.
-// The codebase keeps no central version constant: release builds pin it with
-// -ldflags "-X github.com/evjohn-icu/timingdex/internal/domain.Version=vX.Y.Z",
-// and an unreleased source build reports "(devel)".
+// The root VERSION file is the release declaration. Release builds copy it
+// here with -ldflags; an unreleased source build reports "(devel)".
 var Version = "(devel)"
 
 // DoctorReport is the JSON-safe, secret-free diagnostic snapshot `timingdex

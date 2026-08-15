@@ -35,8 +35,16 @@ func (f *facetUniverseStore) ShotTranscriptSpans(_ context.Context, _ string, _,
 	return nil, nil
 }
 
+func (f *facetUniverseStore) ShotTranscriptSpansBatch(_ context.Context, requests []TranscriptSpanRequest) (map[string][]domain.AlignmentWord, error) {
+	return make(map[string][]domain.AlignmentWord, len(requests)), nil
+}
+
 func (f *facetUniverseStore) NeighborShots(_ context.Context, _ string, _ int) (*domain.AssetShot, *domain.AssetShot, error) {
 	return nil, nil, nil
+}
+
+func (f *facetUniverseStore) NeighborShotsBatch(_ context.Context, requests []NeighborRequest) (map[string]Neighbors, error) {
+	return make(map[string]Neighbors, len(requests)), nil
 }
 
 func (f *facetUniverseStore) ShotSession(_ context.Context, _ string) (string, error) {

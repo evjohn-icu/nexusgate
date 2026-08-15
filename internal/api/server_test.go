@@ -385,7 +385,7 @@ func TestHomePageUsesLibraryFirstShotTimeline(t *testing.T) {
 		"semantic-timeline",
 		"cut-marker",
 		"data-cut-time",
-		"素材回收站 · 镜头浏览",
+		"素材库 · 镜头浏览",
 	} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("homepage missing library-first marker %q", marker)

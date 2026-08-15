@@ -12,8 +12,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags="-s -w" -o /out/timingdex ./cmd/timingdex
+RUN version="$(cat VERSION)" \
+    && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath \
+      -ldflags="-s -w -X github.com/evjohn-icu/timingdex/internal/buildinfo.Version=${version} -X github.com/evjohn-icu/timingdex/internal/domain.Version=${version}" \
+      -o /out/timingdex ./cmd/timingdex
 
 FROM debian:bookworm-slim AS runtime
 

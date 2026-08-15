@@ -1,0 +1,282 @@
+{
+  "version": 1,
+  "queries": [
+    {
+      "id": "zh-fact-car",
+      "query": "汽车",
+      "family": "zh_fact",
+      "language": "zh",
+      "intent": "fact",
+      "relevant": [{"shot_id": "asset-car-second-half:1", "grade": 3}],
+      "evidence": [{"shot_id": "asset-car-second-half:1", "constraint": "object", "value": "car", "states": ["confirmed"], "sources": ["objects"]}]
+    },
+    {
+      "id": "zh-fact-city-night",
+      "query": "城市夜景",
+      "family": "zh_fact",
+      "language": "zh",
+      "intent": "fact",
+      "relevant": [{"shot_id": "asset-city-night:0", "grade": 3}]
+    },
+    {
+      "id": "zh-fact-coffee",
+      "query": "咖啡",
+      "family": "zh_fact",
+      "language": "zh",
+      "intent": "fact",
+      "relevant": [{"shot_id": "asset-cafe-coffee:0", "grade": 3}],
+      "evidence": [{"shot_id": "asset-cafe-coffee:0", "constraint": "tag", "value": "coffee", "states": ["confirmed"], "sources": ["tags"]}]
+    },
+    {
+      "id": "zh-fact-sedan",
+      "query": "轿车",
+      "family": "zh_fact",
+      "language": "zh",
+      "intent": "fact",
+      "relevant": [{"shot_id": "asset-car-first-half:0", "grade": 3}],
+      "evidence": [{"shot_id": "asset-car-first-half:0", "constraint": "object", "value": "car", "states": ["confirmed"], "sources": ["objects"]}]
+    },
+    {
+      "id": "zh-fact-neon",
+      "query": "霓虹灯",
+      "family": "zh_fact",
+      "language": "zh",
+      "intent": "fact",
+      "relevant": [{"shot_id": "asset-city-night:0", "grade": 3}]
+    },
+    {
+      "id": "zh-negative-empty-beach",
+      "query": "没有人的海边空镜",
+      "family": "zh_negative",
+      "language": "zh",
+      "intent": "fact",
+      "relevant": [{"shot_id": "asset-no-person-beach:0", "grade": 3}],
+      "not_relevant": ["asset-no-person-beach:1"]
+    },
+    {
+      "id": "zh-negative-beach",
+      "query": "没有人的海边",
+      "family": "zh_negative",
+      "language": "zh",
+      "intent": "fact",
+      "relevant": [{"shot_id": "asset-no-person-beach:0", "grade": 3}],
+      "not_relevant": ["asset-no-person-beach:1"]
+    },
+    {
+      "id": "zh-negative-nobody",
+      "query": "无人海边",
+      "family": "zh_negative",
+      "language": "zh",
+      "intent": "fact",
+      "relevant": [{"shot_id": "asset-no-person-beach:0", "grade": 3}],
+      "not_relevant": ["asset-no-person-beach:1"]
+    },
+    {
+      "id": "speech-phrase-zh",
+      "query": "谁说过我们明天出发",
+      "family": "speech",
+      "language": "zh",
+      "intent": "speech",
+      "relevant": [{"shot_id": "asset-speech-quote:0", "grade": 3}],
+      "evidence": [{"shot_id": "asset-speech-quote:0", "constraint": "speech", "value": "我们明天出发", "states": ["possible"], "sources": ["transcript"]}]
+    },
+    {
+      "id": "speech-quote-zh",
+      "query": "他说“我们明天出发”",
+      "family": "speech",
+      "language": "zh",
+      "intent": "speech",
+      "relevant": [{"shot_id": "asset-speech-quote:0", "grade": 3}],
+      "evidence": [{"shot_id": "asset-speech-quote:0", "constraint": "speech", "value": "我们明天出发", "states": ["possible"], "sources": ["transcript"]}]
+    },
+    {
+      "id": "speech-phrase-short",
+      "query": "说过明天出发",
+      "family": "speech",
+      "language": "zh",
+      "intent": "speech",
+      "relevant": [{"shot_id": "asset-speech-quote:0", "grade": 3}]
+    },
+    {
+      "id": "speech-quote-word",
+      "query": "他说“出发”",
+      "family": "speech",
+      "language": "zh",
+      "intent": "speech",
+      "relevant": [{"shot_id": "asset-speech-quote:0", "grade": 3}]
+    },
+    {
+      "id": "en-fact-car",
+      "query": "car",
+      "family": "en_fact",
+      "language": "en",
+      "intent": "fact",
+      "relevant": [
+        {"shot_id": "asset-car-second-half:1", "grade": 3},
+        {"shot_id": "asset-car-first-half:0", "grade": 2},
+        {"shot_id": "asset-car-night:1", "grade": 2}
+      ],
+      "not_relevant": ["asset-carefree-beach:0", "asset-carefree-beach:1"]
+    },
+    {
+      "id": "en-fact-boat",
+      "query": "boat",
+      "family": "en_fact",
+      "language": "en",
+      "intent": "fact",
+      "relevant": [{"shot_id": "asset-bridge-river:1", "grade": 3}]
+    },
+    {
+      "id": "en-fact-dining",
+      "query": "empty dining room",
+      "family": "en_fact",
+      "language": "en",
+      "intent": "fact",
+      "relevant": [{"shot_id": "asset-chef-kitchen:1", "grade": 3}]
+    },
+    {
+      "id": "en-fact-runner",
+      "query": "runner finish line",
+      "family": "en_fact",
+      "language": "en",
+      "intent": "fact",
+      "relevant": [{"shot_id": "asset-stadium:1", "grade": 3}]
+    },
+    {
+      "id": "en-fact-bread",
+      "query": "bread loaves",
+      "family": "en_fact",
+      "language": "en",
+      "intent": "fact",
+      "relevant": [{"shot_id": "asset-dist-01:0", "grade": 3}]
+    },
+    {
+      "id": "mixed-car",
+      "query": "red car 红色轿车",
+      "family": "mixed",
+      "language": "mixed",
+      "intent": "fact",
+      "relevant": [{"shot_id": "asset-car-first-half:0", "grade": 3}, {"shot_id": "asset-car-second-half:1", "grade": 2}]
+    },
+    {
+      "id": "mixed-beach",
+      "query": "rainy 海滩",
+      "family": "mixed",
+      "language": "mixed",
+      "intent": "fact",
+      "relevant": [{"shot_id": "asset-city-night:1", "grade": 3}]
+    },
+    {
+      "id": "mixed-coffee",
+      "query": "coffee 咖啡",
+      "family": "mixed",
+      "language": "mixed",
+      "intent": "fact",
+      "relevant": [{"shot_id": "asset-cafe-coffee:0", "grade": 3}]
+    },
+    {
+      "id": "mixed-city",
+      "query": "city 夜景",
+      "family": "mixed",
+      "language": "mixed",
+      "intent": "fact",
+      "relevant": [{"shot_id": "asset-city-night:0", "grade": 3}]
+    },
+    {
+      "id": "creative-carefree",
+      "query": "carefree summer",
+      "family": "creative",
+      "language": "en",
+      "intent": "creative",
+      "relevant": [{"shot_id": "asset-carefree-beach:0", "grade": 2}]
+    },
+    {
+      "id": "creative-lonely",
+      "query": "孤独压抑的夜晚",
+      "family": "creative",
+      "language": "zh",
+      "intent": "creative",
+      "relevant": [{"shot_id": "asset-lonely-night:0", "grade": 3}]
+    },
+    {
+      "id": "creative-market",
+      "query": "繁忙的花市",
+      "family": "creative",
+      "language": "zh",
+      "intent": "creative",
+      "relevant": [{"shot_id": "asset-market-flowers:0", "grade": 2}]
+    },
+    {
+      "id": "creative-cafe",
+      "query": "温暖的咖啡馆",
+      "family": "creative",
+      "language": "zh",
+      "intent": "creative",
+      "relevant": [{"shot_id": "asset-cafe-coffee:0", "grade": 2}]
+    },
+    {
+      "id": "semantic-lonely-en",
+      "query": "lonely quiet night",
+      "family": "semantic",
+      "language": "en",
+      "intent": "semantic",
+      "relevant": [{"shot_id": "asset-lonely-night:0", "grade": 3}]
+    },
+    {
+      "id": "semantic-library",
+      "query": "安静的图书馆",
+      "family": "semantic",
+      "language": "zh",
+      "intent": "semantic",
+      "relevant": [{"shot_id": "asset-library-reading:0", "grade": 3}]
+    },
+    {
+      "id": "semantic-snow",
+      "query": "冬日小镇",
+      "family": "semantic",
+      "language": "zh",
+      "intent": "semantic",
+      "relevant": [{"shot_id": "asset-snow-town:0", "grade": 2}]
+    },
+    {
+      "id": "no-result-cat",
+      "query": "cat",
+      "family": "no_result",
+      "language": "en",
+      "intent": "fact",
+      "expected_empty": true
+    },
+    {
+      "id": "no-result-unicorn",
+      "query": "unicorn",
+      "family": "no_result",
+      "language": "en",
+      "intent": "semantic",
+      "expected_empty": true
+    },
+    {
+      "id": "ambiguous-night",
+      "query": "night",
+      "family": "ambiguous",
+      "language": "en",
+      "intent": "fact",
+      "relevant": [
+        {"shot_id": "asset-city-night:0", "grade": 2},
+        {"shot_id": "asset-car-night:1", "grade": 2},
+        {"shot_id": "asset-umbrella-night:0", "grade": 1}
+      ]
+    },
+    {
+      "id": "ambiguous-street",
+      "query": "street",
+      "family": "ambiguous",
+      "language": "en",
+      "intent": "fact",
+      "relevant": [
+        {"shot_id": "asset-train-rain:1", "grade": 2},
+        {"shot_id": "asset-umbrella-night:0", "grade": 2},
+        {"shot_id": "asset-abandoned-street:0", "grade": 1}
+      ]
+    }
+  ]
+}

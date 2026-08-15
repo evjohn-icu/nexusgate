@@ -5,6 +5,7 @@ package browserfixture
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/app"
 	"github.com/evjohn-icu/timingdex/internal/config"
 	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/hubtls"
 	"github.com/evjohn-icu/timingdex/internal/media"
 	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 )
@@ -21,10 +23,13 @@ import (
 const AdminToken = "pw-admin-fixture"
 
 type Fixture struct {
-	Repo    *sqlite.Repository
-	Service *app.Service
-	Handler http.Handler
-	Dir     string
+	Repo           *sqlite.Repository
+	Service        *app.Service
+	Handler        http.Handler
+	Dir            string
+	TLSCertificate string
+	TLSKey         string
+	TLSFingerprint string
 }
 
 func New(ctx context.Context) (*Fixture, error) {
@@ -32,6 +37,12 @@ func New(ctx context.Context) (*Fixture, error) {
 	if err != nil {
 		return nil, err
 	}
+	keepDir := false
+	defer func() {
+		if !keepDir {
+			_ = os.RemoveAll(dir)
+		}
+	}()
 	repo, err := sqlite.Open(filepath.Join(dir, "timingdex.db"))
 	if err != nil {
 		return nil, err
@@ -49,14 +60,32 @@ func New(ctx context.Context) (*Fixture, error) {
 		repo.Close()
 		return nil, err
 	}
-	return &Fixture{Repo: repo, Service: service, Handler: api.NewServer("", service).Handler(), Dir: dir}, nil
+	certificate, key, fingerprint, err := hubtls.EnsureSelfSigned(dir)
+	if err != nil {
+		repo.Close()
+		return nil, err
+	}
+	fixture := &Fixture{
+		Repo:           repo,
+		Service:        service,
+		Handler:        api.NewTLSServer("127.0.0.1:4173", service, certificate, key).Handler(),
+		Dir:            dir,
+		TLSCertificate: certificate,
+		TLSKey:         key,
+		TLSFingerprint: fingerprint,
+	}
+	keepDir = true
+	return fixture, nil
 }
 
 func (f *Fixture) Close() error {
+	var closeErr error
 	if f.Repo != nil {
-		return f.Repo.Close()
+		closeErr = f.Repo.Close()
+		f.Repo = nil
 	}
-	return nil
+	removeErr := os.RemoveAll(f.Dir)
+	return errors.Join(closeErr, removeErr)
 }
 
 func seed(ctx context.Context, repo *sqlite.Repository, rootPath string) error {
@@ -69,7 +98,7 @@ func seed(ctx context.Context, repo *sqlite.Repository, rootPath string) error {
 	if _, err := db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,?)`, "asset-fixture", "fixture-fingerprint", 1234, "discovered", now, now); err != nil {
 		return err
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,exists_now,is_primary,last_seen_at) VALUES(?,?,?,?,?,1,1,1,?)`, "location-fixture", "asset-fixture", root.ID, `"><img src=x onerror=window.__xss=1>.mp4`, `/tmp/fixture.mp4`, now); err != nil {
+	if _, err := db.ExecContext(ctx, `INSERT INTO asset_locations(id,asset_id,root_id,relative_path,absolute_path,modified_ns,exists_now,is_primary,last_seen_at) VALUES(?,?,?,?,?,1,1,1,?)`, "location-fixture", "asset-fixture", root.ID, `"><img src=x onerror=window.__xss=1>.mp4`, filepath.Join(rootPath, "fixture.mp4"), now); err != nil {
 		return err
 	}
 	if err := repo.ReplaceAssetShots(ctx, "asset-fixture", "", []domain.AssetShot{{ID: "shot-fixture", AssetID: "asset-fixture", Ordinal: 0, StartMS: 0, EndMS: 5000, Description: `"><img src=x onerror=window.__xss=1>`, Tags: []string{`"><img src=x onerror=window.__xss=1>`}, Objects: []string{"camera"}, Confidence: .9, CreatedAt: time.Now().UTC()}}, "", ""); err != nil {

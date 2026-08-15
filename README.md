@@ -54,6 +54,11 @@ regression-tested, but APIs, database migrations and model contracts may still
 change. There is no stable release yet, no API stability promise, and no
 supported-version table.
 
+The current repository release target is `v0.31.0-alpha`. It is being prepared
+from `main` and has not been published; see the [v0.31 release
+notes](docs/v0.31-release-notes.md) for the release-closure scope and current
+verification status.
+
 **Do not expose the Hub directly to the public Internet.** It is built for a
 trusted LAN (or a private overlay like Tailscale): library reads are gated by
 source network, administrative routes by a token, and the security model
@@ -889,6 +894,7 @@ timingdex-eval score --corpus ./corpus --data-dir ./eval --labels qwen3vl-4b,gem
 moved. Each release also has a version-scoped document under `docs/`:
 
 - [v0.30 — review-fix round goal and operations](docs/v0.30-review-fix-round.md)
+- [v0.31 — release-closure notes and verification status](docs/v0.31-release-notes.md)
 - [v0.21 — unattended inspection, quota-exhausted waiting, and timeline export](docs/v0.21-unattended-and-export.md)
 - [v0.21 — model provider deployment](docs/v0.21-provider-deployment.md)
 - [v0.21 — retrieval and search](docs/v0.21-retrieval-and-search.md)

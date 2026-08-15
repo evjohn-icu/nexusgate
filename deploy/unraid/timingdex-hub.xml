@@ -12,7 +12,7 @@
 -->
 <Container version="2">
   <Name>timingdex-hub</Name>
-  <Repository>timingdex:v0.30.0-alpha</Repository>
+  <Repository>timingdex:v0.31.0-alpha</Repository>
   <Registry/>
   <Network>bridge</Network>
   <MyIP/>

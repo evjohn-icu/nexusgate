@@ -14,6 +14,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/evjohn-icu/timingdex/internal/providers/common"
+	"github.com/evjohn-icu/timingdex/internal/testhelper"
 )
 
 func TestASRErrorPaths(t *testing.T) {
@@ -21,10 +22,7 @@ func TestASRErrorPaths(t *testing.T) {
 
 	// Fake ffmpeg that returns minimal PCM audio data.
 	binDir := t.TempDir()
-	ffmpeg := filepath.Join(binDir, "ffmpeg")
-	if err := os.WriteFile(ffmpeg, []byte("#!/bin/sh\nprintf '\\x00\\x00\\x00\\x00'\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testhelper.InstallCommand(t, binDir, "ffmpeg")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	audioPath := filepath.Join(t.TempDir(), "sample.wav")

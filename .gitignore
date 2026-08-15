@@ -67,9 +67,16 @@ coverage.out
 # cmd/timingdex-mcp; a committed binary only bloats history.
 timingdex-mcp
 timingdex-corpusgen
+/dist/
 
 # Playwright CLI session artifacts.
 .playwright-cli/
 
 # Local demo screenshots.
 demo-*.png
+
+# Deterministic on-disk SQLite scale benchmark databases and WAL sidecars.
+.bench/sqlite/
+
+# Repository-local Go module, build, and temporary caches used by constrained CI/dev hosts.
+.cache/

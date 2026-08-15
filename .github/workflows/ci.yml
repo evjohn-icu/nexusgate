@@ -20,7 +20,7 @@ jobs:
         with: {go-version-file: go.mod, cache: true}
       - name: secret scan (full history)
         run: |
-          go install github.com/zricethezav/gitleaks/v8@latest
+          go install github.com/zricethezav/gitleaks/v8@v8.29.1
           gitleaks git --no-banner --redact --exit-code 1 .
       - name: gofmt
         run: test -z "$(gofmt -l .)"
@@ -73,7 +73,10 @@ jobs:
       - uses: actions/setup-go@v5
         with: {go-version-file: go.mod, cache: true}
       - uses: actions/setup-node@v4
-        with: {node-version: 22, cache: npm}
+        with:
+          node-version: 22.14.0
+          cache: npm
+          cache-dependency-path: testdata/browser-smoke/package-lock.json
       - run: node --version
       - run: go test -count=1 ./internal/api
 
@@ -111,6 +114,16 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with: {name: search-quality, path: search-quality.txt}
+
+  search-relevance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go.mod, cache: true}
+      - name: run deterministic offline relevance eval
+        run: go test -count=1 -v ./internal/repository/sqlite -run '^TestSearchRelevanceEval$'
 
   race-core:
     runs-on: ubuntu-latest
@@ -173,30 +186,35 @@ jobs:
       - run: go test -count=1 ./internal/app ./internal/media ./internal/providers/... ./internal/worker
 
   browser-smoke:
-    # Keep this signal non-blocking for this release while exercising it on pushes and PRs.
-    continue-on-error: true
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: {go-version-file: go.mod, cache: true}
       - uses: actions/setup-node@v4
-        with: {node-version: 22}
+        with:
+          node-version: 22.14.0
+          cache: npm
+          cache-dependency-path: testdata/browser-smoke/package-lock.json
+      - name: install locked browser test dependencies
+        working-directory: testdata/browser-smoke
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+        run: npm ci
       - name: install Playwright Chromium
-        run: npx --yes playwright install --with-deps chromium
-      - name: verify Playwright spec bundle
-        run: test -d /tmp/timingdex-playwright/specs && test -n "$(ls -A /tmp/timingdex-playwright/specs)"
+        working-directory: testdata/browser-smoke
+        run: npx --no-install playwright install --with-deps chromium
       - name: fail fast if browser fixture does not compile
         run: bash scripts/check-browser-fixture.sh
       - name: start browser fixture
         run: |
-          TIMINGDEX_PLAYWRIGHT_SERVE=1 TIMINGDEX_PLAYWRIGHT_ADDR=127.0.0.1:4173 \
-            go test -tags playwrightfixture ./internal/api/browserfixture \
-            -run '^TestServePlaywrightFixture$' -count=1 -v > fixture.log 2>&1 &
+          go build -tags playwrightfixture -o "$RUNNER_TEMP/timingdex-playwright-fixture" ./cmd/timingdex-playwright-fixture
+          TIMINGDEX_PLAYWRIGHT_ADDR=127.0.0.1:4173 \
+            "$RUNNER_TEMP/timingdex-playwright-fixture" > fixture.log 2>&1 &
           echo $! > fixture.pid
           for attempt in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:4173/ >/dev/null; then
+            if curl --fail --silent --show-error --insecure https://127.0.0.1:4173/api/v1/health >/dev/null; then
               exit 0
             fi
             sleep 1
@@ -204,7 +222,14 @@ jobs:
           cat fixture.log
           exit 1
       - name: run browser smoke
-        run: npx --yes playwright test /tmp/timingdex-playwright/specs/
+        working-directory: testdata/browser-smoke
+        run: npx --no-install playwright test
+      - name: stop browser fixture
+        if: always()
+        run: |
+          if test -s fixture.pid; then
+            kill "$(cat fixture.pid)" 2>/dev/null || true
+          fi
       # Playwright output is untrusted test data: do not put tokens or provider keys in it.
       - name: upload browser smoke artifacts
         if: always()
@@ -213,7 +238,6 @@ jobs:
           name: browser-smoke-artifacts
           retention-days: 3
           path: |
-            playwright-report/
-            test-results/
-            /tmp/timingdex-playwright/screenshots/
+            testdata/browser-smoke/playwright-report/
+            testdata/browser-smoke/test-results/
             fixture.log

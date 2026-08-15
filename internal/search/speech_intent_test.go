@@ -36,8 +36,16 @@ func (f *recordingTranscriptStore) ShotTranscriptSpans(_ context.Context, _ stri
 	return nil, nil
 }
 
+func (f *recordingTranscriptStore) ShotTranscriptSpansBatch(_ context.Context, requests []TranscriptSpanRequest) (map[string][]domain.AlignmentWord, error) {
+	return make(map[string][]domain.AlignmentWord, len(requests)), nil
+}
+
 func (f *recordingTranscriptStore) NeighborShots(_ context.Context, _ string, _ int) (*domain.AssetShot, *domain.AssetShot, error) {
 	return nil, nil, nil
+}
+
+func (f *recordingTranscriptStore) NeighborShotsBatch(_ context.Context, requests []NeighborRequest) (map[string]Neighbors, error) {
+	return make(map[string]Neighbors, len(requests)), nil
 }
 
 func (f *recordingTranscriptStore) ShotSession(_ context.Context, _ string) (string, error) {

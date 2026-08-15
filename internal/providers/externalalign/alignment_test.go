@@ -2,13 +2,12 @@ package externalalign
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	"github.com/evjohn-icu/timingdex/internal/providers/common"
+	"github.com/evjohn-icu/timingdex/internal/testhelper"
 )
 
 func TestAlign_EmptyCommand(t *testing.T) {
@@ -33,22 +32,9 @@ func TestAlign_CommandNotFound(t *testing.T) {
 	}
 }
 
-// helperScript writes a shell script to a temp file and returns its path.
-func helperScript(t *testing.T, content string) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "aligner.sh")
-	if err := os.WriteFile(path, []byte(content), 0700); err != nil {
-		t.Fatalf("write helper script: %v", err)
-	}
-	return path
-}
-
 func TestAlign_InvalidJSON(t *testing.T) {
-	script := helperScript(t, `#!/bin/sh
-echo "not json at all"
-`)
-	p := &Provider{Command: script}
+	command := testhelper.InstallCommand(t, t.TempDir(), "align-invalid")
+	p := &Provider{Command: command}
 	_, err := p.Align(context.Background(), common.AlignRequest{})
 	if err == nil {
 		t.Fatal("expected error for invalid JSON output")
@@ -59,10 +45,8 @@ echo "not json at all"
 }
 
 func TestAlign_EmptyWords(t *testing.T) {
-	script := helperScript(t, `#!/bin/sh
-echo '{"words":[]}'
-`)
-	p := &Provider{Command: script}
+	command := testhelper.InstallCommand(t, t.TempDir(), "align-empty")
+	p := &Provider{Command: command}
 	_, err := p.Align(context.Background(), common.AlignRequest{})
 	if err == nil {
 		t.Fatal("expected error for empty words array")
@@ -73,10 +57,8 @@ echo '{"words":[]}'
 }
 
 func TestAlign_Success(t *testing.T) {
-	script := helperScript(t, `#!/bin/sh
-echo '{"words":[{"start_ms":0,"end_ms":500,"text":"hello"},{"start_ms":600,"end_ms":900,"text":"world"}]}'
-`)
-	p := &Provider{Command: script, ModelName: "test-aligner"}
+	command := testhelper.InstallCommand(t, t.TempDir(), "align-success")
+	p := &Provider{Command: command, ModelName: "test-aligner"}
 	if p.Name() != "external_command" {
 		t.Errorf("expected Name 'external_command', got %q", p.Name())
 	}

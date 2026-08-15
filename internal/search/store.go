@@ -19,6 +19,31 @@ type ShotEmbeddingRow struct {
 	SourceTextHash string
 }
 
+// TranscriptSpanRequest identifies one shot's transcript window. ShotID is
+// the result key used by the search engine; AssetID and the time bounds are
+// the storage lookup coordinates.
+type TranscriptSpanRequest struct {
+	ShotID  string
+	AssetID string
+	StartMS int64
+	EndMS   int64
+}
+
+// NeighborRequest identifies one shot whose adjacent shots are needed for
+// result context. ShotID is the result key; ordinals may be non-contiguous.
+type NeighborRequest struct {
+	ShotID  string
+	AssetID string
+	Ordinal int
+}
+
+// Neighbors is the minimal neighboring-shot projection returned by a batch
+// lookup. A missing side is nil, just as NeighborShots reported previously.
+type Neighbors struct {
+	Previous *domain.AssetShot
+	Next     *domain.AssetShot
+}
+
 // ShotStore is the narrow persistence contract the Search v2 engine consumes,
 // implemented by internal/repository/sqlite. Declared here, at the consumer,
 // per the repository-interface convention in CLAUDE.md. The methods are the
@@ -41,11 +66,17 @@ type ShotEmbeddingRow struct {
 //   - MetadataRankedShots is the weak asset-level channel (filename first,
 //     summary only as a weak signal). The evidence gate must never treat a
 //     metadata hit as shot-level evidence.
-//   - ShotTranscriptSpans returns aligned words overlapping [startMS, endMS]
-//     for evidence attribution.
+//   - ShotTranscriptSpansBatch returns aligned words overlapping each
+//     [startMS, endMS] for evidence attribution. The result is keyed by the
+//     request ShotID; absent keys mean the shot has no aligned words.
+//   - ShotTranscriptSpans is retained for direct/single-shot repository
+//     callers, but Search hot paths must use the batch method.
 //   - NeighborShots returns the previous/next shot by (asset_id, ordinal) —
 //     ordinals may be non-contiguous, so look up by < and > with ORDER BY
 //     ... LIMIT 1, not by arithmetic.
+//   - NeighborShotsBatch is the batch form used to assemble context for all
+//     selected results in one store round trip. The result is keyed by the
+//     request ShotID; absent keys mean both sides are missing.
 //   - ShotSession returns the shoot-session id of an asset, "" when none.
 //   - ShotSessions is the batch form of ShotSession: it returns the
 //     asset_id -> session_id mapping for a whole candidate set in one
@@ -59,7 +90,9 @@ type ShotStore interface {
 	TranscriptRankedShots(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error)
 	MetadataRankedShots(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error)
 	ShotTranscriptSpans(ctx context.Context, assetID string, startMS, endMS int64) ([]domain.AlignmentWord, error)
+	ShotTranscriptSpansBatch(ctx context.Context, requests []TranscriptSpanRequest) (map[string][]domain.AlignmentWord, error)
 	NeighborShots(ctx context.Context, assetID string, ordinal int) (*domain.AssetShot, *domain.AssetShot, error)
+	NeighborShotsBatch(ctx context.Context, requests []NeighborRequest) (map[string]Neighbors, error)
 	ShotSession(ctx context.Context, assetID string) (string, error)
 	ShotSessions(ctx context.Context, assetIDs []string) (map[string]string, error)
 	// Text embedding storage (derived, rebuildable representations — see

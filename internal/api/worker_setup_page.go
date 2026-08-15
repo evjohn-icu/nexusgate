@@ -24,12 +24,14 @@ var workerPlatforms = map[string]struct {
 	"linux-arm64":   {"timingdex-linux-arm64", "posix"},
 }
 
-func (s *Server) registerWorkerSetupRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /worker-setup", s.workerSetupPage)
-	mux.HandleFunc("GET /api/v1/hub/worker-setup/context", s.requireTrustedRead(s.workerSetupContext))
-	mux.HandleFunc("GET /api/v1/admin/hub/worker-setup/library-roots", s.requireHubAdmin(s.workerSetupLibraryRoots))
-	mux.HandleFunc("GET /api/v1/hub/worker-binaries/{platform}", s.requireTrustedRead(s.workerServeBinary))
-	mux.HandleFunc("POST /api/v1/hub/worker-setup/script", s.requireHubAdmin(s.workerGenerateScript))
+func (s *Server) workerSetupRouteSpecs() []routeSpec {
+	return []routeSpec{
+		newRouteSpec("page-worker-setup", "GET /worker-setup", routeAuthBrowserPage, http.HandlerFunc(s.workerSetupPage)),
+		newRouteSpec("worker-setup-context", "GET /api/v1/hub/worker-setup/context", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.workerSetupContext))),
+		newRouteSpec("worker-setup-library-roots", "GET /api/v1/admin/hub/worker-setup/library-roots", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.workerSetupLibraryRoots))),
+		newRouteSpec("worker-binary", "GET /api/v1/hub/worker-binaries/{platform}", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.workerServeBinary))),
+		newRouteSpec("worker-setup-script", "POST /api/v1/hub/worker-setup/script", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.workerGenerateScript))),
+	}
 }
 
 func (s *Server) workerSetupPage(w http.ResponseWriter, _ *http.Request) {
