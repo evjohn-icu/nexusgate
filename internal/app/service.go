@@ -1646,17 +1646,20 @@ func (s *Service) AssetTranscript(ctx context.Context, assetID string) (*AssetTr
 	if err != nil {
 		return nil, err
 	}
-	if len(words) > 0 {
-		out := &AssetTranscript{AssetID: assetID, Source: "aligned", Words: words}
-		// TranscriptFromAlignmentWords promotes the word stream to the
-		// canonical transcript shape; degenerate words (EndMS <= StartMS) are
-		// dropped by it, so text/segments may be empty even when words exist.
+	// TranscriptFromAlignmentWords drops degenerate words (EndMS <= StartMS);
+	// when none survive there is no usable timing evidence, so fall back to
+	// the ASR transcript rather than answer an empty "aligned" — the same
+	// signal the pipeline's analysis paths already treat as "keep ASR".
+	if aligned := domain.TranscriptFromAlignmentWords(words); aligned != nil {
+		out := &AssetTranscript{
+			AssetID:  assetID,
+			Source:   "aligned",
+			Text:     aligned.Text,
+			Segments: aligned.Segments,
+			Words:    words,
+		}
 		// language comes from the ASR transcript row — independent of the
 		// alignment run — and stays empty when no ASR transcript exists.
-		if aligned := domain.TranscriptFromAlignmentWords(words); aligned != nil {
-			out.Segments = aligned.Segments
-			out.Text = aligned.Text
-		}
 		if full, err := s.repo.GetTranscript(ctx, assetID); err != nil {
 			return nil, err
 		} else if full != nil {

@@ -79,6 +79,38 @@ func TestAssetTranscriptAlignmentWithNoAsrLeavesLanguageEmpty(t *testing.T) {
 	}
 }
 
+// An alignment run whose words carry no timing (all EndMS <= StartMS) yields
+// no usable aligned transcript; the endpoint must fall back to the ASR
+// transcript instead of answering an empty "aligned", exactly as the
+// pipeline's analysis paths treat a nil TranscriptFromAlignmentWords.
+func TestAssetTranscriptDegenerateWordsFallBackToAsr(t *testing.T) {
+	words := []domain.AlignmentWord{{StartMS: 0, EndMS: 0, Text: "退化"}}
+	repo := &transcriptFallbackRepo{
+		words: words,
+		full: &domain.Transcript{
+			Language: "zh",
+			Text:     "完整文本",
+			Segments: []domain.TranscriptSegment{{StartMS: 0, EndMS: 1200, Text: "句子"}},
+		},
+	}
+	out, err := (&Service{repo: repo}).AssetTranscript(context.Background(), "asset-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Source != "asr" || out.Words != nil || out.Text != "完整文本" {
+		t.Fatalf("out = %+v, want source=asr fallback with the ASR transcript", out)
+	}
+}
+
+// Degenerate words with no ASR transcript at all still mean "no transcript".
+func TestAssetTranscriptDegenerateWordsWithoutAsrAnswersNotFound(t *testing.T) {
+	repo := &transcriptFallbackRepo{words: []domain.AlignmentWord{{StartMS: 5, EndMS: 5, Text: "退化"}}}
+	_, err := (&Service{repo: repo}).AssetTranscript(context.Background(), "asset-1")
+	if !errors.Is(err, ErrTranscriptNotFound) {
+		t.Fatalf("err = %v, want ErrTranscriptNotFound", err)
+	}
+}
+
 func TestAssetTranscriptFallsBackToAsrWithoutWords(t *testing.T) {
 	repo := &transcriptFallbackRepo{
 		full: &domain.Transcript{
