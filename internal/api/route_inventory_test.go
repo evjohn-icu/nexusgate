@@ -102,6 +102,7 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 		{http.MethodGet, "/api/v1/library/summary", "trusted", "none", http.StatusForbidden},
 		{http.MethodPost, "/api/v1/library/summary/generate", "admin", "none", http.StatusUnauthorized},
 		{http.MethodPost, "/api/v1/repurpose/plans", "agent/admin", "JSON", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/repurpose/plans", "trusted", "none", http.StatusForbidden},
 		{http.MethodGet, "/api/v1/repurpose/plans/x", "trusted", "none", http.StatusForbidden},
 		{http.MethodGet, "/api/v1/repurpose/plans/x/revisions", "trusted", "none", http.StatusForbidden},
 		{http.MethodPost, "/api/v1/repurpose/plans/x/revisions", "agent/admin", "JSON", http.StatusUnauthorized},

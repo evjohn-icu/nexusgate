@@ -167,6 +167,7 @@ type Repository interface {
 	DiscoverRareShots(context.Context, int) ([]domain.RareShot, error)
 	SaveRepurposePlan(context.Context, domain.RepurposePlan) (domain.RepurposePlan, error)
 	GetRepurposePlan(context.Context, string) (*domain.RepurposePlan, error)
+	ListRepurposePlans(context.Context, string, int) ([]domain.RepurposePlanSummary, error)
 	SaveRepurposePlanRevision(context.Context, domain.RepurposePlan, string) (domain.RepurposePlanRevision, error)
 	ListRepurposePlanRevisions(context.Context, string) ([]domain.RepurposePlanRevision, error)
 	ApproveRepurposePlanRevision(context.Context, string, int) (domain.RepurposePlanRevision, error)
@@ -1783,6 +1784,13 @@ func (s *Service) CreateRepurposePlan(ctx context.Context, brief domain.Repurpos
 
 func (s *Service) GetRepurposePlan(ctx context.Context, id string) (*domain.RepurposePlan, error) {
 	return s.repo.GetRepurposePlan(ctx, id)
+}
+
+// ListRepurposePlans returns the plan inbox projection (summaries only, never
+// candidate payloads), so a human can discover and open drafts an agent
+// created. status filters to draft or approved; empty/all returns both.
+func (s *Service) ListRepurposePlans(ctx context.Context, status string, limit int) ([]domain.RepurposePlanSummary, error) {
+	return s.repo.ListRepurposePlans(ctx, status, limit)
 }
 
 // ReviseRepurposePlan validates a proposed set of sections against the plan's

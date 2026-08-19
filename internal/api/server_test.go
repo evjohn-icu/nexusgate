@@ -1826,7 +1826,7 @@ func TestHandlerServesRepurposeSelectionWorkspace(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	for _, marker := range []string{"保存编辑版", "选择此镜头", "锁定选择", "排除"} {
+	for _, marker := range []string{"保存为新版本", "选择", "锁定选择", "找替代镜头", "排除", "预览"} {
 		if !bytes.Contains(response.Body.Bytes(), []byte(marker)) {
 			t.Fatalf("repurpose selection workspace missing marker %q", marker)
 		}

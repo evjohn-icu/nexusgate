@@ -148,3 +148,73 @@ func TestRepurposePlanWritesWrapDomainSentinels(t *testing.T) {
 		t.Fatalf("overwriting an approved plan: want errors.Is(err, domain.ErrPlanImmutable); got %v", err)
 	}
 }
+
+// TestListRepurposePlansReturnsSummaries pins the plan-inbox projection: it
+// lists every plan as a summary (never a candidate payload), carries revision
+// counts and latest revision, and honours the draft/approved filter — so a
+// human can discover and deep-link a plan an agent drafted.
+func TestListRepurposePlansReturnsSummaries(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "repurpose-list.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := repo.SaveRepurposePlan(ctx, domain.RepurposePlan{Brief: "深圳城市宣传", DurationMS: 30000, Title: "深圳", Status: "draft", Provider: "deterministic", Model: "heuristic-v1", Sections: []domain.PlanSection{{Role: "opening", Query: "city", DurationMS: 5000, Required: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.SaveRepurposePlanRevision(ctx, plan, "开场用雨夜航拍"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.SaveRepurposePlan(ctx, domain.RepurposePlan{Brief: "海边空镜", DurationMS: 10000, Title: "海边", Status: "approved", Provider: "deterministic", Model: "heuristic-v1", Sections: []domain.PlanSection{{Role: "ending", Query: "sea", DurationMS: 5000, Required: true}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := repo.ListRepurposePlans(ctx, "all", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("all summaries = %d, want 2", len(all))
+	}
+	var draftSum, approvedSum domain.RepurposePlanSummary
+	for _, s := range all {
+		switch s.Title {
+		case "深圳":
+			draftSum = s
+		case "海边":
+			approvedSum = s
+		}
+	}
+	if draftSum.ID == "" || approvedSum.ID == "" {
+		t.Fatalf("summaries = %+v, want both plans present", all)
+	}
+	if draftSum.Status != "draft" || draftSum.RevisionCount != 1 || draftSum.LatestRevision != 1 {
+		t.Fatalf("draft summary = %+v, want 1 revision, status draft", draftSum)
+	}
+	if approvedSum.Status != "approved" || approvedSum.RevisionCount != 0 {
+		t.Fatalf("approved summary = %+v, want 0 revisions, status approved", approvedSum)
+	}
+	if draftSum.DurationMS != 30000 || draftSum.Brief == "" {
+		t.Fatalf("draft summary = %+v, want duration and brief", draftSum)
+	}
+
+	drafts, err := repo.ListRepurposePlans(ctx, "draft", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(drafts) != 1 || drafts[0].Status != "draft" || drafts[0].ID != draftSum.ID {
+		t.Fatalf("draft filter = %+v, want only the draft", drafts)
+	}
+	approved, err := repo.ListRepurposePlans(ctx, "approved", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approved) != 1 || approved[0].Status != "approved" {
+		t.Fatalf("approved filter = %+v, want only the approved plan", approved)
+	}
+}

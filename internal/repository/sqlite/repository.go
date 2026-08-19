@@ -3633,6 +3633,47 @@ func (r *Repository) GetRepurposePlan(ctx context.Context, id string) (*domain.R
 	return &plan, nil
 }
 
+// ListRepurposePlans returns the plan inbox projection, most recently
+// updated first. status filters to draft or approved; any other value ("" or
+// "all") returns both. The projection comes from denormalized columns plus a
+// revision subquery — never the full candidate payloads.
+func (r *Repository) ListRepurposePlans(ctx context.Context, status string, limit int) ([]domain.RepurposePlanSummary, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	query := `SELECT p.id,p.title,p.brief,p.status,p.duration_ms,p.updated_at,
+	COALESCE((SELECT COUNT(*) FROM repurpose_plan_revisions r WHERE r.plan_id=p.id),0),
+	COALESCE((SELECT MAX(r.revision) FROM repurpose_plan_revisions r WHERE r.plan_id=p.id),0),
+	COALESCE(json_array_length(COALESCE(json_extract(p.plan_json,'$.missing_needs'),'[]')),0)
+	FROM repurpose_plans p`
+	args := make([]any, 0, 2)
+	if status == "draft" || status == "approved" {
+		query += ` WHERE p.status=?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY p.updated_at DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.RepurposePlanSummary
+	for rows.Next() {
+		var s domain.RepurposePlanSummary
+		var updated string
+		if err := rows.Scan(&s.ID, &s.Title, &s.Brief, &s.Status, &s.DurationMS, &updated, &s.RevisionCount, &s.LatestRevision, &s.MissingNeedsCount); err != nil {
+			return nil, err
+		}
+		s.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 func (r *Repository) SaveRepurposePlanRevision(ctx context.Context, plan domain.RepurposePlan, editorNote string) (domain.RepurposePlanRevision, error) {
 	current, err := r.GetRepurposePlan(ctx, plan.ID)
 	if err != nil {
