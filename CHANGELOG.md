@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Shot-level speech search no longer requires forced alignment**: the
+  transcript channel now sources per asset from the strongest available timing
+  — aligned words when they exist, otherwise the ASR transcript's timed
+  segments (materialized into a new `asr_segments` table at `SaveTranscript`
+  time, with a migration backfill for existing libraries). ASR-only assets are
+  now searchable by spoken phrase with shot-level placement and
+  possible/transcript evidence, joining the description channels in fusion. A
+  0-0 placeholder segment still contributes no timing, so untimed ASR stays
+  asset-level. Mixed CJK/ASCII multi-component phrases over ASR segments keep
+  the honest no-result behaviour rather than over-matching.
 - **Footage capability provider**: Timingdex now exposes its library to
   transcript-driven AI editing frontends as a product-neutral capability
   contract. New `GET /api/v1/assets/{id}/transcript` returns the asset's

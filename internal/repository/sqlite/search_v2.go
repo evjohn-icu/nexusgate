@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	"github.com/evjohn-icu/timingdex/internal/search"
@@ -74,6 +75,96 @@ func (r *Repository) LexicalRankedShots(ctx context.Context, q string, weights [
 // 0-300s. CJK tokens match as substrings (Chinese has no word boundaries in
 // ASR output either); ASCII tokens match the whole aligned word, so "car"
 // cannot match a word like "carefree".
+// The transcript channel reads two speech-source tables. The per-asset
+// source rule keeps them disjoint: an asset contributes either its alignment
+// words (transcript_words) or its ASR segments (asr_segments), never both —
+// matching the aligned-wins fallback the transcript endpoint and analysis
+// paths use. Retrieval runs the same ranked query over each source and merges
+// the disjoint pools in Go, rather than a SQL UNION: modernc.org/sqlite plans
+// a UNION with the correlated per-asset exclusion far more expensively, which
+// the -race test suite amplifies to a timeout.
+const (
+	alignedSpeechTable = "transcript_words"
+	asrSpeechTable     = "asr_segments"
+)
+
+// transcriptTokenPool runs the token-prefilter ranked query over one speech
+// source, returning the scanned pool ordered by tscore DESC, id ASC (the
+// tscore rides in the LexicalScore slot until validation renames it). When
+// excludeAligned is set (the ASR source), assets that already have alignment
+// words are excluded, so an asset never appears in both pools.
+func (r *Repository) transcriptTokenPool(ctx context.Context, patterns []string, candidateLimit int, source string, excludeAligned bool) ([]domain.ShotSearchResult, error) {
+	where := make([]string, 0, len(patterns))
+	args := make([]any, 0, len(patterns))
+	for _, p := range patterns {
+		where = append(where, `w.text LIKE ? ESCAPE '\'`)
+		args = append(args, p)
+	}
+	exclusion := ""
+	if excludeAligned {
+		exclusion = ` AND NOT EXISTS (SELECT 1 FROM transcript_words t WHERE t.asset_id = w.asset_id)`
+	}
+	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),''),MIN(SUM(COALESCE(w.confidence,1)),5.0)/5.0 AS tscore FROM ` + source + ` w JOIN asset_shots s ON s.asset_id=w.asset_id AND s.start_ms < w.end_ms AND s.end_ms > w.start_ms WHERE (` + strings.Join(where, ` OR `) + `)` + exclusion
+	if len(patterns) > 1 {
+		// Every phrase component must be present in the shot before the
+		// bounded pool is formed. The Go pass still owns order, reuse, and
+		// timing; this indexed pass only prevents partial-token saturation.
+		allPatterns := make([]string, 0, len(patterns))
+		for range patterns {
+			allPatterns = append(allPatterns, `EXISTS (SELECT 1 FROM `+source+` wp WHERE wp.asset_id=s.asset_id AND s.start_ms < wp.end_ms AND s.end_ms > wp.start_ms AND wp.text LIKE ? ESCAPE '\')`)
+		}
+		query += ` GROUP BY s.id HAVING ` + strings.Join(allPatterns, ` AND `)
+		args = append(args, args[:len(patterns)]...)
+	} else {
+		query += ` GROUP BY s.id`
+	}
+	query += ` ORDER BY tscore DESC, s.id ASC LIMIT ?`
+	args = append(args, candidateLimit)
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.ShotSearchResult
+	for rows.Next() {
+		result, err := scanShotRowWithFilename(rows, "tscore")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, result)
+	}
+	return out, rows.Err()
+}
+
+// transcriptTokenPools merges the two sources' token pools. Both are ordered
+// by (tscore DESC, id ASC) and are disjoint per asset, so a two-way merge
+// keeps the globally best candidates first for the validation pass.
+func (r *Repository) transcriptTokenPools(ctx context.Context, patterns []string, candidateLimit int) ([]domain.ShotSearchResult, error) {
+	aligned, err := r.transcriptTokenPool(ctx, patterns, candidateLimit, alignedSpeechTable, false)
+	if err != nil {
+		return nil, err
+	}
+	asr, err := r.transcriptTokenPool(ctx, patterns, candidateLimit, asrSpeechTable, true)
+	if err != nil {
+		return nil, err
+	}
+	merged := make([]domain.ShotSearchResult, 0, len(aligned)+len(asr))
+	i, j := 0, 0
+	for i < len(aligned) && j < len(asr) {
+		a, b := aligned[i], asr[j]
+		if a.LexicalScore > b.LexicalScore || (a.LexicalScore == b.LexicalScore && a.ID < b.ID) {
+			merged = append(merged, a)
+			i++
+		} else {
+			merged = append(merged, b)
+			j++
+		}
+	}
+	merged = append(merged, aligned[i:]...)
+	merged = append(merged, asr[j:]...)
+	return merged, nil
+}
+
 func (r *Repository) TranscriptRankedShots(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error) {
 	if limit <= 0 || strings.TrimSpace(q) == "" {
 		return []domain.ShotSearchResult{}, nil
@@ -90,33 +181,8 @@ func (r *Repository) TranscriptRankedShots(ctx context.Context, q string, limit 
 	// bounded pool regardless of how many partials are ahead of it.
 	components := search.SpeechComponents(strings.ToLower(strings.TrimSpace(q)))
 	if len(components) > 1 {
-		out, err := r.transcriptPhraseFirst(ctx, q, limit, components)
-		if err != nil {
-			return nil, err
-		}
-		return out, nil
+		return r.transcriptPhraseFirst(ctx, q, limit, components)
 	}
-	where := make([]string, 0, len(patterns))
-	args := make([]any, 0, len(patterns))
-	for _, p := range patterns {
-		where = append(where, `w.text LIKE ? ESCAPE '\'`)
-		args = append(args, p)
-	}
-	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),''),MIN(SUM(COALESCE(w.confidence,1)),5.0)/5.0 AS tscore FROM transcript_words w JOIN asset_shots s ON s.asset_id=w.asset_id AND s.start_ms < w.end_ms AND s.end_ms > w.start_ms WHERE ` + strings.Join(where, ` OR `)
-	if len(patterns) > 1 {
-		// Every phrase component must be present in the shot before the
-		// bounded pool is formed. The Go pass still owns order, reuse, and
-		// timing; this indexed pass only prevents partial-token saturation.
-		allPatterns := make([]string, 0, len(patterns))
-		for range patterns {
-			allPatterns = append(allPatterns, `EXISTS (SELECT 1 FROM transcript_words wp WHERE wp.asset_id=s.asset_id AND s.start_ms < wp.end_ms AND s.end_ms > wp.start_ms AND wp.text LIKE ? ESCAPE '\')`)
-		}
-		query += ` GROUP BY s.id HAVING ` + strings.Join(allPatterns, ` AND `)
-		args = append(args, args[:len(patterns)]...)
-	} else {
-		query += ` GROUP BY s.id`
-	}
-	query += ` ORDER BY tscore DESC, s.id ASC LIMIT ?`
 	// Phrase validation performs one bounded span lookup per candidate. The
 	// indexed all-components pass makes this pool recall-safe against partial
 	// token saturation while keeping per-request work capped at 10,000 shots.
@@ -127,18 +193,12 @@ func (r *Repository) TranscriptRankedShots(ctx context.Context, q string, limit 
 	if candidateLimit > 10000 {
 		candidateLimit = 10000
 	}
-	args = append(args, candidateLimit)
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	pool, err := r.transcriptTokenPools(ctx, patterns, candidateLimit)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var out []domain.ShotSearchResult
-	for rows.Next() {
-		result, err := scanShotRowWithFilename(rows, "tscore")
-		if err != nil {
-			return nil, err
-		}
+	for _, result := range pool {
 		spans, err := r.ShotTranscriptSpans(ctx, result.AssetID, result.StartMS, result.EndMS)
 		if err != nil {
 			return nil, err
@@ -155,7 +215,7 @@ func (r *Repository) TranscriptRankedShots(ctx context.Context, q string, limit 
 			}
 		}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // transcriptPhraseFirst is the phrase-first pool for multi-component phrases.
@@ -165,19 +225,18 @@ func (r *Repository) TranscriptRankedShots(ctx context.Context, q string, limit 
 // construction, so it can never be crowded out of the candidate pool; shots
 // that merely contain the phrase's characters scattered across time fail at
 // least one window and never occupy a slot. Go-side validation still decides
-// the final verdict; this pass only decides who enters the bounded pool.
+// the final verdict; this pass only decides who enters the bounded pool. Like
+// the token path it runs over both speech sources and merges the disjoint
+// pools (per asset, ordered by id).
 func (r *Repository) transcriptPhraseFirst(ctx context.Context, q string, limit int, components []search.SpeechComponent) ([]domain.ShotSearchResult, error) {
 	windows := make([]string, 0, len(components)-1)
 	args := make([]any, 0, 2*(len(components)-1))
 	for i := 0; i+1 < len(components); i++ {
 		ciTail, _ := headTail(components[i])
 		_, ci1Head := headTail(components[i+1])
-		window := `EXISTS (SELECT 1 FROM transcript_words wa JOIN transcript_words wb ON wb.asset_id=wa.asset_id AND wb.ordinal > wa.ordinal AND wb.start_ms - wa.end_ms <= 1500 WHERE wa.asset_id=s.asset_id AND s.start_ms < wa.end_ms AND s.end_ms > wa.start_ms AND wa.text LIKE ? ESCAPE '\' AND wb.asset_id=s.asset_id AND s.start_ms < wb.end_ms AND s.end_ms > wb.start_ms AND wb.text LIKE ? ESCAPE '\')`
-		windows = append(windows, window)
+		windows = append(windows, `EXISTS (SELECT 1 FROM ${SRC} wa JOIN ${SRC} wb ON wb.asset_id=wa.asset_id AND wb.ordinal > wa.ordinal AND wb.start_ms - wa.end_ms <= 1500 WHERE wa.asset_id=s.asset_id AND s.start_ms < wa.end_ms AND s.end_ms > wa.start_ms AND wa.text LIKE ? ESCAPE '\' AND wb.asset_id=s.asset_id AND s.start_ms < wb.end_ms AND s.end_ms > wb.start_ms AND wb.text LIKE ? ESCAPE '\')`)
 		args = append(args, `%`+escapeLike(ciTail)+`%`, `%`+escapeLike(ci1Head)+`%`)
 	}
-
-	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),''),0.0 AS tscore FROM asset_shots s WHERE ` + strings.Join(windows, ` AND `) + ` ORDER BY s.id ASC LIMIT ?`
 	candidateLimit := limit * 50
 	if candidateLimit < 1000 {
 		candidateLimit = 1000
@@ -185,18 +244,58 @@ func (r *Repository) transcriptPhraseFirst(ctx context.Context, q string, limit 
 	if candidateLimit > 10000 {
 		candidateLimit = 10000
 	}
-	args = append(args, candidateLimit)
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []domain.ShotSearchResult
-	for rows.Next() {
-		result, err := scanShotRowWithFilename(rows, "tscore")
+	base := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),''),0.0 AS tscore FROM asset_shots s WHERE `
+	runSource := func(source string, excludeAligned bool) ([]domain.ShotSearchResult, error) {
+		windowsSrc := make([]string, 0, len(windows))
+		for _, w := range windows {
+			windowsSrc = append(windowsSrc, strings.ReplaceAll(w, "${SRC}", source))
+		}
+		exclusion := ""
+		if excludeAligned {
+			exclusion = ` AND NOT EXISTS (SELECT 1 FROM transcript_words t WHERE t.asset_id = s.asset_id)`
+		}
+		query := base + strings.Join(windowsSrc, ` AND `) + exclusion + ` ORDER BY s.id ASC LIMIT ?`
+		queryArgs := append(append([]any{}, args...), candidateLimit)
+		rows, err := r.db.QueryContext(ctx, query, queryArgs...)
 		if err != nil {
 			return nil, err
 		}
+		defer rows.Close()
+		var out []domain.ShotSearchResult
+		for rows.Next() {
+			result, err := scanShotRowWithFilename(rows, "tscore")
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, result)
+		}
+		return out, rows.Err()
+	}
+	aligned, err := runSource(alignedSpeechTable, false)
+	if err != nil {
+		return nil, err
+	}
+	asr, err := runSource(asrSpeechTable, true)
+	if err != nil {
+		return nil, err
+	}
+	// Both pools are ordered by id ASC and are disjoint per asset; two-way
+	// merge by id.
+	pool := make([]domain.ShotSearchResult, 0, len(aligned)+len(asr))
+	i, j := 0, 0
+	for i < len(aligned) && j < len(asr) {
+		if aligned[i].ID < asr[j].ID {
+			pool = append(pool, aligned[i])
+			i++
+		} else {
+			pool = append(pool, asr[j])
+			j++
+		}
+	}
+	pool = append(pool, aligned[i:]...)
+	pool = append(pool, asr[j:]...)
+	var out []domain.ShotSearchResult
+	for _, result := range pool {
 		spans, err := r.ShotTranscriptSpans(ctx, result.AssetID, result.StartMS, result.EndMS)
 		if err != nil {
 			return nil, err
@@ -211,7 +310,7 @@ func (r *Repository) transcriptPhraseFirst(ctx context.Context, q string, limit 
 			break
 		}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // headTail returns the last and first rune of a phrase component for the
@@ -413,19 +512,28 @@ func strSliceToAny(values []string) []any {
 	return out
 }
 
-// ShotTranscriptSpans returns the aligned words overlapping [startMS, endMS]
-// of one asset — the transcript evidence a shot can actually claim.
+// ShotTranscriptSpans returns the speech spans overlapping [startMS, endMS]
+// of one asset — the transcript evidence a shot can actually claim. Aligned
+// assets contribute their alignment words as-is; ASR-only assets contribute
+// their timed ASR segments expanded to per-rune/per-word spans (see
+// expandAsrSegments), so the exact-phrase validator can match a sub-phrase
+// that a whole sentence-level segment alone would not satisfy.
+//
+// The source resolution is done here in Go rather than with the speech CTE
+// because the evidence gate calls this once per candidate: the aligned path
+// (the overwhelmingly common case) stays a single plain indexed query, and
+// only ASR-only assets pay a second query.
 func (r *Repository) ShotTranscriptSpans(ctx context.Context, assetID string, startMS, endMS int64) ([]domain.AlignmentWord, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT start_ms,end_ms,text,confidence FROM transcript_words WHERE asset_id=? AND start_ms < ? AND end_ms > ? ORDER BY ordinal`, assetID, endMS, startMS)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var out []domain.AlignmentWord
 	for rows.Next() {
 		var w domain.AlignmentWord
 		var confidence sql.NullFloat64
 		if err := rows.Scan(&w.StartMS, &w.EndMS, &w.Text, &confidence); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		if confidence.Valid {
@@ -433,7 +541,70 @@ func (r *Repository) ShotTranscriptSpans(ctx context.Context, assetID string, st
 		}
 		out = append(out, w)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	if len(out) > 0 {
+		return out, nil
+	}
+	// ASR-only asset: expand its timed segments to per-rune/per-word spans.
+	segRows, err := r.db.QueryContext(ctx, `SELECT start_ms,end_ms,text FROM asr_segments WHERE asset_id=? AND start_ms < ? AND end_ms > ? ORDER BY ordinal`, assetID, endMS, startMS)
+	if err != nil {
+		return nil, err
+	}
+	defer segRows.Close()
+	for segRows.Next() {
+		var seg domain.AlignmentWord
+		if err := segRows.Scan(&seg.StartMS, &seg.EndMS, &seg.Text); err != nil {
+			return nil, err
+		}
+		out = expandAsrSegments(out, seg)
+	}
+	return out, segRows.Err()
+}
+
+// isSpeechCJK matches the search package's speech-CJK definition (kana,
+// unified CJK, hangul, and CJK-compatibility ideographs) — the boundary the
+// exact-phrase validator uses to split a phrase into components.
+func isSpeechCJK(r rune) bool {
+	return r >= '\u3040' && r <= '\u30ff' || r >= '\u3400' && r <= '\u9fff' || r >= '\uac00' && r <= '\ud7af' || r >= '\uf900' && r <= '\ufaff'
+}
+
+// expandAsrSegments appends one timed ASR segment expanded into the span
+// granularity the validator accumulates: every CJK rune becomes its own span,
+// every ASCII word run becomes one span, each carrying the segment's time
+// range. The validator joins spans in order (within the 1500ms gap) and
+// requires the accumulated text to equal the phrase, so per-rune spans let a
+// phrase that is a proper sub-phrase of a sentence-level segment still match —
+// exactly the speech the segment contains.
+func expandAsrSegments(out []domain.AlignmentWord, segment domain.AlignmentWord) []domain.AlignmentWord {
+	runes := []rune(segment.Text)
+	for i := 0; i < len(runes); {
+		if isSpeechCJK(runes[i]) {
+			j := i + 1
+			for j < len(runes) && isSpeechCJK(runes[j]) {
+				j++
+			}
+			for k := i; k < j; k++ {
+				out = append(out, domain.AlignmentWord{StartMS: segment.StartMS, EndMS: segment.EndMS, Text: string(runes[k])})
+			}
+			i = j
+			continue
+		}
+		if unicode.IsLetter(runes[i]) || unicode.IsDigit(runes[i]) || runes[i] == '_' {
+			j := i + 1
+			for j < len(runes) && (unicode.IsLetter(runes[j]) || unicode.IsDigit(runes[j]) || runes[j] == '_') && !isSpeechCJK(runes[j]) {
+				j++
+			}
+			out = append(out, domain.AlignmentWord{StartMS: segment.StartMS, EndMS: segment.EndMS, Text: string(runes[i:j])})
+			i = j
+			continue
+		}
+		i++
+	}
+	return out
 }
 
 // NeighborShots returns the shots adjacent to (assetID, ordinal) by ordinal,

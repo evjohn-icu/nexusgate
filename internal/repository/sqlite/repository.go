@@ -3177,7 +3177,34 @@ SELECT ?,?,?,?,?,?,?,?,?, 'succeeded',? WHERE (?='' OR EXISTS (SELECT 1 FROM job
 			return e
 		}
 		if n != 1 {
+			// The lease is gone: the transcript write did not land, and the
+			// asr_segments materialization below must not run for a transcript
+			// the caller does not own.
 			return leaseLostErr(jobID, owner)
+		}
+	}
+	// Materialize the timed ASR segments as the shot-level speech source,
+	// replacing any prior transcript's segments (GetTranscript reads the
+	// latest row). The common no-segments path — and the placeholder 0-0
+	// segment some ASR providers emit — stays a single write with no
+	// asr_segments rows; degenerate segments carry no placement and are
+	// dropped, the same rule Transcript.Timed and the transcript endpoint
+	// apply.
+	var timed []domain.TranscriptSegment
+	for _, seg := range t.Segments {
+		if seg.EndMS > seg.StartMS {
+			timed = append(timed, seg)
+		}
+	}
+	if len(timed) == 0 {
+		return nil
+	}
+	if _, err := r.db.ExecContext(ctx, `DELETE FROM asr_segments WHERE asset_id=?`, assetID); err != nil {
+		return err
+	}
+	for i, seg := range timed {
+		if _, err := r.db.ExecContext(ctx, `INSERT INTO asr_segments(id,asset_id,ordinal,start_ms,end_ms,text,confidence) VALUES(?,?,?,?,?,?,NULL)`, idgen.New(), assetID, i, seg.StartMS, seg.EndMS, seg.Text); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -3243,6 +3270,12 @@ func (r *Repository) SaveAlignment(ctx context.Context, assetID, provider, model
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM transcript_words WHERE alignment_run_id=?`, effectiveRun); err != nil {
+		return err
+	}
+	// Alignment words are now the asset's speech source (strongest timing);
+	// drop any ASR segments so the transcript channel's per-asset resolution
+	// keeps exactly one source per asset.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM asr_segments WHERE asset_id=?`, assetID); err != nil {
 		return err
 	}
 	for i, w := range result.Words {
