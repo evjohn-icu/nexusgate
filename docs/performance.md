@@ -1,4 +1,4 @@
-# Performance Measurements (Synthetic Engine Benchmarks)
+# Performance Measurements
 
 `internal/search/benchmark_test.go` measures the **engine**, never SQLite I/O:
 the `ShotStore` contract (`internal/search/store.go`) is implemented by a
@@ -73,7 +73,7 @@ machine and toolchain, but without a recorded run date.
 | `BenchmarkEmbeddingFullScan100k` | 43.6 ms | 2,347 | 48 MB | 200,003 |
 | `BenchmarkCompile` | 5.7 µs | — | 876 B | 14 |
 
-## Interpretation
+## Synthetic-engine interpretation
 
 **Search is broadly linear in the candidate pool, and the pool is capped in
 production.** ×10 corpus → ×7.0–10.9 time in this run; the 1k result is a
@@ -101,12 +101,14 @@ becomes relevant well before that scale if this throughput persists.
 (fact, negation, speech, creative, shot-id — all panic-safe, pinned by
 `compiler_panic_test.go`).
 
-## Recommendation
+## Synthetic-engine recommendation
 
-Keep the SQLite-first full scan for now. The measurements say a 100k-shot
-library is 459 ms per embedding query — no ANN needed this round, no vector
-DB (the v0.28 design decision stands: embeddings are derived,
-rebuildable, model-tagged, and the engine never treats them as evidence).
+Keep the SQLite-first full scan for now. This recommendation applies to the
+in-memory engine benchmark above; the on-disk SQLite measurements are recorded
+in the release section below. The synthetic engine measures a 100k-shot
+embedding query at 459 ms. No ANN index or vector database is implemented (the
+v0.28 design decision stands: embeddings are derived, rebuildable, model-tagged,
+and the engine never treats them as evidence).
 
 If/when 100k+ shot libraries with embeddings become the norm **and** the
 scan approaches the ~2 s threshold (≈ 435k shots at current throughput, or
@@ -125,3 +127,101 @@ These are single-machine, single-threaded numbers; the shape (linear in N,
 on current hardware before tuning on them — and never let the embedding
 scan regress without a deliberate reason: it is the one number a library
 growth spurt will hit first.
+
+## Real SQLite scale harness
+
+`internal/repository/sqlite/scale_benchmark_test.go` complements the fake
+engine benchmark with a deterministic on-disk corpus. It writes canonical
+shots, the FTS5 projection, heuristic semantic vectors, locations, and
+256-dimension float32 text embeddings in one seed transaction. Seeding is
+outside the benchmark timer. The fixture is synthetic benchmark input only;
+it is not a model-output or production write path.
+
+The harness measures these scenarios against the same database:
+
+- `lexical`: field-weighted FTS5 retrieval;
+- `hybrid`: legacy SQLite lexical plus heuristic semantic scoring;
+- `fact/evidence`: Search v2 fact mode with the evidence gate;
+- `context`: Search v2 fact mode with evidence and previous/next context;
+- `embedding`: text-embedding materialization from SQLite and the Go cosine
+  full scan.
+
+The repository does not currently expose a SQLite statement counter, so this
+harness reports timing and allocations rather than inferred query counts.
+Separate store call-count tests and SQLite batch-equivalence tests enforce the
+fixed-round-trip Search contract; adding a benchmark-only database wrapper
+would distort the implementation being measured.
+
+Each scenario has a warm-open and a fresh-open benchmark. Fresh-open means a
+new `sql.DB` is opened and closed for each measured iteration; it does not
+evict the operating-system page cache, so it is a cold-ish startup measure,
+not a claim about cold disk latency. The repository's `Open` defaults are the
+measured SQLite mode: WAL, `synchronous=NORMAL`, 5-second busy timeout, and
+up to eight open connections.
+
+The 1k sanity test runs in the normal SQLite package test suite. Larger sizes
+are opt-in so ordinary CI cannot accidentally materialize a large database:
+
+```bash
+# ordinary CI sanity (also included in go test ./...)
+go test ./internal/repository/sqlite -run '^TestSQLiteScaleSanity$' -count=1
+
+# release measurements; keep one size/job serial on constrained machines
+TIMINGDEX_SQLITE_SCALE_SIZES=10000 \
+  go test ./internal/repository/sqlite -run '^$' \
+  -bench '^BenchmarkSQLiteScale' -benchmem -benchtime=1x -count=5 \
+  -timeout=30m
+
+# required 100k run, and bounded manual 500k attempt
+TIMINGDEX_SQLITE_SCALE_SIZES=100000 go test ./internal/repository/sqlite \
+  -run '^$' -bench '^BenchmarkSQLiteScale' -benchmem -benchtime=1x -count=5 \
+  -timeout=30m
+TIMINGDEX_SQLITE_SCALE_SIZES=500000 GOMAXPROCS=1 \
+  go test ./internal/repository/sqlite -run '^$' \
+  -bench '^BenchmarkSQLiteScale' -benchmem -benchtime=1x -count=1 \
+  -timeout=30m
+```
+
+Databases are created under `.bench/sqlite/` at the repository root and are
+ignored by Git. The harness removes only its exact `scale-<N>.db` file and
+SQLite WAL sidecars before reseeding, so an interrupted run cannot silently
+reuse a partial corpus. `-count=5` provides stable timing samples; report
+`ns/op`, `B/op`, and `allocs/op` from the output. The embedding benchmark's
+logical scan volume is `N * 256 * 4` bytes per operation. Record the machine,
+Go version, SQLite mode, corpus size, seed shape, and warm/fresh mode with each
+release run. A failed or memory-bound 500k attempt is a bounded result to
+document, not a reason to put 500k in ordinary CI. ANN, sqlite-vec, mmap,
+vector caches, and vector databases remain future options; this harness
+intentionally measures the current SQLite-first design.
+
+## v0.31 SQLite measurements
+
+The release run used an Intel N100 (4 CPUs, 7.5 GiB RAM), Linux amd64, Go
+1.26.4, `modernc.org/sqlite` v1.56, and the repository defaults of WAL with
+`synchronous=NORMAL`. The 1k and 10k values below are approximate medians of
+three warm/fresh samples. The 100k values are one stable warm/fresh sample,
+not a five-sample median. Fresh-open has the meaning defined above: it opens a
+new `sql.DB` but does not evict the operating-system page cache.
+
+| scenario | 1k warm | 1k fresh | 10k warm | 10k fresh | 100k warm | 100k fresh |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| lexical | 5.37 ms | 8.32 ms | 49.81 ms | 54.63 ms | 542.16 ms | 534.30 ms |
+| hybrid | 27.77 ms | 42.55 ms | 268.41 ms | 364.70 ms | 3.688 s | 3.677 s |
+| fact (evidence) | 80.68 ms | 97.12 ms | 739.40 ms | 830.04 ms | 7.495 s | 8.377 s |
+| context | 92.73 ms | 97.95 ms | 740.56 ms | 830.20 ms | 7.485 s | 8.382 s |
+| embedding | 17.72 ms | 25.67 ms | 197.12 ms | 200.65 ms | 2.209 s | 2.199 s |
+
+Warm 100k allocation measurements were:
+
+| scenario | B/op | allocs/op |
+| --- | ---: | ---: |
+| lexical | 65,760 | 1,139 |
+| hybrid | 1,054,380,944 | 12,491,212 |
+| fact (evidence) | 1,717,258,616 | 18,576,319 |
+| context | 1,717,325,088 | 18,578,048 |
+| embedding | 720,872,960 | 6,090,107 |
+
+These results establish the measured 100k SQLite boundary for this host and
+configuration; they do not predict other hardware or a cold-disk run. The
+500k measurement was deferred because of resource/runtime cost. No ANN index
+is implemented in v0.31.

@@ -99,7 +99,7 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 		candidates = pageResults(candidates, req.Offset)
 		response.Query.Intent = q.Intent
 		response.SearchID = randomHex(8)
-		response.QueryHash = queryHash(q, req.Mode, s.opts.ProfileVersion)
+		response.QueryHash = queryProfileFingerprint(q, req.Mode, s.opts.ProfileVersion)
 		for i, candidate := range candidates {
 			item := ResultItem{
 				ShotID:      candidate.ShotID,
@@ -252,10 +252,25 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 	// An offset at or beyond the list length yields empty results, not a
 	// wrapped page.
 	selected = pageResults(selected, req.Offset)
+	var neighborsByID map[string]Neighbors
+	if req.IncludeContext && len(selected) > 0 {
+		requests := make([]NeighborRequest, 0, len(selected))
+		for _, candidate := range selected {
+			requests = append(requests, NeighborRequest{
+				ShotID:  candidate.ShotID,
+				AssetID: candidate.AssetID,
+				Ordinal: candidate.Ordinal,
+			})
+		}
+		neighborsByID, err = s.store.NeighborShotsBatch(ctx, requests)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	response.Query.Intent = q.Intent
 	response.SearchID = randomHex(8)
-	response.QueryHash = queryHash(q, req.Mode, s.opts.ProfileVersion)
+	response.QueryHash = queryProfileFingerprint(q, req.Mode, s.opts.ProfileVersion)
 	for i, candidate := range selected {
 		item := ResultItem{
 			ShotID:      candidate.ShotID,
@@ -280,11 +295,7 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 			item.Evidence = evidenceByID[candidate.ShotID]
 		}
 		if req.IncludeContext {
-			context, err := s.shotContext(ctx, candidate)
-			if err != nil {
-				return nil, err
-			}
-			item.Context = context
+			item.Context = contextFromNeighbors(neighborsByID[candidate.ShotID])
 		}
 		response.Results = append(response.Results, item)
 	}
@@ -322,21 +333,19 @@ func (s *Service) reranker() Reranker {
 	return NoneReranker{}
 }
 
-// shotContext fetches the previous/next shots of a selected shot. Neighbour
-// metadata never participates in scoring or evidence.
-func (s *Service) shotContext(ctx context.Context, c Candidate) (*ShotContext, error) {
-	prev, next, err := s.store.NeighborShots(ctx, c.AssetID, c.Ordinal)
-	if err != nil {
-		return nil, err
-	}
+// contextFromNeighbors projects a batch lookup result into the public search
+// response. Neighbour metadata never participates in scoring or evidence.
+func contextFromNeighbors(neighbors Neighbors) *ShotContext {
 	context := &ShotContext{}
-	if prev != nil {
+	if neighbors.Previous != nil {
+		prev := neighbors.Previous
 		context.PreviousShot = &ContextShot{ShotID: prev.ID, StartMS: prev.StartMS, EndMS: prev.EndMS, Description: prev.Description}
 	}
-	if next != nil {
+	if neighbors.Next != nil {
+		next := neighbors.Next
 		context.NextShot = &ContextShot{ShotID: next.ID, StartMS: next.StartMS, EndMS: next.EndMS, Description: next.Description}
 	}
-	return context, nil
+	return context
 }
 
 // hasAnyFacet reports whether the facet filter carries any constraint at all.
@@ -400,10 +409,11 @@ func assetIDs(candidates []Candidate) []string {
 	return out
 }
 
-// queryHash is a deterministic fingerprint of how the query was understood,
-// so future feedback hooks can correlate a result with the exact pipeline
-// that produced it.
-func queryHash(q SearchQuery, mode, profileVersion string) string {
+// queryProfileFingerprint identifies the raw query, requested mode and profile
+// version. It deliberately is not a complete execution fingerprint: facets,
+// diversity and runtime search configuration are not included. The public
+// field remains query_hash for API compatibility.
+func queryProfileFingerprint(q SearchQuery, mode, profileVersion string) string {
 	sum := sha256.Sum256([]byte(profileVersion + "|" + mode + "|" + q.Raw))
 	return hex.EncodeToString(sum[:8])
 }

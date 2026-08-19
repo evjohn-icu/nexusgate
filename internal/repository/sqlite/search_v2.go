@@ -183,9 +183,7 @@ func (r *Repository) TranscriptRankedShots(ctx context.Context, q string, limit 
 	if len(components) > 1 {
 		return r.transcriptPhraseFirst(ctx, q, limit, components)
 	}
-	// Phrase validation performs one bounded span lookup per candidate. The
-	// indexed all-components pass makes this pool recall-safe against partial
-	// token saturation while keeping per-request work capped at 10,000 shots.
+
 	candidateLimit := limit * 50
 	if candidateLimit < 1000 {
 		candidateLimit = 1000
@@ -197,13 +195,13 @@ func (r *Repository) TranscriptRankedShots(ctx context.Context, q string, limit 
 	if err != nil {
 		return nil, err
 	}
+	spansByID, err := r.ShotTranscriptSpansBatch(ctx, transcriptSpanRequests(pool))
+	if err != nil {
+		return nil, err
+	}
 	var out []domain.ShotSearchResult
 	for _, result := range pool {
-		spans, err := r.ShotTranscriptSpans(ctx, result.AssetID, result.StartMS, result.EndMS)
-		if err != nil {
-			return nil, err
-		}
-		if !search.MatchAlignedSpeechPhrase(q, spans) {
+		if !search.MatchAlignedSpeechPhrase(q, spansByID[result.ID]) {
 			continue
 		}
 		result.TranscriptScore = result.LexicalScore // slot carries tscore
@@ -294,13 +292,13 @@ func (r *Repository) transcriptPhraseFirst(ctx context.Context, q string, limit 
 	}
 	pool = append(pool, aligned[i:]...)
 	pool = append(pool, asr[j:]...)
+	spansByID, err := r.ShotTranscriptSpansBatch(ctx, transcriptSpanRequests(pool))
+	if err != nil {
+		return nil, err
+	}
 	var out []domain.ShotSearchResult
 	for _, result := range pool {
-		spans, err := r.ShotTranscriptSpans(ctx, result.AssetID, result.StartMS, result.EndMS)
-		if err != nil {
-			return nil, err
-		}
-		if !search.MatchAlignedSpeechPhrase(q, spans) {
+		if !search.MatchAlignedSpeechPhrase(q, spansByID[result.ID]) {
 			continue
 		}
 		result.TranscriptScore = 1.0
@@ -311,6 +309,19 @@ func (r *Repository) transcriptPhraseFirst(ctx context.Context, q string, limit 
 		}
 	}
 	return out, nil
+}
+
+func transcriptSpanRequests(candidates []domain.ShotSearchResult) []search.TranscriptSpanRequest {
+	requests := make([]search.TranscriptSpanRequest, 0, len(candidates))
+	for _, candidate := range candidates {
+		requests = append(requests, search.TranscriptSpanRequest{
+			ShotID:  candidate.ID,
+			AssetID: candidate.AssetID,
+			StartMS: candidate.StartMS,
+			EndMS:   candidate.EndMS,
+		})
+	}
+	return requests
 }
 
 // headTail returns the last and first rune of a phrase component for the
@@ -607,6 +618,95 @@ func expandAsrSegments(out []domain.AlignmentWord, segment domain.AlignmentWord)
 	return out
 }
 
+// ShotTranscriptSpansBatch returns aligned words overlapping each requested
+// shot window. The result is keyed by ShotID, so callers can perform the
+// per-shot evidence/phrase pass in memory after one SQLite round trip. The
+// request array is expanded by SQLite's JSON1 table-valued function rather
+// than host parameters; this keeps the method bounded for the 10k speech
+// validation pool and avoids SQLite's variable limit.
+func (r *Repository) ShotTranscriptSpansBatch(ctx context.Context, requests []search.TranscriptSpanRequest) (map[string][]domain.AlignmentWord, error) {
+	out := make(map[string][]domain.AlignmentWord, len(requests))
+	if len(requests) == 0 {
+		return out, nil
+	}
+	payload := make([]transcriptSpanBatchRequest, 0, len(requests))
+	for i, request := range requests {
+		payload = append(payload, transcriptSpanBatchRequest{
+			Index:   i,
+			ShotID:  request.ShotID,
+			AssetID: request.AssetID,
+			StartMS: request.StartMS,
+			EndMS:   request.EndMS,
+		})
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, `
+WITH requested AS (
+    SELECT
+        CAST(json_extract(value, '$.index') AS INTEGER) AS request_index,
+        json_extract(value, '$.shot_id') AS shot_id,
+        json_extract(value, '$.asset_id') AS asset_id,
+        CAST(json_extract(value, '$.start_ms') AS INTEGER) AS start_ms,
+        CAST(json_extract(value, '$.end_ms') AS INTEGER) AS end_ms
+    FROM json_each(?)
+),
+aligned_assets AS (SELECT DISTINCT asset_id FROM transcript_words),
+speech AS (
+    SELECT w.asset_id, w.ordinal, w.start_ms, w.end_ms, w.text, w.confidence, 'aligned' AS source
+    FROM transcript_words w JOIN aligned_assets a ON a.asset_id = w.asset_id
+    UNION ALL
+    SELECT s.asset_id, s.ordinal, s.start_ms, s.end_ms, s.text, NULL, 'asr'
+    FROM asr_segments s LEFT JOIN aligned_assets a ON a.asset_id = s.asset_id
+    WHERE a.asset_id IS NULL
+)
+SELECT requested.shot_id, words.start_ms, words.end_ms, words.text, words.confidence, words.source
+FROM requested
+JOIN speech words
+  ON words.asset_id = requested.asset_id
+ AND words.start_ms < requested.end_ms
+ AND words.end_ms > requested.start_ms
+ORDER BY requested.request_index, words.ordinal`, string(encoded))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var shotID, source string
+		var word domain.AlignmentWord
+		var confidence sql.NullFloat64
+		if err := rows.Scan(&shotID, &word.StartMS, &word.EndMS, &word.Text, &confidence, &source); err != nil {
+			return nil, err
+		}
+		if confidence.Valid {
+			value := confidence.Float64
+			word.Confidence = &value
+		}
+		if source == "asr" {
+			// ASR segments are sentence-level; expand to per-rune spans so
+			// the exact-phrase validator can match a sub-phrase, matching the
+			// per-candidate ShotTranscriptSpans.
+			out[shotID] = expandAsrSegments(out[shotID], word)
+			continue
+		}
+		out[shotID] = append(out[shotID], word)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+type transcriptSpanBatchRequest struct {
+	Index   int    `json:"index"`
+	ShotID  string `json:"shot_id"`
+	AssetID string `json:"asset_id"`
+	StartMS int64  `json:"start_ms"`
+	EndMS   int64  `json:"end_ms"`
+}
+
 // NeighborShots returns the shots adjacent to (assetID, ordinal) by ordinal,
 // which may be non-contiguous — the lookups use < and > with ORDER BY rather
 // than arithmetic on ordinals.
@@ -624,6 +724,105 @@ func (r *Repository) NeighborShots(ctx context.Context, assetID string, ordinal 
 	return prev, next, nil
 }
 
+// NeighborShotsBatch returns the previous and next shot for each request in a
+// single SQLite query. Ordinals need not be contiguous: each side is selected
+// with a strict range predicate and an ordered LIMIT 1, matching
+// NeighborShots exactly. Missing sides are left nil; requests with no sides
+// are omitted from the returned map.
+func (r *Repository) NeighborShotsBatch(ctx context.Context, requests []search.NeighborRequest) (map[string]search.Neighbors, error) {
+	out := make(map[string]search.Neighbors, len(requests))
+	if len(requests) == 0 {
+		return out, nil
+	}
+	payload := make([]neighborBatchRequest, 0, len(requests))
+	for i, request := range requests {
+		payload = append(payload, neighborBatchRequest{
+			Index:   i,
+			ShotID:  request.ShotID,
+			AssetID: request.AssetID,
+			Ordinal: request.Ordinal,
+		})
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, `
+WITH requested AS (
+    SELECT
+        CAST(json_extract(value, '$.index') AS INTEGER) AS request_index,
+        json_extract(value, '$.shot_id') AS shot_id,
+        json_extract(value, '$.asset_id') AS asset_id,
+        CAST(json_extract(value, '$.ordinal') AS INTEGER) AS ordinal
+    FROM json_each(?)
+), adjacent AS (
+    SELECT requested.request_index, requested.shot_id, 'previous' AS side, shots.id,
+	           shots.asset_id, COALESCE(shots.source_run_id,'') AS source_run_id, shots.ordinal,
+           shots.start_ms, shots.end_ms, shots.description, shots.tags_json,
+           shots.objects_json, shots.actions_json, shots.mood_json,
+           shots.confidence, shots.created_at
+    FROM requested
+    JOIN asset_shots shots ON shots.id = (
+        SELECT previous.id
+        FROM asset_shots previous
+        WHERE previous.asset_id = requested.asset_id
+          AND previous.ordinal < requested.ordinal
+        ORDER BY previous.ordinal DESC
+        LIMIT 1
+    )
+    UNION ALL
+    SELECT requested.request_index, requested.shot_id, 'next' AS side, shots.id,
+	           shots.asset_id, COALESCE(shots.source_run_id,'') AS source_run_id, shots.ordinal,
+           shots.start_ms, shots.end_ms, shots.description, shots.tags_json,
+           shots.objects_json, shots.actions_json, shots.mood_json,
+           shots.confidence, shots.created_at
+    FROM requested
+    JOIN asset_shots shots ON shots.id = (
+        SELECT next_shot.id
+        FROM asset_shots next_shot
+        WHERE next_shot.asset_id = requested.asset_id
+          AND next_shot.ordinal > requested.ordinal
+        ORDER BY next_shot.ordinal ASC
+        LIMIT 1
+    )
+)
+SELECT request_index, shot_id, side, id, asset_id, source_run_id, ordinal,
+       start_ms, end_ms, description, tags_json, objects_json, actions_json,
+       mood_json, confidence, created_at
+FROM adjacent
+ORDER BY request_index, side`, string(encoded))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var requestIndex int
+		var shotID, side string
+		row, err := scanAssetShotBatchRow(rows, &requestIndex, &shotID, &side)
+		if err != nil {
+			return nil, err
+		}
+		neighbors := out[shotID]
+		if side == "previous" {
+			neighbors.Previous = row
+		} else {
+			neighbors.Next = row
+		}
+		out[shotID] = neighbors
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+type neighborBatchRequest struct {
+	Index   int    `json:"index"`
+	ShotID  string `json:"shot_id"`
+	AssetID string `json:"asset_id"`
+	Ordinal int    `json:"ordinal"`
+}
+
 func isNoRows(err error) bool {
 	return err == sql.ErrNoRows
 }
@@ -632,6 +831,20 @@ func scanSingleAssetShot(row *sql.Row) (*domain.AssetShot, error) {
 	var shot domain.AssetShot
 	var tags, objects, actions, mood, created string
 	if err := row.Scan(&shot.ID, &shot.AssetID, &shot.SourceRunID, &shot.Ordinal, &shot.StartMS, &shot.EndMS, &shot.Description, &tags, &objects, &actions, &mood, &shot.Confidence, &created); err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal([]byte(tags), &shot.Tags)
+	_ = json.Unmarshal([]byte(objects), &shot.Objects)
+	_ = json.Unmarshal([]byte(actions), &shot.Actions)
+	_ = json.Unmarshal([]byte(mood), &shot.Mood)
+	shot.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	return &shot, nil
+}
+
+func scanAssetShotBatchRow(row interface{ Scan(...any) error }, requestIndex *int, shotID, side *string) (*domain.AssetShot, error) {
+	var shot domain.AssetShot
+	var tags, objects, actions, mood, created string
+	if err := row.Scan(requestIndex, shotID, side, &shot.ID, &shot.AssetID, &shot.SourceRunID, &shot.Ordinal, &shot.StartMS, &shot.EndMS, &shot.Description, &tags, &objects, &actions, &mood, &shot.Confidence, &created); err != nil {
 		return nil, err
 	}
 	_ = json.Unmarshal([]byte(tags), &shot.Tags)

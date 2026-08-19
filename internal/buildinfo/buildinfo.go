@@ -5,7 +5,7 @@ package buildinfo
 
 // Version is the binary version, injected at release build time via
 //
-//	-ldflags "-X github.com/evjohn-icu/timingdex/internal/buildinfo.Version=v0.29.0"
+//	-ldflags "-X github.com/evjohn-icu/timingdex/internal/buildinfo.Version=vX.Y.Z-alpha"
 //
 // and left at the "dev" default for any local build.
 var Version = "dev"

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+### v0.31.0-alpha — footage capability provider & release preparation
+
 - **Shot-level speech search no longer requires forced alignment**: the
   transcript channel now sources per asset from the strongest available timing
   — aligned words when they exist, otherwise the ASR transcript's timed
@@ -35,6 +37,22 @@
   `plugins/claude/`) that declares `timingdex-mcp` over stdio and passes
   through `TIMINGDEX_BASE_URL`, `TIMINGDEX_AGENT_TOKEN` and
   `TIMINGDEX_HUB_FINGERPRINT`; the plugin ships no binary.
+- Release-closure work makes browser smoke deterministic and repository-owned,
+  runs it over the fixture's HTTPS session boundary, pins Playwright and
+  gitleaks, and makes browser regressions blocking once the clean-run gate is
+  green.
+- Search v2 batches transcript evidence, speech-phrase validation, and result
+  context lookups; candidate sorting is stable `O(N log N)` for full scans.
+  API wire compatibility, ranking, evidence semantics, and the `query_hash`
+  bytes remain unchanged.
+- HTTP route registration is grouped behind an auditable typed inventory, and
+  the browser shell makes the core Library/Search-to-reuse path distinct from
+  Advanced / Operator links without removing capabilities.
+- The repository adds a central `VERSION` declaration, synchronized
+  `v0.31.0-alpha` deployment references, a native release-build helper, real
+  SQLite scale benchmark/evaluation scaffolding, and offline Search relevance
+  evaluation data. Measured results and the remaining publication-only gates
+  are recorded in [`docs/v0.31-release-notes.md`](docs/v0.31-release-notes.md).
 - Completed the browser/Pipeline P0 hardening: API scans still trigger queued work
   after partial scan errors, concurrent Pipeline triggers coalesce into a joined
   follow-up pass, and `serve` waits for background Pipeline work before closing the

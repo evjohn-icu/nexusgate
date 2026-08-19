@@ -17,7 +17,7 @@ import (
 func main() {
 	addr := os.Getenv("TIMINGDEX_PLAYWRIGHT_ADDR")
 	if addr == "" {
-		addr = "127.0.0.1:8799"
+		addr = "127.0.0.1:4173"
 	}
 	fixture, err := browserfixture.New(context.Background())
 	if err != nil {
@@ -32,8 +32,8 @@ func main() {
 		<-stop
 		_ = server.Shutdown(context.Background())
 	}()
-	log.Printf("fixture server listening on http://%s", addr)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	log.Printf("fixture server listening on https://%s", addr)
+	if err := server.ListenAndServeTLS(fixture.TLSCertificate, fixture.TLSKey); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/media"
 	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 	"github.com/evjohn-icu/timingdex/internal/staging"
+	"github.com/evjohn-icu/timingdex/internal/testhelper"
 )
 
 func TestPipelineDeriveHardwareFallbackPersistsActualProfile(t *testing.T) {
@@ -127,24 +128,11 @@ func testPipelineDerive(t *testing.T, failHardware, reuseSoftware bool) {
 
 func writeFakeMediaCommands(t *testing.T, dir string, failHardware bool) {
 	t.Helper()
-	ffprobe := `#!/bin/sh
-printf '%s' '{"format":{"duration":"1.0","filename":"clip.mp4"},"streams":[{"codec_type":"video","codec_name":"h264","width":1280,"height":720,"avg_frame_rate":"30/1","pix_fmt":"yuv420p"}]}'
-`
-	ffmpeg := `#!/bin/sh
-out=""
-for arg in "$@"; do out="$arg"; done
-` + func() string {
-		if failHardware {
-			return `case " $* " in *" h264_nvenc "*|*" -hwaccel "*) exit 1;; esac
-`
-		}
-		return ""
-	}() + `printf 'derived' > "$out"
-`
-	for name, body := range map[string]string{"ffprobe": ffprobe, "ffmpeg": ffmpeg} {
-		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
-			t.Fatal(err)
-		}
+	testhelper.InstallCommand(t, dir, "ffprobe")
+	testhelper.InstallCommand(t, dir, "ffmpeg")
+	if failHardware {
+		t.Setenv("TIMINGDEX_FAKE_FFMPEG_FAIL_HARDWARE", "1")
+	} else {
+		t.Setenv("TIMINGDEX_FAKE_FFMPEG_FAIL_HARDWARE", "0")
 	}
 }

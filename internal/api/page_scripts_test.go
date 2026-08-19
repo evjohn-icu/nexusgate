@@ -18,8 +18,7 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 )
 
-// pageRoutes is the closed set of GET routes in Server.Handler() (server.go)
-// and registerWorkerSetupRoutes (worker_setup_page.go) that serve an HTML
+// pageRoutes is the closed set of GET routes in the route inventory that serve an HTML
 // page. Handler() registers many more routes — JSON endpoints, asset file
 // serving, worker enrollment — but only these render inline <script> blocks
 // that must parse. The list mirrors the route table rather than a hand-picked

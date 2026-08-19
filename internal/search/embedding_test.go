@@ -126,8 +126,16 @@ func (f *fakeEmbeddingStore) ShotTranscriptSpans(_ context.Context, _ string, _,
 	return nil, nil
 }
 
+func (f *fakeEmbeddingStore) ShotTranscriptSpansBatch(_ context.Context, requests []TranscriptSpanRequest) (map[string][]domain.AlignmentWord, error) {
+	return make(map[string][]domain.AlignmentWord, len(requests)), nil
+}
+
 func (f *fakeEmbeddingStore) NeighborShots(_ context.Context, _ string, _ int) (*domain.AssetShot, *domain.AssetShot, error) {
 	return nil, nil, nil
+}
+
+func (f *fakeEmbeddingStore) NeighborShotsBatch(_ context.Context, requests []NeighborRequest) (map[string]Neighbors, error) {
+	return make(map[string]Neighbors, len(requests)), nil
 }
 
 func (f *fakeEmbeddingStore) ShotSession(_ context.Context, _ string) (string, error) {

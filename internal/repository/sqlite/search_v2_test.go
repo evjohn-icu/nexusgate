@@ -510,6 +510,41 @@ func TestSearchV2NeighborsNonContiguousOrdinals(t *testing.T) {
 	}
 }
 
+func TestSearchV2NeighborsBatchNonContiguousOrdinals(t *testing.T) {
+	repo, ids := seedSearchV2Corpus(t)
+	ctx := context.Background()
+	requests := []search.NeighborRequest{
+		{ShotID: "first", AssetID: "asset-car-duplicate", Ordinal: 0},
+		{ShotID: "last", AssetID: "asset-car-duplicate", Ordinal: 1},
+		{ShotID: "unknown", AssetID: "missing", Ordinal: 1},
+	}
+	got, err := repo.NeighborShotsBatch(ctx, requests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, ok := got["first"]
+	if !ok || first.Previous != nil {
+		t.Fatalf("first neighbors = %+v, want no previous: %+v", first, got)
+	}
+	if first.Next == nil || first.Next.ID != ids["asset-car-duplicate:1"] {
+		t.Fatalf("first next = %+v, want ordinal 1: %+v", first.Next, got)
+	}
+	last, ok := got["last"]
+	if !ok || last.Previous == nil || last.Previous.ID != ids["asset-car-duplicate:0"] || last.Next != nil {
+		t.Fatalf("last neighbors = %+v, want previous and no next", last)
+	}
+	if _, ok := got["unknown"]; ok {
+		t.Fatalf("missing asset must be omitted from batch map: %+v", got["unknown"])
+	}
+	empty, err := repo.NeighborShotsBatch(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty == nil || len(empty) != 0 {
+		t.Fatalf("empty batch must return an empty map, got %+v", empty)
+	}
+}
+
 func TestSearchV2ShotSession(t *testing.T) {
 	repo, _ := seedSearchV2Corpus(t)
 	ctx := context.Background()
@@ -545,6 +580,41 @@ func TestSearchV2ShotTranscriptSpans(t *testing.T) {
 	}
 	if len(outside) != 0 {
 		t.Fatalf("spans must not leak outside the interval, got %+v", outside)
+	}
+}
+
+func TestSearchV2ShotTranscriptSpansBatch(t *testing.T) {
+	repo, ids := seedSearchV2Corpus(t)
+	ctx := context.Background()
+	requests := []search.TranscriptSpanRequest{
+		{ShotID: ids["asset-speech-quote:0"], AssetID: "asset-speech-quote", StartMS: 95_000, EndMS: 105_000},
+		{ShotID: "outside", AssetID: "asset-speech-quote", StartMS: 200_000, EndMS: 300_000},
+		{ShotID: ids["asset-speech-quote:0"] + "-second", AssetID: "asset-speech-quote", StartMS: 100_000, EndMS: 101_000},
+	}
+	got, err := repo.ShotTranscriptSpansBatch(ctx, requests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got[requests[0].ShotID]) != 3 {
+		t.Fatalf("batch returned %d overlapping words, want 3: %+v", len(got[requests[0].ShotID]), got)
+	}
+	if _, ok := got[requests[1].ShotID]; ok {
+		t.Fatalf("batch must omit windows without words, got %+v", got[requests[1].ShotID])
+	}
+	if len(got[requests[2].ShotID]) != 1 {
+		t.Fatalf("narrow batch window returned %d words, want 1: %+v", len(got[requests[2].ShotID]), got[requests[2].ShotID])
+	}
+	for i, word := range got[requests[0].ShotID] {
+		if i > 0 && word.StartMS < got[requests[0].ShotID][i-1].StartMS {
+			t.Fatalf("batch words are not ordered by ordinal: %+v", got[requests[0].ShotID])
+		}
+	}
+	empty, err := repo.ShotTranscriptSpansBatch(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty == nil || len(empty) != 0 {
+		t.Fatalf("empty batch must return an empty map, got %+v", empty)
 	}
 }
 

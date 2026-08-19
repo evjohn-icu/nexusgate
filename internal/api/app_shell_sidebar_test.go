@@ -6,8 +6,8 @@ import (
 )
 
 // TestShellSidebarMarkup pins the sidebar shape the shell now injects: the
-// <aside> shell, the brand row the branding layer rewrites, the three
-// navigation groups of the IA (素材/创作/系统), the browser-session login
+// <aside> shell, the brand row the branding layer rewrites, the two
+// navigation groups of the IA (核心/高级), the browser-session login
 // controls, and the four status cells. It also pins the one thing
 // the shell deliberately does NOT do — no legacy top header.
 func TestShellSidebarMarkup(t *testing.T) {
@@ -17,9 +17,8 @@ func TestShellSidebarMarkup(t *testing.T) {
 		`<aside class="shell-sidebar" data-app-shell>`,
 		`<span class="brand">Timingdex</span>`,
 		`<span class="shell-tagline">本地素材智能层</span>`,
-		`<span class="nav-group-title">素材</span>`,
-		`<span class="nav-group-title">创作</span>`,
-		`<span class="nav-group-title">系统</span>`,
+		`<span class="nav-group-title">核心</span>`,
+		`<div class="nav-group nav-group-advanced"><span class="nav-group-title">高级 / 运维</span>`,
 		`id="admin-token"`,
 		`id="admin-login"`,
 		`onclick="loginAdmin()"`,
@@ -35,15 +34,18 @@ func TestShellSidebarMarkup(t *testing.T) {
 		}
 	}
 
-	// The IA's 素材 group carries 素材库 and 收藏; 搜索 lives on /.
-	if got := strings.Count(html, `class="nav-link"`); got != 10 {
-		t.Fatalf("expected 10 nav links, got %d", got)
+	// The core group carries the normal user loop; Search lives on /.
+	if got := strings.Count(html, `class="nav-link"`); got != 11 {
+		t.Fatalf("expected 11 nav links, got %d", got)
 	}
 	if !strings.Contains(html, `href="/" data-nav="/" class="nav-link">素材库</a>`) {
 		t.Fatal("素材库 link to / missing")
 	}
 	if !strings.Contains(html, `href="/collections" data-nav="/collections" class="nav-link">收藏</a>`) {
 		t.Fatal("收藏 link to /collections missing")
+	}
+	if !strings.Contains(html, `href="/worker-setup" data-nav="/worker-setup" class="nav-link">节点安装</a>`) {
+		t.Fatal("Worker Setup link missing from advanced navigation")
 	}
 
 	// The shell opens with the aside and the status strip lives inside it,

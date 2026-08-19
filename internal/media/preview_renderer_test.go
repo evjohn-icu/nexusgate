@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/evjohn-icu/timingdex/internal/testhelper"
 )
 
 func TestPreviewRendererRejectsAppleLogWithoutLUT(t *testing.T) {
@@ -47,14 +49,8 @@ func TestPreviewRendererRejectsRAWWithoutInvokingFFmpeg(t *testing.T) {
 }
 
 func TestPreviewRendererRefusesToOverwriteOriginal(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fixture uses portable POSIX helper scripts")
-	}
 	binDir := t.TempDir()
-	ffmpeg := filepath.Join(binDir, "ffmpeg")
-	if err := os.WriteFile(ffmpeg, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testhelper.InstallCommand(t, binDir, "ffmpeg")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	src := filepath.Join(t.TempDir(), "source.mp4")
@@ -165,22 +161,13 @@ func TestEscapeFilterValueUsesForwardSlashes(t *testing.T) {
 }
 
 func TestGenerateProxyPassesClassifiedHDRFilterToFFmpeg(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fixture uses portable POSIX helper scripts")
-	}
 	binDir := t.TempDir()
 	filterLog := filepath.Join(binDir, "filter.txt")
-	writeExecutable := func(name, body string) {
-		t.Helper()
-		path := filepath.Join(binDir, name)
-		if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	writeExecutable("ffprobe", "#!/bin/sh\nprintf '%s' '{\"streams\":[{\"codec_type\":\"video\",\"color_transfer\":\"arib-std-b67\"}]}'\n")
-	writeExecutable("ffmpeg", "#!/bin/sh\nprevious=''\nfor argument in \"$@\"; do\n  if [ \"$previous\" = \"-vf\" ]; then printf '%s' \"$argument\" > \"$TIMINGDEX_FILTER_LOG\"; fi\n  previous=\"$argument\"\ndone\nprintf x > \"$previous\"\nexit 0\n")
+	testhelper.InstallCommand(t, binDir, "ffprobe")
+	testhelper.InstallCommand(t, binDir, "ffmpeg")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("TIMINGDEX_FILTER_LOG", filterLog)
+	t.Setenv("TIMINGDEX_FAKE_FFPROBE_COLOR_TRANSFER", "arib-std-b67")
 
 	if _, err := GenerateProxy(context.Background(), "hdr.mov", filepath.Join(t.TempDir(), "proxy.mp4"), HardwarePlan{Mode: "software"}); err != nil {
 		t.Fatal(err)

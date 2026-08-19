@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/evjohn-icu/timingdex/internal/providers/common"
+	"github.com/evjohn-icu/timingdex/internal/testhelper"
 )
 
 func TestTranscribeSSEFixture(t *testing.T) {
@@ -48,10 +49,7 @@ func TestTranscribeSSEFixture(t *testing.T) {
 	defer server.Close()
 
 	binDir := t.TempDir()
-	ffmpeg := filepath.Join(binDir, "ffmpeg")
-	if err := os.WriteFile(ffmpeg, []byte("#!/bin/sh\nprintf fixture-pcm\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	testhelper.InstallCommand(t, binDir, "ffmpeg")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	audioPath := filepath.Join(t.TempDir(), "sample.m4a")
 	if err := os.WriteFile(audioPath, []byte("fixture"), 0o600); err != nil {

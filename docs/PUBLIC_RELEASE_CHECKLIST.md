@@ -28,6 +28,8 @@ a yes/no with the evidence where it lives.
 
 ## Gates (must be run, not assumed)
 
+- [ ] `VERSION`, Docker/Compose, Unraid templates and release notes declare the
+      same prerelease; `bash scripts/check-deployment-versions.sh` passes
 - [ ] `gofmt -l .` prints nothing
 - [ ] `go vet ./...`
 - [ ] `go test ./...`
@@ -37,6 +39,20 @@ a yes/no with the evidence where it lives.
 - [ ] CI green (`.github/workflows/ci.yml` incl. the 65 % coverage gate)
 - [ ] Retrieval golden set green: `go test ./internal/repository/sqlite -run
       TestRetrievalGolden -v`
+
+## v0.31 Release Preparation
+
+- [ ] Root `VERSION` is the intended prerelease (`v0.31.0-alpha` for this
+      release), and the deployment check passes:
+      `bash scripts/check-deployment-versions.sh`
+- [ ] Native binaries are built with the same version metadata:
+      `bash scripts/build-release.sh ./dist`
+- [ ] [`docs/v0.31-release-notes.md`](v0.31-release-notes.md) records the
+      actual CI, benchmark, relevance-eval, and full test results; no item is
+      still marked pending.
+- [ ] After every gate is green, create the exact version tag and mark the
+      GitHub release as an alpha/prerelease. This repository-preparation round
+      does not create or push tags, releases, or container images.
 
 ## Product claims
 

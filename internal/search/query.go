@@ -155,7 +155,7 @@ type SearchQueryInfo struct {
 type SearchResponse struct {
 	Query     SearchQueryInfo `json:"query"`
 	SearchID  string          `json:"search_id"`
-	QueryHash string          `json:"query_hash"`
+	QueryHash string          `json:"query_hash"` // query/mode/profile fingerprint; kept for wire compatibility
 	Results   []ResultItem    `json:"results"`
 }
 

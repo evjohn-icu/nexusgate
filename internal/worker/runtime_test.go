@@ -11,6 +11,7 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	"github.com/evjohn-icu/timingdex/internal/media"
 	"github.com/evjohn-icu/timingdex/internal/remote"
+	"github.com/evjohn-icu/timingdex/internal/testhelper"
 )
 
 type runtimeTestClient struct {
@@ -50,13 +51,9 @@ func TestFFmpegDeriverFallbackUploadsSoftwareProfiles(t *testing.T) {
 	if err := os.MkdirAll(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	ffprobe := []byte("#!/bin/sh\nprintf '%s' '{\"format\":{\"duration\":\"1\"},\"streams\":[{\"codec_type\":\"video\"}]}'\n")
-	ffmpeg := []byte("#!/bin/sh\nout=\"\"; for arg in \"$@\"; do out=\"$arg\"; done; case \" $* \" in *\" h264_nvenc \"*|*\" -hwaccel \"*) exit 1;; esac; printf derived > \"$out\"\n")
-	for name, content := range map[string][]byte{"ffprobe": ffprobe, "ffmpeg": ffmpeg} {
-		if err := os.WriteFile(filepath.Join(bin, name), content, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
+	testhelper.InstallCommand(t, bin, "ffprobe")
+	testhelper.InstallCommand(t, bin, "ffmpeg")
+	t.Setenv("TIMINGDEX_FAKE_FFMPEG_FAIL_HARDWARE", "1")
 	oldPath := os.Getenv("PATH")
 	if err := os.Setenv("PATH", bin+string(os.PathListSeparator)+oldPath); err != nil {
 		t.Fatal(err)

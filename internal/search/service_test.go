@@ -9,6 +9,25 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/domain"
 )
 
+func TestQueryProfileFingerprintCompatibility(t *testing.T) {
+	tests := []struct {
+		profile string
+		mode    string
+		raw     string
+		want    string
+	}{
+		{profile: "v2-profile-2", mode: "auto", raw: "car", want: "6966b250a6f30877"},
+		{profile: "v2-profile-2", mode: "", raw: "car", want: "b516f0d2a8b840e0"},
+		{profile: "v2-profile-2", mode: "fact", raw: "car", want: "96c977dd115330e0"},
+	}
+	for _, tt := range tests {
+		got := queryProfileFingerprint(SearchQuery{Raw: tt.raw}, tt.mode, tt.profile)
+		if got != tt.want {
+			t.Fatalf("fingerprint(%q,%q,%q) = %q, want %q", tt.profile, tt.mode, tt.raw, got, tt.want)
+		}
+	}
+}
+
 func TestNormalizePagination(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -64,14 +83,20 @@ func TestSearchV2SimilarOffsetPagination(t *testing.T) {
 // fakeStore is a scripted ShotStore for pipeline tests. It holds the legacy
 // candidate universe plus per-channel results; every method is deterministic.
 type fakeStore struct {
-	candidates    []domain.ShotSearchResult
-	lexical       []domain.ShotSearchResult
-	transcript    []domain.ShotSearchResult
-	metadata      []domain.ShotSearchResult
-	spansByID     map[string][]domain.AlignmentWord
-	sessions      map[string]string
-	shotsByID     map[string]domain.AssetShot
-	embeddingRows map[string][]ShotEmbeddingRow
+	candidates           []domain.ShotSearchResult
+	lexical              []domain.ShotSearchResult
+	transcript           []domain.ShotSearchResult
+	metadata             []domain.ShotSearchResult
+	spansByID            map[string][]domain.AlignmentWord
+	sessions             map[string]string
+	shotsByID            map[string]domain.AssetShot
+	embeddingRows        map[string][]ShotEmbeddingRow
+	transcriptBatchCalls int
+	transcriptBatchSize  int
+	transcriptCalls      int
+	neighborBatchCalls   int
+	neighborBatchSize    int
+	neighborCalls        int
 }
 
 func (f *fakeStore) ScoreCandidates(_ context.Context, _ string, _ domain.FacetFilter) ([]domain.ShotSearchResult, error) {
@@ -91,17 +116,38 @@ func (f *fakeStore) MetadataRankedShots(_ context.Context, _ string, _ int) ([]d
 }
 
 func (f *fakeStore) ShotTranscriptSpans(_ context.Context, assetID string, startMS, endMS int64) ([]domain.AlignmentWord, error) {
+	f.transcriptCalls++
+	return f.transcriptSpans(assetID, startMS, endMS), nil
+}
+
+func (f *fakeStore) transcriptSpans(assetID string, startMS, endMS int64) []domain.AlignmentWord {
 	if f.spansByID != nil {
 		if spans, ok := f.spansByID[assetID+"|"+itoa(startMS)+"|"+itoa(endMS)]; ok {
-			return spans, nil
+			return spans
 		}
 	}
-	return nil, nil
+	return nil
+}
+
+func (f *fakeStore) ShotTranscriptSpansBatch(_ context.Context, requests []TranscriptSpanRequest) (map[string][]domain.AlignmentWord, error) {
+	f.transcriptBatchCalls++
+	f.transcriptBatchSize = len(requests)
+	out := make(map[string][]domain.AlignmentWord, len(requests))
+	for _, request := range requests {
+		out[request.ShotID] = f.transcriptSpans(request.AssetID, request.StartMS, request.EndMS)
+	}
+	return out, nil
 }
 
 func (f *fakeStore) NeighborShots(_ context.Context, assetID string, ordinal int) (*domain.AssetShot, *domain.AssetShot, error) {
+	f.neighborCalls++
+	prev, next := f.neighbors(assetID, ordinal)
+	return prev, next, nil
+}
+
+func (f *fakeStore) neighbors(assetID string, ordinal int) (*domain.AssetShot, *domain.AssetShot) {
 	if f.shotsByID == nil {
-		return nil, nil, nil
+		return nil, nil
 	}
 	var prev, next *domain.AssetShot
 	for _, shot := range f.shotsByID {
@@ -117,7 +163,18 @@ func (f *fakeStore) NeighborShots(_ context.Context, assetID string, ordinal int
 			next = &copy
 		}
 	}
-	return prev, next, nil
+	return prev, next
+}
+
+func (f *fakeStore) NeighborShotsBatch(_ context.Context, requests []NeighborRequest) (map[string]Neighbors, error) {
+	f.neighborBatchCalls++
+	f.neighborBatchSize = len(requests)
+	out := make(map[string]Neighbors, len(requests))
+	for _, request := range requests {
+		prev, next := f.neighbors(request.AssetID, request.Ordinal)
+		out[request.ShotID] = Neighbors{Previous: prev, Next: next}
+	}
+	return out, nil
 }
 
 func (f *fakeStore) ShotSession(_ context.Context, assetID string) (string, error) {
@@ -219,6 +276,42 @@ func TestSearchV2ResponseShape(t *testing.T) {
 	}
 	if response.SearchID == "" || len(response.QueryHash) != 16 {
 		t.Fatalf("search_id=%q query_hash=%q", response.SearchID, response.QueryHash)
+	}
+	if store.transcriptBatchCalls != 1 || store.transcriptBatchSize != 1 {
+		t.Fatalf("transcript spans calls=(%d,size=%d), want one batch of one", store.transcriptBatchCalls, store.transcriptBatchSize)
+	}
+	if store.neighborBatchCalls != 1 || store.neighborBatchSize != 1 {
+		t.Fatalf("neighbor calls=(%d,size=%d), want one batch of one", store.neighborBatchCalls, store.neighborBatchSize)
+	}
+}
+
+func TestSearchV2BatchLookupsDoNotScaleStoreCallsWithResults(t *testing.T) {
+	shots := make([]domain.ShotSearchResult, 0, 4)
+	for i := 0; i < 4; i++ {
+		shots = append(shots, shot("s"+itoa(int64(i)), "a"+itoa(int64(i)), int64(i*1000), int64(i*1000+500), []string{"car"}, "car crossing"))
+	}
+	store := &fakeStore{candidates: shots, lexical: shots}
+	response, err := NewService(store, DefaultOptions()).Search(context.Background(), SearchRequest{
+		Query:           "car",
+		Mode:            "semantic",
+		Limit:           4,
+		IncludeEvidence: true,
+		IncludeContext:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 4 {
+		t.Fatalf("want four results, got %d", len(response.Results))
+	}
+	if store.transcriptBatchCalls != 1 || store.transcriptBatchSize != 4 {
+		t.Fatalf("transcript spans calls=(%d,size=%d), want one batch of four", store.transcriptBatchCalls, store.transcriptBatchSize)
+	}
+	if store.neighborBatchCalls != 1 || store.neighborBatchSize != 4 {
+		t.Fatalf("neighbor calls=(%d,size=%d), want one batch of four", store.neighborBatchCalls, store.neighborBatchSize)
+	}
+	if store.transcriptCalls != 0 || store.neighborCalls != 0 {
+		t.Fatalf("scalar lookup calls=(transcript:%d,neighbor:%d), want zero", store.transcriptCalls, store.neighborCalls)
 	}
 }
 

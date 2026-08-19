@@ -2,10 +2,11 @@ package shotdetect
 
 import (
 	"context"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/evjohn-icu/timingdex/internal/testhelper"
 )
 
 func TestNormalizeRejectsStructuralGarbage(t *testing.T) {
@@ -193,16 +194,6 @@ func TestNormalizeSingleShortShotWithoutDurationStaysPut(t *testing.T) {
 	}
 }
 
-func helperScript(t *testing.T, content string) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "detector.sh")
-	if err := os.WriteFile(path, []byte(content), 0o700); err != nil {
-		t.Fatalf("write helper script: %v", err)
-	}
-	return path
-}
-
 func TestExternalCommandEmpty(t *testing.T) {
 	d := &ExternalCommand{}
 	if _, err := d.Detect(context.Background(), "/tmp/v.mp4", 5000); err == nil || !contains(err.Error(), "command is empty") {
@@ -211,11 +202,8 @@ func TestExternalCommandEmpty(t *testing.T) {
 }
 
 func TestExternalCommandSuccess(t *testing.T) {
-	script := helperScript(t, `#!/bin/sh
-cat >/dev/null
-echo '{"shots":[{"start_ms":0,"end_ms":4300},{"start_ms":4300,"end_ms":9000}]}'
-`)
-	d := &ExternalCommand{Command: script, Args: []string{"--flag"}}
+	command := testhelper.InstallCommand(t, t.TempDir(), "shotdetect-success")
+	d := &ExternalCommand{Command: command, Args: []string{"--flag"}}
 	if d.Name() == "" {
 		t.Fatal("Name() is empty")
 	}
@@ -237,20 +225,16 @@ func TestExternalCommandNameTracksCommandLine(t *testing.T) {
 }
 
 func TestExternalCommandRejectsBadOutput(t *testing.T) {
-	script := helperScript(t, `#!/bin/sh
-echo 'not json'
-`)
-	d := &ExternalCommand{Command: script}
+	command := testhelper.InstallCommand(t, t.TempDir(), "shotdetect-invalid")
+	d := &ExternalCommand{Command: command}
 	if _, err := d.Detect(context.Background(), "/tmp/v.mp4", 1000); err == nil || !contains(err.Error(), "decode shot detector output") {
 		t.Fatalf("got %v", err)
 	}
 }
 
 func TestExternalCommandRejectsEmptyShots(t *testing.T) {
-	script := helperScript(t, `#!/bin/sh
-echo '{"shots":[]}'
-`)
-	d := &ExternalCommand{Command: script}
+	command := testhelper.InstallCommand(t, t.TempDir(), "shotdetect-empty")
+	d := &ExternalCommand{Command: command}
 	if _, err := d.Detect(context.Background(), "/tmp/v.mp4", 1000); err == nil || !contains(err.Error(), "no shots") {
 		t.Fatalf("got %v", err)
 	}

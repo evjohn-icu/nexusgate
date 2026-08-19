@@ -36,18 +36,31 @@ func NewEvidenceGate(opts Options) *EvidenceGate {
 // "confirmed" would kill recall; the downrank factor below still punishes
 // partial support.
 //
-// The transcript spans are fetched per candidate through the store; the pool
-// is bounded (the service caps it before gating) so this stays cheap.
+// Transcript spans are fetched for the whole candidate pool through the
+// store's batch contract. The pool is bounded (the service caps it before
+// gating), and the per-candidate evidence work stays in memory.
 func (g *EvidenceGate) Gate(ctx context.Context, store ShotStore, q SearchQuery, candidates []Candidate, filter bool) ([]Candidate, map[string][]Evidence, error) {
 	evidenceByID := make(map[string][]Evidence, len(candidates))
+	if len(candidates) == 0 {
+		return []Candidate{}, evidenceByID, nil
+	}
+	requests := make([]TranscriptSpanRequest, 0, len(candidates))
+	for _, candidate := range candidates {
+		requests = append(requests, TranscriptSpanRequest{
+			ShotID:  candidate.ShotID,
+			AssetID: candidate.AssetID,
+			StartMS: candidate.StartMS,
+			EndMS:   candidate.EndMS,
+		})
+	}
+	spansByID, err := store.ShotTranscriptSpansBatch(ctx, requests)
+	if err != nil {
+		return nil, nil, err
+	}
 	active := q.Intent == IntentFact && filter
 	out := make([]Candidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		spans, err := store.ShotTranscriptSpans(ctx, candidate.AssetID, candidate.StartMS, candidate.EndMS)
-		if err != nil {
-			return nil, nil, err
-		}
-		evidence := evaluateConstraints(q, candidate, spans)
+		evidence := evaluateConstraints(q, candidate, spansByID[candidate.ShotID])
 		evidenceByID[candidate.ShotID] = evidence
 		if active && g.opts.GateFact {
 			verdict := evidenceForGate(q, evidence)

@@ -62,6 +62,18 @@ func TestWebDAVDeliveryEndToEnd(t *testing.T) {
 	manager := webdavspace.NewManager(app.WebDAVLinker{Service: service}, sqliterepo.WebDAVAccountStore{Repo: repo})
 	service.SetWebDAVSpaceManager(manager, sqliterepo.WebDAVAccountStore{Repo: repo})
 	server.SetWebDAVSpaceManager(manager)
+	foundDeliveryRoute := false
+	for _, spec := range server.routeInventory() {
+		if spec.Pattern == "/spaces/" {
+			foundDeliveryRoute = true
+			if spec.Auth != routeAuthWebDAVBasic || spec.Handler == nil {
+				t.Fatalf("WebDAV delivery route = %+v, want explicit Basic Auth classification", spec)
+			}
+		}
+	}
+	if !foundDeliveryRoute {
+		t.Fatal("WebDAV delivery mount is missing from route inventory")
+	}
 	handler := server.Handler()
 
 	// 1. Create account (admin).

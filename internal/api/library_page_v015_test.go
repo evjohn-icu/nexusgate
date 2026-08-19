@@ -228,6 +228,9 @@ func TestLibraryPageCollectionsEmptyStateHasGuidance(t *testing.T) {
 // drawer the cards open must seek the proxy to the shot's own range.
 func TestLibraryPageSearchIsShotFirst(t *testing.T) {
 	page := libraryIndexHTML
+	if count := strings.Count(page, `id="q"`); count != 1 {
+		t.Fatalf("library page renders %d search inputs with id=q, want exactly one", count)
+	}
 	if !strings.Contains(page, `fetch('/api/v1/search/shots',{method:'POST'`) {
 		t.Fatalf("search() must POST to the structured v2 shot endpoint")
 	}
