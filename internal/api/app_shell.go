@@ -121,6 +121,14 @@ body{padding-left:220px}
 .status-cell .dot.warn{background:#ffc783}
 .status-cell .dot.err{background:#ff7b8a}
 .status-cell .dot.off{background:#47597a}
+/* Shared accessibility + dialog primitives. Pages own their layout CSS; these
+   are the cross-page floor every surface must not drift below. */
+.visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;clip:rect(0 0 0 0);clip-path:inset(50%);overflow:hidden;white-space:nowrap}
+:where(a,button,input,select,textarea,summary,[tabindex]):focus-visible{outline:2px solid #8ca7ff;outline-offset:2px;border-radius:6px}
+.nav-link[aria-current="page"]{color:#fff;font-weight:800}
+.ui-dialog{background:#121f34;color:#edf3ff;border:1px solid #40577a;border-radius:14px;padding:20px;width:min(680px,92vw);max-height:86vh;overflow:auto}.ui-dialog::backdrop{background:rgba(6,12,24,.6)}.ui-dialog__close{position:absolute;top:12px;right:14px;background:transparent;border:none;color:#9fb0ce;font-size:20px;cursor:pointer}.ui-dialog__close:hover{color:#fff}
+@media(max-width:600px){.ui-dialog{width:100vw;max-width:100vw;border-radius:0;border-left:0;border-right:0;margin:0}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
  @media(max-width:860px){body{padding-left:0;overflow-x:hidden}.shell-sidebar{position:relative;left:auto;top:auto;bottom:auto;width:auto;max-width:100%;height:auto;flex-direction:row;flex-wrap:wrap;align-items:center;gap:12px;padding:12px 16px;border-right:0;border-bottom:1px solid #273750;overflow:visible}.shell-nav{flex:1 1 100%;width:100%;min-width:0;flex-direction:row;flex-wrap:wrap;align-items:center;gap:10px 18px}.nav-group{flex-direction:row;flex-wrap:wrap;align-items:center;gap:10px}.nav-group-title{margin-bottom:0}.shell-actions{flex-direction:row;flex-wrap:wrap;align-items:center;gap:10px;margin-left:auto;margin-top:0;max-width:100%}.shell-actions input{width:min(250px,38vw);max-width:100%}.wrap,.layout,.panels,.console-hero,.hero-title,.hero-actions,.panel,.mount-row,.mount-row>div{max-width:100%;min-width:0}.coll-head{display:grid;grid-template-columns:minmax(0,1fr);gap:7px;align-items:start}.coll-meta{white-space:normal;overflow-wrap:anywhere}.coll-tools,.shot-actions{justify-content:flex-start;flex-wrap:wrap}.console-hero{align-items:flex-start}.hero-title>*{max-width:100%;overflow-wrap:anywhere}.metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.panels{grid-template-columns:minmax(0,1fr);gap:12px}.panel{overflow-x:auto}.panel table{min-width:520px}.mount-row{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}.mount-row input{max-width:100%}}
 `
 
@@ -140,7 +148,7 @@ function statusCell(id,state,text){const el=document.getElementById(id);if(!el)r
 // The old per-page headers marked the current page with nav-active; the
 // shell header derives it from the URL instead of taking an argument, so a
 // page can never forget to pass it. Runs at end of body, so the DOM is ready.
-document.querySelectorAll('.nav-link').forEach(function(a){if(a.getAttribute('href')===location.pathname)a.classList.add('active')});
+document.querySelectorAll('.nav-link').forEach(function(a){if(a.getAttribute('href')===location.pathname){a.classList.add('active');a.setAttribute('aria-current','page')}});
 async function refreshStatus(){
   try{const r=await fetch('/api/v1/health');statusCell('status-hub',r.ok?'ok':'err',r.ok?'Hub 正常':'Hub 异常')}catch(e){statusCell('status-hub','err','Hub 异常')}
   try{const s=await fetch('/api/v1/jobs/summary',{credentials:'same-origin',headers:shellAuthHeaders()}).then(r=>r.ok?r.json():null);if(s){let state='idle',text='空闲';if(s.running>0){state='ok';text='运行中 '+s.running}else if(s.deferred>0){state='warn';text='等待额度 '+s.deferred}else if((s.failed||0)+(s.terminal||0)>0){state='err';text='失败 '+(s.failed+s.terminal)}else if(s.pending>0){text='排队 '+s.pending}statusCell('status-pipeline',state,text)}else{statusCell('status-pipeline','off','—')}}catch(e){statusCell('status-pipeline','off','—')}
