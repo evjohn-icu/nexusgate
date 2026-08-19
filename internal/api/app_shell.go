@@ -46,7 +46,7 @@ func shellHeaderHTML() string {
 	}{
 		{"素材", [][2]string{{"素材库", "/"}, {"收藏", "/collections"}}},
 		{"创作", [][2]string{{"翻新方案", "/repurpose"}, {"Tags", "/tags"}}},
-		{"系统", [][2]string{{"处理任务", "/progress"}, {"模型服务", "/providers"}, {"Workers", "/workers"}, {"素材目录", "/library-roots"}, {"启动配置", "/setup"}, {"设置", "/settings"}}},
+		{"系统", [][2]string{{"处理任务", "/progress"}, {"模型服务", "/providers"}, {"处理节点", "/workers"}, {"素材目录", "/library-roots"}, {"启动配置", "/setup"}, {"设置", "/settings"}}},
 	}
 	for _, g := range groups {
 		b.WriteString(`<div class="nav-group"><span class="nav-group-title">` + g.title + `</span>`)
@@ -147,5 +147,5 @@ async function refreshStatus(){
   try{const r=await fetch('/api/v1/admin/provider-channels/status',{headers:shellAuthHeaders()});if(r.ok){const caps=await r.json();const list=Array.isArray(caps)?caps:[];const anyData=list.some(c=>c&&c.has_runtime_data);let okN=0,degradedN=0;list.forEach(function(c){if(!c||!c.has_runtime_data||!c.snapshot||!Array.isArray(c.snapshot.channels))return;c.snapshot.channels.forEach(function(ch){if(!ch||!ch.enabled)return;if(ch.available)okN++;else degradedN++})});if(!anyData||(okN+degradedN)===0){statusCell('status-providers','off','未配置')}else if(degradedN>0){statusCell('status-providers','warn','降级 '+degradedN)}else{statusCell('status-providers','ok','正常 '+okN)}}else{statusCell('status-providers','err','异常')}}catch(e){statusCell('status-providers','off','—')}
   try{const w=await fetch('/api/v1/hub/workers',{headers:shellAuthHeaders()}).then(r=>r.ok?r.json():null);if(Array.isArray(w)){const on=w.filter(x=>x.status==='online').length;const off=w.length-on;statusCell('status-workers',off>0?'warn':'ok',on+' 在线'+(off?' / '+off+' 离线':''))}else{statusCell('status-workers','off','—')}}catch(e){statusCell('status-workers','off','—')}
 }
-fetch('/api/v1/auth/admin/session',{credentials:'same-origin'}).then(function(r){shellSetAuthState(r.ok)}).catch(function(){shellSetAuthState(false)});refreshStatus();setInterval(refreshStatus,15000);
+fetch('/api/v1/auth/admin/session',{credentials:'same-origin'}).then(function(r){shellSetAuthState(r.ok);window.dispatchEvent(new CustomEvent('timingdex:admin-auth-changed',{detail:{authenticated:r.ok}}))}).catch(function(){shellSetAuthState(false);window.dispatchEvent(new CustomEvent('timingdex:admin-auth-changed',{detail:{authenticated:false}}))});refreshStatus();setInterval(refreshStatus,15000);
 </script>`
