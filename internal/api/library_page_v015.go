@@ -193,11 +193,21 @@ function clearSearch(){const q=document.getElementById('q');if(q)q.value='';load
 	// the onkeydown attribute, so the duplicate listener would fire search()
 	// twice per Enter.
 	{anchor: `document.getElementById('q').addEventListener('keydown',e=>{if(e.key==='Enter')search()});`, replacement: ``},
+	// Timeline shots are interactive buttons: reset the button chrome on .shot
+	// (padding/font/color) so absolute positioning and the tone chip are
+	// unchanged, and switch the cursor to pointer.
+	{anchor: `.shot{position:absolute;top:47px;left:calc(var(--left)*1%);width:max(2%,calc(var(--width)*1%));min-width:13px;height:31px;border-radius:6px;background:var(--tone);border:1px solid #c9d7ff;box-shadow:0 3px 10px #0004;overflow:hidden;cursor:default}`,
+		replacement: `.shot{position:absolute;top:47px;left:calc(var(--left)*1%);width:max(2%,calc(var(--width)*1%));min-width:13px;height:31px;border-radius:6px;background:var(--tone);border:1px solid #c9d7ff;box-shadow:0 3px 10px #0004;overflow:hidden;padding:0;font:inherit;color:inherit;text-align:left;cursor:pointer}`},
+	// Timeline blocks are real buttons carrying the shot payload the drawer
+	// opens with (no second round trip) and an aria-label for keyboard and
+	// screen-reader users: description + exact time range.
+	{anchor: `<div class="shot" style="--left:'+left.toFixed(3)+';--width:'+width.toFixed(3)+'" title="'+esc(title)+'">`,
+		replacement: `<button type="button" class="shot" style="--left:'+left.toFixed(3)+';--width:'+width.toFixed(3)+'" aria-label="'+esc(description)+'，'+fmt(start)+' 到 '+fmt(end)+'" title="'+esc(title)+'">`},
 	// Timeline blocks become clickable shot evidence: each carries its own
 	// row (the same payload the drawer opens with) so the drawer never needs
 	// a second round trip.
 	{anchor: `title="'+esc(title)+'"><span class="shot-label">'+esc(description)+'</span></div>'`,
-		replacement: `data-shot="'+encodeURIComponent(JSON.stringify(s))+'" data-asset="'+esc(x.id)+'" data-filename="'+esc(x.filename||'')+'" title="'+esc(title)+'"><span class="shot-label">'+esc(description)+'</span></div>'`},
+		replacement: `data-shot="'+encodeURIComponent(JSON.stringify(s))+'" data-asset="'+esc(x.id)+'" data-filename="'+esc(x.filename||'')+'" title="'+esc(title)+'"><span class="shot-label">'+esc(description)+'</span></button>'`},
 	// An asset card with no shots yet is a browse-mode dead end; the same
 	// test-drive coaching the search-empty state offers (below) goes here so
 	// the first-run library coaches from both modes. The status and chips
