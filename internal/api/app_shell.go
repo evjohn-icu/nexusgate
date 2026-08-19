@@ -100,13 +100,22 @@ func cellHref(id string) string {
 // and the content flows underneath the bar. The status strip and the
 // admin-token input keep their exact classes, ids and oninput wiring.
 const shellCSS = `
-.shell-sidebar{position:fixed;left:0;top:0;bottom:0;width:220px;z-index:30;background:#0c1422;border-right:1px solid #273750;display:flex;flex-direction:column;padding:18px 14px;gap:18px;overflow-y:auto}
+:root{
+--ui-bg:#0c1422;--ui-surface:#121f34;--ui-surface-raised:#172238;--ui-surface-inset:#0e1728;
+--ui-border:#2b3e5b;--ui-border-strong:#40577a;--ui-text:#edf3ff;--ui-text-muted:#aab8d0;
+--ui-accent:#8ca7ff;--ui-accent-strong:#b8c8ff;--ui-success:#70d7b1;--ui-warning:#ffc783;--ui-danger:#ff7b8a;
+--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:24px;--space-6:32px;
+--radius-sm:8px;--radius-md:12px;--radius-lg:16px;--control-h:40px;
+--text-xs:12px;--text-sm:13px;--text-body:15px;
+--font-ui:ui-sans-serif,system-ui,-apple-system,sans-serif;--font-data:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+.shell-sidebar{position:fixed;left:0;top:0;bottom:0;width:220px;z-index:30;background:var(--ui-bg);border-right:1px solid var(--ui-border);display:flex;flex-direction:column;padding:18px 14px;gap:18px;overflow-y:auto}
 body{padding-left:220px}
 .shell-brand-row{display:flex;align-items:baseline;gap:9px}
 .shell-tagline{color:#93aaff;font-size:11px;font-weight:800;letter-spacing:.1em}
 .shell-nav{display:flex;flex-direction:column;gap:16px}
 .nav-group{display:flex;flex-direction:column;gap:3px}
-.nav-group-title{color:#61759b;font-size:10px;font-weight:850;letter-spacing:.1em;margin-bottom:2px}
+.nav-group-title{color:#9fb0ce;font-size:12px;font-weight:800;letter-spacing:.08em;margin-bottom:2px}
 .nav-link{color:#b7c8eb;text-decoration:none;font-size:13px;padding:3px 6px;border-radius:6px;white-space:nowrap}
 .nav-link:hover{color:#fff}
 .nav-link.active{color:#fff;font-weight:800}
