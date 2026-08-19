@@ -187,6 +187,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/shoot-sessions", s.requireTrustedRead(s.listShootSessions))
 	mux.HandleFunc("GET /api/v1/assets/{id}", s.requireTrustedRead(s.assetDetail))
 	mux.HandleFunc("GET /api/v1/assets/{id}/shots", s.requireTrustedRead(s.assetShots))
+	mux.HandleFunc("GET /api/v1/assets/{id}/transcript", s.requireTrustedRead(s.assetTranscript))
 	mux.HandleFunc("GET /api/v1/assets/{id}/thumbnail", s.requireTrustedRead(s.assetThumbnail))
 	mux.HandleFunc("GET /api/v1/assets/{id}/proxy", s.requireTrustedRead(s.assetProxy))
 	// Queue status is readable without a token from a trusted network; the
@@ -1099,15 +1100,15 @@ func (s *Server) agentCapabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		// version is the agent contract version, not the product version. The
 		// skills/timingdex package — its SKILL.md and
-		// references/api-contract.md, titled "Timingdex v0.14 Local Agent API
+		// references/api-contract.md, titled "Timingdex v0.15 Local Agent API
 		// Contract" — is written against this exact string, and server_test.go
 		// pins it, so it only moves when the contract itself changes: a route,
 		// an action, or a field in this document. It must not track Hub
-		// releases; the product is at v0.21 while this stays v0.13, and the
+		// releases; the product is at v0.31 while this stays v0.15, and the
 		// gap is the contract not having changed, not this endpoint being
 		// stale. Bumping it means re-versioning and re-validating the skills
 		// package in the same change.
-		"version":       "v0.14",
+		"version":       "v0.15",
 		"approval_mode": "human_required",
 		"auth": map[string]any{
 			"header": "Authorization: Bearer <agent-token>",
@@ -1122,6 +1123,7 @@ func (s *Server) agentCapabilities(w http.ResponseWriter, r *http.Request) {
 		"allowed_actions": []string{
 			"inspect_readiness",
 			"search_shots",
+			"read_transcript",
 			"create_draft_plan",
 			"inspect_plan",
 			"revise_draft_plan",
@@ -2346,6 +2348,15 @@ func (s *Server) assetShots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, shots)
+}
+
+func (s *Server) assetTranscript(w http.ResponseWriter, r *http.Request) {
+	transcript, err := s.service.AssetTranscript(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, transcript)
 }
 
 func (s *Server) assetThumbnail(w http.ResponseWriter, r *http.Request) {

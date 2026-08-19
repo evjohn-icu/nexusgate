@@ -10,6 +10,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,13 +36,57 @@ type hubClient struct {
 	http       *http.Client
 }
 
-func newHubClient() *hubClient {
+// newHubClient builds the Hub API client. An https base URL requires
+// TIMINGDEX_HUB_FINGERPRINT: cross-machine deployments use the Hub's
+// self-signed certificate, and accepting it unpinned would silently trust any
+// attacker in the path — the exact boundary fingerprint pinning exists for.
+// http:// stays available for local development.
+func newHubClient() (*hubClient, error) {
+	baseURL := strings.TrimRight(os.Getenv("TIMINGDEX_BASE_URL"), "/")
+	fingerprint := strings.TrimSpace(os.Getenv("TIMINGDEX_HUB_FINGERPRINT"))
+	if fingerprint != "" && !ValidFingerprint(fingerprint) {
+		return nil, fmt.Errorf("TIMINGDEX_HUB_FINGERPRINT must be a 64-character SHA-256 hex fingerprint")
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if fingerprint != "" {
+		expected := normalizeFingerprint(fingerprint)
+		transport.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true,
+			VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+				if len(rawCerts) == 0 {
+					return fmt.Errorf("Hub did not present a certificate")
+				}
+				sum := sha256.Sum256(rawCerts[0])
+				if normalizeFingerprint(hex.EncodeToString(sum[:])) != expected {
+					return fmt.Errorf("Hub certificate fingerprint mismatch")
+				}
+				return nil
+			},
+		}
+	}
+	if strings.HasPrefix(strings.ToLower(baseURL), "https://") && fingerprint == "" {
+		return nil, fmt.Errorf("TIMINGDEX_BASE_URL is https but TIMINGDEX_HUB_FINGERPRINT is not set: refusing to accept an unpinned Hub certificate")
+	}
 	return &hubClient{
-		baseURL:    strings.TrimRight(os.Getenv("TIMINGDEX_BASE_URL"), "/"),
+		baseURL:    baseURL,
 		agentToken: os.Getenv("TIMINGDEX_AGENT_TOKEN"),
 		adminToken: os.Getenv("TIMINGDEX_ADMIN_TOKEN"),
-		http:       &http.Client{Timeout: 60 * time.Second},
+		http:       &http.Client{Transport: transport, Timeout: 60 * time.Second},
+	}, nil
+}
+
+// ValidFingerprint accepts only the canonical 64-character SHA-256 hex form.
+func ValidFingerprint(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != sha256.Size*2 {
+		return false
 	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func normalizeFingerprint(value string) string {
+	return strings.ToLower(strings.NewReplacer(":", "", " ", "", "sha256", "").Replace(value))
 }
 
 func (c *hubClient) base() string {
@@ -118,6 +166,19 @@ func (c *hubClient) searchFootage(ctx context.Context, q string, limit int) ([]m
 	return out, nil
 }
 
+// getTranscript returns the asset's word-level timeline transcript. The
+// response's source field tells the caller where the timestamps come from:
+// "aligned" (word-level forced alignment, the strongest timing evidence) or
+// "asr" (sentence-level segments only). Uses the agent token like the other
+// trusted reads.
+func (c *hubClient) getTranscript(ctx context.Context, assetID string) (map[string]any, error) {
+	var out map[string]any
+	if err := c.do(ctx, http.MethodGet, "/api/v1/assets/"+url.PathEscape(assetID)+"/transcript", c.agentToken, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 type planResult struct {
 	ID string `json:"id"`
 }
@@ -175,7 +236,15 @@ func requireString(args map[string]any, key string) (string, *mcp.CallToolResult
 }
 
 func main() {
-	client := newHubClient()
+	client, err := newHubClient()
+	if err != nil {
+		// A hard configuration error (an https base URL without a pinned
+		// certificate fingerprint) must fail startup loudly rather than
+		// silently connect to an arbitrary Hub identity — that is the one
+		// case the no-stderr rule below does not cover.
+		fmt.Fprintf(os.Stderr, "timingdex-mcp: %v\n", err)
+		os.Exit(1)
+	}
 	// No startup logging to stderr: MCP stdio clients treat stderr strictly,
 	// and the Hub-side logs already cover token absence at serve time. The
 	// tools themselves return clear errors when a token is missing.
@@ -225,6 +294,25 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 				return errResult(err), nil
 			}
 			raw, _ := json.MarshalIndent(shots, "", "  ")
+			return toolResult(string(raw)), nil
+		},
+	)
+
+	srv.AddTool(
+		mcp.NewTool("get_transcript",
+			mcp.WithDescription("Return an asset's word-level timeline transcript. The response's source field says where the timestamps come from: 'aligned' (word-level forced alignment — the strongest timing evidence) or 'asr' (sentence-level segments only, no word boundaries). Use to ground narration or dialogue in precise media time."),
+			mcp.WithString("asset_id", mcp.Required(), mcp.Description("The asset id from search_footage results")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			assetID, rerr := requireString(req.GetArguments(), "asset_id")
+			if rerr != nil {
+				return rerr, nil
+			}
+			transcript, err := client.getTranscript(ctx, assetID)
+			if err != nil {
+				return errResult(err), nil
+			}
+			raw, _ := json.MarshalIndent(transcript, "", "  ")
 			return toolResult(string(raw)), nil
 		},
 	)

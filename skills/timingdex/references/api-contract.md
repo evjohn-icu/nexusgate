@@ -1,4 +1,4 @@
-# Timingdex v0.14 Local Agent API Contract
+# Timingdex v0.15 Local Agent API Contract
 
 Base URL: the user’s local Timingdex server, normally `http://127.0.0.1:8787`.
 All requests and responses are JSON unless noted. This Skill is limited to the
@@ -97,9 +97,38 @@ GET /api/v1/search/shots/hybrid?q=<query>&limit=20
 POST /api/v1/search/shots
 GET /api/v1/shots/{shot-id}/similar?limit=10
 GET /api/v1/discover/rare-shots?limit=20
+GET /api/v1/assets/{asset-id}/transcript
 GET /api/v1/cost/summary
 GET /api/v1/pipeline/throttle
 ```
+
+`GET /api/v1/assets/{asset-id}/transcript` returns the asset's transcript with
+the strongest timing evidence available. It is a trusted read like the rest of
+the retrieval surface:
+
+```json
+{
+  "asset_id": "asset_8",
+  "source": "aligned",
+  "language": "zh",
+  "text": "完整文本",
+  "segments": [{"start_ms": 0, "end_ms": 1200, "text": "句子"}],
+  "words": [{"start_ms": 0, "end_ms": 260, "text": "词", "confidence": 0.94}]
+}
+```
+
+`source` is required and tells you where the timestamps come from:
+
+- `aligned` — word-level forced alignment; `words` is present with precise
+  per-word `start_ms`/`end_ms` (and optional `confidence`). This is the
+  strongest timing evidence the pipeline has.
+- `asr` — the ASR transcript's sentence segments only; `words` is omitted.
+
+The word stream is contiguous across shot boundaries — do not re-split it by
+shot. `404 not_found` means the asset has no transcript at all, which is
+different from an empty one: do not treat a 404 as silent footage. The request
+needs no credential from a trusted network and answers `403` elsewhere unless
+the agent token is sent, like every other read route.
 
 `GET /api/v1/search/shots/hybrid` is the legacy retrieval endpoint and keeps
 its exact response shape. `POST /api/v1/search/shots` is the structured

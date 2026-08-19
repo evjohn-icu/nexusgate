@@ -67,6 +67,14 @@ func (f *fakeHub) handler() http.Handler {
 		}
 		http.Error(w, "missing q", http.StatusBadRequest)
 	}))
+	mux.HandleFunc("GET /api/v1/assets/{id}/transcript", errWrapper(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
+			http.Error(w, "transcript requires trusted read", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"asset_id":"` + r.PathValue("id") + `","source":"aligned","language":"zh","text":"你好 世界","segments":[{"start_ms":0,"end_ms":260,"text":"你好"},{"start_ms":260,"end_ms":620,"text":"世界"}],"words":[{"start_ms":0,"end_ms":260,"text":"你好","confidence":0.94},{"start_ms":260,"end_ms":620,"text":"世界"}]}`))
+	}))
 	mux.HandleFunc("POST /api/v1/repurpose/plans", errWrapper(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
 			http.Error(w, "bad agent auth", http.StatusUnauthorized)
@@ -149,6 +157,34 @@ func TestSearchFootageEmptyResults(t *testing.T) {
 	}
 }
 
+func TestGetTranscript(t *testing.T) {
+	hub := &fakeHub{}
+	c := newTestClient(t, hub)
+	transcript, err := c.getTranscript(context.Background(), "asset-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transcript["asset_id"] != "asset-1" || transcript["source"] != "aligned" {
+		t.Fatalf("transcript = %v, want asset_id=asset-1 source=aligned", transcript)
+	}
+	words, ok := transcript["words"].([]any)
+	if !ok || len(words) != 2 {
+		t.Fatalf("words = %v, want the word stream decoded", transcript["words"])
+	}
+}
+
+// get_transcript is a trusted read like search_footage: a client without the
+// agent token must surface the Hub's remote 403 rather than passing silently.
+func TestGetTranscriptWithoutAgentTokenSurfacesRemote403(t *testing.T) {
+	hub := &fakeHub{}
+	srv := httptest.NewServer(hub.handler())
+	t.Cleanup(srv.Close)
+	client := &hubClient{baseURL: srv.URL, http: srv.Client()}
+	if _, err := client.getTranscript(context.Background(), "asset-1"); err == nil {
+		t.Fatal("getTranscript without agent token must fail on a remote Hub")
+	}
+}
+
 // A client that never configured TIMINGDEX_AGENT_TOKEN is exactly the remote
 // 403 the v0.23.1 changelog claimed to have fixed and did not: the read routes
 // behind requireTrustedRead reject empty tokens off the trusted network, and
@@ -228,10 +264,57 @@ func TestRequireString(t *testing.T) {
 	}
 }
 
+// TestNewHubClientRequiresFingerprintForHTTPS pins the cross-machine trust
+// boundary: an https base URL without TIMINGDEX_HUB_FINGERPRINT must refuse
+// to start rather than silently accept any Hub certificate, and a malformed
+// fingerprint is refused too. Plain http (local development) stays usable
+// without one.
+func TestNewHubClientRequiresFingerprintForHTTPS(t *testing.T) {
+	t.Setenv("TIMINGDEX_BASE_URL", "https://nas.lan:8787")
+	t.Setenv("TIMINGDEX_HUB_FINGERPRINT", "")
+	if _, err := newHubClient(); err == nil || !strings.Contains(err.Error(), "TIMINGDEX_HUB_FINGERPRINT") {
+		t.Fatalf("https without fingerprint must fail startup, got %v", err)
+	}
+
+	t.Setenv("TIMINGDEX_HUB_FINGERPRINT", "not-a-fingerprint")
+	if _, err := newHubClient(); err == nil || !strings.Contains(err.Error(), "64-character SHA-256") {
+		t.Fatalf("malformed fingerprint must fail startup, got %v", err)
+	}
+
+	t.Setenv("TIMINGDEX_HUB_FINGERPRINT", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	client, err := newHubClient()
+	if err != nil {
+		t.Fatalf("https with a valid fingerprint must construct: %v", err)
+	}
+	if client.http.Transport.(*http.Transport).TLSClientConfig == nil {
+		t.Fatal("expected a pinned TLS client config for https + fingerprint")
+	}
+
+	t.Setenv("TIMINGDEX_BASE_URL", "")
+	t.Setenv("TIMINGDEX_HUB_FINGERPRINT", "")
+	if _, err := newHubClient(); err != nil {
+		t.Fatalf("default http base URL must construct without a fingerprint: %v", err)
+	}
+}
+
+func TestValidFingerprint(t *testing.T) {
+	if ValidFingerprint("") || ValidFingerprint("abc") || ValidFingerprint("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz") {
+		t.Fatal("invalid fingerprints must be rejected")
+	}
+	// Like the Worker's ValidFingerprint, surrounding whitespace is trimmed
+	// before the length/hex check.
+	if !ValidFingerprint("  0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  ") {
+		t.Fatal("a 64-char SHA-256 hex fingerprint must be accepted")
+	}
+}
+
 // TestToolNamesRegistered verifies the MCP server exposes exactly the tools we
 // intend, and that the stdio server can be constructed without panicking.
 func TestToolNamesRegistered(t *testing.T) {
-	client := newHubClient()
+	client, err := newHubClient()
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv := server.NewMCPServer("timingdex", "v0.1", server.WithToolCapabilities(true))
 	registerTools(srv, client)
 
@@ -240,7 +323,7 @@ func TestToolNamesRegistered(t *testing.T) {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	want := []string{"create_edit_plan", "inspect_library", "request_source_media", "revise_edit_plan", "search_footage"}
+	want := []string{"create_edit_plan", "get_transcript", "inspect_library", "request_source_media", "revise_edit_plan", "search_footage"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}

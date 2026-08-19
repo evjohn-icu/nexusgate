@@ -1612,6 +1612,74 @@ func (s *Service) ListAssetShots(ctx context.Context, assetID string) ([]domain.
 	return s.repo.ListAssetShots(ctx, assetID)
 }
 
+// AssetTranscript is the API-facing transcript view for one asset: word-level
+// timing when a forced alignment exists, the ASR transcript's sentence
+// segments otherwise. source tells a transcript-driven editor where the
+// timestamps come from — aligned word boundaries are the strongest timing
+// evidence the pipeline has, asr segments are sentence-level only. The word
+// stream stays contiguous across shot boundaries: consumers think in
+// sentences, and imposing timingdex's shot atomicity would break their edit
+// model.
+type AssetTranscript struct {
+	AssetID  string                     `json:"asset_id"`
+	Source   string                     `json:"source"`
+	Language string                     `json:"language"`
+	Text     string                     `json:"text"`
+	Segments []domain.TranscriptSegment `json:"segments"`
+	Words    []domain.AlignmentWord     `json:"words,omitempty"`
+}
+
+// ErrTranscriptNotFound reports an asset that has neither an alignment word
+// stream nor an ASR transcript. align is an optional pipeline stage, so most
+// assets have ASR only; "no transcript at all" and "an empty transcript" are
+// different facts, and a transcript-driven editor must be able to tell them
+// apart — an empty 200 would read as silent footage.
+var ErrTranscriptNotFound = errors.New("asset has no transcript")
+
+// AssetTranscript resolves the asset's transcript with the strongest timing
+// evidence available. Alignment words win when present (source="aligned" and
+// words is populated); otherwise the ASR transcript's segments are returned
+// (source="asr", words omitted). An asset with neither answers
+// ErrTranscriptNotFound.
+func (s *Service) AssetTranscript(ctx context.Context, assetID string) (*AssetTranscript, error) {
+	words, err := s.repo.GetAlignmentWords(ctx, assetID)
+	if err != nil {
+		return nil, err
+	}
+	if len(words) > 0 {
+		out := &AssetTranscript{AssetID: assetID, Source: "aligned", Words: words}
+		// TranscriptFromAlignmentWords promotes the word stream to the
+		// canonical transcript shape; degenerate words (EndMS <= StartMS) are
+		// dropped by it, so text/segments may be empty even when words exist.
+		// language comes from the ASR transcript row — independent of the
+		// alignment run — and stays empty when no ASR transcript exists.
+		if aligned := domain.TranscriptFromAlignmentWords(words); aligned != nil {
+			out.Segments = aligned.Segments
+			out.Text = aligned.Text
+		}
+		if full, err := s.repo.GetTranscript(ctx, assetID); err != nil {
+			return nil, err
+		} else if full != nil {
+			out.Language = full.Language
+		}
+		return out, nil
+	}
+	full, err := s.repo.GetTranscript(ctx, assetID)
+	if err != nil {
+		return nil, err
+	}
+	if full == nil {
+		return nil, ErrTranscriptNotFound
+	}
+	return &AssetTranscript{
+		AssetID:  assetID,
+		Source:   "asr",
+		Language: full.Language,
+		Text:     full.Text,
+		Segments: full.Segments,
+	}, nil
+}
+
 func (s *Service) SearchShots(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error) {
 	return s.repo.SearchShots(ctx, q, limit)
 }
