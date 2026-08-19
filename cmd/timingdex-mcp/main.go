@@ -152,15 +152,32 @@ func (c *hubClient) inspectLibrary(ctx context.Context) (map[string]any, error) 
 	return result, nil
 }
 
-func (c *hubClient) searchFootage(ctx context.Context, q string, limit int) ([]map[string]any, error) {
+// searchFootage runs the structured Search v2 endpoint so results carry
+// per-constraint evidence (confirmed/possible/contradicted/unknown), not just
+// a score — matching how the README positions the search surface. Uses the
+// agent token like the other trusted reads.
+func (c *hubClient) searchFootage(ctx context.Context, q string, limit int) (map[string]any, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	params := url.Values{}
-	params.Set("q", q)
-	params.Set("limit", fmt.Sprintf("%d", limit))
+	var out map[string]any
+	if err := c.do(ctx, http.MethodPost, "/api/v1/search/shots", c.agentToken, map[string]any{
+		"query":            q,
+		"mode":             "auto",
+		"limit":            limit,
+		"include_evidence": true,
+	}, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// getShots returns every shot of one asset with exact time ranges and shot
+// descriptions, so an agent can enumerate a whole clip's timeline (all shots,
+// not just the matched ones search returns).
+func (c *hubClient) getShots(ctx context.Context, assetID string) ([]map[string]any, error) {
 	var out []map[string]any
-	if err := c.do(ctx, http.MethodGet, "/api/v1/search/shots/hybrid?"+params.Encode(), c.agentToken, nil, &out); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/api/v1/assets/"+url.PathEscape(assetID)+"/shots", c.agentToken, nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -300,7 +317,7 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 
 	srv.AddTool(
 		mcp.NewTool("search_footage",
-			mcp.WithDescription("Search the footage library for shots matching a query. Returns shot ids, asset ids, time ranges, scores and descriptions. Use to find material before creating an edit plan."),
+			mcp.WithDescription("Search the footage library using the structured Search v2 endpoint: results carry per-constraint evidence (confirmed/possible/contradicted/unknown) alongside scores, so you can tell a retrieval signal from an observational claim. Returns shot ids, asset ids, time ranges, scores, evidence and descriptions. Use to find material before creating an edit plan."),
 			mcp.WithString("q", mcp.Required(), mcp.Description("Search query, e.g. 'sunset over water', '城市夜景', or a tag")),
 			mcp.WithNumber("limit", mcp.Description("Maximum number of shots (default 20)")),
 		),
@@ -313,7 +330,26 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 			if v, ok := req.GetArguments()["limit"].(float64); ok && v > 0 {
 				limit = int(v)
 			}
-			shots, err := client.searchFootage(ctx, q, limit)
+			result, err := client.searchFootage(ctx, q, limit)
+			if err != nil {
+				return errResult(err), nil
+			}
+			raw, _ := json.MarshalIndent(result, "", "  ")
+			return toolResult(string(raw)), nil
+		},
+	)
+
+	srv.AddTool(
+		mcp.NewTool("get_shots",
+			mcp.WithDescription("Return every shot of one asset, with exact start_ms/end_ms time ranges and shot descriptions. Use to enumerate a whole clip's timeline (all shots, not just matched ones) before building an edit plan."),
+			mcp.WithString("asset_id", mcp.Required(), mcp.Description("The asset id from search_footage results")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			assetID, rerr := requireString(req.GetArguments(), "asset_id")
+			if rerr != nil {
+				return rerr, nil
+			}
+			shots, err := client.getShots(ctx, assetID)
 			if err != nil {
 				return errResult(err), nil
 			}

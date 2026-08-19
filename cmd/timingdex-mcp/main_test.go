@@ -42,9 +42,10 @@ func (f *fakeHub) handler() http.Handler {
 		}
 	}
 
-	// /health is anonymous by design; /hardware and the hybrid search route
-	// are behind requireTrustedRead, which admits a bearer agent token from
-	// anywhere — a remote (off-LAN) MCP client must carry one or get 403.
+	// /health is anonymous by design; /hardware, the structured search route
+	// and the asset routes are behind requireTrustedRead, which admits a
+	// bearer agent token from anywhere — a remote (off-LAN) MCP client must
+	// carry one or get 403.
 	mux.HandleFunc("GET /api/v1/health", errWrapper(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte(`{"status":"ok"}`))
 	}))
@@ -55,17 +56,37 @@ func (f *fakeHub) handler() http.Handler {
 		}
 		w.Write([]byte(`{"hardware":"software"}`))
 	}))
-	mux.HandleFunc("GET /api/v1/search/shots/hybrid", errWrapper(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/v1/search/shots", errWrapper(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
 			http.Error(w, "search requires trusted read", http.StatusForbidden)
 			return
 		}
-		if got := r.URL.Query().Get("q"); got != "" {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(f.searchHits)
+		results := make([]map[string]any, 0, len(f.searchHits))
+		for _, hit := range f.searchHits {
+			results = append(results, map[string]any{
+				"shot_id":  hit["id"],
+				"asset_id": hit["asset_id"],
+				"start_ms": 0,
+				"end_ms":   5000,
+				"score":    hit["score"],
+				"evidence": []map[string]any{{"constraint_type": "object", "constraint": "person", "state": "confirmed", "sources": []string{"objects"}}},
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"query":      map[string]any{"raw": "sunset", "intent": "semantic"},
+			"search_id":  "s-1",
+			"query_hash": "0123456789abcdef",
+			"results":    results,
+		})
+	}))
+	mux.HandleFunc("GET /api/v1/assets/{id}/shots", errWrapper(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
+			http.Error(w, "shots requires trusted read", http.StatusForbidden)
 			return
 		}
-		http.Error(w, "missing q", http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[{"id":"shot-1","asset_id":"` + r.PathValue("id") + `","start_ms":0,"end_ms":5000,"description":"雨夜城市街道","tags":["rain","urban_night"]}]`))
 	}))
 	mux.HandleFunc("GET /api/v1/assets/{id}/transcript", errWrapper(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
@@ -135,25 +156,47 @@ func TestSearchFootage(t *testing.T) {
 		{"id": "shot-1", "asset_id": "asset-1", "score": 1.5},
 	}}
 	c := newTestClient(t, hub)
-	hits, err := c.searchFootage(context.Background(), "sunset", 10)
+	result, err := c.searchFootage(context.Background(), "sunset", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hits) != 1 || hits[0]["id"] != "shot-1" {
-		t.Fatalf("hits = %v", hits)
+	results, ok := result["results"].([]any)
+	if !ok || len(results) != 1 {
+		t.Fatalf("results = %v, want one structured result", result["results"])
+	}
+	hit := results[0].(map[string]any)
+	if hit["shot_id"] != "shot-1" || hit["asset_id"] != "asset-1" {
+		t.Fatalf("hit = %v, want shot_id=shot-1", hit)
+	}
+	// The structured endpoint carries per-constraint evidence, not just a score.
+	if evidence, ok := hit["evidence"].([]any); !ok || len(evidence) != 1 {
+		t.Fatalf("evidence = %v, want the evidence gate's verdict", hit["evidence"])
 	}
 }
 
 func TestSearchFootageEmptyResults(t *testing.T) {
-	// Empty searchHits should return an empty slice, not an error.
+	// Empty searchHits should return an empty results list, not an error.
 	hub := &fakeHub{searchHits: []map[string]any{}}
 	c := newTestClient(t, hub)
-	hits, err := c.searchFootage(context.Background(), "nonexistent", 10)
+	result, err := c.searchFootage(context.Background(), "nonexistent", 10)
 	if err != nil {
 		t.Fatalf("empty search should not error: %v", err)
 	}
-	if len(hits) != 0 {
-		t.Fatalf("empty search returned %d hits, want 0", len(hits))
+	results, ok := result["results"].([]any)
+	if !ok || len(results) != 0 {
+		t.Fatalf("empty search returned %v, want 0 results", result["results"])
+	}
+}
+
+func TestGetShots(t *testing.T) {
+	hub := &fakeHub{}
+	c := newTestClient(t, hub)
+	shots, err := c.getShots(context.Background(), "asset-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shots) != 1 || shots[0]["id"] != "shot-1" || shots[0]["start_ms"] != float64(0) {
+		t.Fatalf("shots = %v, want the asset's full shot list", shots)
 	}
 }
 
@@ -230,6 +273,9 @@ func TestReadToolsWithoutAgentTokenSurfaceRemote403(t *testing.T) {
 	}
 	if _, err := client.searchFootage(context.Background(), "sunset", 10); err == nil {
 		t.Fatal("searchFootage without agent token must fail on a remote Hub")
+	}
+	if _, err := client.getShots(context.Background(), "asset-1"); err == nil {
+		t.Fatal("getShots without agent token must fail on a remote Hub")
 	}
 }
 
@@ -354,7 +400,7 @@ func TestToolNamesRegistered(t *testing.T) {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	want := []string{"create_edit_plan", "get_transcript", "inspect_library", "request_source_media", "revise_edit_plan", "search_footage"}
+	want := []string{"create_edit_plan", "get_shots", "get_transcript", "inspect_library", "request_source_media", "revise_edit_plan", "search_footage"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("tools = %v, want %v", names, want)
 	}

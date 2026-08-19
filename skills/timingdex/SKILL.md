@@ -56,15 +56,21 @@ If this agent runs with MCP access to `timingdex-mcp` (see
 hand-built HTTP calls:
 
 1. `inspect_library` first — confirm the library is healthy before planning.
-2. `search_footage(q, limit)` — find shots (returns shot id, asset id, time
-   ranges, score, description).
-3. `get_transcript(asset_id)` — read the word-level timeline transcript; its
+2. `search_footage(q, limit)` — find shots via the structured Search v2
+   endpoint: results carry per-constraint `evidence`
+   (confirmed/possible/contradicted/unknown) alongside shot id, asset id, time
+   ranges and score. Treat the score as a retrieval signal, the evidence as
+   the claim.
+3. `get_shots(asset_id)` — enumerate every shot of one asset with exact
+   start_ms/end_ms ranges, when you need a full timeline rather than matched
+   slices.
+4. `get_transcript(asset_id)` — read the word-level timeline transcript; its
    `source` field says whether timestamps are word-aligned (`aligned`) or
    sentence-level only (`asr`).
-4. `create_edit_plan(brief)` — draft the edit plan.
-5. `revise_edit_plan(plan_id, sections_json)` — fill sections with concrete
+5. `create_edit_plan(brief)` — draft the edit plan.
+6. `revise_edit_plan(plan_id, sections_json)` — fill sections with concrete
    shot selections.
-6. `request_source_media(space_id, asset_id)` — when the user wants the
+7. `request_source_media(space_id, asset_id)` — when the user wants the
    footage delivered for editing, link the original media into the operator's
    on-demand WebDAV space and return the mount path. This tool calls an
    administrator-guarded route: it only works when a Hub administrator token is
