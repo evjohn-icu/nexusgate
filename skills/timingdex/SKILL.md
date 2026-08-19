@@ -30,11 +30,11 @@ available unless the API returned it.
    accepts it back in a response body and there is no reason for it to appear
    in transcript output.
 
-The capability contract is version `v0.14`. Its current action and route
+The capability contract is version `v0.15`. Its current action and route
 allowlist is:
 
-- `allowed_actions`: `inspect_readiness`, `search_shots`, `create_draft_plan`,
-  `inspect_plan`, `revise_draft_plan`
+- `allowed_actions`: `inspect_readiness`, `search_shots`, `read_transcript`,
+  `create_draft_plan`, `inspect_plan`, `revise_draft_plan`
 - Agent-token write routes: `POST /api/v1/repurpose/plans` and
   `POST /api/v1/repurpose/plans/{id}/revisions`
 - `denied_actions`: `approve_plan`, `run_pipeline`, `read_provider_keys`,
@@ -56,14 +56,27 @@ If this agent runs with MCP access to `timingdex-mcp` (see
 hand-built HTTP calls:
 
 1. `inspect_library` first — confirm the library is healthy before planning.
-2. `search_footage(q, limit)` — find shots (returns shot id, asset id, time
-   ranges, score, description).
-3. `create_edit_plan(brief)` — draft the edit plan.
-4. `revise_edit_plan(plan_id, sections_json)` — fill sections with concrete
+2. `search_footage(q, limit)` — find shots via the structured Search v2
+   endpoint: results carry per-constraint `evidence`
+   (confirmed/possible/contradicted/unknown) alongside shot id, asset id, time
+   ranges and score. Treat the score as a retrieval signal, the evidence as
+   the claim.
+3. `get_shots(asset_id)` — enumerate every shot of one asset with exact
+   start_ms/end_ms ranges, when you need a full timeline rather than matched
+   slices.
+4. `get_transcript(asset_id)` — read the word-level timeline transcript; its
+   `source` field says whether timestamps are word-aligned (`aligned`) or
+   sentence-level only (`asr`).
+5. `create_edit_plan(brief)` — draft the edit plan.
+6. `revise_edit_plan(plan_id, sections_json)` — fill sections with concrete
    shot selections.
-5. `request_source_media(space_id, asset_id)` — when the user wants the
+7. `request_source_media(space_id, asset_id)` — when the user wants the
    footage delivered for editing, link the original media into the operator's
-   on-demand WebDAV space and return the mount path.
+   on-demand WebDAV space and return the mount path. This tool calls an
+   administrator-guarded route: it only works when a Hub administrator token is
+   configured on the MCP server, so with an agent-token-only configuration the
+   delivery step is operator-mediated (an operator creates the space and hands
+   the editing software its WebDAV credentials).
 
 The same boundaries apply: approval stays human, the pipeline is never run,
 and provider keys are never read.

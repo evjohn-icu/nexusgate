@@ -44,7 +44,7 @@ func TestShellSidebarMarkup(t *testing.T) {
 	if !strings.Contains(html, `href="/collections" data-nav="/collections" class="nav-link">收藏</a>`) {
 		t.Fatal("收藏 link to /collections missing")
 	}
-	if !strings.Contains(html, `href="/worker-setup" data-nav="/worker-setup" class="nav-link">Worker Setup</a>`) {
+	if !strings.Contains(html, `href="/worker-setup" data-nav="/worker-setup" class="nav-link">节点安装</a>`) {
 		t.Fatal("Worker Setup link missing from advanced navigation")
 	}
 

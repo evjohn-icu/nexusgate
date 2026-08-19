@@ -10,6 +10,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,13 +36,57 @@ type hubClient struct {
 	http       *http.Client
 }
 
-func newHubClient() *hubClient {
+// newHubClient builds the Hub API client. An https base URL requires
+// TIMINGDEX_HUB_FINGERPRINT: cross-machine deployments use the Hub's
+// self-signed certificate, and accepting it unpinned would silently trust any
+// attacker in the path — the exact boundary fingerprint pinning exists for.
+// http:// stays available for local development.
+func newHubClient() (*hubClient, error) {
+	baseURL := strings.TrimRight(os.Getenv("TIMINGDEX_BASE_URL"), "/")
+	fingerprint := strings.TrimSpace(os.Getenv("TIMINGDEX_HUB_FINGERPRINT"))
+	if fingerprint != "" && !ValidFingerprint(fingerprint) {
+		return nil, fmt.Errorf("TIMINGDEX_HUB_FINGERPRINT must be a 64-character SHA-256 hex fingerprint")
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if fingerprint != "" {
+		expected := normalizeFingerprint(fingerprint)
+		transport.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true,
+			VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+				if len(rawCerts) == 0 {
+					return fmt.Errorf("Hub did not present a certificate")
+				}
+				sum := sha256.Sum256(rawCerts[0])
+				if normalizeFingerprint(hex.EncodeToString(sum[:])) != expected {
+					return fmt.Errorf("Hub certificate fingerprint mismatch")
+				}
+				return nil
+			},
+		}
+	}
+	if strings.HasPrefix(strings.ToLower(baseURL), "https://") && fingerprint == "" {
+		return nil, fmt.Errorf("TIMINGDEX_BASE_URL is https but TIMINGDEX_HUB_FINGERPRINT is not set: refusing to accept an unpinned Hub certificate")
+	}
 	return &hubClient{
-		baseURL:    strings.TrimRight(os.Getenv("TIMINGDEX_BASE_URL"), "/"),
+		baseURL:    baseURL,
 		agentToken: os.Getenv("TIMINGDEX_AGENT_TOKEN"),
 		adminToken: os.Getenv("TIMINGDEX_ADMIN_TOKEN"),
-		http:       &http.Client{Timeout: 60 * time.Second},
+		http:       &http.Client{Transport: transport, Timeout: 60 * time.Second},
+	}, nil
+}
+
+// ValidFingerprint accepts only the canonical 64-character SHA-256 hex form.
+func ValidFingerprint(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != sha256.Size*2 {
+		return false
 	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func normalizeFingerprint(value string) string {
+	return strings.ToLower(strings.NewReplacer(":", "", " ", "", "sha256", "").Replace(value))
 }
 
 func (c *hubClient) base() string {
@@ -104,15 +152,69 @@ func (c *hubClient) inspectLibrary(ctx context.Context) (map[string]any, error) 
 	return result, nil
 }
 
-func (c *hubClient) searchFootage(ctx context.Context, q string, limit int) ([]map[string]any, error) {
+// searchFootage runs the structured Search v2 endpoint so results carry
+// per-constraint evidence (confirmed/possible/contradicted/unknown), not just
+// a score — matching how the README positions the search surface. Uses the
+// agent token like the other trusted reads.
+func (c *hubClient) searchFootage(ctx context.Context, q string, limit int) (map[string]any, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	params := url.Values{}
-	params.Set("q", q)
-	params.Set("limit", fmt.Sprintf("%d", limit))
+	var out map[string]any
+	if err := c.do(ctx, http.MethodPost, "/api/v1/search/shots", c.agentToken, map[string]any{
+		"query":            q,
+		"mode":             "auto",
+		"limit":            limit,
+		"include_evidence": true,
+	}, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// getShots returns every shot of one asset with exact time ranges and shot
+// descriptions, so an agent can enumerate a whole clip's timeline (all shots,
+// not just the matched ones search returns).
+func (c *hubClient) getShots(ctx context.Context, assetID string) ([]map[string]any, error) {
 	var out []map[string]any
-	if err := c.do(ctx, http.MethodGet, "/api/v1/search/shots/hybrid?"+params.Encode(), c.agentToken, nil, &out); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/api/v1/assets/"+url.PathEscape(assetID)+"/shots", c.agentToken, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// maxTranscriptBytes bounds a transcript response body. A word-level
+// transcript is the one API response that legitimately outgrows do()'s 1 MiB
+// success-body bound (a long asset's full word stream), so getTranscript
+// decodes its own body; the cap still stops a misbehaving Hub from making the
+// process allocate without bound. No real transcript approaches it.
+const maxTranscriptBytes int64 = 64 << 20
+
+// getTranscript returns the asset's word-level timeline transcript. The
+// response's source field tells the caller where the timestamps come from:
+// "aligned" (word-level forced alignment, the strongest timing evidence) or
+// "asr" (sentence-level segments only). Uses the agent token like the other
+// trusted reads.
+func (c *hubClient) getTranscript(ctx context.Context, assetID string) (map[string]any, error) {
+	path := "/api/v1/assets/" + url.PathEscape(assetID) + "/transcript"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base()+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.agentToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.agentToken)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, fmt.Errorf("Hub API %s %s: %s (%s)", http.MethodGet, path, strings.TrimSpace(string(raw)), resp.Status)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxTranscriptBytes)).Decode(&out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -175,7 +277,15 @@ func requireString(args map[string]any, key string) (string, *mcp.CallToolResult
 }
 
 func main() {
-	client := newHubClient()
+	client, err := newHubClient()
+	if err != nil {
+		// A hard configuration error (an https base URL without a pinned
+		// certificate fingerprint) must fail startup loudly rather than
+		// silently connect to an arbitrary Hub identity — that is the one
+		// case the no-stderr rule below does not cover.
+		fmt.Fprintf(os.Stderr, "timingdex-mcp: %v\n", err)
+		os.Exit(1)
+	}
 	// No startup logging to stderr: MCP stdio clients treat stderr strictly,
 	// and the Hub-side logs already cover token absence at serve time. The
 	// tools themselves return clear errors when a token is missing.
@@ -207,7 +317,7 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 
 	srv.AddTool(
 		mcp.NewTool("search_footage",
-			mcp.WithDescription("Search the footage library for shots matching a query. Returns shot ids, asset ids, time ranges, scores and descriptions. Use to find material before creating an edit plan."),
+			mcp.WithDescription("Search the footage library using the structured Search v2 endpoint: results carry per-constraint evidence (confirmed/possible/contradicted/unknown) alongside scores, so you can tell a retrieval signal from an observational claim. Returns shot ids, asset ids, time ranges, scores, evidence and descriptions. Use to find material before creating an edit plan."),
 			mcp.WithString("q", mcp.Required(), mcp.Description("Search query, e.g. 'sunset over water', '城市夜景', or a tag")),
 			mcp.WithNumber("limit", mcp.Description("Maximum number of shots (default 20)")),
 		),
@@ -220,11 +330,49 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 			if v, ok := req.GetArguments()["limit"].(float64); ok && v > 0 {
 				limit = int(v)
 			}
-			shots, err := client.searchFootage(ctx, q, limit)
+			result, err := client.searchFootage(ctx, q, limit)
+			if err != nil {
+				return errResult(err), nil
+			}
+			raw, _ := json.MarshalIndent(result, "", "  ")
+			return toolResult(string(raw)), nil
+		},
+	)
+
+	srv.AddTool(
+		mcp.NewTool("get_shots",
+			mcp.WithDescription("Return every shot of one asset, with exact start_ms/end_ms time ranges and shot descriptions. Use to enumerate a whole clip's timeline (all shots, not just matched ones) before building an edit plan."),
+			mcp.WithString("asset_id", mcp.Required(), mcp.Description("The asset id from search_footage results")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			assetID, rerr := requireString(req.GetArguments(), "asset_id")
+			if rerr != nil {
+				return rerr, nil
+			}
+			shots, err := client.getShots(ctx, assetID)
 			if err != nil {
 				return errResult(err), nil
 			}
 			raw, _ := json.MarshalIndent(shots, "", "  ")
+			return toolResult(string(raw)), nil
+		},
+	)
+
+	srv.AddTool(
+		mcp.NewTool("get_transcript",
+			mcp.WithDescription("Return an asset's word-level timeline transcript. The response's source field says where the timestamps come from: 'aligned' (word-level forced alignment — the strongest timing evidence) or 'asr' (sentence-level segments only, no word boundaries). Use to ground narration or dialogue in precise media time."),
+			mcp.WithString("asset_id", mcp.Required(), mcp.Description("The asset id from search_footage results")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			assetID, rerr := requireString(req.GetArguments(), "asset_id")
+			if rerr != nil {
+				return rerr, nil
+			}
+			transcript, err := client.getTranscript(ctx, assetID)
+			if err != nil {
+				return errResult(err), nil
+			}
+			raw, _ := json.MarshalIndent(transcript, "", "  ")
 			return toolResult(string(raw)), nil
 		},
 	)

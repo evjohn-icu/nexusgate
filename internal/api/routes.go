@@ -105,6 +105,7 @@ func (s *Server) libraryRouteSpecs() []routeSpec {
 		newRouteSpec("shoot-sessions", "GET /api/v1/shoot-sessions", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.listShootSessions))),
 		newRouteSpec("asset-detail", "GET /api/v1/assets/{id}", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.assetDetail))),
 		newRouteSpec("asset-shots", "GET /api/v1/assets/{id}/shots", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.assetShots))),
+		newRouteSpec("asset-transcript", "GET /api/v1/assets/{id}/transcript", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.assetTranscript))),
 		newRouteSpec("asset-thumbnail", "GET /api/v1/assets/{id}/thumbnail", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.assetThumbnail))),
 		newRouteSpec("asset-proxy", "GET /api/v1/assets/{id}/proxy", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.assetProxy))),
 		newRouteSpec("jobs", "GET /api/v1/jobs", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.listJobs))),
@@ -200,6 +201,7 @@ func (s *Server) repurposeRouteSpecs() []routeSpec {
 	return []routeSpec{
 		newRouteSpec("library-summary", "GET /api/v1/library/summary", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.latestLibrarySummary))),
 		newRouteSpec("library-summary-generate", "POST /api/v1/library/summary/generate", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.generateLibrarySummary))),
+		newRouteSpec("repurpose-plan-list", "GET /api/v1/repurpose/plans", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.listRepurposePlans))),
 		newRouteSpec("repurpose-plan-create", "POST /api/v1/repurpose/plans", routeAuthAgentOrAdmin, http.HandlerFunc(s.requireAgentOrAdmin(s.createRepurposePlan))),
 		newRouteSpec("repurpose-plan-get", "GET /api/v1/repurpose/plans/{id}", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.getRepurposePlan))),
 		newRouteSpec("repurpose-plan-revisions", "GET /api/v1/repurpose/plans/{id}/revisions", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.listRepurposePlanRevisions))),

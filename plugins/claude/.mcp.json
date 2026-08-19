@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "timingdex": {
+      "type": "stdio",
+      "command": "timingdex-mcp",
+      "args": [],
+      "env": {
+        "TIMINGDEX_BASE_URL": "${TIMINGDEX_BASE_URL}",
+        "TIMINGDEX_AGENT_TOKEN": "${TIMINGDEX_AGENT_TOKEN}",
+        "TIMINGDEX_HUB_FINGERPRINT": "${TIMINGDEX_HUB_FINGERPRINT}"
+      }
+    }
+  }
+}

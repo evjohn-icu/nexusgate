@@ -75,3 +75,18 @@ type RepurposePlanRevision struct {
 	CreatedAt  time.Time     `json:"created_at"`
 	ApprovedAt *time.Time    `json:"approved_at,omitempty"`
 }
+
+// RepurposePlanSummary is the list projection the plan inbox renders: enough
+// to discover and deep-link to a plan (including one an agent drafted), with
+// none of the candidate payloads or paths the full plan carries.
+type RepurposePlanSummary struct {
+	ID                string    `json:"id"`
+	Title             string    `json:"title"`
+	Brief             string    `json:"brief"`
+	Status            string    `json:"status"`
+	DurationMS        int64     `json:"duration_ms"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	LatestRevision    int       `json:"latest_revision"`
+	RevisionCount     int       `json:"revision_count"`
+	MissingNeedsCount int       `json:"missing_needs_count"`
+}

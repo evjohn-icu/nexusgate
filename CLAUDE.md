@@ -5,8 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project
 
 Re:Footage / `timingdex` — a local-first video footage intelligence layer written in Go
-(stdlib + `modernc.org/sqlite` + `nhooyr.io/websocket` only; no web framework, no ORM, no
-frontend build). One binary serves two roles: a **Hub** (database, HTTP/HTTPS API, browser
+(stdlib + `modernc.org/sqlite`, `github.com/coder/websocket`, `github.com/mark3labs/mcp-go`
+and `golang.org/x/{crypto,net}` only; no web framework, no ORM, no frontend build). The
+`timingdex` binary serves two roles: a **Hub** (database, HTTP/HTTPS API, browser
 UI, secrets, local pipeline) and a **Worker** (paired remote node that performs FFmpeg derive
 work, and — only when `worker enroll --provider-operation` declares it — calls a Provider for
 `video_analysis`/`asr`, either through the Hub JSON proxy or, behind an explicitly enabled
@@ -63,6 +64,16 @@ then `timingdex worker run`; its config defaults to `~/.timingdex/worker.json`.
 `cmd/timingdex/main.go` → `config.Load()` → `sqliterepo.Open` + `Migrate` →
 `app.NewService` (wires providers, staging, hardware, admin token, secret store, pipeline) →
 `api.NewTLSServer`. Everything below `app` is dependency-free of HTTP.
+
+`cmd/` holds five commands, not one. `timingdex` (~1.8k lines) is the product; the other four
+are satellites that must not be mistaken for dead directories: `timingdex-mcp` (~300 lines)
+exposes the library and the draft-plan workflow to MCP agents over stdio and is a **thin HTTP
+client of the Hub** — it holds no database handle and never touches the NAS, so its tools
+follow the same agent-token/trusted-read contract as `skills/timingdex/` except
+`request_source_media`, which links into the WebDAV space and is administrator-only;
+`timingdex-eval` and
+`timingdex-corpusgen` are the offline retrieval benchmark and its corpus generator;
+`timingdex-playwright-fixture` exists only so CI can compile-check the browser fixture.
 
 ### Layer map
 
@@ -153,6 +164,9 @@ legacy GET hybrid endpoint is served by the same engine via
 regression floor is `TestRetrievalGolden` + `TestSearchV2Benchmark` (72 queries, six
 pipelines, per-intent RetrievalFP/AssertionFP) in `internal/repository/sqlite`; a
 ranking change that moves these numbers needs a deliberate reason, not an accident.
+`internal/eval` (with `cmd/timingdex-eval`) is a *separate* offline harness that scores against
+the legacy `HybridSearchShots` path rather than this engine — useful, but not the source of the
+RetrievalFP/AssertionFP figures above; don't cite one for the other.
 
 ### Model safety boundary (non-negotiable)
 
@@ -221,7 +235,12 @@ These invariants are the point of several packages — preserve them when editin
   back the ciphertext on key-write failure.
 - **Hub admin token** (`hubauth`) is generated at first start, compared with
   `crypto/subtle`, and enforced by `s.requireHubAdmin(...)` on every mutating/administrative
-  route. New write endpoints default to wrapped, not open.
+  route. New write endpoints default to wrapped, not open. It is not the only mutation guard:
+  agent-facing plan writes use `requireAgentOrAdmin`, and the nine `/api/v1/worker/*` routes
+  authenticate in-handler through `s.authenticatedWorker(...)` against the node token
+  (`enroll` is the exception — a Worker has no token yet, so it presents the one-time pairing
+  token). Three guards, one table: `TestAPIRouteInventoryGuardMatrix` is only worth its name
+  while every route in `Handler()` also has a row there, so add both or neither.
 - **Worker trust**: one-time pairing token, revocable node token, TLS certificate
   fingerprint pinning. A Worker gets a *lease-bound, memory-only* provider credential only
   when `hub_security.allow_worker_provider_credentials` is explicitly enabled (default
@@ -235,16 +254,25 @@ These invariants are the point of several packages — preserve them when editin
   their provider is "not configured" when they configured it in the browser blames them for
   something they did not do.
   `provider_operations` is enrollment-time trust; heartbeats cannot grant provider access.
-- **Capture coordinates** are exposed as a region label; source precision is admin-only
-  (`GET /api/v1/admin/assets/{id}/capture-location`).
+- **Capture coordinates**: source precision is admin-only
+  (`GET /api/v1/admin/assets/{id}/capture-location`). The `RegionLabel` surfaced elsewhere is
+  free text set by whoever wrote the row — nothing in the tree reverse-geocodes latitude and
+  longitude into it. It is therefore *not* a coarsened view of the coordinates, and calling it
+  one would promise a privacy transform that does not exist.
 - Original media is read-only. Nothing is ever written next to source files; NAS mode
   (`source_staging.mode: copy`) copies into `cache/sources/` first.
 
 ### Database migrations
 
 `internal/repository/sqlite/migrations/NNNN_*.sql`, `go:embed`-ed and applied in filename
-order inside a transaction, tracked in `schema_migrations`. The current migration ceiling is
-`0033_asset_probe_identity.sql`; the newest migrations are:
+order inside a transaction, tracked in `schema_migrations`. `Migrate` does more than apply
+files, and the extra steps are the reason a half-applied schema has not happened: it refuses to
+start on an `integrity_check` failure or without free disk for `2×dbsize + 256MiB`, snapshots
+the database with `VACUUM INTO`, applies every pending file inside one `BEGIN IMMEDIATE` with
+`foreign_keys` off (SQLite ignores the pragma mid-transaction), and runs
+`pragma_foreign_key_check` *after* the commit. The current migration ceiling is
+`0033_asset_probe_identity.sql` — 32 files, not 33: `0025` was abandoned before it landed and
+the numbering simply skips it. The newest migrations are:
 
 - `0030_asset_location_primary.sql`
 - `0031_model_run_retryable_dedup.sql`
@@ -259,17 +287,24 @@ Pages are Go string constants of inline HTML/CSS/JS — no templates, no assets,
 `internal/api/server.go` holds the base constants (`legacyLibraryIndexHTML`, `progressHTML`,
 `repurposeHTML`, …).
 
-**Check which shape a page is before editing it; guessing has been wrong repeatedly.** Only
-`library_page_v015.go` overlays a base constant (`enhanceLibraryPage(legacyLibraryIndexHTML)`),
-patching it by **exact-match `strings.Replace`**; a stale anchor is a *silent no-op* — the page
-builds, serves, and the feature is simply gone, with no compile or runtime error. Editing the
-legacy HTML is what breaks it. `providers_page_v015.go` and `setup_page_v015.go` are
-self-contained constants with no `strings.Replace` at all. `branding.go` applies its own
-replacements to every page.
+**Check which shape a page is before editing it; guessing has been wrong repeatedly.** Three
+`strings.Replace` layers stack, and a stale anchor in any of them is a *silent no-op* — the page
+builds, serves, and the feature is simply gone, with no compile or runtime error:
+
+- `shelledPage` (`app_shell.go`) — three anchors, every page, injects the shared nav/shell.
+- `enhanceLibraryPage` (`library_page_v015.go`) — **18 ordered anchors**, library page only,
+  applied once at package init to build `libraryIndexHTML` from `legacyLibraryIndexHTML`.
+- `brandedPage` (`branding.go`) — two anchors, every page, applied **per request**.
+
+Only the library page carries an overlay; `providers_page_v015.go` and `setup_page_v015.go` are
+self-contained constants whose own text is never patched. Editing the legacy HTML underneath an
+anchor is what breaks it.
 
 Two guards exist because greps and review cannot see these failures:
-`TestLibraryPagePatchesApplyInOrderAndBite` asserts every library-page anchor still matches,
-`TestBrandedPageAnchorsBite` does the same for branding, and `page_scripts_test.go` runs
+`TestLibraryPagePatchesApplyInOrderAndBite` asserts every library-page anchor still matches
+*exactly once* and replays the whole chain bit-for-bit. `TestBrandedPageAnchorsBite` is weaker
+by construction — it only requires each branding anchor to appear somewhere across the eleven
+pages, so a branding anchor that goes stale on one page alone still passes. `page_scripts_test.go` runs
 `node --check` over the `<script>` block of every page route (skipped when node is absent).
 That last one exists because one misplaced character left `/worker-setup`'s script dead from
 v0.18 until v0.21 while the page kept serving.

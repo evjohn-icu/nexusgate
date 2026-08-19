@@ -1,0 +1,33 @@
+{
+  "name": "timingdex",
+  "owner": {
+    "name": "Timingdex",
+    "url": "https://github.com/evjohn-icu/timingdex"
+  },
+  "metadata": {
+    "description": "Timingdex plugins for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "timingdex",
+      "source": "./plugins/claude",
+      "description": "Timingdex footage capability provider: inspect the local-first library, search shots with evidence, read word-level transcripts, draft and revise edit plans.",
+      "category": "productivity",
+      "homepage": "https://github.com/evjohn-icu/timingdex",
+      "author": {
+        "name": "Timingdex",
+        "url": "https://github.com/evjohn-icu/timingdex"
+      },
+      "license": "Apache-2.0",
+      "keywords": [
+        "timingdex",
+        "footage",
+        "video",
+        "video-search",
+        "transcription",
+        "transcript",
+        "mcp"
+      ]
+    }
+  ]
+}

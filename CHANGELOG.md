@@ -2,8 +2,41 @@
 
 ## Unreleased
 
-### v0.31.0-alpha — release preparation
+### v0.31.0-alpha — footage capability provider & release preparation
 
+- **Shot-level speech search no longer requires forced alignment**: the
+  transcript channel now sources per asset from the strongest available timing
+  — aligned words when they exist, otherwise the ASR transcript's timed
+  segments (materialized into a new `asr_segments` table at `SaveTranscript`
+  time, with a migration backfill for existing libraries). ASR-only assets are
+  now searchable by spoken phrase with shot-level placement and
+  possible/transcript evidence, joining the description channels in fusion. A
+  0-0 placeholder segment still contributes no timing, so untimed ASR stays
+  asset-level. Mixed CJK/ASCII multi-component phrases over ASR segments keep
+  the honest no-result behaviour rather than over-matching.
+- **Footage capability provider**: Timingdex now exposes its library to
+  transcript-driven AI editing frontends as a product-neutral capability
+  contract. New `GET /api/v1/assets/{id}/transcript` returns the asset's
+  word-level timeline transcript: `source=aligned` carries the forced-alignment
+  word stream (the strongest timing evidence) with `text`/`segments` promoted
+  from it, `source=asr` falls back to the ASR sentence segments, and an asset
+  with neither answers `404 not_found` rather than an empty 200 — so an editor
+  can tell "no transcript" from "silent footage". The word stream stays
+  contiguous across shot boundaries. The Agent contract bumps v0.14 → v0.15:
+  `read_transcript` joins `allowed_actions`, and the skills package
+  (`SKILL.md`, `references/api-contract.md`) is re-versioned and re-validated
+  in the same change. The route guard matrix also gains the previously missing
+  `GET /api/v1/admin/hub/worker-setup/library-roots` admin row.
+- **MCP**: `timingdex-mcp` gains a sixth tool `get_transcript(asset_id)`,
+  plus certificate fingerprint pinning for cross-machine Hubs:
+  `TIMINGDEX_HUB_FINGERPRINT` (printed by `timingdex serve`) pins the Hub's
+  self-signed leaf certificate over `https://`. An https base URL without a
+  fingerprint now fails at startup instead of silently accepting an arbitrary
+  certificate; `http://` remains available for local development. Added a
+  Claude Code plugin marketplace (`.claude-plugin/marketplace.json` +
+  `plugins/claude/`) that declares `timingdex-mcp` over stdio and passes
+  through `TIMINGDEX_BASE_URL`, `TIMINGDEX_AGENT_TOKEN` and
+  `TIMINGDEX_HUB_FINGERPRINT`; the plugin ships no binary.
 - Release-closure work makes browser smoke deterministic and repository-owned,
   runs it over the fixture's HTTPS session boundary, pins Playwright and
   gitleaks, and makes browser regressions blocking once the clean-run gate is
@@ -20,7 +53,6 @@
   SQLite scale benchmark/evaluation scaffolding, and offline Search relevance
   evaluation data. Measured results and the remaining publication-only gates
   are recorded in [`docs/v0.31-release-notes.md`](docs/v0.31-release-notes.md).
-
 - Completed the browser/Pipeline P0 hardening: API scans still trigger queued work
   after partial scan errors, concurrent Pipeline triggers coalesce into a joined
   follow-up pass, and `serve` waits for background Pipeline work before closing the

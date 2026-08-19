@@ -3177,7 +3177,34 @@ SELECT ?,?,?,?,?,?,?,?,?, 'succeeded',? WHERE (?='' OR EXISTS (SELECT 1 FROM job
 			return e
 		}
 		if n != 1 {
+			// The lease is gone: the transcript write did not land, and the
+			// asr_segments materialization below must not run for a transcript
+			// the caller does not own.
 			return leaseLostErr(jobID, owner)
+		}
+	}
+	// Materialize the timed ASR segments as the shot-level speech source,
+	// replacing any prior transcript's segments (GetTranscript reads the
+	// latest row). The common no-segments path — and the placeholder 0-0
+	// segment some ASR providers emit — stays a single write with no
+	// asr_segments rows; degenerate segments carry no placement and are
+	// dropped, the same rule Transcript.Timed and the transcript endpoint
+	// apply.
+	var timed []domain.TranscriptSegment
+	for _, seg := range t.Segments {
+		if seg.EndMS > seg.StartMS {
+			timed = append(timed, seg)
+		}
+	}
+	if len(timed) == 0 {
+		return nil
+	}
+	if _, err := r.db.ExecContext(ctx, `DELETE FROM asr_segments WHERE asset_id=?`, assetID); err != nil {
+		return err
+	}
+	for i, seg := range timed {
+		if _, err := r.db.ExecContext(ctx, `INSERT INTO asr_segments(id,asset_id,ordinal,start_ms,end_ms,text,confidence) VALUES(?,?,?,?,?,?,NULL)`, idgen.New(), assetID, i, seg.StartMS, seg.EndMS, seg.Text); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -3243,6 +3270,12 @@ func (r *Repository) SaveAlignment(ctx context.Context, assetID, provider, model
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM transcript_words WHERE alignment_run_id=?`, effectiveRun); err != nil {
+		return err
+	}
+	// Alignment words are now the asset's speech source (strongest timing);
+	// drop any ASR segments so the transcript channel's per-asset resolution
+	// keeps exactly one source per asset.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM asr_segments WHERE asset_id=?`, assetID); err != nil {
 		return err
 	}
 	for i, w := range result.Words {
@@ -3598,6 +3631,47 @@ func (r *Repository) GetRepurposePlan(ctx context.Context, id string) (*domain.R
 	plan.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	plan.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
 	return &plan, nil
+}
+
+// ListRepurposePlans returns the plan inbox projection, most recently
+// updated first. status filters to draft or approved; any other value ("" or
+// "all") returns both. The projection comes from denormalized columns plus a
+// revision subquery — never the full candidate payloads.
+func (r *Repository) ListRepurposePlans(ctx context.Context, status string, limit int) ([]domain.RepurposePlanSummary, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	query := `SELECT p.id,p.title,p.brief,p.status,p.duration_ms,p.updated_at,
+	COALESCE((SELECT COUNT(*) FROM repurpose_plan_revisions r WHERE r.plan_id=p.id),0),
+	COALESCE((SELECT MAX(r.revision) FROM repurpose_plan_revisions r WHERE r.plan_id=p.id),0),
+	COALESCE(json_array_length(COALESCE(json_extract(p.plan_json,'$.missing_needs'),'[]')),0)
+	FROM repurpose_plans p`
+	args := make([]any, 0, 2)
+	if status == "draft" || status == "approved" {
+		query += ` WHERE p.status=?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY p.updated_at DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.RepurposePlanSummary
+	for rows.Next() {
+		var s domain.RepurposePlanSummary
+		var updated string
+		if err := rows.Scan(&s.ID, &s.Title, &s.Brief, &s.Status, &s.DurationMS, &updated, &s.RevisionCount, &s.LatestRevision, &s.MissingNeedsCount); err != nil {
+			return nil, err
+		}
+		s.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 func (r *Repository) SaveRepurposePlanRevision(ctx context.Context, plan domain.RepurposePlan, editorNote string) (domain.RepurposePlanRevision, error) {

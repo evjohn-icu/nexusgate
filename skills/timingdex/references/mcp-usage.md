@@ -24,10 +24,18 @@ Hub HTTP API — it never touches the NAS directly.
 | Tool | Hub endpoint | Token |
 |---|---|---|
 | `inspect_library` | GET /api/v1/health, /hardware | none (trusted network) |
-| `search_footage` | GET /api/v1/search/shots/hybrid | none (trusted network) |
+| `search_footage` | POST /api/v1/search/shots | none (trusted network) |
+| `get_shots` | GET /api/v1/assets/{id}/shots | none (trusted network) |
+| `get_transcript` | GET /api/v1/assets/{id}/transcript | none (trusted network) |
 | `create_edit_plan` | POST /api/v1/repurpose/plans | agent |
 | `revise_edit_plan` | POST /api/v1/repurpose/plans/{id}/revisions | agent |
 | `request_source_media` | POST /api/v1/admin/webdav/spaces/{id}/links | admin |
+
+`search_footage` uses the structured Search v2 endpoint, so each result carries
+per-constraint `evidence` (confirmed/possible/contradicted/unknown) alongside
+its score — treat a high score as a retrieval signal, the evidence as the
+claim. `get_shots` enumerates every shot of one asset (all shots and exact
+time ranges), which `search_footage` does not return.
 
 ## Boundaries (same as the HTTP skill)
 

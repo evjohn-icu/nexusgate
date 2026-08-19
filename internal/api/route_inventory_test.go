@@ -76,6 +76,7 @@ POST /api/v1/collections/{id}/shots/reorder
 GET /api/v1/shoot-sessions
 GET /api/v1/assets/{id}
 GET /api/v1/assets/{id}/shots
+GET /api/v1/assets/{id}/transcript
 GET /api/v1/assets/{id}/thumbnail
 GET /api/v1/assets/{id}/proxy
 GET /api/v1/jobs
@@ -109,6 +110,7 @@ POST /api/v1/tags/proposals/{id}/review
 GET /api/v1/library/summary
 POST /api/v1/library/summary/generate
 POST /api/v1/repurpose/plans
+GET /api/v1/repurpose/plans
 GET /api/v1/repurpose/plans/{id}
 GET /api/v1/repurpose/plans/{id}/revisions
 POST /api/v1/repurpose/plans/{id}/revisions
@@ -181,6 +183,7 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 		{http.MethodGet, "/api/v1/shoot-sessions", "trusted", "none", http.StatusForbidden},
 		{http.MethodGet, "/api/v1/assets/x", "trusted", "none", http.StatusForbidden},
 		{http.MethodGet, "/api/v1/assets/x/shots", "trusted", "none", http.StatusForbidden},
+		{http.MethodGet, "/api/v1/assets/x/transcript", "trusted", "none", http.StatusForbidden},
 		{http.MethodGet, "/api/v1/assets/x/thumbnail", "trusted", "none", http.StatusForbidden},
 		{http.MethodGet, "/api/v1/assets/x/proxy", "trusted", "none", http.StatusForbidden},
 		{http.MethodGet, "/api/v1/jobs", "trusted", "none", http.StatusForbidden},
@@ -213,6 +216,7 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 		{http.MethodGet, "/api/v1/library/summary", "trusted", "none", http.StatusForbidden},
 		{http.MethodPost, "/api/v1/library/summary/generate", "admin", "none", http.StatusUnauthorized},
 		{http.MethodPost, "/api/v1/repurpose/plans", "agent/admin", "JSON", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/repurpose/plans", "trusted", "none", http.StatusForbidden},
 		{http.MethodGet, "/api/v1/repurpose/plans/x", "trusted", "none", http.StatusForbidden},
 		{http.MethodGet, "/api/v1/repurpose/plans/x/revisions", "trusted", "none", http.StatusForbidden},
 		{http.MethodPost, "/api/v1/repurpose/plans/x/revisions", "agent/admin", "JSON", http.StatusUnauthorized},
@@ -220,6 +224,7 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 		{http.MethodGet, "/api/v1/repurpose/plans/x/export.edl", "admin", "none", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/repurpose/plans/x/export.fcpxml", "admin", "none", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/hub/worker-setup/context", "trusted", "none", http.StatusForbidden},
+		{http.MethodGet, "/api/v1/admin/hub/worker-setup/library-roots", "admin", "none", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/hub/worker-binaries/linux-amd64", "trusted", "none", http.StatusForbidden},
 		{http.MethodPost, "/api/v1/hub/worker-setup/script", "admin", "JSON", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/unknown", "catch-all", "none", http.StatusNotFound},
@@ -241,7 +246,7 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 func TestAPIRouteInventoryIsComplete(t *testing.T) {
 	server := NewServer("admin-token", newErrorEnvelopeTestService(t, "route-inventory"))
 	specs := server.routeInventory()
-	if got, want := len(specs), 108; got != want {
+	if got, want := len(specs), 110; got != want {
 		t.Fatalf("route inventory contains %d routes, want %d", got, want)
 	}
 	expected := strings.Split(expectedRouteInventoryPatterns, "\n")

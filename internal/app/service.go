@@ -167,6 +167,7 @@ type Repository interface {
 	DiscoverRareShots(context.Context, int) ([]domain.RareShot, error)
 	SaveRepurposePlan(context.Context, domain.RepurposePlan) (domain.RepurposePlan, error)
 	GetRepurposePlan(context.Context, string) (*domain.RepurposePlan, error)
+	ListRepurposePlans(context.Context, string, int) ([]domain.RepurposePlanSummary, error)
 	SaveRepurposePlanRevision(context.Context, domain.RepurposePlan, string) (domain.RepurposePlanRevision, error)
 	ListRepurposePlanRevisions(context.Context, string) ([]domain.RepurposePlanRevision, error)
 	ApproveRepurposePlanRevision(context.Context, string, int) (domain.RepurposePlanRevision, error)
@@ -1612,6 +1613,77 @@ func (s *Service) ListAssetShots(ctx context.Context, assetID string) ([]domain.
 	return s.repo.ListAssetShots(ctx, assetID)
 }
 
+// AssetTranscript is the API-facing transcript view for one asset: word-level
+// timing when a forced alignment exists, the ASR transcript's sentence
+// segments otherwise. source tells a transcript-driven editor where the
+// timestamps come from — aligned word boundaries are the strongest timing
+// evidence the pipeline has, asr segments are sentence-level only. The word
+// stream stays contiguous across shot boundaries: consumers think in
+// sentences, and imposing timingdex's shot atomicity would break their edit
+// model.
+type AssetTranscript struct {
+	AssetID  string                     `json:"asset_id"`
+	Source   string                     `json:"source"`
+	Language string                     `json:"language"`
+	Text     string                     `json:"text"`
+	Segments []domain.TranscriptSegment `json:"segments"`
+	Words    []domain.AlignmentWord     `json:"words,omitempty"`
+}
+
+// ErrTranscriptNotFound reports an asset that has neither an alignment word
+// stream nor an ASR transcript. align is an optional pipeline stage, so most
+// assets have ASR only; "no transcript at all" and "an empty transcript" are
+// different facts, and a transcript-driven editor must be able to tell them
+// apart — an empty 200 would read as silent footage.
+var ErrTranscriptNotFound = errors.New("asset has no transcript")
+
+// AssetTranscript resolves the asset's transcript with the strongest timing
+// evidence available. Alignment words win when present (source="aligned" and
+// words is populated); otherwise the ASR transcript's segments are returned
+// (source="asr", words omitted). An asset with neither answers
+// ErrTranscriptNotFound.
+func (s *Service) AssetTranscript(ctx context.Context, assetID string) (*AssetTranscript, error) {
+	words, err := s.repo.GetAlignmentWords(ctx, assetID)
+	if err != nil {
+		return nil, err
+	}
+	// TranscriptFromAlignmentWords drops degenerate words (EndMS <= StartMS);
+	// when none survive there is no usable timing evidence, so fall back to
+	// the ASR transcript rather than answer an empty "aligned" — the same
+	// signal the pipeline's analysis paths already treat as "keep ASR".
+	if aligned := domain.TranscriptFromAlignmentWords(words); aligned != nil {
+		out := &AssetTranscript{
+			AssetID:  assetID,
+			Source:   "aligned",
+			Text:     aligned.Text,
+			Segments: aligned.Segments,
+			Words:    words,
+		}
+		// language comes from the ASR transcript row — independent of the
+		// alignment run — and stays empty when no ASR transcript exists.
+		if full, err := s.repo.GetTranscript(ctx, assetID); err != nil {
+			return nil, err
+		} else if full != nil {
+			out.Language = full.Language
+		}
+		return out, nil
+	}
+	full, err := s.repo.GetTranscript(ctx, assetID)
+	if err != nil {
+		return nil, err
+	}
+	if full == nil {
+		return nil, ErrTranscriptNotFound
+	}
+	return &AssetTranscript{
+		AssetID:  assetID,
+		Source:   "asr",
+		Language: full.Language,
+		Text:     full.Text,
+		Segments: full.Segments,
+	}, nil
+}
+
 func (s *Service) SearchShots(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error) {
 	return s.repo.SearchShots(ctx, q, limit)
 }
@@ -1712,6 +1784,13 @@ func (s *Service) CreateRepurposePlan(ctx context.Context, brief domain.Repurpos
 
 func (s *Service) GetRepurposePlan(ctx context.Context, id string) (*domain.RepurposePlan, error) {
 	return s.repo.GetRepurposePlan(ctx, id)
+}
+
+// ListRepurposePlans returns the plan inbox projection (summaries only, never
+// candidate payloads), so a human can discover and open drafts an agent
+// created. status filters to draft or approved; empty/all returns both.
+func (s *Service) ListRepurposePlans(ctx context.Context, status string, limit int) ([]domain.RepurposePlanSummary, error) {
+	return s.repo.ListRepurposePlans(ctx, status, limit)
 }
 
 // ReviseRepurposePlan validates a proposed set of sections against the plan's

@@ -33,6 +33,10 @@ config.json
 # skills/timingdex/mcp/.mcp.json.example; a filled-in copy at the repo root or
 # anywhere else must never be committed.
 .mcp.json
+# The Claude Code plugin's declaration (plugins/claude/.mcp.json) is a
+# token-free template — stdio command plus ${VAR} env passthrough, never a
+# secret — so it is committed despite the general rule above.
+!plugins/claude/.mcp.json
 
 # Editor/backup noise.
 *.tmp

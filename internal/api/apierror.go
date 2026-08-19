@@ -102,7 +102,8 @@ func apiErrorFromError(err error) (int, APIError) {
 		errors.Is(err, domain.ErrShotVectorNotFound),
 		errors.Is(err, domain.ErrShotNotFound),
 		errors.Is(err, app.ErrCollectionNotFound),
-		errors.Is(err, app.ErrWebDAVSpaceNotFound):
+		errors.Is(err, app.ErrWebDAVSpaceNotFound),
+		errors.Is(err, app.ErrTranscriptNotFound):
 		return http.StatusNotFound, APIError{Code: "not_found", Message: "resource not found", Action: "check_the_identifier"}
 	case errors.Is(err, domain.ErrReorderInvalid):
 		return http.StatusConflict, APIError{Code: "conflict", Message: "the shot list no longer matches the collection's current pins", Retryable: true, Action: "refresh_the_basket"}
