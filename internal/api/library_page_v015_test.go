@@ -205,16 +205,16 @@ func TestLibraryPageCollectionsEmptyStateHasGuidance(t *testing.T) {
 	if !strings.Contains(page, `<p class="muted collections-hint" id="collections-hint" hidden>`) {
 		t.Fatalf("library page must ship a hidden collections hint next to the select")
 	}
-	if !strings.Contains(page, `还没有保存的视图。在搜索结果页可以把筛选保存为视图。`) {
+	if !strings.Contains(page, `还没有动态视图。在搜索结果页可以把筛选保存为动态视图。`) {
 		t.Fatalf("library page collections hint copy missing")
 	}
 	if !strings.Contains(page, `<option value="">不使用</option>`) {
 		t.Fatalf("the 不使用 option must stay in place when no collections exist")
 	}
-	if !strings.Contains(page, `collectionsHint(items.length?'':'还没有保存的视图。在搜索结果页可以把筛选保存为视图。',false)`) {
+	if !strings.Contains(page, `collectionsHint(views.length?'':'还没有动态视图。在搜索结果页可以把筛选保存为动态视图。',false)`) {
 		t.Fatalf("loadCollections() must show the hint when the fetched list is empty")
 	}
-	if !strings.Contains(page, `collectionsHint('无法加载保存的视图，请稍后再试。',true)`) {
+	if !strings.Contains(page, `collectionsHint('无法加载动态视图，请稍后再试。',true)`) {
 		t.Fatalf("loadCollections() must surface a fetch failure as a warning hint")
 	}
 }
