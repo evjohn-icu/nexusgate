@@ -894,6 +894,8 @@ timingdex-eval score --corpus ./corpus --data-dir ./eval --labels qwen3vl-4b,gem
 moved. Each release also has a version-scoped document under `docs/`:
 
 - [v0.30 — review-fix round goal and operations](docs/v0.30-review-fix-round.md)
+- [v0.31 — deployment guide](docs/v0.31-deployment.md)
+- [v0.31 — footage capability provider](docs/v0.31-footage-capability-provider.md)
 - [v0.31 — release-closure notes and verification status](docs/v0.31-release-notes.md)
 - [v0.21 — unattended inspection, quota-exhausted waiting, and timeline export](docs/v0.21-unattended-and-export.md)
 - [v0.21 — model provider deployment](docs/v0.21-provider-deployment.md)
