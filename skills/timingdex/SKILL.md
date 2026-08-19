@@ -66,7 +66,11 @@ hand-built HTTP calls:
    shot selections.
 6. `request_source_media(space_id, asset_id)` — when the user wants the
    footage delivered for editing, link the original media into the operator's
-   on-demand WebDAV space and return the mount path.
+   on-demand WebDAV space and return the mount path. This tool calls an
+   administrator-guarded route: it only works when a Hub administrator token is
+   configured on the MCP server, so with an agent-token-only configuration the
+   delivery step is operator-mediated (an operator creates the space and hands
+   the editing software its WebDAV credentials).
 
 The same boundaries apply: approval stays human, the pipeline is never run,
 and provider keys are never read.

@@ -25,6 +25,7 @@ Hub HTTP API — it never touches the NAS directly.
 |---|---|---|
 | `inspect_library` | GET /api/v1/health, /hardware | none (trusted network) |
 | `search_footage` | GET /api/v1/search/shots/hybrid | none (trusted network) |
+| `get_transcript` | GET /api/v1/assets/{id}/transcript | none (trusted network) |
 | `create_edit_plan` | POST /api/v1/repurpose/plans | agent |
 | `revise_edit_plan` | POST /api/v1/repurpose/plans/{id}/revisions | agent |
 | `request_source_media` | POST /api/v1/admin/webdav/spaces/{id}/links | admin |

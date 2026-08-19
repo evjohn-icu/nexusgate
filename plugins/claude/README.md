@@ -28,6 +28,10 @@ The MCP server reads these variables from the environment (the plugin's
   them or run the pipeline.
 - The agent never sees raw media paths, provider keys, or the administrator
   token.
+- The plugin passes only the agent token, so the admin-guarded
+  `request_source_media` MCP tool is not available here: original-media
+  delivery via WebDAV is operator-mediated (an operator creates the space and
+  hands the editing software its WebDAV credentials).
 
 ## Install
 
