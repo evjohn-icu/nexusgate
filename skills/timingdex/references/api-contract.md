@@ -74,8 +74,9 @@ GET /api/v1/agent/capabilities
 ```
 
 Require `approval_mode` to be `human_required`. `allowed_actions` currently
-contains `inspect_readiness`, `search_shots`, `create_draft_plan`,
-`inspect_plan`, and `revise_draft_plan`. `allowed_write_routes` lists the exact
+contains `inspect_readiness`, `search_shots`, `read_transcript`,
+`create_draft_plan`, `inspect_plan`, and `revise_draft_plan`.
+`allowed_write_routes` lists the exact
 routes that accept the agent token (the two `POST /api/v1/repurpose/plans...`
 routes above). `denied_actions` must include `approve_plan`, `run_pipeline`,
 `read_provider_keys`, `access_original_media_paths`, and `export_timeline`.

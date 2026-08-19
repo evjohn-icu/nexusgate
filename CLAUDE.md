@@ -68,8 +68,10 @@ then `timingdex worker run`; its config defaults to `~/.timingdex/worker.json`.
 `cmd/` holds five commands, not one. `timingdex` (~1.8k lines) is the product; the other four
 are satellites that must not be mistaken for dead directories: `timingdex-mcp` (~300 lines)
 exposes the library and the draft-plan workflow to MCP agents over stdio and is a **thin HTTP
-client of the Hub** — it holds no database handle and never touches the NAS, so its six tools
-inherit the same agent-token allowlist as `skills/timingdex/`; `timingdex-eval` and
+client of the Hub** — it holds no database handle and never touches the NAS, so its tools
+follow the same agent-token/trusted-read contract as `skills/timingdex/` except
+`request_source_media`, which links into the WebDAV space and is administrator-only;
+`timingdex-eval` and
 `timingdex-corpusgen` are the offline retrieval benchmark and its corpus generator;
 `timingdex-playwright-fixture` exists only so CI can compile-check the browser fixture.
 

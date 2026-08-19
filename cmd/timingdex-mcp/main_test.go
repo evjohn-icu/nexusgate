@@ -185,6 +185,37 @@ func TestGetTranscriptWithoutAgentTokenSurfacesRemote403(t *testing.T) {
 	}
 }
 
+// A word-level transcript for a long asset can exceed do()'s 1 MiB
+// success-body bound. getTranscript must decode the full body — truncating a
+// valid transcript would break the full-transcript contract.
+func TestGetTranscriptDecodesLargeTranscript(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/assets/{id}/transcript", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
+			http.Error(w, "transcript requires trusted read", http.StatusForbidden)
+			return
+		}
+		const n = 30000
+		words := make([]map[string]any, 0, n)
+		for i := range n {
+			words = append(words, map[string]any{"start_ms": i * 100, "end_ms": i*100 + 90, "text": "词语"})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"asset_id": r.PathValue("id"), "source": "aligned", "language": "zh", "words": words})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := &hubClient{baseURL: srv.URL, agentToken: "agent-tok", http: srv.Client()}
+	transcript, err := client.getTranscript(context.Background(), "asset-1")
+	if err != nil {
+		t.Fatalf("large transcript must decode without truncation: %v", err)
+	}
+	words, ok := transcript["words"].([]any)
+	if !ok || len(words) != 30000 {
+		t.Fatalf("words = %d, want all 30000 decoded", len(words))
+	}
+}
+
 // A client that never configured TIMINGDEX_AGENT_TOKEN is exactly the remote
 // 403 the v0.23.1 changelog claimed to have fixed and did not: the read routes
 // behind requireTrustedRead reject empty tokens off the trusted network, and

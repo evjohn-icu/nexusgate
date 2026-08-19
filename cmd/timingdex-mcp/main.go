@@ -166,14 +166,38 @@ func (c *hubClient) searchFootage(ctx context.Context, q string, limit int) ([]m
 	return out, nil
 }
 
+// maxTranscriptBytes bounds a transcript response body. A word-level
+// transcript is the one API response that legitimately outgrows do()'s 1 MiB
+// success-body bound (a long asset's full word stream), so getTranscript
+// decodes its own body; the cap still stops a misbehaving Hub from making the
+// process allocate without bound. No real transcript approaches it.
+const maxTranscriptBytes int64 = 64 << 20
+
 // getTranscript returns the asset's word-level timeline transcript. The
 // response's source field tells the caller where the timestamps come from:
 // "aligned" (word-level forced alignment, the strongest timing evidence) or
 // "asr" (sentence-level segments only). Uses the agent token like the other
 // trusted reads.
 func (c *hubClient) getTranscript(ctx context.Context, assetID string) (map[string]any, error) {
+	path := "/api/v1/assets/" + url.PathEscape(assetID) + "/transcript"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base()+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.agentToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.agentToken)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, fmt.Errorf("Hub API %s %s: %s (%s)", http.MethodGet, path, strings.TrimSpace(string(raw)), resp.Status)
+	}
 	var out map[string]any
-	if err := c.do(ctx, http.MethodGet, "/api/v1/assets/"+url.PathEscape(assetID)+"/transcript", c.agentToken, nil, &out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxTranscriptBytes)).Decode(&out); err != nil {
 		return nil, err
 	}
 	return out, nil
