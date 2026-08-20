@@ -37,6 +37,15 @@
   `plugins/claude/`) that declares `timingdex-mcp` over stdio and passes
   through `TIMINGDEX_BASE_URL`, `TIMINGDEX_AGENT_TOKEN` and
   `TIMINGDEX_HUB_FINGERPRINT`; the plugin ships no binary.
+- **Design round — the browser UI now closes its core workflows**: the
+  Repurpose workspace gained a plan inbox, deep links, revision history and
+  per-candidate proxy preview, so an agent-drafted plan can be discovered,
+  reviewed and human-approved after refresh; `/workers` is the front door to
+  the setup wizard (dead button removed); the Library has one search entry,
+  keyboard-operable shot timeline, and a mobile nav; Provider channels gain
+  full edit/enable/disable/delete management and Tags governance is wired with
+  error recovery; Collections distinguish dynamic views from pinned shot
+  lists; and every served page consumes a shared design-token vocabulary.
 - Release-closure work makes browser smoke deterministic and repository-owned,
   runs it over the fixture's HTTPS session boundary, pins Playwright and
   gitleaks, and makes browser regressions blocking once the clean-run gate is

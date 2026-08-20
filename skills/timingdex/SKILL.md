@@ -104,6 +104,10 @@ and provider keys are never read.
    `/api/v1/discover/rare-shots?limit=20`.
 4. Report each proposed clip as `asset_id`, `shot_id`, `start_ms`, `end_ms`,
    score and API-provided reasons. State “no match” when the result is empty.
+5. When the user needs narration or exact speech timing, read
+   `GET /api/v1/assets/{asset-id}/transcript` (word-level when `source=aligned`,
+   sentence segments when `source=asr`; `404` means the asset has no transcript
+   at all — never report that as silent footage).
 
 ### Create a draft plan
 

@@ -19,6 +19,14 @@ Hub HTTP API — it never touches the NAS directly.
    tokens and the Hub base URL. Codex reads `.mcp.json` from the project
    root or `~/.codex/`.
 
+## Cross-machine (HTTPS)
+
+When the Hub is on another machine, set `TIMINGDEX_BASE_URL` to
+`https://<hub-host>:8787` and set `TIMINGDEX_HUB_FINGERPRINT` to the Hub's
+SHA-256 certificate fingerprint printed by `timingdex serve` at startup. The
+client refuses to start with an https base URL and no fingerprint rather than
+silently accept any certificate; `http://` remains for local development.
+
 ## Tools
 
 | Tool | Hub endpoint | Token |
