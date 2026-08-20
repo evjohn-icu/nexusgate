@@ -205,16 +205,16 @@ func TestLibraryPageCollectionsEmptyStateHasGuidance(t *testing.T) {
 	if !strings.Contains(page, `<p class="muted collections-hint" id="collections-hint" hidden>`) {
 		t.Fatalf("library page must ship a hidden collections hint next to the select")
 	}
-	if !strings.Contains(page, `还没有动态视图。在搜索结果页可以把筛选保存为动态视图。`) {
+	if !strings.Contains(page, `还没有收藏的筛选。在搜索结果页可以把筛选保存为收藏的筛选。`) {
 		t.Fatalf("library page collections hint copy missing")
 	}
 	if !strings.Contains(page, `<option value="">不使用</option>`) {
 		t.Fatalf("the 不使用 option must stay in place when no collections exist")
 	}
-	if !strings.Contains(page, `collectionsHint(views.length?'':'还没有动态视图。在搜索结果页可以把筛选保存为动态视图。',false)`) {
+	if !strings.Contains(page, `collectionsHint(views.length?'':'还没有收藏的筛选。在搜索结果页可以把筛选保存为收藏的筛选。',false)`) {
 		t.Fatalf("loadCollections() must show the hint when the fetched list is empty")
 	}
-	if !strings.Contains(page, `collectionsHint('无法加载动态视图，请稍后再试。',true)`) {
+	if !strings.Contains(page, `collectionsHint('无法加载收藏的筛选，请稍后再试。',true)`) {
 		t.Fatalf("loadCollections() must surface a fetch failure as a warning hint")
 	}
 }
@@ -249,7 +249,7 @@ func TestLibraryPageSearchIsShotFirst(t *testing.T) {
 		`shot-result-file`, // owning asset filename rendered
 		`s.filename`,       // filename comes from the joined asset
 		`shotEvidence(s)`,  // the evidence line renders per card
-		`为什么命中：`,           // the evidence line is human-readable
+		`为什么找到它：`,          // the evidence line is human-readable
 		`未确认`,              // unknown evidence must render, not vanish
 		`/api/v1/assets/'+encodeURIComponent(s.asset_id)+'/thumbnail`, // shot thumb via asset endpoint
 	} {
@@ -310,8 +310,8 @@ func TestLibraryPageSelectionFeatures(t *testing.T) {
 		`/api/v1/collections',{headers:authHeaders()}`,
 		`/api/v1/collections/'+encodeURIComponent(cid)+'/shots'`,
 		`createAndAddCollection()`,
-		`需要管理 Token：请先在左侧栏填入`,
-		`复制时间码`,
+		`需要 Hub 管理口令：请先在左侧栏填入`,
+		`复制时间标记`,
 		`copyTimecode(this)`,
 		`navigator.clipboard.writeText`,
 		`document.execCommand('copy')`,
@@ -319,7 +319,7 @@ func TestLibraryPageSelectionFeatures(t *testing.T) {
 		`相似镜头`,
 		`loadSimilarShots()`,
 		`/api/v1/shots/'+encodeURIComponent(shotId)+'/similar'`,
-		`先分析几个片段`,
+		`先试分析几个`,
 		`testDriveStart`,
 		`'/api/v1/test-drive'`,
 		`test-drive/suggestions?assets='+ids.map(encodeURIComponent).join(',')`,
@@ -335,7 +335,7 @@ func TestLibraryPageSelectionFeatures(t *testing.T) {
 	}
 	// The test-drive coaching must also reach the browse-mode timeline-empty
 	// state, not just the search-empty state.
-	if !strings.Contains(page, `<div class="timeline-empty"><span>尚未生成镜头理解；完成分析后会显示可用时间段。</span><button class="shot-add" onclick="testDriveStart(this)">`) {
+	if !strings.Contains(page, `<div class="timeline-empty"><span>还没看懂镜头；分析完会显示可用的时间段。</span><button class="shot-add" onclick="testDriveStart(this)">先试分析几个</button>`) {
 		t.Fatalf("timeline-empty state missing the test-drive coaching")
 	}
 }

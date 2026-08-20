@@ -102,7 +102,7 @@ func TestProgressPageRendersTheSupervisorSchedule(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d", response.Code)
 	}
-	for _, marker := range []string{`id="supervisor"`, "/api/v1/pipeline/supervisor", "无人值守巡检", "held_off_peak", "next_pass_at"} {
+	for _, marker := range []string{`id="supervisor"`, "/api/v1/pipeline/supervisor", "自动巡检", "held_off_peak", "next_pass_at"} {
 		if !strings.Contains(response.Body.String(), marker) {
 			t.Fatalf("progress page missing %q", marker)
 		}

@@ -39,14 +39,14 @@ func shelledPage(page string) string {
 // tag), and body padding reserves its 220px gutter on wide screens.
 func shellHeaderHTML() string {
 	var b strings.Builder
-	b.WriteString(`<aside class="shell-sidebar" data-app-shell><div class="shell-brand-row"><span class="brand">Timingdex</span><span class="shell-tagline">本地素材智能层</span><button type="button" class="shell-menu-toggle" id="shell-menu-toggle" aria-expanded="false" aria-controls="shell-nav">导航</button></div><nav class="shell-nav" id="shell-nav" aria-label="主导航">`)
+	b.WriteString(`<aside class="shell-sidebar" data-app-shell><div class="shell-brand-row"><span class="brand">Timingdex</span><span class="shell-tagline">本地的素材智能库</span><button type="button" class="shell-menu-toggle" id="shell-menu-toggle" aria-expanded="false" aria-controls="shell-nav">导航</button></div><nav class="shell-nav" id="shell-nav" aria-label="主导航">`)
 	groups := []struct {
 		title    string
 		advanced bool
 		links    [][2]string // label, href
 	}{
 		{"核心", false, [][2]string{{"素材库", "/"}, {"收藏", "/collections"}, {"翻新方案", "/repurpose"}, {"处理进度", "/progress"}}},
-		{"高级 / 运维", true, [][2]string{{"模型服务", "/providers"}, {"处理节点", "/workers"}, {"节点安装", "/worker-setup"}, {"素材目录", "/library-roots"}, {"Tags", "/tags"}, {"启动配置", "/setup"}, {"设置", "/settings"}}},
+		{"高级 / 管理", true, [][2]string{{"模型服务", "/providers"}, {"处理节点", "/workers"}, {"节点安装", "/worker-setup"}, {"素材目录", "/library-roots"}, {"Tags", "/tags"}, {"启动配置", "/setup"}, {"设置", "/settings"}}},
 	}
 	for _, g := range groups {
 		className := "nav-group"
@@ -59,14 +59,14 @@ func shellHeaderHTML() string {
 		}
 		b.WriteString(`</div>`)
 	}
-	b.WriteString(`</nav><div class="shell-actions"><div class="shell-auth"><input id="admin-token" type="password" autocomplete="off" placeholder="Hub 管理 Token（仅用于登录）" aria-label="Hub 管理 Token"><button type="button" id="admin-login" onclick="loginAdmin()">登录</button><button type="button" id="admin-logout" onclick="logoutAdmin()" hidden>退出</button><span id="admin-session-state" class="shell-auth-state">未登录</span></div><div class="status-strip" data-status-strip aria-label="系统状态">`)
+	b.WriteString(`</nav><div class="shell-actions"><div class="shell-auth"><input id="admin-token" type="password" autocomplete="off" placeholder="Hub 管理口令（仅用于登录）" aria-label="Hub 管理口令"><button type="button" id="admin-login" onclick="loginAdmin()">登录</button><button type="button" id="admin-logout" onclick="logoutAdmin()" hidden>退出</button><span id="admin-session-state" class="shell-auth-state">未登录</span></div><div class="status-strip" data-status-strip aria-label="系统状态">`)
 	cells := []struct {
 		id, title, label string
 	}{
 		{"status-hub", "Hub 状态", "Hub"},
-		{"status-pipeline", "处理队列状态", "Pipeline"},
-		{"status-providers", "模型服务状态", "Providers"},
-		{"status-workers", "Worker 状态", "Workers"},
+		{"status-pipeline", "处理队列状态", "处理"},
+		{"status-providers", "模型服务状态", "模型"},
+		{"status-workers", "处理节点状态", "节点"},
 	}
 	for _, c := range cells {
 		b.WriteString(`<a class="status-cell" data-` + c.id + ` href="` + cellHref(c.id) + `" title="` + c.title + `"><i class="dot"></i><b id="` + c.id + `">…</b></a>`)
@@ -170,7 +170,7 @@ function statusCell(id,state,text){const el=document.getElementById(id);if(!el)r
 document.querySelectorAll('.nav-link').forEach(function(a){if(a.getAttribute('href')===location.pathname){a.classList.add('active');a.setAttribute('aria-current','page')}});
 async function refreshStatus(){
   try{const r=await fetch('/api/v1/health');statusCell('status-hub',r.ok?'ok':'err',r.ok?'Hub 正常':'Hub 异常')}catch(e){statusCell('status-hub','err','Hub 异常')}
-  try{const s=await fetch('/api/v1/jobs/summary',{credentials:'same-origin',headers:shellAuthHeaders()}).then(r=>r.ok?r.json():null);if(s){let state='idle',text='空闲';if(s.running>0){state='ok';text='运行中 '+s.running}else if(s.deferred>0){state='warn';text='等待额度 '+s.deferred}else if((s.failed||0)+(s.terminal||0)>0){state='err';text='失败 '+(s.failed+s.terminal)}else if(s.pending>0){text='排队 '+s.pending}statusCell('status-pipeline',state,text)}else{statusCell('status-pipeline','off','—')}}catch(e){statusCell('status-pipeline','off','—')}
+  try{const s=await fetch('/api/v1/jobs/summary',{credentials:'same-origin',headers:shellAuthHeaders()}).then(r=>r.ok?r.json():null);if(s){let state='idle',text='空闲';if(s.running>0){state='ok';text='运行中 '+s.running}else if(s.deferred>0){state='warn';text='等用量 '+s.deferred}else if((s.failed||0)+(s.terminal||0)>0){state='err';text='失败 '+(s.failed+s.terminal)}else if(s.pending>0){text='排队 '+s.pending}statusCell('status-pipeline',state,text)}else{statusCell('status-pipeline','off','—')}}catch(e){statusCell('status-pipeline','off','—')}
   try{const r=await fetch('/api/v1/admin/provider-channels/status',{headers:shellAuthHeaders()});if(r.ok){const caps=await r.json();const list=Array.isArray(caps)?caps:[];const anyData=list.some(c=>c&&c.has_runtime_data);let okN=0,degradedN=0;list.forEach(function(c){if(!c||!c.has_runtime_data||!c.snapshot||!Array.isArray(c.snapshot.channels))return;c.snapshot.channels.forEach(function(ch){if(!ch||!ch.enabled)return;if(ch.available)okN++;else degradedN++})});if(!anyData||(okN+degradedN)===0){statusCell('status-providers','off','未配置')}else if(degradedN>0){statusCell('status-providers','warn','降级 '+degradedN)}else{statusCell('status-providers','ok','正常 '+okN)}}else{statusCell('status-providers','err','异常')}}catch(e){statusCell('status-providers','off','—')}
   try{const w=await fetch('/api/v1/hub/workers',{headers:shellAuthHeaders()}).then(r=>r.ok?r.json():null);if(Array.isArray(w)){const on=w.filter(x=>x.status==='online').length;const off=w.length-on;statusCell('status-workers',off>0?'warn':'ok',on+' 在线'+(off?' / '+off+' 离线':''))}else{statusCell('status-workers','off','—')}}catch(e){statusCell('status-workers','off','—')}
 }

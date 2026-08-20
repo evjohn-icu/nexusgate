@@ -93,7 +93,7 @@ func TestProvidersPageAdvancedConfigKeepsFieldIdsAndClasses(t *testing.T) {
 	body := response.Body.String()
 	for _, marker := range []string{
 		`<details class="advanced-config wide">`,
-		`<summary>高级配置</summary>`,
+		`<summary>高级设置</summary>`,
 		`id="weight"`,
 		`id="max-inflight"`,
 		`class="m-weight"`,
@@ -125,7 +125,7 @@ func TestProvidersPageShowsRuntimeHealthStatusLine(t *testing.T) {
 		`/api/v1/admin/provider-channels/status`,
 		`has_runtime_data`,
 		`ch.available`,
-		`暂无运行数据`,
+		`还没有使用记录`,
 		`部分服务降级`,
 		`服务正常`,
 	} {
@@ -157,14 +157,14 @@ func TestProvidersPageRendersPerMemberHealth(t *testing.T) {
 		`cooldown_until`,
 		`half_open`,
 		`last_failure_retryable`,
-		`<span class="pill bad">退休</span>`,
-		`<span class="pill warn">冷却中`,
+		`<span class="pill bad">停用</span>`,
+		`<span class="pill warn">等待中`,
 		`<span class="pill ok">正常</span>`,
 		`<span class="pill warn">最近失败（可重试）</span>`,
 		`<span class="pill bad">最近失败</span>`,
 		`成功 '+(Number(s.successes)||0)`,
-		`429 '+(Number(s.retryable_429)||0)`,
-		`5xx '+(Number(s.server_error_5xx)||0)`,
+		`限流 '+(Number(s.retryable_429)||0)`,
+		`服务端错误 '+(Number(s.server_error_5xx)||0)`,
 		`延迟 '+(Number(s.latency_ms)||0)`,
 		`上次成功`,
 		`无记录`,
@@ -175,7 +175,7 @@ func TestProvidersPageRendersPerMemberHealth(t *testing.T) {
 	}
 	// Fresh restart: no capability has runtime data yet, so member rows render
 	// the muted line instead of any pill, and the health line agrees.
-	if !strings.Contains(body, `if(!anyRuntimeData)return'<div class="member-health muted">暂无运行数据</div>'`) {
+	if !strings.Contains(body, `if(!anyRuntimeData)return'<div class="member-health muted">还没有使用记录</div>'`) {
 		t.Fatalf("member rows must show 暂无运行数据 when the status fetch has no runtime data")
 	}
 	// The health line and the member rows must not fight over one fetch: the
@@ -196,7 +196,7 @@ func TestProvidersPageHasTestChannelButton(t *testing.T) {
 	body := providersHTML
 	for _, marker := range []string{
 		`data-act="test-channel"`,
-		`测试</button>`,
+		`试试能不能用</button>`,
 		`test-result-'+esc(c.id)`,
 		`model_responded`,
 		`模型已响应`,
@@ -219,7 +219,7 @@ func TestProvidersPageHasTestChannelButton(t *testing.T) {
 func TestProvidersPageHasOneClickModelProbe(t *testing.T) {
 	body := providersHTML
 	for _, marker := range []string{
-		`读取模型</button>`,
+		`看看有哪些模型</button>`,
 		`id="probe-models"`,
 		`probe-models'`,
 		`list="model-options"`,

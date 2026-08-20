@@ -25,9 +25,9 @@ func TestSetupWizardPageServesFirstRunWizard(t *testing.T) {
 		"第一次使用向导",
 		"环境检查",
 		"素材目录",
-		"模型能力",
-		"Timingdex 从不写入原始素材。素材只读打开，派生文件放在缓存目录。",
-		"页面不会生成含 API Key 的终端命令",
+		"模型服务",
+		"Timingdex 从不改动原始素材。素材只读打开，生成的文件放在缓存目录。",
+		"页面不会生成含密钥的命令",
 		`fetch('/api/v1/setup/status')`,
 		`href="/library-roots"`,
 		`href="/providers"`,
@@ -52,10 +52,10 @@ func TestSetupWizardPageRendersEnvRowsAndNextStepMapping(t *testing.T) {
 		`id="env-ffmpeg"`, `id="env-ffprobe"`, `id="env-exiftool"`,
 		`id="env-datadir"`, `id="env-cache"`, `id="env-disk"`, `id="env-db"`,
 		`id="pill-env"`, `id="pill-roots"`, `id="pill-providers"`, `id="pill-status"`,
-		"✓ Ready", "✗ Needs action", "⚠ Optional",
+		"✓ 正常", "✗ 需要处理", "⚠ 可选",
 		"已完成", "待处理",
 		`'add_footage'`, `'configure_providers'`, `'scan_or_process'`, `'search'`, `'ready'`,
-		"下一步：添加素材目录", "下一步：配置模型", "下一步：扫描并处理素材", "可以去搜索素材了", "一切就绪",
+		"下一步：添加素材目录", "下一步：给功能配上模型", "下一步：扫描并处理素材", "可以去搜索素材了", "一切就绪",
 		"无法连接状态接口", // fetch failure must degrade to a retry hint, never a broken page
 	} {
 		if !strings.Contains(page, marker) {

@@ -24,15 +24,15 @@ const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset=
 <div class="wrap">
 <div class="panel" id="root-health-section">
 <h2>素材目录状态</h2>
-<p class="muted">每个已添加素材目录的健康状态。目录离线时，缺失文件对账会暂停，不会把素材标记为缺失。</p>
+<p class="muted">每个已加素材目录的健康状态。目录离线时，缺文件的核对会暂停，不会把素材标成缺失。</p>
 <div id="root-health-wrap"><div class="muted">正在读取…</div></div>
 </div>
 
-<div class="step-nav" id="step-nav"><div class="active" data-step="1">1. 输入路径或共享</div><div data-step="2">2. 挂载说明</div><div data-step="3">3. 验证挂载</div><div data-step="4">4. 添加并扫描</div></div>
+<div class="step-nav" id="step-nav"><div class="active" data-step="1">1. 输入路径</div><div data-step="2">2. 接入说明</div><div data-step="3">3. 验证接入</div><div data-step="4">4. 添加并扫描</div></div>
 
 <div class="step active" id="step-1">
 <div class="panel"><h2>本机目录，或者 NAS / SMB 共享</h2>
-<p class="muted">直接输入本机已经能访问的目录，会立即添加为素材目录。如果输入的是网络共享地址（例如 <code>//nas/Video</code>、<code>smb://user@host/share</code>、<code>host:/export</code>），会先给出挂载命令，不会猜测密码，也不会替你执行挂载。</p>
+<p class="muted">直接输入本机能访问的目录，会立即添加为素材目录。如果输入的是网络共享地址（例如 <code>//nas/Video</code>、<code>smb://user@host/share</code>、<code>host:/export</code>），会先给出接入命令，不会猜密码，也不会替你执行接入。</p>
 <div class="field"><label for="root-input">路径或共享地址</label><input id="root-input" type="text" placeholder="/Users/me/Footage 或 //nas.local/Video"></div>
 <div id="step1-status" class="hint"></div>
 <div class="step-actions"><button class="primary" onclick="startInspect()">下一步 →</button></div>
@@ -43,18 +43,18 @@ const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset=
 <div class="panel"><h2>这是一个网络共享</h2>
 <div id="share-summary"></div>
 <p class="muted" id="guide-summary"></p>
-<div class="field"><label for="mountpoint">挂载点（可修改，会重新生成下面的命令）</label><input id="mountpoint" type="text" onchange="regenerateGuidance()"></div>
+<div class="field"><label for="mountpoint">接入点（可改，会重新生成下面的命令）</label><input id="mountpoint" type="text" onchange="regenerateGuidance()"></div>
 <div id="guide-body"></div>
 </div>
 <div class="panel" id="compose-section" style="display:none"></div>
-<div class="step-actions"><button class="nav-btn secondary" onclick="goStep(1)">← 上一步</button><button class="nav-btn primary" onclick="goVerify()">我已完成挂载，验证 →</button></div>
+<div class="step-actions"><button class="nav-btn secondary" onclick="goStep(1)">← 上一步</button><button class="nav-btn primary" onclick="goVerify()">我已完成接入，验证 →</button></div>
 </div>
 
 <div class="step" id="step-3">
-<div class="panel"><h2>验证挂载</h2>
-<p class="muted">向 Hub 确认挂载点现在是否存在、是不是目录，以及它是不是一个网络挂载。</p>
+<div class="panel"><h2>验证接入</h2>
+<p class="muted">让 Hub 确认接入点是否存在、是不是目录、是不是网络共享。</p>
 <div id="verify-result"></div>
-<div class="step-actions"><button class="nav-btn secondary" onclick="goStep(2)">← 返回挂载说明</button><button class="nav-btn secondary" onclick="verifyMount()">重新检查</button><button class="nav-btn primary" id="verify-add-btn" style="display:none" onclick="addFromVerify()">添加为素材目录 →</button></div>
+<div class="step-actions"><button class="nav-btn secondary" onclick="goStep(2)">← 返回接入说明</button><button class="nav-btn secondary" onclick="verifyMount()">重新检查</button><button class="nav-btn primary" id="verify-add-btn" style="display:none" onclick="addFromVerify()">添加为素材目录 →</button></div>
 </div>
 </div>
 
@@ -63,7 +63,7 @@ const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset=
 <div id="added-summary"></div>
 <div class="center"><button class="primary" id="scan-btn" style="display:none" onclick="startScan()">开始扫描</button></div>
 <div id="scan-result"></div>
-<p class="muted">扫描会在后台把发现的素材加入处理队列；进度可以在「<a href="/progress">处理进度</a>」查看。</p>
+<p class="muted">扫描会在后台把发现的素材加进处理队列；进度在「<a href="/progress">处理进度</a>」看。</p>
 </div>
 </div>
 
@@ -86,16 +86,16 @@ const esc=function(v){return String(v??'').replace(/[&<>"']/g,function(c){return
 // matching entry here fails the build instead of shipping silently in
 // English.
 const MOUNT_TR={
-  'create-mountpoint':'创建挂载点',
+  'create-mountpoint':'创建接入点',
   'smb-credentials-file':'把凭据写入仅 root 可读的文件',
-  'smb-mount':'以只读方式挂载共享',
-  'nfs-mount':'以只读方式挂载 NFS 导出目录',
+  'smb-mount':'以只读方式接入共享',
+  'nfs-mount':'以只读方式接入 NFS 导出目录',
   'fstab':'写入 /etc/fstab，让挂载在重启后依然生效',
-  'add-root':'把挂载点添加为素材目录',
+  'add-root':'把接入点添加为素材目录',
   'add-root-in-container':'回到 Hub 容器里执行 —— 宿主机上的这个目录在容器内是另一个路径，要记录的是容器内的那个',
   'add-root-not-visible':'这个挂载点不在绑定进本容器的目录之下，Hub 永远看不到它。请改挂到绑定目录之下再重跑本向导，或者用能覆盖它的绑定重建容器。',
-  'windows-map':'映射共享',
-  'darwin-mount':'挂载共享（密码会在终端提示中输入，不会出现在命令里）',
+  'windows-map':'接入共享',
+  'darwin-mount':'接入共享（密码会在终端提示里输入，不会出现在命令里）',
   'container-run-on-host':'请在运行 Docker 的宿主机上执行以下命令——不是在这个容器里面',
   'read-only':'挂载被特意设为只读。素材本身从不会被写入；只读挂载能让这一点对整个共享成立，而不只是对本程序成立。',
   'staging-copy':'为网络素材目录在 config.json 中设置 "source_staging": {"mode": "copy"}。如果每次生成衍生文件都要让 FFmpeg 通过 SMB 读取 4K 源文件，NAS 素材库会慢到无法忍受；copy 模式会先把源文件缓存到 cache/sources/，之后不再重复经过网络读取。',
@@ -116,7 +116,7 @@ function tr(key,fallback){var v=MOUNT_TR[key];return v!==undefined?v:fallback}
 // Key of its own the way steps and notes are.
 function translatedSummary(inspection){
   var path=(inspection&&inspection.path)||'';
-  return path+' 是一个网络共享，不是本机路径。请先挂载它，再把挂载点添加为素材目录。';
+  return path+' 是网络共享，不是本机路径。请先接入它，再把接入点添加为素材目录。';
 }
  function csrfToken(){var prefix='__Host-timingdex_csrf=';var item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
  function authHeaders(base){var headers=new Headers(base||{});var csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
@@ -129,7 +129,7 @@ async function loadRootHealth(){
   var wrap=document.getElementById('root-health-wrap');
   if(!wrap)return;
   var list;
-  try{list=await json('/api/v1/roots/health')}catch(e){wrap.innerHTML='<div class="muted">需要 Hub 管理 Token 才能查看目录状态。</div>';return}
+  try{list=await json('/api/v1/roots/health')}catch(e){wrap.innerHTML='<div class="muted">需要 Hub 管理口令才能查看目录状态。</div>';return}
   if(!list||!list.length){wrap.innerHTML='<div class="muted">暂无素材目录。添加后这里会显示健康状态。</div>';return}
   var warns=[];
   var rows=list.map(function(h){
@@ -140,14 +140,14 @@ async function loadRootHealth(){
       // The reconciliation gate pauses on an unavailable root (the scan
       // service's verdict, not this page's) so assets are never marked
       // missing while the root itself is the thing that is gone.
-      warns.push('<div class="health-warn">⚠ 目录离线 — 暂停缺失文件对账（不会把素材标记为缺失）。<br>Last healthy：'+esc(healthTime(h.last_healthy_at))+'</div>');
+      warns.push('<div class="health-warn">⚠ 目录离线 — 暂停缺失文件核对（不会把素材标记为缺失）。<br>上次正常：'+esc(healthTime(h.last_healthy_at))+'</div>');
     }
     // warnings is the same advice Doctor prints for a root (network mount,
     // staging-copy recommendation, writable mount) — see Service.RootWarnings.
     var tips=(h.warnings||[]).map(function(w){return '<div class="root-warning">⚠ '+esc(w)+'</div>'}).join('');
     return '<tr><td class="health-path">'+esc(h.path)+'</td><td><span class="health-pill '+pill+'">'+label+'</span></td><td>'+esc(healthTime(h.last_healthy_at))+'</td><td>'+esc(healthTime(h.last_scan_at))+'</td><td class="health-tips">'+tips+'</td></tr>';
   }).join('');
-  wrap.innerHTML='<table class="health-table"><tr><th>路径</th><th>状态</th><th>Last healthy</th><th>上次扫描</th><th>提示</th></tr>'+rows+'</table>'+warns.join('');
+  wrap.innerHTML='<table class="health-table"><tr><th>路径</th><th>状态</th><th>上次正常</th><th>上次扫描</th><th>提示</th></tr>'+rows+'</table>'+warns.join('');
 }
 loadRootHealth();
 
@@ -160,7 +160,7 @@ async function addRoot(path){
   var body=null;
   try{body=await response.json()}catch(e){}
   if(response.status===422&&body&&body.inspection){
-    var shareErr=new Error((body.error&&body.error.message)||(typeof body.error==='string'?body.error:'')||'该共享尚未挂载');
+    var shareErr=new Error((body.error&&body.error.message)||(typeof body.error==='string'?body.error:'')||'这个共享还没接入');
     shareErr.shareNotMounted=true;
     shareErr.inspection=body.inspection;
     throw shareErr;
@@ -241,7 +241,7 @@ function renderComposeVolume(inspection){
 
 function renderGuideBody(guidance){
   var container=document.getElementById('guide-body');
-  if(!guidance||!guidance.steps){container.innerHTML='<div class="muted">没有可用的挂载说明。</div>';return}
+  if(!guidance||!guidance.steps){container.innerHTML='<div class="muted">没有可用的接入说明。</div>';return}
   var html='';
   guidance.steps.forEach(function(step,i){
     html+='<div class="guide-step"><div class="guide-step-title">'+(i+1)+'. '+esc(tr(step.key,step.title))+'</div>';
@@ -276,7 +276,7 @@ async function verifyMount(){
   var mp=document.getElementById('mountpoint').value.trim();
   var el=document.getElementById('verify-result');
   document.getElementById('verify-add-btn').style.display='none';
-  if(!mp){el.innerHTML='<div class="hint bad">挂载点为空。</div>';return}
+  if(!mp){el.innerHTML='<div class="hint bad">接入点是空的。</div>';return}
   el.innerHTML='<div class="muted">正在检查…</div>';
   try{
     var inspection=await json('/api/v1/roots/inspect',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({path:mp})});
@@ -292,11 +292,11 @@ async function verifyMount(){
       if(inspection.network){lines.push('<div class="muted">文件系统：'+esc(inspection.network_label||inspection.filesystem_type)+'（'+esc(inspection.filesystem_type)+'）</div>')}
       document.getElementById('verify-add-btn').style.display='';
     }else if(!inspection.exists){
-      lines.push('<div class="hint bad">'+esc(checked)+' 尚不存在。请先完成上一步的挂载命令，再点击「重新检查」。</div>');
+      lines.push('<div class="hint bad">'+esc(checked)+' 尚不存在。请先完成上一步的接入命令，再点击「重新检查」。</div>');
     }else{
       lines.push('<div class="hint bad">'+esc(checked)+' 存在，但不是目录。</div>');
     }
-    if(inspection.looks_unmounted){lines.push('<div class="hint bad">这个目录是空的，并且它本身不是挂载点——共享可能没有真正挂载上。</div>')}
+    if(inspection.looks_unmounted){lines.push('<div class="hint bad">这个目录是空的，而且它本身不是接入点——共享可能没真正接上。</div>')}
     (inspection.warnings||[]).forEach(function(w){lines.push('<div class="hint">'+esc(w)+'</div>')});
     el.innerHTML=lines.join('');
   }catch(e){
@@ -314,7 +314,7 @@ async function addFromVerify(){
     goStep(4);
   }catch(e){
     if(e.shareNotMounted){
-      el.innerHTML+='<div class="hint bad">添加失败：共享未挂载。'+esc(e.message)+'</div>';
+      el.innerHTML+='<div class="hint bad">添加失败：共享未接入。'+esc(e.message)+'</div>';
       renderGuidance(e.inspection);
       goStep(2);
       return;

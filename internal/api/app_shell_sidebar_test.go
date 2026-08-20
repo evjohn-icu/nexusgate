@@ -16,9 +16,9 @@ func TestShellSidebarMarkup(t *testing.T) {
 	for _, want := range []string{
 		`<aside class="shell-sidebar" data-app-shell>`,
 		`<span class="brand">Timingdex</span>`,
-		`<span class="shell-tagline">本地素材智能层</span>`,
+		`<span class="shell-tagline">本地的素材智能库</span>`,
 		`<span class="nav-group-title">核心</span>`,
-		`<div class="nav-group nav-group-advanced"><span class="nav-group-title">高级 / 运维</span>`,
+		`<div class="nav-group nav-group-advanced"><span class="nav-group-title">高级 / 管理</span>`,
 		`id="admin-token"`,
 		`id="admin-login"`,
 		`onclick="loginAdmin()"`,

@@ -281,7 +281,7 @@ func TestProgressPageRendersIssuesSection(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	for _, marker := range []string{"需处理的问题", "重试此组", "issuesRefresh", "issuesRow", "retryIssueGroup", "/api/v1/issues"} {
+	for _, marker := range []string{"需处理的问题", "重试这组", "issuesRefresh", "issuesRow", "retryIssueGroup", "/api/v1/issues"} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("progress page missing %q", marker)
 		}

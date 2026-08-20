@@ -672,7 +672,7 @@ func TestWorkersPageShowsNodeAndWorkflowProgressSurfaces(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	for _, marker := range []string{"处理节点", "工作流进度", "/api/v1/hub/workers", "/api/v1/jobs", "data-workers-page", "admin-token", "生成配对 Token", "X-CSRF-Token"} {
+	for _, marker := range []string{"处理节点", "任务进度", "/api/v1/hub/workers", "/api/v1/jobs", "data-workers-page", "admin-token", "生成配对口令", "X-CSRF-Token"} {
 		if !strings.Contains(response.Body.String(), marker) {
 			t.Fatalf("workers page missing %q", marker)
 		}
@@ -1381,7 +1381,7 @@ func TestHandlerServesLocalWorkspacePages(t *testing.T) {
 		{path: "/", marker: "素材库"},
 		{path: "/setup", marker: "启动配置"},
 		{path: "/progress", marker: "处理进度"},
-		{path: "/repurpose", marker: "翻新工作台"},
+		{path: "/repurpose", marker: "改编工作台"},
 	} {
 		t.Run(page.path, func(t *testing.T) {
 			response := httptest.NewRecorder()
@@ -1424,16 +1424,16 @@ func TestProvidersPageShowsCapabilityGroupsAndEphemeralAdminToken(t *testing.T) 
 	}
 	body := response.Body.String()
 	for _, marker := range []string{
-		"能力与服务",
-		"Video analysis",
-		"ASR",
-		"语义检索",
-		"Tag curation",
-		"Repurpose",
+		"模型服务",
+		"视频理解",
+		"语音转文字",
+		"语义搜索",
+		"自动打标签",
+		"方案助手",
 		`id="admin-token"`,
 		`type="password"`,
 		"当前页面",
-		"API Key",
+		"密钥",
 		"adminHeaders",
 		`id="channel-form"`,
 		`id="capability"`,
@@ -1456,7 +1456,7 @@ func TestSetupPageDelegatesProviderKeysToProtectedChannelManager(t *testing.T) {
 	response := httptest.NewRecorder()
 	NewServer("", nil).setupPage(response, httptest.NewRequest(http.MethodGet, "/setup", nil))
 	body := response.Body.String()
-	if !strings.Contains(body, `href="/providers"`) || !strings.Contains(body, "模型通道") {
+	if !strings.Contains(body, `href="/providers"`) || !strings.Contains(body, "模型服务") {
 		t.Fatalf("setup page must direct provider configuration to the protected channel manager")
 	}
 	for _, leakedPattern := range []string{`id="key"`, "GEMINI_API_KEY", "DASHSCOPE_API_KEY", "ARK_API_KEY"} {
@@ -1826,7 +1826,7 @@ func TestHandlerServesRepurposeSelectionWorkspace(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	for _, marker := range []string{"保存为新版本", "选择", "锁定选择", "找替代镜头", "排除", "预览"} {
+	for _, marker := range []string{"保存为新版本", "选择", "锁住选择", "找替代镜头", "排除", "预览"} {
 		if !bytes.Contains(response.Body.Bytes(), []byte(marker)) {
 			t.Fatalf("repurpose selection workspace missing marker %q", marker)
 		}
@@ -1954,7 +1954,7 @@ func TestProgressSurfacesJobsWaitingOnProviderQuota(t *testing.T) {
 
 	page := httptest.NewRecorder()
 	handler.ServeHTTP(page, lanRequest(http.MethodGet, "/progress", nil))
-	for _, marker := range []string{"deferred_reason", "等待服务商额度", "等待额度"} {
+	for _, marker := range []string{"deferred_reason", "等服务商用量", "等用量"} {
 		if !strings.Contains(page.Body.String(), marker) {
 			t.Fatalf("progress page does not render the quota wait: missing %q", marker)
 		}

@@ -48,11 +48,11 @@ func TestWorkerSetupPageRendersWithStepMarkers(t *testing.T) {
 	body := response.Body.String()
 	for _, marker := range []string{
 		"data-worker-setup-wizard",
-		"Worker 安装向导",
+		"处理节点安装向导",
 		"环境概览",
-		"配置 Worker",
+		"配置处理节点",
 		"生成安装脚本",
-		"启动 Worker",
+		"启动处理节点",
 		"admin-token",
 		`type="password"`,
 		"GOOS=windows GOARCH=amd64",
@@ -96,7 +96,7 @@ func TestWorkerSetupPagePreservesRedactedRootsWhenAdminDetailsFail(t *testing.T)
 	body := response.Body.String()
 	for _, marker := range []string{
 		"管理员路径详情加载失败，已保留脱敏素材目录。",
-		"路径需管理员 Token",
+		"路径需管理员口令",
 		"renderMounts()",
 	} {
 		if !strings.Contains(body, marker) {

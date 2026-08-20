@@ -50,9 +50,9 @@ func TestLibraryRootsPageRendersWithStepMarkers(t *testing.T) {
 	body := response.Body.String()
 	for _, marker := range []string{
 		"data-library-roots-wizard",
-		"输入路径或共享",
-		"挂载说明",
-		"验证挂载",
+		"输入路径",
+		"接入说明",
+		"验证接入",
 		"添加并扫描",
 		"admin-token",
 		`type="password"`,
@@ -83,9 +83,9 @@ func TestLibraryRootsPageShowsRootHealthSection(t *testing.T) {
 		"素材目录状态",
 		"/api/v1/roots/health",
 		"loadRootHealth()",
-		"Last healthy",
+		"上次正常",
 		"health-table",
-		"暂停缺失文件对账（不会把素材标记为缺失）",
+		"暂停缺失文件核对（不会把素材标记为缺失）",
 	} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("library roots page missing root-health marker %q", marker)

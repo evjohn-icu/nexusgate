@@ -141,7 +141,7 @@ func TestSettingsPageRendersStorageOverviewPanel(t *testing.T) {
 	page := response.Body.String()
 	for _, marker := range []string{
 		"存储概览",                     // the panel itself
-		"可安全释放（可重建）",               // the rebuildable row
+		"可安全删除（能重新生成）",             // the rebuildable row
 		"估算（只读）",                   // the original-media row's honesty label
 		"/api/v1/storage/overview", // the fetch target
 		"loadStorage",              // and it actually loads
