@@ -151,6 +151,39 @@ func (r *Repository) HeartbeatWorker(ctx context.Context, workerID, version stri
 	return tx.Commit()
 }
 
+// RevokeWorker permanently decommissions a Worker: its status becomes
+// 'revoked' and its token hash is replaced with a fresh random digest, so the
+// stored credential no longer matches any issued token. AuthenticateWorker
+// already refuses 'revoked' rows (WHERE status!='revoked') and HeartbeatWorker
+// refuses to touch them, so this is the write that makes a revoked Worker's
+// token unusable — the only way that status is ever set. It is idempotent:
+// revoking an already-revoked Worker returns nil, because its id still exists.
+//
+// The token hash is cleared to a fresh random value rather than the empty
+// string because workers.token_hash is NOT NULL UNIQUE: two revocations would
+// otherwise collide on ''. A random digest satisfies the constraint and is
+// guaranteed never to match an issued token (the original digest is gone).
+//
+// Revoking an id that names nothing returns domain.ErrWorkerNotFound.
+func (r *Repository) RevokeWorker(ctx context.Context, id string) error {
+	cleared, err := randomToken()
+	if err != nil {
+		return err
+	}
+	result, err := r.db.ExecContext(ctx, `UPDATE workers SET status=?,token_hash=? WHERE id=?`, string(remote.WorkerRevoked), tokenDigest(cleared), id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return domain.ErrWorkerNotFound
+	}
+	return nil
+}
+
 // workerOfflineAfter bounds how stale a worker's last heartbeat may be before
 // ListWorkers derives its status as offline. It is 3x the default 30s
 // HeartbeatInterval so a single dropped heartbeat does not flap the fleet view.

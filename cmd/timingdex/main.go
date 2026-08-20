@@ -80,7 +80,7 @@ func run() error {
 	}
 
 	if os.Args[1] == "worker" {
-		return runWorkerCommand()
+		return runWorkerCommand(cfg)
 	}
 	repo, err := sqliterepo.Open(cfg.DatabasePath)
 	if err != nil {
@@ -429,13 +429,14 @@ Usage:
   timingdex support bundle [-out path]
   timingdex worker enroll --hub https://nas:8787 --fingerprint <sha256> --pairing <token> [--name worker] [--mount root-id=/mounted/path] [--provider-operation video_analysis]
   timingdex worker run [--config path] [--tray]
-  timingdex worker doctor [--config path]`)
+  timingdex worker doctor [--config path]
+  timingdex worker revoke <worker-id>`)
 	return errors.New("invalid command")
 }
 
-func runWorkerCommand() error {
+func runWorkerCommand(cfg config.Config) error {
 	if len(os.Args) < 3 {
-		return errors.New("usage: timingdex worker enroll|run|doctor")
+		return errors.New("usage: timingdex worker enroll|run|doctor|revoke")
 	}
 	switch os.Args[2] {
 	case "enroll":
@@ -551,8 +552,41 @@ func runWorkerCommand() error {
 		report, _ := media.DetectHardware(context.Background(), media.HardwareConfig{Mode: "auto", AllowFallback: true})
 		media.FormatHardwareReport(os.Stdout, report)
 		return nil
+	case "revoke":
+		// Revoking a Worker is a Hub administration action, so this runs
+		// against the Hub's own database with the same in-process authority
+		// every other Hub CLI command (pipeline run, root add, reanalyze,
+		// rekey) uses: app.NewService resolves the Hub administrator token
+		// from the standard config/env (TIMINGDEX_HUB_ADMIN_TOKEN or the
+		// mode-0600 DATA_DIR/admin-token file), which is what authorizes this
+		// write. Running it on a Worker node without the Hub database is a
+		// clear "open database" error.
+		if len(os.Args) < 4 {
+			return errors.New("usage: timingdex worker revoke <worker-id>")
+		}
+		workerID := strings.TrimSpace(os.Args[3])
+		if workerID == "" {
+			return errors.New("usage: timingdex worker revoke <worker-id>")
+		}
+		repo, err := sqliterepo.Open(cfg.DatabasePath)
+		if err != nil {
+			return fmt.Errorf("open database: %w", err)
+		}
+		defer repo.Close()
+		if err := repo.Migrate(context.Background()); err != nil {
+			return fmt.Errorf("migrate database: %w", err)
+		}
+		service, err := app.NewService(repo, cfg)
+		if err != nil {
+			return fmt.Errorf("initialize service: %w", err)
+		}
+		if err := service.RevokeWorker(context.Background(), workerID); err != nil {
+			return fmt.Errorf("revoke worker %s: %w", workerID, err)
+		}
+		fmt.Printf("revoked worker %s\n", workerID)
+		return nil
 	default:
-		return errors.New("usage: timingdex worker enroll|run|doctor")
+		return errors.New("usage: timingdex worker enroll|run|doctor|revoke")
 	}
 }
 

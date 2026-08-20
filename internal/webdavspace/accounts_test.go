@@ -54,3 +54,32 @@ func TestPasswordStoredAsHashOnly(t *testing.T) {
 		t.Fatalf("hash does not look like bcrypt: %q", a.PasswordHash)
 	}
 }
+
+// WEBDAV-002: bcrypt truncates input at 72 bytes, so a password longer than
+// MaxWebDAVPasswordBytes must be refused up front rather than silently
+// hashed into a credential that only its first bytes protect.
+func TestHashPasswordRejectsOversizedPassword(t *testing.T) {
+	long := strings.Repeat("x", MaxWebDAVPasswordBytes+1)
+	if _, err := HashPassword(long); err == nil {
+		t.Fatal("password longer than MaxWebDAVPasswordBytes was hashed")
+	}
+	// Exactly the bound is accepted (and hashes to real bcrypt).
+	atBound := strings.Repeat("y", MaxWebDAVPasswordBytes)
+	hash, err := HashPassword(atBound)
+	if err != nil {
+		t.Fatalf("password at MaxWebDAVPasswordBytes rejected: %v", err)
+	}
+	if !strings.HasPrefix(hash, "$2") {
+		t.Fatalf("hash does not look like bcrypt: %q", hash)
+	}
+
+	// The in-memory store's CreateAccount goes through HashPassword, so the
+	// same bound protects the account path.
+	store := NewMemAccountStore()
+	if err := store.CreateAccount("editor", long); err == nil {
+		t.Fatal("CreateAccount accepted an oversized password")
+	}
+	if err := store.CreateAccount("editor", atBound); err != nil {
+		t.Fatalf("CreateAccount rejected password at the bound: %v", err)
+	}
+}

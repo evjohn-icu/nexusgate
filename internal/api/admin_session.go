@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -22,6 +23,17 @@ const (
 	adminLoginWindow   = 5 * time.Minute
 	adminLoginMaxFails = 5
 	adminLoginBlock    = time.Minute
+	// adminLoginGlobalMaxFails is the ceiling on total failed login attempts
+	// across all keys within adminLoginWindow. Once it is crossed, every key
+	// is blocked for adminLoginGlobalBlock regardless of the per-key count, so
+	// a distributed attack (or a reverse proxy collapsing many clients onto
+	// one RemoteAddr, where every client shares a single per-key budget) still
+	// trips a whole-login lockout instead of letting failures rotate keys
+	// forever. adminLoginGlobalBlock is deliberately shorter than the per-key
+	// block: it is a brake against a burst, not a long-lived denial of the
+	// legitimate admin.
+	adminLoginGlobalMaxFails = 20
+	adminLoginGlobalBlock    = 30 * time.Second
 )
 
 type adminSession struct {
@@ -86,7 +98,22 @@ func pruneAdminSessionsLocked(sessions map[[sha256.Size]byte]adminSession, now t
 	}
 }
 
-func adminLoginKey(r *http.Request) string {
+// adminLoginKey derives the rate-limit key for a login request. It keys on the
+// client's IP so that failures are attributed per client rather than globally.
+//
+// By default the client is taken from RemoteAddr and nothing else — forwarded
+// headers are attacker-controlled on a directly exposed listener. When the Hub
+// is configured (SetTrustedProxyNetworks) to sit behind a reverse proxy and
+// the immediate peer is one of those proxies, the verified client address from
+// X-Forwarded-For / X-Real-IP is used instead; otherwise every client behind
+// the proxy shares one RemoteAddr key and five failures from any of them lock
+// out all administrators.
+func (s *Server) adminLoginKey(r *http.Request) string {
+	if s.peerIsTrustedProxy(r) {
+		if client := clientAddressFromForwarded(r); client != "" {
+			return client
+		}
+	}
 	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
 	if err == nil && host != "" {
 		return host
@@ -94,9 +121,63 @@ func adminLoginKey(r *http.Request) string {
 	return strings.TrimSpace(r.RemoteAddr)
 }
 
+// peerIsTrustedProxy reports whether the immediate TCP peer is one of the
+// configured reverse proxies. This is the gate that lets the forwarded client
+// address be trusted: the header is only honoured for peers that were set up
+// to be allowed to overwrite it.
+func (s *Server) peerIsTrustedProxy(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	addr, err := netip.ParseAddr(strings.TrimSpace(host))
+	if err != nil {
+		return false
+	}
+	addr = addr.Unmap()
+	for _, prefix := range s.trustedProxyNetworks {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientAddressFromForwarded reads the client address a trusted reverse proxy
+// stamped on the request. X-Forwarded-For is a comma-separated list ordered
+// from the original client; the leftmost entry is the client as the proxy saw
+// it, so a proxy appending to the list cannot be confused with the client.
+// X-Real-IP is accepted as a fallback. Both are only ever used when
+// peerIsTrustedProxy already verified the sender (see adminLoginKey), so an
+// arbitrary internet client cannot spoof them. Unparsable or absent values
+// return "" and the caller falls back to RemoteAddr.
+func clientAddressFromForwarded(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		first, _, _ := strings.Cut(xff, ",")
+		first = strings.TrimSpace(first)
+		if addr, err := netip.ParseAddr(first); err == nil {
+			return addr.Unmap().String()
+		}
+	}
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		if addr, err := netip.ParseAddr(xri); err == nil {
+			return addr.Unmap().String()
+		}
+	}
+	return ""
+}
+
 func (s *Server) adminLoginRateLimit(key string, now time.Time) (int, bool) {
 	s.adminLoginMu.Lock()
 	defer s.adminLoginMu.Unlock()
+	// A global block short-circuits every key: sustained failed attempts from
+	// many distinct addresses — each individually below the per-key cap — must
+	// still trip a whole-login lockout rather than letting an attacker rotate
+	// keys forever. Checked before the per-key state so a distributed burst
+	// cannot be laundered through fresh keys.
+	if !s.adminLoginGlobal.blockedTill.IsZero() && now.Before(s.adminLoginGlobal.blockedTill) {
+		return max(1, int(s.adminLoginGlobal.blockedTill.Sub(now).Seconds()+0.999)), true
+	}
 	if s.adminLoginAttempts == nil {
 		s.adminLoginAttempts = make(map[string]adminLoginAttempt)
 	}
@@ -125,11 +206,32 @@ func (s *Server) recordAdminLoginFailure(key string, now time.Time) {
 		attempt.blockedTill = now.Add(adminLoginBlock)
 	}
 	s.adminLoginAttempts[key] = attempt
+
+	// Aggregate the failure across all keys so a distributed attack (or a
+	// reverse proxy collapsing many clients onto one RemoteAddr) cannot evade
+	// the per-key cap. When total failures cross the global cap, briefly block
+	// every key; the burst brake re-arms on each further failure within the
+	// window, while a quiet period resets the window like the per-key state.
+	global := s.adminLoginGlobal
+	if global.windowStart.IsZero() || now.Sub(global.windowStart) >= adminLoginWindow {
+		global = adminLoginAttempt{windowStart: now}
+	}
+	global.failures++
+	if global.failures >= adminLoginGlobalMaxFails {
+		global.blockedTill = now.Add(adminLoginGlobalBlock)
+	}
+	s.adminLoginGlobal = global
 }
 
 func (s *Server) clearAdminLoginFailures(key string) {
 	s.adminLoginMu.Lock()
 	delete(s.adminLoginAttempts, key)
+	// A successful login is strong evidence the lockout was not protecting
+	// against an active attack, so the accumulated global failure count is
+	// reset along with the per-key entry. Leaving it in place could otherwise
+	// let stale failures from a long-past burst permanently starve the global
+	// budget for the legitimate admin.
+	s.adminLoginGlobal = adminLoginAttempt{}
 	s.adminLoginMu.Unlock()
 }
 

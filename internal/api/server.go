@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -30,16 +31,32 @@ import (
 )
 
 type Server struct {
-	address             string
-	service             *app.Service
-	tlsCert             string
-	tlsKey              string
-	trustedReadNetworks []netip.Prefix
-	webdav              *webdavspace.Manager
-	adminSessionsMu     sync.Mutex
-	adminSessions       map[[32]byte]adminSession
-	adminLoginMu        sync.Mutex
-	adminLoginAttempts  map[string]adminLoginAttempt
+	address              string
+	service              *app.Service
+	tlsCert              string
+	tlsKey               string
+	trustedReadNetworks  []netip.Prefix
+	webdav               *webdavspace.Manager
+	adminSessionsMu      sync.Mutex
+	adminSessions        map[[32]byte]adminSession
+	adminLoginMu         sync.Mutex
+	adminLoginAttempts   map[string]adminLoginAttempt
+	adminLoginGlobal     adminLoginAttempt
+	trustedProxyNetworks []netip.Prefix
+}
+
+// SetTrustedProxyNetworks configures the set of reverse-proxy addresses the
+// Hub sits behind. When set, the immediate TCP peer must fall inside one of
+// these prefixes before adminLoginKey will key on the client address carried
+// in X-Forwarded-For / X-Real-IP instead of the proxy's RemoteAddr — so one
+// admin failing to log in cannot lock out every admin behind the same proxy.
+// The forwarded headers are only ever honoured for peers in this list: on a
+// directly exposed listener they are attacker-controlled and ignored,
+// matching network_guard's stance. Nil (the default) keeps RemoteAddr-only
+// keying. Intended to be wired from the deployment's proxy configuration at
+// startup, before the server starts serving.
+func (s *Server) SetTrustedProxyNetworks(prefixes []netip.Prefix) {
+	s.trustedProxyNetworks = prefixes
 }
 
 // SetWebDAVSpaceManager attaches the on-demand WebDAV space manager. When set,
@@ -128,10 +145,17 @@ func (s *Server) isHubAdmin(r *http.Request) bool {
 	}
 	provided := strings.TrimSpace(strings.TrimPrefix(value, scheme))
 	expected := s.service.AdminToken()
-	if provided == "" || expected == "" || len(provided) != len(expected) {
+	// Compare fixed-size SHA-256 digests of both sides so that a length
+	// difference does not short-circuit before subtle.ConstantTimeCompare —
+	// the raw constant-time comparison itself runs over the full expected
+	// token, so an attacker probing remotely cannot distinguish a wrong-length
+	// token from a wrong-token of the same length.
+	if provided == "" || expected == "" {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
+	providedSum := sha256.Sum256([]byte(provided))
+	expectedSum := sha256.Sum256([]byte(expected))
+	return subtle.ConstantTimeCompare(providedSum[:], expectedSum[:]) == 1
 }
 
 func (s *Server) requireHubAdmin(next http.HandlerFunc) http.HandlerFunc {
@@ -177,14 +201,18 @@ func (s *Server) createAdminSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	provided := strings.TrimSpace(request.Token)
-	loginKey := adminLoginKey(r)
+	loginKey := s.adminLoginKey(r)
 	if retryAfter, limited := s.adminLoginRateLimit(loginKey, time.Now()); limited {
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		writeAPIError(w, http.StatusTooManyRequests, APIError{Code: "admin_login_rate_limited", Message: "too many administrator login attempts", Retryable: true})
 		return
 	}
 	expected := s.service.AdminToken()
-	if provided == "" || expected == "" || len(provided) != len(expected) || subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
+	// Same fixed-size digest comparison as isHubAdmin so the login flow does
+	// not leak token length either; the empty-token rejection stays.
+	providedSum := sha256.Sum256([]byte(provided))
+	expectedSum := sha256.Sum256([]byte(expected))
+	if provided == "" || expected == "" || subtle.ConstantTimeCompare(providedSum[:], expectedSum[:]) != 1 {
 		s.recordAdminLoginFailure(loginKey, time.Now())
 		writeAPIError(w, http.StatusUnauthorized, APIError{Code: "admin_authentication_required", Message: "Hub administrator authentication required", Action: "enter_the_admin_token"})
 		return
@@ -246,10 +274,14 @@ func (s *Server) isHubAgent(r *http.Request) bool {
 	}
 	provided := strings.TrimSpace(strings.TrimPrefix(value, scheme))
 	expected := s.service.AgentToken()
-	if provided == "" || expected == "" || len(provided) != len(expected) {
+	// Same fixed-size digest comparison as isHubAdmin: never let a length
+	// mismatch exit early and reveal how long the agent token is.
+	if provided == "" || expected == "" {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
+	providedSum := sha256.Sum256([]byte(provided))
+	expectedSum := sha256.Sum256([]byte(expected))
+	return subtle.ConstantTimeCompare(providedSum[:], expectedSum[:]) == 1
 }
 
 // requireAgentOrAdmin accepts either the agent token or the admin token. An
@@ -1158,6 +1190,29 @@ func parseInt(value string, fallback int) int {
 	return parsed
 }
 
+// legacyLimitMax caps the limit parameter of the legacy trusted-read GET
+// endpoints (listJobs, searchShots, hybridSearchShots, similarShots, rareShots,
+// listAssetCards). Those endpoints pass a caller-supplied limit straight into
+// SQL LIMIT with no upper bound, so an unbounded value lets any trusted-network
+// caller force the Hub to allocate and serialize an arbitrarily large result
+// set. The v2 POST search path already clamps via search.ValidatePagination and
+// the asset-card listing caps its own id set, so only these legacy paths need
+// the bound here.
+const legacyLimitMax = 500
+
+// parseBoundedInt is parseInt with an upper bound. A value above max clamps to
+// max — an explicit limit is a best-effort cap, not a caller-supplied exact
+// set, so clamping (like search's maxListedAssetIDs handling) is deliberate
+// rather than erroring. Negative or unparsable values keep the fallback,
+// matching parseInt. Default values are passed through unchanged.
+func parseBoundedInt(value string, fallback, max int) int {
+	parsed := parseInt(value, fallback)
+	if parsed > max {
+		return max
+	}
+	return parsed
+}
+
 // facetQueryFields pairs each controlled-vocabulary facet with the vocabulary
 // it must be drawn from, listed once so the browse endpoint and the three
 // shot-search endpoints can't drift out of sync on param names or allowed
@@ -1431,7 +1486,7 @@ type jobView struct {
 }
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
-	jobs, err := s.service.ListJobs(r.Context(), parseInt(r.URL.Query().Get("limit"), 100))
+	jobs, err := s.service.ListJobs(r.Context(), parseBoundedInt(r.URL.Query().Get("limit"), 100, legacyLimitMax))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1736,7 +1791,7 @@ func (s *Server) searchShots(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 		return
 	}
-	hits, err := s.service.SearchShotsFiltered(r.Context(), q, parseInt(r.URL.Query().Get("limit"), 100), facets)
+	hits, err := s.service.SearchShotsFiltered(r.Context(), q, parseBoundedInt(r.URL.Query().Get("limit"), 100, legacyLimitMax), facets)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1788,7 +1843,7 @@ func (s *Server) hybridSearchShots(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 		return
 	}
-	hits, err := s.service.HybridSearchShotsFiltered(r.Context(), q, parseInt(r.URL.Query().Get("limit"), 100), facets)
+	hits, err := s.service.HybridSearchShotsFiltered(r.Context(), q, parseBoundedInt(r.URL.Query().Get("limit"), 100, legacyLimitMax), facets)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1802,7 +1857,7 @@ func (s *Server) similarShots(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 		return
 	}
-	hits, err := s.service.SimilarShotsFiltered(r.Context(), r.PathValue("id"), parseInt(r.URL.Query().Get("limit"), 20), facets)
+	hits, err := s.service.SimilarShotsFiltered(r.Context(), r.PathValue("id"), parseBoundedInt(r.URL.Query().Get("limit"), 20, legacyLimitMax), facets)
 	if err != nil {
 		// Matched as a sentinel rather than by message prefix: this used to be
 		// strings.HasPrefix(err.Error(), "shot not found:"), which made the
@@ -1820,7 +1875,7 @@ func (s *Server) similarShots(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) rareShots(w http.ResponseWriter, r *http.Request) {
-	items, err := s.service.DiscoverRareShots(r.Context(), parseInt(r.URL.Query().Get("limit"), 50))
+	items, err := s.service.DiscoverRareShots(r.Context(), parseBoundedInt(r.URL.Query().Get("limit"), 50, legacyLimitMax))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1883,7 +1938,7 @@ func (s *Server) listAssetCards(w http.ResponseWriter, r *http.Request) {
 		defaultLimit = len(ids)
 	}
 	filter := domain.AssetCardFilter{
-		Limit:       parseInt(query.Get("limit"), defaultLimit),
+		Limit:       parseBoundedInt(query.Get("limit"), defaultLimit, legacyLimitMax),
 		Offset:      parseInt(query.Get("offset"), 0),
 		RegionLabel: query.Get("region"),
 		CameraModel: query.Get("camera"),
@@ -2249,7 +2304,26 @@ func (s *Server) serveArtifact(w http.ResponseWriter, r *http.Request, typ strin
 	if ct := mime.TypeByExtension(filepath.Ext(a.LocalPath)); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
-	http.ServeFile(w, r, a.LocalPath)
+	// Serve the file from the handle opened after the containment check above,
+	// not by letting the handler re-resolve the path: http.ServeFile would
+	// re-resolve a.LocalPath (and follow whatever symlink is in place at serve
+	// time), which re-opens the check-then-serve race for a local actor with
+	// DataDir/CacheDir write access. Opening once here means the file handle
+	// being served is the one that was verified to live inside the allowed
+	// roots — the path can still be swapped for a different inode after open,
+	// but never for a path outside those roots.
+	f, err := os.Open(a.LocalPath)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found"})
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found"})
+		return
+	}
+	http.ServeContent(w, r, filepath.Base(a.LocalPath), info.ModTime(), f)
 }
 
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {

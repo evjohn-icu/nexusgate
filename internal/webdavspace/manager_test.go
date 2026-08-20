@@ -141,3 +141,103 @@ func TestManagerConcurrentRequestsStayInTheirSpaces(t *testing.T) {
 		t.Fatalf("unlinked path status = %d, want 404", rec.Code)
 	}
 }
+
+// WEBDAV-001: a source that fails Basic Auth enough times is blocked with 429
+// (and Retry-After), even for a request that would have used correct
+// credentials — the block is by source, and a different source is unaffected.
+func TestManagerRateLimitsFailedAuthenticationBySourceIP(t *testing.T) {
+	accounts := NewMemAccountStore()
+	_ = accounts.CreateAccount("e", "p")
+	m := NewManager(&testLinker{}, accounts)
+	h := m.Handler()
+
+	wrongAttempt := func(ip string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", "/spaces/space-1/assets/a/original.mov", nil)
+		r.RemoteAddr = ip
+		r.SetBasicAuth("e", "wrong")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec
+	}
+
+	for i := 0; i < webdavLoginMaxFails; i++ {
+		if rec := wrongAttempt("192.0.2.10:1"); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("failure attempt %d = %d, want 401", i+1, rec.Code)
+		}
+	}
+	// Now blocked: even correct credentials answer 429 with Retry-After.
+	r := httptest.NewRequest("GET", "/spaces/space-1/assets/a/original.mov", nil)
+	r.RemoteAddr = "192.0.2.10:1"
+	r.SetBasicAuth("e", "p")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("blocked source = %d, want 429", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("rate-limited response missing Retry-After")
+	}
+	// A different source is not blocked by this source's failures.
+	if rec := wrongAttempt("192.0.2.20:1"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unrelated source = %d, want 401 (must not inherit the block)", rec.Code)
+	}
+}
+
+// WEBDAV-001: a successful authentication clears the source's failure budget,
+// so a user who types a wrong password once is not one step away from being
+// locked out forever.
+func TestManagerSuccessfulAuthClearsFailures(t *testing.T) {
+	accounts := NewMemAccountStore()
+	_ = accounts.CreateAccount("e", "p")
+	m := NewManager(&testLinker{}, accounts)
+	h := m.Handler()
+
+	wrong := httptest.NewRequest("GET", "/spaces/s/assets/a/original.mov", nil)
+	wrong.RemoteAddr = "192.0.2.30:1"
+	wrong.SetBasicAuth("e", "wrong")
+	h.ServeHTTP(httptest.NewRecorder(), wrong)
+
+	good := httptest.NewRequest("GET", "/spaces/s/assets/a/original.mov", nil)
+	good.RemoteAddr = "192.0.2.30:1"
+	good.SetBasicAuth("e", "p")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, good)
+	if rec.Code == http.StatusTooManyRequests {
+		t.Fatal("correct credentials after one failure must not be rate limited")
+	}
+}
+
+// WEBDAV-001: the bcrypt verify semaphore is bounded and starts empty, and a
+// concurrent flood from distinct sources (each below the per-IP failure
+// budget) completes without deadlock and without cross-IP blocking.
+func TestManagerBoundedBcryptConcurrency(t *testing.T) {
+	accounts := NewMemAccountStore()
+	_ = accounts.CreateAccount("e", "p")
+	m := NewManager(&testLinker{}, accounts)
+	if cap(m.bcryptSlots) != webdavBcryptSlots {
+		t.Fatalf("bcrypt semaphore capacity = %d, want %d", cap(m.bcryptSlots), webdavBcryptSlots)
+	}
+	if len(m.bcryptSlots) != 0 {
+		t.Fatalf("bcrypt semaphore starts occupied: %d", len(m.bcryptSlots))
+	}
+	h := m.Handler()
+	var wg sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			r := httptest.NewRequest("GET", "/spaces/s/assets/a/original.mov", nil)
+			r.RemoteAddr = fmt.Sprintf("198.51.100.%d:1234", n)
+			r.SetBasicAuth("e", "wrong")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, r)
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("flood request %d = %d, want 401", n, rec.Code)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if len(m.bcryptSlots) != 0 {
+		t.Fatalf("bcrypt semaphore leaked slots after the flood: %d", len(m.bcryptSlots))
+	}
+}

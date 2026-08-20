@@ -2,10 +2,12 @@ package sqlite
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/evjohn-icu/timingdex/internal/domain"
 	"github.com/evjohn-icu/timingdex/internal/remote"
 )
 
@@ -154,5 +156,62 @@ func TestHeartbeatWorkerPreservesEnrolledProviderOperations(t *testing.T) {
 	}
 	if got = workers[0].Capabilities; len(got.ProviderOperations) != 1 || got.ProviderOperations[0] != "video_analysis" {
 		t.Fatalf("heartbeat escalated provider operations: %v", got.ProviderOperations)
+	}
+}
+
+// WORKER-001: revoking a worker must make its issued token stop authenticating
+// (status='revoked' + cleared token hash), be idempotent, and answer
+// domain.ErrWorkerNotFound for an id that names nothing.
+func TestRevokeWorkerRejectsTokenAndIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "workers-revoke.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	pairing, err := repo.CreateWorkerPairing(ctx, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrolled, token, err := repo.EnrollWorker(ctx, pairing.Token, remote.WorkerRegistration{
+		Name: "revoke-me", Platform: "linux-amd64",
+		Capabilities: remote.WorkerCapabilities{Proxy: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := repo.AuthenticateWorker(ctx, token); err != nil {
+		t.Fatalf("token must authenticate before revocation: %v", err)
+	}
+
+	if err := repo.RevokeWorker(ctx, enrolled.ID); err != nil {
+		t.Fatalf("RevokeWorker: %v", err)
+	}
+	// The issued token must no longer authenticate.
+	if _, err := repo.AuthenticateWorker(ctx, token); err == nil {
+		t.Fatal("revoked worker token still authenticates")
+	}
+	// The row's status must be revoked (and stay revoked across ListWorkers).
+	workers, err := repo.ListWorkers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workers) != 1 || workers[0].Status != remote.WorkerRevoked {
+		t.Fatalf("revoked worker status=%q, want %q", workers[0].Status, remote.WorkerRevoked)
+	}
+
+	// Revoking the same id again is a no-op success.
+	if err := repo.RevokeWorker(ctx, enrolled.ID); err != nil {
+		t.Fatalf("revoking an already-revoked worker should be idempotent: %v", err)
+	}
+
+	// An unknown id reports not-found.
+	if err := repo.RevokeWorker(ctx, "no-such-worker"); !errors.Is(err, domain.ErrWorkerNotFound) {
+		t.Fatalf("RevokeWorker(unknown) = %v, want domain.ErrWorkerNotFound", err)
 	}
 }

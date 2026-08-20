@@ -2344,3 +2344,79 @@ func TestHandlerSuppressesMissingFaviconNoise(t *testing.T) {
 		t.Fatalf("status=%d, want no-content favicon response", response.Code)
 	}
 }
+
+// TestParseBoundedIntClampsAtMax pins the API-001 bound on the legacy
+// trusted-read GET limits: defaults pass through unchanged, values above the
+// cap clamp to it, and the unparsable/negative fallback matches parseInt.
+func TestParseBoundedIntClampsAtMax(t *testing.T) {
+	tests := []struct {
+		value    string
+		fallback int
+		max      int
+		want     int
+	}{
+		{"", 100, 500, 100},       // absent -> fallback
+		{"abc", 100, 500, 100},    // unparsable -> fallback
+		{"-5", 100, 500, 100},     // negative -> fallback
+		{"0", 100, 500, 0},        // explicit zero is honoured
+		{"100", 100, 500, 100},    // in range -> unchanged
+		{"500", 100, 500, 500},    // at cap -> unchanged
+		{"501", 100, 500, 500},    // over cap -> clamped to max
+		{"999999", 100, 500, 500}, // far over cap -> clamped to max
+	}
+	for _, tc := range tests {
+		if got := parseBoundedInt(tc.value, tc.fallback, tc.max); got != tc.want {
+			t.Fatalf("parseBoundedInt(%q, %d, %d) = %d, want %d", tc.value, tc.fallback, tc.max, got, tc.want)
+		}
+	}
+}
+
+// TestAdminAndAgentTokenComparisonAcceptsOnlyExactMatch pins the accept/reject
+// semantics of isHubAdmin and isHubAgent after AUTH-001 replaced the
+// length-pre-check + subtle.ConstantTimeCompare over the raw tokens with a
+// fixed-size SHA-256 digest comparison. The observable contract is unchanged —
+// only an exact match passes — but the raw constant-time comparison now runs
+// over 32-byte digests, so a wrong-length token can no longer be told apart
+// from a same-length wrong token by timing. The timing property itself is not
+// asserted here: wall-clock comparisons in unit tests are noise-dominated and
+// flaky, and the fixed-size digest comparison is structural (both sides always
+// hash to sha256.Size bytes before ConstantTimeCompare, with the empty-token
+// rejection the only early return), so this behavioural guard on accept/reject
+// is the meaningful regression test.
+func TestAdminAndAgentTokenComparisonAcceptsOnlyExactMatch(t *testing.T) {
+	server, _ := newAdminSessionTestServer(t)
+	admin := server.service.AdminToken()
+	agent := server.service.AgentToken()
+	if len(admin) < 2 || len(agent) < 2 {
+		t.Fatal("test service must issue long-lived tokens")
+	}
+	bearer := func(token string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		return r
+	}
+	if !server.isHubAdmin(bearer(admin)) {
+		t.Fatal("exact admin token rejected")
+	}
+	if server.isHubAdmin(bearer("short")) {
+		t.Fatal("wrong-length admin token accepted")
+	}
+	if server.isHubAdmin(bearer("x" + admin[1:])) {
+		t.Fatal("same-length wrong admin token accepted")
+	}
+	if server.isHubAdmin(bearer("")) {
+		t.Fatal("empty admin token accepted")
+	}
+	if !server.isHubAgent(bearer(agent)) {
+		t.Fatal("exact agent token rejected")
+	}
+	if server.isHubAgent(bearer("nope")) {
+		t.Fatal("wrong-length agent token accepted")
+	}
+	if server.isHubAgent(bearer("y" + agent[1:])) {
+		t.Fatal("same-length wrong agent token accepted")
+	}
+	if server.isHubAgent(bearer("")) {
+		t.Fatal("empty agent token accepted")
+	}
+}

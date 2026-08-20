@@ -242,6 +242,17 @@ var ErrShotNotFound = errors.New("shot not found")
 // ErrCollectionNotFound reports that a collection id names nothing.
 var ErrCollectionNotFound = errors.New("collection not found")
 
+// ErrWorkerNotFound reports that a worker id names nothing in the workers
+// table. RevokeWorker (internal/repository/sqlite/repository.go) returns it
+// when its UPDATE touches no row — the id was never enrolled, or its row was
+// removed — so the API can answer 404 for what is a caller mistake (a stale
+// or mistyped id) instead of the classifier's default 500. It lives here, in
+// domain, for the same reason ErrShotNotFound does: the repository enforces
+// the condition at the only place that cannot be raced, and the layers above
+// match it with errors.Is rather than by reading a message that maintenance
+// may reword.
+var ErrWorkerNotFound = errors.New("worker not found")
+
 // ErrReorderInvalid reports that a collection shot reorder cannot be applied
 // because the submitted list does not match the collection's current pins:
 // a length mismatch, a duplicate id, or a shot that is not in the collection.

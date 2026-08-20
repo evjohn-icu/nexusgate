@@ -183,6 +183,7 @@ type Repository interface {
 	AuthenticateWorker(context.Context, string) (remote.Worker, error)
 	HeartbeatWorker(context.Context, string, string, remote.WorkerCapabilities) error
 	ListWorkers(context.Context) ([]remote.Worker, error)
+	RevokeWorker(context.Context, string) error
 	LeaseNextWorkerDerive(context.Context, remote.Worker, time.Duration, domain.LeaseFilter) (*remote.WorkerJob, error)
 	CompleteWorkerJob(context.Context, string, string, domain.JobState, string) error
 	RecordWorkerJobProgress(context.Context, string, string, string, float64, string, string) error
@@ -813,6 +814,14 @@ func (s *Service) HeartbeatWorker(ctx context.Context, workerID, version string,
 
 func (s *Service) ListWorkers(ctx context.Context) ([]remote.Worker, error) {
 	return s.repo.ListWorkers(ctx)
+}
+
+// RevokeWorker decommissions a Worker so its token stops authenticating and
+// its heartbeat stops registering it as online. It is the write that backs
+// the admin "revoke" endpoint and the `timingdex worker revoke` CLI command;
+// an unknown id is reported as domain.ErrWorkerNotFound.
+func (s *Service) RevokeWorker(ctx context.Context, id string) error {
+	return s.repo.RevokeWorker(ctx, id)
 }
 
 // LeaseNextWorkerDerive applies the same throttle the local pipeline obeys. The
@@ -2033,7 +2042,10 @@ func (l WebDAVLinker) ProxyPath(ctx context.Context, assetID string) string {
 // manager's account store) and persists it. Plaintext never enters the
 // repository.
 // ErrWebDAVAccountInvalid reports an empty username or password on account
-// creation. Mapped to 400 by the API layer.
+// creation, or a password too long to hash safely (over
+// webdavspace.MaxWebDAVPasswordBytes — bcrypt truncates input at 72 bytes,
+// so a longer password would silently become a shorter credential). Mapped to
+// 400 by the API layer.
 var ErrWebDAVAccountInvalid = errors.New("WebDAV username and password are required")
 
 // ErrWebDAVAccountExists reports a duplicate WebDAV account username. Mapped
@@ -2058,6 +2070,12 @@ func (s *Service) CreateWebDAVAccount(ctx context.Context, username, password st
 	}
 	username = strings.TrimSpace(username)
 	if username == "" || password == "" {
+		return ErrWebDAVAccountInvalid
+	}
+	// Reject an over-long password before it reaches bcrypt, which would
+	// otherwise silently truncate it to its first 72 bytes (see
+	// webdavspace.ValidatePassword).
+	if err := webdavspace.ValidatePassword(password); err != nil {
 		return ErrWebDAVAccountInvalid
 	}
 	// Reject duplicates up front so the operator gets a clear 409 instead of

@@ -374,6 +374,45 @@ func TestNewHubClientRequiresFingerprintForHTTPS(t *testing.T) {
 	}
 }
 
+// TestNewHubClientRejectsRemoteHTTP pins the cleartext boundary: the agent
+// and administrator tokens must not cross the network in cleartext, so an
+// http:// base URL pointing at anything other than loopback or link-local
+// fails startup — mirroring the worker CLI's https-only enrollment — while the
+// loopback/local development forms keep working.
+func TestNewHubClientRejectsRemoteHTTP(t *testing.T) {
+	t.Setenv("TIMINGDEX_HUB_FINGERPRINT", "")
+
+	t.Setenv("TIMINGDEX_BASE_URL", "http://192.168.1.50:8787")
+	if _, err := newHubClient(); err == nil || !strings.Contains(err.Error(), "cleartext") {
+		t.Fatalf("remote LAN http must fail startup, got %v", err)
+	}
+
+	t.Setenv("TIMINGDEX_BASE_URL", "http://hub.example.com:8787")
+	if _, err := newHubClient(); err == nil || !strings.Contains(err.Error(), "cleartext") {
+		t.Fatalf("remote http hostname must fail startup, got %v", err)
+	}
+
+	t.Setenv("TIMINGDEX_BASE_URL", "http://127.0.0.1:8787")
+	if _, err := newHubClient(); err != nil {
+		t.Fatalf("loopback http must construct: %v", err)
+	}
+
+	t.Setenv("TIMINGDEX_BASE_URL", "http://localhost:8787")
+	if _, err := newHubClient(); err != nil {
+		t.Fatalf("localhost http must construct: %v", err)
+	}
+
+	t.Setenv("TIMINGDEX_BASE_URL", "http://[::1]:8787")
+	if _, err := newHubClient(); err != nil {
+		t.Fatalf("IPv6 loopback http must construct: %v", err)
+	}
+
+	t.Setenv("TIMINGDEX_BASE_URL", "http://169.254.10.10:8787")
+	if _, err := newHubClient(); err != nil {
+		t.Fatalf("link-local http must construct: %v", err)
+	}
+}
+
 func TestValidFingerprint(t *testing.T) {
 	if ValidFingerprint("") || ValidFingerprint("abc") || ValidFingerprint("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz") {
 		t.Fatal("invalid fingerprints must be rejected")

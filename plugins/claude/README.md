@@ -32,6 +32,12 @@ The MCP server reads these variables from the environment (the plugin's
   `request_source_media` MCP tool is not available here: original-media
   delivery via WebDAV is operator-mediated (an operator creates the space and
   hands the editing software its WebDAV credentials).
+- `TIMINGDEX_ADMIN_TOKEN` must **not** be exported in the operator's
+  environment (shell profile, CI): the spawned `timingdex-mcp` inherits the
+  parent environment, and Claude Code merges the `.mcp.json` env with it — so
+  an exported admin token would make the admin-gated `request_source_media`
+  tool available to the agent, contradicting the boundary above. Set it only
+  where the operator (not the agent) will use it.
 
 ## Install
 

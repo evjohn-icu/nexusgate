@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -13,6 +14,25 @@ import (
 // ErrInvalidCredentials reports a Basic-Auth attempt whose username or
 // password did not match any account.
 var ErrInvalidCredentials = errors.New("invalid WebDAV credentials")
+
+// MaxWebDAVPasswordBytes is the longest password CreateWebDAVAccount /
+// HashPassword accept. bcrypt silently truncates its input at 72 bytes, so
+// two passwords sharing their first 72 bytes would hash identically; rejecting
+// anything over 64 keeps a clear margin under that limit while admitting every
+// reasonable human password. The same bound is enforced at the service layer
+// (Service.CreateWebDAVAccount) so the operator hears the refusal as a 400
+// before any hashing happens.
+const MaxWebDAVPasswordBytes = 64
+
+// ValidatePassword reports whether a plaintext password is safe to hash: not
+// longer than MaxWebDAVPasswordBytes, so bcrypt never truncates it into a
+// credential that collisions could authenticate against.
+func ValidatePassword(password string) error {
+	if len(password) > MaxWebDAVPasswordBytes {
+		return fmt.Errorf("WebDAV password must be at most %d bytes", MaxWebDAVPasswordBytes)
+	}
+	return nil
+}
 
 // Account is one WebDAV user. Passwords are stored only as bcrypt hashes; the
 // plaintext is never persisted.
@@ -51,8 +71,12 @@ func (m *memAccountStore) GetAccount(_ context.Context, username string) (*Accou
 
 // HashPassword returns a bcrypt hash of the plaintext password. It is the
 // only place plaintext is turned into a stored credential; the caller passes
-// only the hash onward.
+// only the hash onward. Passwords over MaxWebDAVPasswordBytes are rejected
+// (see ValidatePassword) so bcrypt never silently truncates them.
 func HashPassword(password string) (string, error) {
+	if err := ValidatePassword(password); err != nil {
+		return "", err
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return "", err

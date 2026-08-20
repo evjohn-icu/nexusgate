@@ -3,12 +3,39 @@ package webdavspace
 import (
 	"encoding/base64"
 	"errors"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/net/webdav"
 )
+
+// The WebDAV authentication rate-limit constants mirror the Hub's admin login
+// budget (internal/api/admin_session.go): a per-source-IP failure counter that
+// blocks a source after webdavLoginMaxFails failures for webdavLoginBlock.
+// Without it a LAN peer could brute-force the shared credential at bcrypt
+// speed, and every failed attempt also spends real CPU.
+const (
+	webdavLoginWindow   = 5 * time.Minute
+	webdavLoginMaxFails = 5
+	webdavLoginBlock    = time.Minute
+
+	// webdavBcryptSlots bounds how many bcrypt verifies the WebDAV handler
+	// runs concurrently. bcrypt is deliberately expensive, so an unthrottled
+	// flood of Basic-Auth requests can occupy every core; this semaphore
+	// caps the verify pipeline while the rate limiter above cuts off repeat
+	// offenders at the source.
+	webdavBcryptSlots = 6
+)
+
+type webdavLoginAttempt struct {
+	windowStart time.Time
+	failures    int
+	blockedTill time.Time
+}
 
 // Manager owns the WebDAV spaces and their HTTP mounting. It is safe for
 // concurrent use: Link/Revoke happen from MCP tool calls while the WebDAV
@@ -21,6 +48,10 @@ type Manager struct {
 	mu         sync.RWMutex
 	spaces     map[string]*Space
 	lockSystem webdav.LockSystem
+
+	loginMu       sync.Mutex
+	loginAttempts map[string]webdavLoginAttempt
+	bcryptSlots   chan struct{}
 }
 
 // NewManager creates a space manager whose assets resolve via linker and
@@ -30,7 +61,7 @@ func NewManager(linker Linker, accounts AccountStore, dataDir ...string) *Manage
 	if len(dataDir) > 0 {
 		dir = dataDir[0]
 	}
-	return &Manager{linker: linker, accounts: accounts, dataDir: dir, spaces: map[string]*Space{}, lockSystem: webdav.NewMemLS()}
+	return &Manager{linker: linker, accounts: accounts, dataDir: dir, spaces: map[string]*Space{}, lockSystem: webdav.NewMemLS(), loginAttempts: map[string]webdavLoginAttempt{}, bcryptSlots: make(chan struct{}, webdavBcryptSlots)}
 }
 
 // CreateSpace registers a new empty space and returns it.
@@ -100,11 +131,30 @@ func (m *Manager) Handler() http.Handler {
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
+		loginKey := webdavLoginKey(r)
+		// Spend the failure budget check before any bcrypt so a blocked source
+		// neither keeps paying the verify cost nor lets us keep running it.
+		if retryAfter, limited := m.loginRateLimited(loginKey, time.Now()); limited {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			http.Error(w, "too many failed authentication attempts", http.StatusTooManyRequests)
+			return
+		}
+		// Bound concurrent bcrypt verifies so a LAN flood cannot occupy all
+		// cores; see webdavBcryptSlots.
+		select {
+		case m.bcryptSlots <- struct{}{}:
+			defer func() { <-m.bcryptSlots }()
+		case <-r.Context().Done():
+			http.Error(w, "authentication aborted", http.StatusServiceUnavailable)
+			return
+		}
 		if err := Authenticate(r.Context(), m.accounts, username, password); err != nil {
+			m.recordLoginFailure(loginKey, time.Now())
 			w.Header().Set("WWW-Authenticate", `Basic realm="timingdex webdav"`)
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}
+		m.clearLoginFailures(loginKey)
 
 		space := m.Space(spaceID)
 		if space == nil {
@@ -118,6 +168,56 @@ func (m *Manager) Handler() http.Handler {
 		dav := &webdav.Handler{Prefix: prefix, FileSystem: space.NewHandlerFS(prefix), LockSystem: m.lockSystem, Logger: logger}
 		dav.ServeHTTP(w, r)
 	})
+}
+
+// webdavLoginKey identifies a Basic-Auth attempt's source by client IP, so a
+// repeat offender on one host cannot lock out everyone else.
+func webdavLoginKey(r *http.Request) string {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil && host != "" {
+		return host
+	}
+	return strings.TrimSpace(r.RemoteAddr)
+}
+
+// loginRateLimited reports whether key is currently blocked. It mirrors
+// Server.adminLoginRateLimit (internal/api/admin_session.go): a non-blocked
+// source whose failure window has lapsed is forgotten. The returned seconds
+// feed the Retry-After header.
+func (m *Manager) loginRateLimited(key string, now time.Time) (int, bool) {
+	m.loginMu.Lock()
+	defer m.loginMu.Unlock()
+	attempt, ok := m.loginAttempts[key]
+	if !ok {
+		return 0, false
+	}
+	if !attempt.blockedTill.IsZero() && now.Before(attempt.blockedTill) {
+		return max(1, int(attempt.blockedTill.Sub(now).Seconds()+0.999)), true
+	}
+	if now.Sub(attempt.windowStart) >= webdavLoginWindow {
+		delete(m.loginAttempts, key)
+	}
+	return 0, false
+}
+
+func (m *Manager) recordLoginFailure(key string, now time.Time) {
+	m.loginMu.Lock()
+	defer m.loginMu.Unlock()
+	attempt := m.loginAttempts[key]
+	if attempt.windowStart.IsZero() || now.Sub(attempt.windowStart) >= webdavLoginWindow {
+		attempt = webdavLoginAttempt{windowStart: now}
+	}
+	attempt.failures++
+	if attempt.failures >= webdavLoginMaxFails {
+		attempt.blockedTill = now.Add(webdavLoginBlock)
+	}
+	m.loginAttempts[key] = attempt
+}
+
+func (m *Manager) clearLoginFailures(key string) {
+	m.loginMu.Lock()
+	delete(m.loginAttempts, key)
+	m.loginMu.Unlock()
 }
 
 // parseBasicAuth decodes an HTTP Basic Authorization header value.

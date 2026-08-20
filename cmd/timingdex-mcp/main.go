@@ -18,7 +18,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -40,7 +42,10 @@ type hubClient struct {
 // TIMINGDEX_HUB_FINGERPRINT: cross-machine deployments use the Hub's
 // self-signed certificate, and accepting it unpinned would silently trust any
 // attacker in the path — the exact boundary fingerprint pinning exists for.
-// http:// stays available for local development.
+// http:// stays available only for loopback/link-local development (see
+// httpAllowedForLocalDevelopment); pointing it at any other host would send
+// the agent and administrator tokens in cleartext, mirroring the worker CLI's
+// refusal of non-https Hubs.
 func newHubClient() (*hubClient, error) {
 	baseURL := strings.TrimRight(os.Getenv("TIMINGDEX_BASE_URL"), "/")
 	fingerprint := strings.TrimSpace(os.Getenv("TIMINGDEX_HUB_FINGERPRINT"))
@@ -67,12 +72,59 @@ func newHubClient() (*hubClient, error) {
 	if strings.HasPrefix(strings.ToLower(baseURL), "https://") && fingerprint == "" {
 		return nil, fmt.Errorf("TIMINGDEX_BASE_URL is https but TIMINGDEX_HUB_FINGERPRINT is not set: refusing to accept an unpinned Hub certificate")
 	}
+	if strings.HasPrefix(strings.ToLower(baseURL), "http://") && !httpAllowedForLocalDevelopment(hostFromBaseURL(baseURL)) {
+		return nil, fmt.Errorf("TIMINGDEX_BASE_URL is http:// and the host is not loopback or link-local: refusing to send the agent and administrator tokens in cleartext to a remote Hub; use https://")
+	}
 	return &hubClient{
 		baseURL:    baseURL,
 		agentToken: os.Getenv("TIMINGDEX_AGENT_TOKEN"),
 		adminToken: os.Getenv("TIMINGDEX_ADMIN_TOKEN"),
 		http:       &http.Client{Transport: transport, Timeout: 60 * time.Second},
 	}, nil
+}
+
+// hostFromBaseURL returns the host portion (with any port) of a base URL, or
+// "" when the URL does not parse.
+func hostFromBaseURL(baseURL string) string {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+	return u.Host
+}
+
+// httpAllowedForLocalDevelopment reports whether an http:// Hub base URL may
+// carry the agent and administrator tokens in cleartext: only loopback
+// (127.0.0.0/8, ::1, plus the "localhost" hostname) and link-local
+// (169.254.0.0/16, fe80::/10) destinations qualify. Any other host is remote
+// and must be reached over https with a pinned fingerprint, matching the
+// worker CLI's https-only enrollment stance.
+func httpAllowedForLocalDevelopment(host string) bool {
+	if host == "" {
+		return false
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		h, _, err := net.SplitHostPort(host)
+		if err != nil {
+			return false
+		}
+		addr, err = netip.ParseAddr(h)
+		if err != nil {
+			return strings.EqualFold(h, "localhost")
+		}
+	}
+	for _, prefix := range []netip.Prefix{
+		netip.MustParsePrefix("127.0.0.0/8"),
+		netip.MustParsePrefix("::1/128"),
+		netip.MustParsePrefix("169.254.0.0/16"),
+		netip.MustParsePrefix("fe80::/10"),
+	} {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidFingerprint accepts only the canonical 64-character SHA-256 hex form.
