@@ -102,6 +102,17 @@ type Repository interface {
 	// because it is a startup concern, not a pipeline-run one, and the narrow
 	// interface's fakes should not have to grow it.
 	HealStaleRunningJobs(context.Context, time.Time) (int, int, error)
+	// RegisterExecutor, TouchExecutor and UnregisterExecutor back the Hub-local
+	// pipeline executor registry (pipeline_executors table). HealOnStartup uses
+	// it to distinguish a live process's in-flight jobs from the orphans a
+	// killed process left behind, so a restart can reclaim the latter
+	// immediately instead of waiting out the lease TTL. They live here rather
+	// than on PipelineRepository because they are process-lifecycle concerns,
+	// not pipeline-run ones, and the narrow interface's fakes should not have
+	// to grow them.
+	RegisterExecutor(context.Context, string, string, time.Time) error
+	TouchExecutor(context.Context, string, time.Time) error
+	UnregisterExecutor(context.Context, string) error
 	CreateLibraryRoot(ctx context.Context, path string) (domain.LibraryRoot, error)
 	ListLibraryRoots(ctx context.Context) ([]domain.LibraryRoot, error)
 	GetLibraryRoot(ctx context.Context, id string) (domain.LibraryRoot, error)
@@ -237,6 +248,10 @@ type Service struct {
 	pipelineDrainContext   context.Context
 	pipelineDone           chan struct{}
 	pipelineContext        context.Context
+	// leaseOwner is the stable "local-<id>" identity the pipeline mints every
+	// lease from (see pipeline.leaseOwner); it also keys this process's row in
+	// the pipeline_executors liveness registry.
+	leaseOwner string
 
 	supervisor *LibrarySupervisor
 
@@ -337,10 +352,18 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 	// falling through to the plain path.
 	videoRouter, _ := videoProvider.(*videoproviders.Router)
 	pipelineVideoProvider := &pipelineVideo{channel: channelRuntime.video().(*channelVideo), router: videoRouter}
+	// The Hub-local pipeline mints every lease from one stable owner per
+	// process so the executor registry (pipeline_executors) can attribute
+	// in-flight jobs to this process; HealOnStartup then reclaims only the
+	// jobs whose owning process is gone.
+	pipeline := NewPipeline(repo, cfg.CacheDir, channelRuntime.asr(), channelRuntime.asrFallback(), pipelineVideoProvider, alignment, shotDetector, plan, sourceStager, time.Duration(cfg.Pipeline.ProviderRouteDeferralMinutes)*time.Minute, cfg.Pipeline.MinimumFreeSpaceBytes)
+	leaseOwner := "local-" + idgen.New()
+	pipeline.SetLeaseOwner(leaseOwner)
 	service := &Service{
 		repo: repo, cfg: cfg, scanner: ingest.NewScanner(repo),
-		pipeline: NewPipeline(repo, cfg.CacheDir, channelRuntime.asr(), channelRuntime.asrFallback(), pipelineVideoProvider, alignment, shotDetector, plan, sourceStager, time.Duration(cfg.Pipeline.ProviderRouteDeferralMinutes)*time.Minute, cfg.Pipeline.MinimumFreeSpaceBytes),
-		curator:  channelRuntime.curator(), embedder: channelRuntime.embedder(), planner: channelRuntime.planner(),
+		pipeline:   pipeline,
+		leaseOwner: leaseOwner,
+		curator:    channelRuntime.curator(), embedder: channelRuntime.embedder(), planner: channelRuntime.planner(),
 		hardware: hardware, adminToken: adminToken, agentToken: agentToken, secrets: secrets,
 		channelRuntime:  channelRuntime,
 		scanFailures:    make(map[string]map[string]int),
@@ -1372,6 +1395,13 @@ func (s *Service) Doctor(ctx context.Context, writer io.Writer) error {
 
 func (s *Service) HardwareReport() media.HardwareReport { return s.hardware }
 
+// ProviderSummary exposes the configured provider view — selected names,
+// protocols, models, and which blocks are enabled — for the capabilities
+// endpoint and diagnostics. It carries no credentials.
+func (s *Service) ProviderSummary() providers.ProviderSummary {
+	return providers.SummarizeProviders(s.cfg.Providers)
+}
+
 // HealOnStartup runs the crash-recovery sweep for stale 'running' jobs once,
 // right after NewService, on the CLI paths that actually run the queue
 // (`serve`, `pipeline run`). It is deliberately not called from NewService
@@ -1382,6 +1412,45 @@ func (s *Service) HardwareReport() media.HardwareReport { return s.hardware }
 func (s *Service) HealOnStartup(ctx context.Context) error {
 	_, _, err := s.repo.HealStaleRunningJobs(ctx, time.Now())
 	return err
+}
+
+// executorHeartbeat is how often a running Hub-local executor refreshes its
+// pipeline_executors row; executorStaleAfter (in the sqlite package) must stay
+// comfortably above it so a delayed tick never costs a live pass its jobs.
+const executorHeartbeat = 15 * time.Second
+
+// StartExecutor registers this process in the pipeline_executors liveness
+// registry and refreshes its heartbeat until ctx is cancelled. Call it before
+// HealOnStartup so the startup sweep sees this process as alive and reclaims
+// only its dead predecessor's jobs; call the returned stop func on shutdown so
+// the next process does not wait for the heartbeat to age out. Every process
+// that runs the Hub-local queue (`serve`, `timingdex pipeline run`) must call
+// it; anything else is free to skip it.
+func (s *Service) StartExecutor(ctx context.Context) (stop func(), err error) {
+	owner := s.leaseOwner
+	if owner == "" {
+		owner = "local-" + idgen.New()
+		s.leaseOwner = owner
+		s.pipeline.SetLeaseOwner(owner)
+	}
+	if err := s.repo.RegisterExecutor(ctx, owner, "hub", time.Now()); err != nil {
+		return nil, err
+	}
+	go func() {
+		ticker := time.NewTicker(executorHeartbeat)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// Best-effort: a failed heartbeat (e.g. DB closing during
+				// shutdown) must never take down the pipeline pass.
+				_ = s.repo.TouchExecutor(ctx, owner, time.Now())
+			}
+		}
+	}()
+	return func() { _ = s.repo.UnregisterExecutor(context.Background(), owner) }, nil
 }
 
 func (s *Service) RunPipeline(ctx context.Context) error {

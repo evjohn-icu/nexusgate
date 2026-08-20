@@ -83,10 +83,16 @@ routes above). `denied_actions` must include `approve_plan`, `run_pipeline`,
 The last one covers `GET /api/v1/repurpose/plans/{id}/export.edl` and
 `.fcpxml`: both require the Hub administrator token and reject the agent
 token, because an FCPXML names the absolute path of every original file and
-an EDL is the artifact an editor cuts with. Do not attempt either; hand the
+and an EDL is the artifact an editor cuts with. Do not attempt either; hand the
 plan id to the operator instead. The response also
 carries an `auth` object describing the header format above; treat it as
-documentation, not as something to branch on.
+documentation, not as something to branch on. The response additionally
+carries a `providers` object (`asr`/`vision`/`repurpose`/`tag_curator`/
+`embedding`/`alignment`), each listing the selected `primary` and `fallbacks`
+names plus the `configured` blocks that are actually enabled (`name`,
+`protocol`, `model` — never credentials). It is informational: read it to
+learn which capabilities this Hub is wired for, and do not branch on its exact
+shape.
 
 ## Readiness and retrieval
 

@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/evjohn-icu/timingdex/internal/config"
@@ -104,5 +105,93 @@ func TestNewShotDetectorModes(t *testing.T) {
 	detector, err = NewShotDetector(cfg)
 	if err != nil || detector != nil {
 		t.Fatalf("disabled detection must be nil: %v err=%v", detector, err)
+	}
+}
+
+func TestValidateProviderConfigAcceptsDefaultAndKeyedConfigs(t *testing.T) {
+	// The shipped default selects stepfun/qwen but leaves them disabled: that
+	// must not fail, or every fresh install would refuse to start.
+	if err := ValidateProviderConfig(config.ProvidersConfig{ASRPrimary: "stepfun", ASRFallback: "qwen"}); err != nil {
+		t.Fatalf("default config rejected: %v", err)
+	}
+	// An enabled keyed provider with a resolved key passes.
+	if err := ValidateProviderConfig(config.ProvidersConfig{
+		ASRPrimary: "stepfun",
+		StepFun:    config.ProviderConfig{Enabled: true, APIKeyEnv: "STEP_API_KEY", APIKey: "sk-test"},
+	}); err != nil {
+		t.Fatalf("keyed config rejected: %v", err)
+	}
+	// Keyless local endpoints (LM Studio, a relay) pass without any key.
+	if err := ValidateProviderConfig(config.ProvidersConfig{
+		VisionPrimary: "local_vlm",
+		LocalVLM:      config.ProviderConfig{Enabled: true, BaseURL: "http://127.0.0.1:1234/v1", Protocol: ProtocolOpenAIMultiframe},
+	}); err != nil {
+		t.Fatalf("keyless local_vlm rejected: %v", err)
+	}
+	// Heuristic repurpose needs no provider.
+	if err := ValidateProviderConfig(config.ProvidersConfig{RepurposePrimary: "heuristic"}); err != nil {
+		t.Fatalf("heuristic repurpose rejected: %v", err)
+	}
+}
+
+func TestValidateProviderConfigRejectsEnabledProviderWithUnsetKey(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  config.ProvidersConfig
+		want string
+	}{
+		{"asr", config.ProvidersConfig{
+			ASRPrimary: "stepfun",
+			StepFun:    config.ProviderConfig{Enabled: true, APIKeyEnv: "STEP_API_KEY"},
+		}, "STEP_API_KEY"},
+		{"vision", config.ProvidersConfig{
+			VisionPrimary: "qwen_video",
+			QwenVideo:     config.ProviderConfig{Enabled: true, APIKeyEnv: "DASHSCOPE_API_KEY"},
+		}, "DASHSCOPE_API_KEY"},
+		{"repurpose", config.ProvidersConfig{
+			RepurposePrimary: "openai_chat",
+			Repurpose:        config.ProviderConfig{Enabled: true, APIKeyEnv: "ARK_API_KEY"},
+		}, "ARK_API_KEY"},
+	}
+	for _, tc := range cases {
+		err := ValidateProviderConfig(tc.cfg)
+		if err == nil {
+			t.Fatalf("%s: expected failure for enabled provider with unset key", tc.name)
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: error %q does not name %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+func TestValidateProviderConfigRejectsUnknownProvider(t *testing.T) {
+	err := ValidateProviderConfig(config.ProvidersConfig{ASRPrimary: "bogus", ASRFallback: "qwen"})
+	if err == nil || !strings.Contains(err.Error(), `asr provider "bogus"`) {
+		t.Fatalf("unknown asr provider: err=%v", err)
+	}
+}
+
+func TestSummarizeProvidersReportsEnabledBlocksWithoutSecrets(t *testing.T) {
+	cfg := config.ProvidersConfig{
+		ASRPrimary:    "stepfun",
+		StepFun:       config.ProviderConfig{Enabled: true, Model: "stepaudio-2.5-asr", APIKey: "sk-secret"},
+		Qwen:          config.ProviderConfig{Enabled: false, Model: "qwen3-asr-flash"},
+		VisionPrimary: "local_vlm",
+		LocalVLM:      config.ProviderConfig{Enabled: true, Protocol: ProtocolOpenAIMultiframe, Model: "doubao-seed-2.0-lite"},
+	}
+	s := SummarizeProviders(cfg)
+	if s.ASR.Primary != "stepfun" {
+		t.Fatalf("asr primary=%q", s.ASR.Primary)
+	}
+	if len(s.ASR.Configured) != 1 || s.ASR.Configured[0].Name != "stepfun" || s.ASR.Configured[0].Model != "stepaudio-2.5-asr" {
+		t.Fatalf("asr configured=%+v", s.ASR.Configured)
+	}
+	for _, p := range append(s.ASR.Configured, s.Vision.Configured...) {
+		if strings.Contains(p.Name, "secret") || strings.Contains(p.Model, "sk-") {
+			t.Fatalf("provider info leaked a secret: %+v", p)
+		}
+	}
+	if len(s.Vision.Configured) != 1 || s.Vision.Configured[0].Protocol != ProtocolOpenAIMultiframe {
+		t.Fatalf("vision configured=%+v", s.Vision.Configured)
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/hubauth"
 	"github.com/evjohn-icu/timingdex/internal/hubtls"
 	"github.com/evjohn-icu/timingdex/internal/media"
+	"github.com/evjohn-icu/timingdex/internal/providers"
 	"github.com/evjohn-icu/timingdex/internal/remote"
 	sqliterepo "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 	"github.com/evjohn-icu/timingdex/internal/secretstore"
@@ -79,6 +80,18 @@ func run() error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	if os.Args[1] != "worker" {
+		// Fail fast on a selected provider whose key never resolved (see
+		// providers.ValidateProviderConfig). config.Load already resolved
+		// api_key_env into api_key, so this catches an enabled ASR/vision/
+		// repurpose route with an unset key env before serve claims to be
+		// healthy. The worker pulls provider work (and keys) from the Hub and
+		// never runs these providers itself, so it is exempt.
+		if err := providers.ValidateProviderConfig(cfg.Providers); err != nil {
+			return fmt.Errorf("invalid provider config: %w", err)
+		}
+	}
+
 	if os.Args[1] == "worker" {
 		return runWorkerCommand(cfg)
 	}
@@ -104,14 +117,25 @@ func run() error {
 		if err := fs.Parse(os.Args[2:]); err != nil {
 			return err
 		}
-		// A previous Hub crash can leave jobs at state='running' with dead
-		// leases; release them before anything can be looking at the queue, or
-		// they sit on /progress forever while nobody runs the pipeline.
-		if err := service.HealOnStartup(context.Background()); err != nil {
-			slog.Warn("self-heal sweep failed; stale running jobs will be reclaimed on the next lease attempt", "error", err)
-		}
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
+		// Register this process in the executor registry BEFORE the startup
+		// sweep so HealOnStartup reclaims only its dead predecessor's jobs,
+		// never this process's (it has none yet, but the row doubles as the
+		// heartbeat anchor for every pass the supervisor runs from here).
+		executorStop, err := service.StartExecutor(ctx)
+		if err != nil {
+			return fmt.Errorf("register pipeline executor: %w", err)
+		}
+		defer executorStop()
+		// A previous Hub crash can leave jobs at state='running' with dead
+		// leases; release them before anything can be looking at the queue, or
+		// they sit on /progress forever while nobody runs the pipeline. The
+		// executor registry lets this reclaim a killed process's still-valid
+		// local leases immediately instead of waiting out the lease TTL.
+		if err := service.HealOnStartup(ctx); err != nil {
+			slog.Warn("self-heal sweep failed; stale running jobs will be reclaimed on the next lease attempt", "error", err)
+		}
 		certificate, key, err := hubTLSFiles(cfg)
 		if err != nil {
 			return err
@@ -162,13 +186,18 @@ func run() error {
 		}
 		switch os.Args[2] {
 		case "run":
-			// Same startup sweep as `serve`: release stale running jobs from
-			// a crashed process before the pipeline can lease or reclaim.
-			if err := service.HealOnStartup(context.Background()); err != nil {
-				slog.Warn("self-heal sweep failed; stale running jobs will be reclaimed on the next lease attempt", "error", err)
-			}
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
+			executorStop, err := service.StartExecutor(ctx)
+			if err != nil {
+				return fmt.Errorf("register pipeline executor: %w", err)
+			}
+			defer executorStop()
+			// Same startup sweep as `serve`: release stale running jobs from
+			// a crashed process before the pipeline can lease or reclaim.
+			if err := service.HealOnStartup(ctx); err != nil {
+				slog.Warn("self-heal sweep failed; stale running jobs will be reclaimed on the next lease attempt", "error", err)
+			}
 			return service.RunPipeline(ctx)
 		case "retry-failed":
 			requeued, err := service.RequeueFailedJobs(context.Background())

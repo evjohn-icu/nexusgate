@@ -81,6 +81,23 @@
   before exiting. Browser administration now uses a short-lived HTTPS HttpOnly session with
   same-origin Origin and CSRF checks; CLI, Agent, and Worker Bearer authentication remains
   unchanged.
+- **Real-machine deployment hardening (107 / NAS / agent-plan)**:
+  - **Fail-fast provider validation**: `timingdex serve`/`pipeline run` now refuse to start
+    when a selected provider (`asr_primary`, `vision_primary`, `repurpose_primary`, …) is
+    enabled but its `api_key_env` did not resolve. Previously the Hub came up "healthy" with a
+    dead ASR/vision route and only failed on the first real job. A selected-but-disabled block
+    stays allowed (the shipped default selects providers while leaving them disabled).
+  - **Orphan lease reclaim at startup**: a killed `serve`/`pipeline run` left `running` jobs
+    with still-valid leases that stalled the queue for the whole lease TTL (30 min on derive).
+    Hub-local executors now register a heartbeat row (`pipeline_executors`, migration 0035) and
+    `HealOnStartup` reclaims any `running` job whose local executor is dead immediately, while
+    never touching a live process's jobs or worker-pinned work.
+  - **Provider visibility**: `GET /api/v1/agent/capabilities` now carries a `providers` object
+    (`asr`/`vision`/`repurpose`/`tag_curator`/`embedding`/`alignment`) listing the selected
+    primary/fallbacks and the enabled blocks (`name`, `protocol`, `model`, never credentials),
+    so an operator can see at a glance what the Hub is actually running.
+  - 部署运维要点（SSH 里用 `pkill -x timingdex`、`/tmp` 满、key 环境变量、`pipeline run`
+    单轮语义）写入 [v0.31 部署指南](docs/v0.31-deployment.md)。
 
 ## v0.30.0-alpha — 2026-08-10（成本参考值）
 

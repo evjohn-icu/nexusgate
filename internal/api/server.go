@@ -1025,6 +1025,11 @@ func (s *Server) agentCapabilities(w http.ResponseWriter, r *http.Request) {
 			"manage_pipeline_throttle",
 			"manage_library_summary",
 		},
+		// providers renders what this Hub is actually configured to run —
+		// names, protocols, models, never credentials — so an operator (or the
+		// diagnostics page) can see at a glance whether ASR, vision, repurpose
+		// and the rest are wired, without poking the secret store.
+		"providers": s.service.ProviderSummary(),
 	})
 }
 

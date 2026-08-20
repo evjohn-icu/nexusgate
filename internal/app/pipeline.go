@@ -129,6 +129,13 @@ type Pipeline struct {
 	// nil when no cost tracking is wired (tests, minimal setups), in which
 	// case recordCostEstimate is a no-op.
 	costEstimator func(ctx context.Context, capability, provider, model, assetID string, durationMS int64)
+	// leaseOwner is the stable identity this process mints lease owners from
+	// when it runs the queue. It doubles as the executor_id in the
+	// pipeline_executors liveness registry, so HealStaleRunningJobs can map a
+	// 'running' job back to the process that holds it. Empty in tests and
+	// minimal setups, where RunUntilIdle falls back to a fresh per-run owner
+	// (the historical behaviour).
+	leaseOwner string
 }
 
 func (p *Pipeline) failModelRun(ctx context.Context, runID, code, message, raw string, j *domain.Job, worker string) error {
@@ -151,6 +158,14 @@ func NewPipeline(repo PipelineRepository, cacheDir string, asr providers.ASR, as
 		deferral = minProviderRouteDeferral
 	}
 	return &Pipeline{repo: repo, cacheDir: cacheDir, asr: asr, asrFallback: asrFallback, videoProvider: videoProvider, alignment: alignment, shotDetector: shotDetector, hardware: hardware, sourceStager: sourceStager, routeDeferral: deferral, minFreeBytes: minFreeBytes}
+}
+
+// SetLeaseOwner pins the identity this pipeline uses for every lease it mints
+// and for its pipeline_executors liveness row (see the struct field). It must
+// be set before the first RunUntilIdle and before HealOnStartup, or the
+// startup sweep cannot tell this process's own jobs from a dead predecessor's.
+func (p *Pipeline) SetLeaseOwner(owner string) {
+	p.leaseOwner = owner
 }
 
 // SetAfterShotsCommitted attaches the post-commit hook (see onShotsCommitted).
@@ -227,7 +242,13 @@ func leaseTTL(typ domain.JobType) time.Duration {
 }
 
 func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
-	worker := "local-" + idgen.New()
+	// A stable per-process owner (see SetLeaseOwner) lets the executor
+	// registry attribute in-flight jobs to this process; empty falls back to
+	// a fresh per-run owner, which tests and minimal setups rely on.
+	worker := p.leaseOwner
+	if worker == "" {
+		worker = "local-" + idgen.New()
+	}
 	executed := 0
 	consecutiveLeaseErrors := 0
 	for {

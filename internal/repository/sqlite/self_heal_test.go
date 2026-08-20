@@ -126,3 +126,79 @@ func TestHealStaleRunningJobsIsIdempotent(t *testing.T) {
 		t.Fatalf("second sweep released=%d terminal=%d err=%v, want 0/0/nil", released, terminal, err)
 	}
 }
+
+// A Hub-local job whose lease owner has no live executor is a crash orphan and
+// is released even though its lease is still valid — that is the restart
+// case, where the old process's derive/transcribe/analyze leases would
+// otherwise stall the queue for the whole TTL. A live executor's row keeps its
+// jobs in place whatever the lease age.
+func TestHealStaleRunningJobsReclaimsDeadLocalExecutor(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "self-heal-exec.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	stamp := formatTime(now)
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES('asset-exec','exec-fp',1,'discovered',?,?)`, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	seed := func(id, owner string) {
+		t.Helper()
+		_, err := repo.db.ExecContext(ctx, `INSERT INTO jobs(id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,lease_owner,lease_expires_at,created_at,updated_at) VALUES(?,?,'derive','running',10,1,3,?,?,?,?,?,?)`,
+			id, "asset-exec", formatTime(now.Add(-time.Hour)), "hash-"+id, owner, formatTime(now.Add(time.Hour)), stamp, stamp)
+		if err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	// orphan: a valid lease but no executor row at all.
+	seed("job-orphan", "local-deadbeef")
+	// live: an executor whose heartbeat is fresh — its still-valid lease stays.
+	if err := repo.RegisterExecutor(ctx, "local-alive", "hub", now); err != nil {
+		t.Fatal(err)
+	}
+	seed("job-live", "local-alive")
+	// stale: an executor whose heartbeat aged out — its job is an orphan too.
+	if err := repo.RegisterExecutor(ctx, "local-stale", "hub", now.Add(-10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	seed("job-stale", "local-stale")
+
+	released, terminal, err := repo.HealStaleRunningJobs(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if released != 2 || terminal != 0 {
+		t.Fatalf("released=%d terminal=%d, want 2/0 (orphan + stale, live untouched)", released, terminal)
+	}
+	for _, id := range []string{"job-orphan", "job-stale"} {
+		var state string
+		var owner sql.NullString
+		if err := repo.db.QueryRowContext(ctx, `SELECT state,lease_owner FROM jobs WHERE id=?`, id).Scan(&state, &owner); err != nil {
+			t.Fatalf("read %s: %v", id, err)
+		}
+		if domain.JobState(state) != domain.JobPending || owner.Valid {
+			t.Fatalf("%s = state=%s owner.valid=%v, want pending/cleared", id, state, owner.Valid)
+		}
+	}
+	var state string
+	var owner sql.NullString
+	if err := repo.db.QueryRowContext(ctx, `SELECT state,lease_owner FROM jobs WHERE id='job-live'`).Scan(&state, &owner); err != nil {
+		t.Fatal(err)
+	}
+	if domain.JobState(state) != domain.JobRunning || !owner.Valid || owner.String != "local-alive" {
+		t.Fatalf("job-live = state=%s owner=%v, want running/local-alive untouched", state, owner)
+	}
+
+	// Unregistering a live executor makes its job an orphan on the next sweep.
+	if err := repo.UnregisterExecutor(ctx, "local-alive"); err != nil {
+		t.Fatal(err)
+	}
+	if released, terminal, err := repo.HealStaleRunningJobs(ctx, now); err != nil || released != 1 || terminal != 0 {
+		t.Fatalf("after unregister released=%d terminal=%d err=%v, want 1/0/nil", released, terminal, err)
+	}
+}

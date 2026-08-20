@@ -2,6 +2,7 @@ package providers
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/evjohn-icu/timingdex/internal/config"
 	"github.com/evjohn-icu/timingdex/internal/providers/common"
@@ -222,6 +223,235 @@ func NewRepurposePlanner(name string, c config.ProvidersConfig) (RepurposePlanne
 	default:
 		return nil, fmt.Errorf("unsupported repurpose planner %q", name)
 	}
+}
+
+// ProviderInfo is the non-secret projection of an enabled provider block:
+// how the pipeline addresses it, over what protocol, and with which model.
+// Credentials never appear here.
+type ProviderInfo struct {
+	Name     string `json:"name"`
+	Protocol string `json:"protocol,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
+// ProviderCapability is one pipeline capability's provider view: what the
+// config selects as primary/fallback, and which blocks are actually enabled.
+type ProviderCapability struct {
+	Primary    string         `json:"primary"`
+	Fallbacks  []string       `json:"fallbacks,omitempty"`
+	Configured []ProviderInfo `json:"configured"`
+}
+
+// ProviderSummary renders every pipeline capability's provider configuration
+// for /api/v1/agent/capabilities and the diagnostics pages. It lets an
+// operator see "which providers is this Hub actually running" without poking
+// the secret store; a selected-but-disabled provider shows up as a primary
+// name with no matching row under configured.
+type ProviderSummary struct {
+	ASR        ProviderCapability `json:"asr"`
+	Vision     ProviderCapability `json:"vision"`
+	Repurpose  ProviderCapability `json:"repurpose"`
+	TagCurator ProviderCapability `json:"tag_curator"`
+	Embedding  ProviderCapability `json:"embedding"`
+	Alignment  ProviderCapability `json:"alignment"`
+}
+
+// SummarizeProviders builds the provider view from configuration. An empty
+// protocol means the block uses its endpoint's native protocol (openai_chat,
+// openai_video, ...) — the same meaning the factory applies.
+func SummarizeProviders(c config.ProvidersConfig) ProviderSummary {
+	type block struct {
+		name     string
+		protocol string
+		model    string
+		enabled  bool
+	}
+	capability := func(primary string, fallbacks []string, blocks ...block) ProviderCapability {
+		pc := ProviderCapability{Primary: primary, Fallbacks: fallbacks}
+		for _, b := range blocks {
+			if b.enabled {
+				pc.Configured = append(pc.Configured, ProviderInfo{Name: b.name, Protocol: b.protocol, Model: b.model})
+			}
+		}
+		return pc
+	}
+	return ProviderSummary{
+		ASR: capability(c.ASRPrimary, []string{c.ASRFallback},
+			block{"stepfun", c.StepFun.Protocol, c.StepFun.Model, c.StepFun.Enabled},
+			block{"qwen", c.Qwen.Protocol, c.Qwen.Model, c.Qwen.Enabled},
+			block{"volcengine_asr", "", c.VolcASR.Model, c.VolcASR.Enabled}),
+		Vision: capability(c.VisionPrimary, c.VisionFallback,
+			block{"gemini", c.Gemini.Protocol, c.Gemini.Model, c.Gemini.Enabled},
+			block{"qwen_video", c.QwenVideo.Protocol, c.QwenVideo.Model, c.QwenVideo.Enabled},
+			block{"volcengine_video", c.VolcVideo.Protocol, c.VolcVideo.Model, c.VolcVideo.Enabled},
+			block{"local_vlm", c.LocalVLM.Protocol, c.LocalVLM.Model, c.LocalVLM.Enabled}),
+		Repurpose: capability(c.RepurposePrimary, nil,
+			block{"openai_chat", c.Repurpose.Protocol, c.Repurpose.Model, c.Repurpose.Enabled},
+			block{"volc_agent_plan", c.VolcAgentPlan.Protocol, c.VolcAgentPlan.Model, c.VolcAgentPlan.Enabled},
+			block{"volc_coding_plan", c.VolcCodingPlan.Protocol, c.VolcCodingPlan.Model, c.VolcCodingPlan.Enabled}),
+		TagCurator: capability(c.TagCuratorPrimary, nil,
+			block{"openai_chat", c.TagCurator.Protocol, c.TagCurator.Model, c.TagCurator.Enabled},
+			block{"volc_agent_plan", c.VolcAgentPlan.Protocol, c.VolcAgentPlan.Model, c.VolcAgentPlan.Enabled},
+			block{"volc_coding_plan", c.VolcCodingPlan.Protocol, c.VolcCodingPlan.Model, c.VolcCodingPlan.Enabled}),
+		Embedding: capability(c.EmbeddingPrimary, nil,
+			block{"openai_embeddings", c.Embedding.Protocol, c.Embedding.Model, c.Embedding.Enabled},
+			block{"volc_agent_plan_embedding", c.VolcAgentPlanEmbedding.Protocol, c.VolcAgentPlanEmbedding.Model, c.VolcAgentPlanEmbedding.Enabled},
+			block{"volc_coding_plan_embedding", c.VolcCodingPlanEmbedding.Protocol, c.VolcCodingPlanEmbedding.Model, c.VolcCodingPlanEmbedding.Enabled}),
+		Alignment: capability(c.AlignmentPrimary, nil,
+			block{"external_command", "", c.Alignment.Model, c.Alignment.Enabled}),
+	}
+}
+
+// ValidateProviderConfig is the startup fail-fast for the configured provider
+// route. The provider factories defer key use to call time and return a nil
+// provider for a disabled block, so without this check a Hub can come up
+// "healthy" with an ASR/vision/repurpose route that dies on the first real
+// job. config.Load resolves api_key_env into api_key before this runs, so an
+// enabled provider whose key env never resolved surfaces here instead of at
+// job time. A selected-but-disabled block is deliberately allowed: the shipped
+// default config selects the recommended providers while leaving them disabled
+// until the operator enables them.
+func ValidateProviderConfig(c config.ProvidersConfig) error {
+	type check struct {
+		found   bool
+		enabled bool
+		keyed   bool
+		keyEnv  string
+		apiKey  string
+	}
+	pc := func(p config.ProviderConfig) (keyed bool, keyEnv, apiKey string) {
+		return p.APIKeyEnv != "" || p.AuthHeader != "" || p.AuthScheme != "", p.APIKeyEnv, p.APIKey
+	}
+	validate := func(role, name string, chk check) error {
+		name = strings.TrimSpace(name)
+		if name == "" || name == "none" {
+			return nil
+		}
+		if !chk.found {
+			return fmt.Errorf("%s provider %q is not supported", role, name)
+		}
+		if !chk.enabled || !chk.keyed {
+			return nil
+		}
+		if strings.TrimSpace(chk.apiKey) == "" {
+			if chk.keyEnv != "" {
+				return fmt.Errorf("%s provider %q is enabled but has no API key: environment variable %q is unset", role, name, chk.keyEnv)
+			}
+			return fmt.Errorf("%s provider %q is enabled but has no API key", role, name)
+		}
+		return nil
+	}
+
+	asrCheck := func(name string) check {
+		switch name {
+		case "stepfun":
+			k, env, key := pc(c.StepFun)
+			return check{true, c.StepFun.Enabled, k, env, key}
+		case "qwen":
+			k, env, key := pc(c.Qwen)
+			return check{true, c.Qwen.Enabled, k, env, key}
+		case "volcengine_asr":
+			return check{true, c.VolcASR.Enabled, c.VolcASR.APIKeyEnv != "" || c.VolcASR.APIKey != "", c.VolcASR.APIKeyEnv, c.VolcASR.APIKey}
+		}
+		return check{}
+	}
+	visionCheck := func(name string) check {
+		switch name {
+		case "gemini":
+			k, env, key := pc(c.Gemini)
+			return check{true, c.Gemini.Enabled, k, env, key}
+		case "qwen_video":
+			k, env, key := pc(c.QwenVideo)
+			return check{true, c.QwenVideo.Enabled, k, env, key}
+		case "volcengine_video":
+			k, env, key := pc(c.VolcVideo)
+			return check{true, c.VolcVideo.Enabled, k, env, key}
+		case "local_vlm":
+			k, env, key := pc(c.LocalVLM)
+			return check{true, c.LocalVLM.Enabled, k, env, key}
+		}
+		return check{}
+	}
+	planCheck := func(name string, enabled bool, p config.ProviderConfig) check {
+		k, env, key := pc(p)
+		return check{true, enabled, k, env, key}
+	}
+	alignmentCheck := func(name string) check {
+		if name == "external_command" {
+			return check{true, c.Alignment.Enabled, false, "", ""}
+		}
+		return check{}
+	}
+	keylessSelected := func(name string) (check, bool) {
+		switch name {
+		case "heuristic":
+			return check{found: true, enabled: true, keyed: false}, true
+		case "", "none":
+			return check{}, true
+		}
+		return check{}, false
+	}
+
+	for _, name := range []string{c.ASRPrimary, c.ASRFallback} {
+		if err := validate("asr", name, asrCheck(name)); err != nil {
+			return err
+		}
+	}
+	for _, name := range append([]string{c.VisionPrimary}, c.VisionFallback...) {
+		if err := validate("vision", name, visionCheck(name)); err != nil {
+			return err
+		}
+	}
+	for _, name := range []string{c.AlignmentPrimary} {
+		if err := validate("alignment", name, alignmentCheck(name)); err != nil {
+			return err
+		}
+	}
+	for _, name := range []string{c.TagCuratorPrimary} {
+		chk, ok := keylessSelected(name)
+		if !ok {
+			switch name {
+			case "openai_chat":
+				chk = planCheck(name, c.TagCurator.Enabled, c.TagCurator)
+			case "volc_agent_plan":
+				chk = planCheck(name, c.VolcAgentPlan.Enabled, c.VolcAgentPlan)
+			case "volc_coding_plan":
+				chk = planCheck(name, c.VolcCodingPlan.Enabled, c.VolcCodingPlan)
+			}
+		}
+		if err := validate("tag curator", name, chk); err != nil {
+			return err
+		}
+	}
+	for _, name := range []string{c.EmbeddingPrimary} {
+		chk, ok := keylessSelected(name)
+		if !ok {
+			switch name {
+			case "openai_embeddings", "gemini_embed_content":
+				chk = planCheck(name, c.Embedding.Enabled, c.Embedding)
+			case "volc_agent_plan_embedding":
+				chk = planCheck(name, c.VolcAgentPlanEmbedding.Enabled, c.VolcAgentPlanEmbedding)
+			case "volc_coding_plan_embedding":
+				chk = planCheck(name, c.VolcCodingPlanEmbedding.Enabled, c.VolcCodingPlanEmbedding)
+			}
+		}
+		if err := validate("embedding", name, chk); err != nil {
+			return err
+		}
+	}
+	for _, name := range []string{c.RepurposePrimary} {
+		chk, ok := keylessSelected(name)
+		if !ok {
+			switch name {
+			case "openai_chat":
+				chk = planCheck(name, c.Repurpose.Enabled, c.Repurpose)
+			}
+		}
+		if err := validate("repurpose", name, chk); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func newPlanTagCurator(c config.ProviderConfig) (TagCurator, error) {
