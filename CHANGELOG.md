@@ -104,7 +104,10 @@
   把当前账号可用模型拉进下拉（火山 agent/coding plan、qwen token plan 等 OpenAI 兼容端点
   直接可用），省去手查端点与模型 ID。新增 Hub-admin 门控路由
   `POST /api/v1/admin/provider-channels/probe-models`；key 仍只沿管理员 HTTPS 请求方向流动，
-  不落浏览器存储、不回显，返回的模型 ID 均按 key 脱敏，超长/超量截断。
+  不落浏览器存储、不回显，返回的模型 ID 均按 key 脱敏，超长/超量截断。另加「一键补齐模型」
+  向导：视频理解 / ASR / Repurpose / Tag / Embedding 五个能力一行一个，预设端点与模型，
+  粘贴对应 key 后一次「开始配置」批量创建缺失通道（模型留空时自动探测、取首个），已配置
+  的能力跳过、未填 key 的行跳过，全部为纯前端编排，复用既有建通道与探测端点。
 
 ## v0.30.0-alpha — 2026-08-10（成本参考值）
 

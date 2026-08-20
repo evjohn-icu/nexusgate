@@ -241,6 +241,43 @@ func TestProvidersPageHasOneClickModelProbe(t *testing.T) {
 	}
 }
 
+// The 一键补齐模型 wizard must provision every missing capability from one
+// dialog and one submit: it renders one row per capability (video_analysis,
+// asr, repurpose, tag_curator, embedding) with provider select + preset
+// endpoint/model + key, marks rows that already have a channel as 已配置, and
+// quickSubmit drives the existing probe-models then provider-channels routes
+// (never a new one), clearing every key input when it finishes.
+func TestProvidersPageHasOneClickQuickConfigWizard(t *testing.T) {
+	body := providersHTML
+	for _, marker := range []string{
+		`id="quick-config-btn"`,
+		`一键补齐模型`,
+		`id="quick-dialog"`,
+		`id="quick-rows"`,
+		`id="quick-go"`,
+		`quickSubmit()`,
+		`function quickRender()`,
+		`function quickProbe(row)`,
+		`quick-datalist-`,
+		`data-cap="'+cap+'"`,
+		`cap:'video_analysis'`,
+		`cap:'asr'`,
+		`cap:'repurpose'`,
+		`cap:'tag_curator'`,
+		`cap:'embedding'`,
+		`row.dataset.configured`,
+		`已配置`,
+		`probe-models`,
+		`label:provider`,
+		`members:[{label:'primary',api_key:key`,
+		`q-key').forEach(function(k){k.value=''`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("providers page missing quick-config marker %q", marker)
+		}
+	}
+}
+
 // The page adds a key by resending the surviving members without api_key,
 // because PATCH replaces the whole member set and retains a member's stored
 // secret only when the member is present and its key is omitted. This test
