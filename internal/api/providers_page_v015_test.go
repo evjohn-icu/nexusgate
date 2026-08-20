@@ -241,35 +241,40 @@ func TestProvidersPageHasOneClickModelProbe(t *testing.T) {
 	}
 }
 
-// The 一键补齐模型 wizard must provision every missing capability from one
-// dialog and one submit: it renders one row per capability (video_analysis,
-// asr, repurpose, tag_curator, embedding) with provider select + preset
-// endpoint/model + key, marks rows that already have a channel as 已配置, and
-// quickSubmit drives the existing probe-models then provider-channels routes
-// (never a new one), clearing every key input when it finishes.
+// The 一键配置 wizard must let an operator provision every missing capability
+// from one dialog and one submit with only the plan key pasted — endpoint and
+// model come pre-filled from presets, but the model field stays editable so a
+// user can specify their own model. Beside the plan presets there is a custom
+// endpoint mode: endpoint + key, the program probes the model list, and the
+// operator ticks which roles that endpoint should serve (each role's model
+// pre-filled, editable).
 func TestProvidersPageHasOneClickQuickConfigWizard(t *testing.T) {
 	body := providersHTML
 	for _, marker := range []string{
 		`id="quick-config-btn"`,
-		`一键补齐模型`,
+		`一键配置`,
 		`id="quick-dialog"`,
 		`id="quick-rows"`,
 		`id="quick-go"`,
 		`quickSubmit()`,
-		`function quickRender()`,
-		`function quickProbe(row)`,
-		`quick-datalist-`,
-		`data-cap="'+cap+'"`,
-		`cap:'video_analysis'`,
-		`cap:'asr'`,
-		`cap:'repurpose'`,
-		`cap:'tag_curator'`,
-		`cap:'embedding'`,
+		`const planPresets=[`,
+		`function quickPlanRowHTML(plan)`,
+		`function quickChannelRowHTML(ch)`,
+		`火山 Agent Plan`,
+		`火山 Coding Plan`,
+		`Qwen Token Plan`,
+		`doubao-seed-2.0-lite`,
+		`qwen3.7-plus`,
+		`capNames`,
+		`data-plan="'+plan.id+'"`,
+		`class="q-model" data-cap="'+ch.cap+'"`,
+		`可自定义`,
 		`row.dataset.configured`,
 		`已配置`,
+		`customProbe()`,
+		`custom-roles`,
+		`q-role-model`,
 		`probe-models`,
-		`label:provider`,
-		`members:[{label:'primary',api_key:key`,
 		`q-key').forEach(function(k){k.value=''`,
 	} {
 		if !strings.Contains(body, marker) {
