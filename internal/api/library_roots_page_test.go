@@ -88,7 +88,27 @@ func TestLibraryRootsPageShowsRootHealthSection(t *testing.T) {
 		"暂停缺失文件对账（不会把素材标记为缺失）",
 	} {
 		if !strings.Contains(body, marker) {
-			t.Fatalf("library roots page missing marker %q", marker)
+			t.Fatalf("library roots page missing root-health marker %q", marker)
+		}
+	}
+}
+
+// The root health table carries a 提示 column fed by the same RootWarnings
+// the CLI doctor prints — network-mount notice, staging-copy recommendation,
+// writable-mount note — so an operator sees the advice for an already-added
+// root without running the CLI. The cell must escape every warning and render
+// one line each.
+func TestLibraryRootsPageRootHealthRendersWarnings(t *testing.T) {
+	body := libraryRootsHTML
+	for _, marker := range []string{
+		`<th>提示</th>`,
+		`h.warnings`,
+		`root-warning`,
+		`health-tips`,
+		`esc(w)`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("library roots page missing root-health warnings marker %q", marker)
 		}
 	}
 }

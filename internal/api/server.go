@@ -1074,11 +1074,12 @@ func (s *Server) listRoots(w http.ResponseWriter, r *http.Request) {
 // UIs render, with times preformatted the same way encoding/json formats
 // time.Time (RFC3339, fractional seconds only when nonzero).
 type RootHealth struct {
-	RootID      string  `json:"root_id"`
-	Path        string  `json:"path"`
-	State       string  `json:"state"` // unknown|healthy|unavailable
-	LastHealthy *string `json:"last_healthy_at,omitempty"`
-	LastScan    *string `json:"last_scan_at,omitempty"`
+	RootID      string   `json:"root_id"`
+	Path        string   `json:"path"`
+	State       string   `json:"state"` // unknown|healthy|unavailable
+	LastHealthy *string  `json:"last_healthy_at,omitempty"`
+	LastScan    *string  `json:"last_scan_at,omitempty"`
+	Warnings    []string `json:"warnings,omitempty"`
 }
 
 // rootsHealth is the read-only counterpart to listRoots: same data, same
@@ -1086,7 +1087,9 @@ type RootHealth struct {
 // hub administrator owns), shaped for a status table. An unavailable root
 // keeps its last_healthy_at — MarkRootUnavailable deliberately never clears
 // it, and this endpoint is what lets the UI show "last healthy" during an
-// outage instead of a blank.
+// outage instead of a blank. Warnings is the same advice Doctor prints for a
+// root (network mount, staging-copy recommendation, writable mount), so the
+// health table surfaces what the path alone cannot tell an operator.
 func (s *Server) rootsHealth(w http.ResponseWriter, r *http.Request) {
 	roots, err := s.service.ListLibraryRoots(r.Context())
 	if err != nil {
@@ -1096,9 +1099,10 @@ func (s *Server) rootsHealth(w http.ResponseWriter, r *http.Request) {
 	health := make([]RootHealth, 0, len(roots))
 	for _, root := range roots {
 		item := RootHealth{
-			RootID: root.ID,
-			Path:   root.Path,
-			State:  string(root.HealthState),
+			RootID:   root.ID,
+			Path:     root.Path,
+			State:    string(root.HealthState),
+			Warnings: s.service.RootWarnings(root.Path, true),
 		}
 		if root.LastHealthyAt != nil {
 			value := root.LastHealthyAt.Format(time.RFC3339Nano)
