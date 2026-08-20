@@ -161,7 +161,7 @@ func (r *Repository) HeartbeatWorker(ctx context.Context, workerID, version stri
 //
 // The token hash is cleared to a fresh random value rather than the empty
 // string because workers.token_hash is NOT NULL UNIQUE: two revocations would
-// otherwise collide on ''. A random digest satisfies the constraint and is
+// otherwise collide on ”. A random digest satisfies the constraint and is
 // guaranteed never to match an issued token (the original digest is gone).
 //
 // Revoking an id that names nothing returns domain.ErrWorkerNotFound.

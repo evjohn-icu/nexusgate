@@ -35,7 +35,7 @@ func TestSearchSpeechViaAsrOnlyEndpoint(t *testing.T) {
 	}
 	var parsed struct {
 		Results []struct {
-			ShotID string `json:"shot_id"`
+			ShotID   string `json:"shot_id"`
 			Evidence []struct {
 				ConstraintType string   `json:"constraint_type"`
 				Constraint     string   `json:"constraint"`
