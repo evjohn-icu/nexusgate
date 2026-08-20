@@ -600,6 +600,32 @@ func (s *Server) testProviderChannel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// probeProviderModelList is the one-click model-list read for the channel
+// dialog. The operator has not saved the channel yet, so the endpoint and key
+// come from the still-open form rather than from a persisted channel or the
+// secret store. The key is used for one non-billed GET {endpoint}/models and
+// is never stored, never logged, and never reflected in the response (the
+// service redacts it from every returned model id). It rides in this request
+// body only because that is the same trusted direction it already travels on
+// channel save; the route stays Hub-admin-gated like every other
+// provider-channels route.
+func (s *Server) probeProviderModelList(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		ProviderName string `json:"provider_name"`
+		Endpoint     string `json:"endpoint"`
+		APIKey       string `json:"api_key"`
+	}
+	if !decodeStrictJSON(w, r, &input, 8<<10) {
+		return
+	}
+	result, err := s.service.ProbeProviderModelList(r.Context(), input.ProviderName, input.Endpoint, input.APIKey)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "provider model probe rejected"})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) writeProviderChannel(w http.ResponseWriter, r *http.Request, status int, saved domain.ProviderChannel) {
 	channels, err := s.service.ListProviderChannels(r.Context(), saved.Capability)
 	if err == nil {

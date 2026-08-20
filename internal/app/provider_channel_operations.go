@@ -333,12 +333,23 @@ const providerChannelTestBudget = 8 * time.Second
 // a query parameter and its model list lives under a different shape, and ASR
 // endpoints expose no model list at all. For those the test keeps the
 // reachability verdict and says explicitly that no billed call was made.
-func channelProbeableModels(channel domain.ProviderChannel) bool {
-	switch strings.TrimSpace(channel.ProviderName) {
+// providerNameProbeableModels reports whether the provider speaks an
+// OpenAI-compatible wire protocol with a cheap, non-billed GET /models
+// listing. The Gemini family and Volcengine ASR do not: Gemini's key rides in
+// a query parameter and its model list lives under a different shape, and ASR
+// endpoints expose no model list at all. Everything else is assumed
+// OpenAI-compatible; a wrong guess surfaces as a "no model list here" verdict,
+// never a billed call.
+func providerNameProbeableModels(providerName string) bool {
+	switch strings.TrimSpace(providerName) {
 	case "gemini", "gemini_embed_content", "volcengine_asr":
 		return false
 	}
 	return true
+}
+
+func channelProbeableModels(channel domain.ProviderChannel) bool {
+	return providerNameProbeableModels(channel.ProviderName)
 }
 
 func providerChannelModelsURL(endpoint string) string {
@@ -410,6 +421,131 @@ func clipProbeText(s string, n int) string {
 		s = s[:len(s)-1]
 	}
 	return s + "…"
+}
+
+// maxProbeModelCount bounds how many model ids one probe may return. The
+// listing is upstream-controlled text destined for the browser page, so it
+// gets the same truncation discipline as a single id (maxProbeModelNameBytes);
+// a pathological account with thousands of models must not balloon the
+// response or the page.
+const maxProbeModelCount = 256
+
+// probeProviderModelList is the full-listing sibling of probeProviderModels:
+// GET {endpoint}/models with the key and return every model id, redacted
+// against the key, truncated per id and in count. It carries the same
+// invariants as the single-name probe — the key never leaves in a header
+// position it is already supposed to be in, never appears in a message or a
+// returned id, and no upstream body is ever copied verbatim into a message.
+func probeProviderModelList(ctx context.Context, client *http.Client, endpoint, key string) (models []string, schemaOK bool, message string, httpStatus int) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, providerChannelModelsURL(endpoint), nil)
+	if err != nil {
+		return nil, false, "Endpoint 可达；模型列表请求无效", 0
+	}
+	request.Header.Set("Authorization", "Bearer "+key)
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, false, "Endpoint 可达；模型列表请求失败", 0
+	}
+	defer response.Body.Close()
+	switch response.StatusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return nil, false, fmt.Sprintf("Endpoint 可达；API Key 无效或已被拒绝 (HTTP %d)", response.StatusCode), response.StatusCode
+	case http.StatusNotFound:
+		return nil, false, "Endpoint 可达；未发现模型列表端点（schema 未知）", response.StatusCode
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, false, fmt.Sprintf("Endpoint 可达；模型列表请求失败 (HTTP %d)", response.StatusCode), response.StatusCode
+	}
+	var listing struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&listing); err != nil {
+		return nil, false, "Endpoint 可达；模型列表返回无法解析（schema 未知）", response.StatusCode
+	}
+	seen := make(map[string]struct{}, len(listing.Data))
+	for _, m := range listing.Data {
+		id := redactString(strings.TrimSpace(m.ID), key)
+		if id == "" {
+			continue
+		}
+		id = clipProbeText(id, maxProbeModelNameBytes)
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		models = append(models, id)
+		if len(models) >= maxProbeModelCount {
+			break
+		}
+	}
+	if len(models) == 0 {
+		return nil, true, "Endpoint 可达；模型列表为空", response.StatusCode
+	}
+	return models, true, "", response.StatusCode
+}
+
+// ProviderModelProbeResult is the one-click "读取模型列表" answer for the
+// channel dialog: the operator pastes a key into the form, the Hub makes one
+// non-billed GET {endpoint}/models with it, and returns the model ids so the
+// page can fill its model field. Status is "ok" (models returned), "no_models"
+// (listing parsed but empty), "invalid_endpoint", "no_key", or "unprobeable"
+// (the provider speaks no OpenAI-compatible /models). The key is never stored,
+// never logged, and never appears in the result — every id is redacted against
+// it, so an upstream that echoes the key back as a model id cannot smuggle it
+// to the page.
+type ProviderModelProbeResult struct {
+	ProviderName string   `json:"provider_name"`
+	Status       string   `json:"status"`
+	Models       []string `json:"models,omitempty"`
+	Message      string   `json:"message,omitempty"`
+	HTTPStatus   int      `json:"http_status,omitempty"`
+}
+
+// ProbeProviderModelList is the Service-side of the one-click model-list
+// read. Unlike TestProviderChannel it has no persisted channel or secret: the
+// endpoint and key come straight from the still-open dialog form, so a
+// not-yet-saved channel can be configured against its real account before the
+// key is committed to the secret store.
+func (s *Service) ProbeProviderModelList(ctx context.Context, providerName, endpoint, apiKey string) (ProviderModelProbeResult, error) {
+	result := ProviderModelProbeResult{ProviderName: strings.TrimSpace(providerName)}
+	if !providerNameProbeableModels(result.ProviderName) {
+		result.Status = "unprobeable"
+		result.Message = "该 Provider 不提供 OpenAI 兼容的模型列表端点；请直接填写模型 ID"
+		return result, nil
+	}
+	if strings.TrimSpace(apiKey) == "" {
+		result.Status = "no_key"
+		result.Message = "请先在表单中填写一个 API Key"
+		return result, nil
+	}
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		result.Status = "invalid_endpoint"
+		result.Message = "Provider Endpoint 无效"
+		return result, nil
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, providerChannelTestBudget)
+	defer cancel()
+	client := &http.Client{Timeout: providerChannelTestBudget}
+	models, schemaOK, message, status := probeProviderModelList(probeCtx, client, endpoint, apiKey)
+	if len(models) > 0 {
+		result.Status = "ok"
+		result.Models = models
+		return result, nil
+	}
+	switch {
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		result.Status = "key_invalid"
+	case schemaOK && status == http.StatusOK:
+		result.Status = "no_models"
+	default:
+		result.Status = "schema_unknown"
+	}
+	result.Message = message
+	result.HTTPStatus = status
+	return result, nil
 }
 
 func (s *Service) TestProviderChannel(ctx context.Context, id string) (ProviderChannelTestResult, error) {

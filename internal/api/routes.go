@@ -142,6 +142,7 @@ func (s *Server) providerRouteSpecs() []routeSpec {
 		newRouteSpec("provider-channel-disable", "POST /api/v1/admin/provider-channels/{id}/disable", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.disableProviderChannel))),
 		newRouteSpec("provider-channel-delete", "DELETE /api/v1/admin/provider-channels/{id}", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.deleteProviderChannel))),
 		newRouteSpec("provider-channel-test", "POST /api/v1/admin/provider-channels/{id}/test", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.testProviderChannel))),
+		newRouteSpec("provider-channel-probe-models", "POST /api/v1/admin/provider-channels/probe-models", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.probeProviderModelList))),
 		newRouteSpec("asset-capture-location", "GET /api/v1/admin/assets/{id}/capture-location", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.assetCaptureLocation))),
 	}
 }

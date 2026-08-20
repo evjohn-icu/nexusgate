@@ -98,6 +98,13 @@
     so an operator can see at a glance what the Hub is actually running.
   - 部署运维要点（SSH 里用 `pkill -x timingdex`、`/tmp` 满、key 环境变量、`pipeline run`
     单轮语义）写入 [v0.31 部署指南](docs/v0.31-deployment.md)。
+- **模型通道一键配置**：`/providers` 新增通道时，选择已知 Provider 会自动带出 well-known
+  端点（火山 Agent/Coding Plan、火山视频、千问、Gemini、StepFun、本地 VLM），并在模型字段
+  旁提供「读取模型」——用表单里刚输入的 key 经 Hub 发一次非计费 `GET {endpoint}/models`，
+  把当前账号可用模型拉进下拉（火山 agent/coding plan、qwen token plan 等 OpenAI 兼容端点
+  直接可用），省去手查端点与模型 ID。新增 Hub-admin 门控路由
+  `POST /api/v1/admin/provider-channels/probe-models`；key 仍只沿管理员 HTTPS 请求方向流动，
+  不落浏览器存储、不回显，返回的模型 ID 均按 key 脱敏，超长/超量截断。
 
 ## v0.30.0-alpha — 2026-08-10（成本参考值）
 

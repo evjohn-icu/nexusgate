@@ -209,6 +209,38 @@ func TestProvidersPageHasTestChannelButton(t *testing.T) {
 	}
 }
 
+// The channel dialog must let an operator configure a known provider by
+// pasting just the key: selecting the provider pre-fills its well-known
+// endpoint, and a 读取模型 button POSTs the still-open form's endpoint and key
+// to /api/v1/admin/provider-channels/probe-models so the Hub can return the
+// account's model list into a datalist. The presets must never be applied over
+// an operator-typed endpoint (endpointTouched), and the probe must go through
+// adminHeaders() exactly like every other channel write.
+func TestProvidersPageHasOneClickModelProbe(t *testing.T) {
+	body := providersHTML
+	for _, marker := range []string{
+		`读取模型</button>`,
+		`id="probe-models"`,
+		`probe-models'`,
+		`list="model-options"`,
+		`id="model-options"`,
+		`const endpointPresets={`,
+		`ark.cn-beijing.volces.com/api/plan/v3`,
+		`ark.cn-beijing.volces.com/api/coding/v3`,
+		`dashscope.aliyuncs.com/compatible-mode/v1`,
+		`function applyEndpointPreset()`,
+		`endpointTouched`,
+		`function probeModels()`,
+		`provider_name:provider`,
+		`api_key:key`,
+		"adminHeaders(true)",
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("providers page missing one-click probe marker %q", marker)
+		}
+	}
+}
+
 // The page adds a key by resending the surviving members without api_key,
 // because PATCH replaces the whole member set and retains a member's stored
 // secret only when the member is present and its key is omitted. This test
