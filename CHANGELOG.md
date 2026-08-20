@@ -108,6 +108,10 @@
   向导：视频理解 / ASR / Repurpose / Tag / Embedding 五个能力一行一个，预设端点与模型，
   粘贴对应 key 后一次「开始配置」批量创建缺失通道（模型留空时自动探测、取首个），已配置
   的能力跳过、未填 key 的行跳过，全部为纯前端编排，复用既有建通道与探测端点。
+- **素材目录状态表加「提示」列**：`/library-roots` 的健康表对每个已添加根显示
+  `timingdex doctor` 同源的存储建议（网络挂载提示、SMB/NFS 根建议 `source_staging.mode
+  =copy`、可写挂载提示），`GET /api/v1/roots/health` 每行新增 `warnings` 字段——原本只能
+  在 CLI 里看到的 NAS 性能建议，现在网页上就能看到。
 
 ## v0.30.0-alpha — 2026-08-10（成本参考值）
 
