@@ -382,9 +382,9 @@ func TestHomePageUsesLibraryFirstShotTimeline(t *testing.T) {
 		"data-library-browser",
 		"loadShots",
 		"/api/v1/assets/" + "'+encodeURIComponent(id)+'" + "/shots",
-		"semantic-timeline",
-		"cut-marker",
-		"data-cut-time",
+		"tickrule",
+		"tickrule-track",
+		"tickrule-scale",
 		"素材库 · 镜头浏览",
 	} {
 		if !strings.Contains(body, marker) {
@@ -594,7 +594,9 @@ func TestCollectionsAndProcessingSummaryExposeOnlySafeLibraryFilters(t *testing.
 	if err := repo.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	cfg := config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}}
+	cfg.HubSecurity.AdminAuth = "required"
+	service, err := app.NewService(repo, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1481,7 +1483,9 @@ func TestPublicAssetDetailHidesPreciseLocationAndAbsolutePath(t *testing.T) {
 	if err := os.WriteFile(videoPath, []byte("fixture"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	service, err := app.NewService(repo, config.Config{DataDir: secureTestDataDir(t), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	cfg := config.Config{DataDir: secureTestDataDir(t), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}}
+	cfg.HubSecurity.AdminAuth = "required"
+	service, err := app.NewService(repo, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

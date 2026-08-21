@@ -727,7 +727,9 @@ func TestWorkerSetupScriptRejectsNotAuthorizedReader(t *testing.T) {
 	if err := repo.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	service, err := app.NewService(repo, config.Config{DataDir: secureTestDataDir(t), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	cfg := config.Config{DataDir: secureTestDataDir(t), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}}
+	cfg.HubSecurity.AdminAuth = "required"
+	service, err := app.NewService(repo, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

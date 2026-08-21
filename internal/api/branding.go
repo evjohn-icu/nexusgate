@@ -15,7 +15,7 @@ const productName = "Re:Footage"
 // gives the library overlay).
 var brandReplacements = []pagePatch{
 	{anchor: "<title>Timingdex", replacement: "<title>" + productName},
-	{anchor: `<span class="brand">Timingdex</span>`, replacement: `<span class="brand">` + productName + `</span>`},
+	{anchor: `<span class="brand">Timingdex</span>`, replacement: `<span class="brand">` + strings.Replace(productName, ":", `<i>:</i>`, 1) + `</span>`},
 }
 
 func brandedPage(page string) string {

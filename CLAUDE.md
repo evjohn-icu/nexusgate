@@ -233,14 +233,23 @@ These invariants are the point of several packages — preserve them when editin
   secrets with fresh nonces, atomically persist both files, backup old key to
   `store.key.pre-rekey`. It holds the write lock for its entire duration and rolls
   back the ciphertext on key-write failure.
-- **Hub admin token** (`hubauth`) is generated at first start, compared with
-  `crypto/subtle`, and enforced by `s.requireHubAdmin(...)` on every mutating/administrative
-  route. New write endpoints default to wrapped, not open. It is not the only mutation guard:
-  agent-facing plan writes use `requireAgentOrAdmin`, and the nine `/api/v1/worker/*` routes
-  authenticate in-handler through `s.authenticatedWorker(...)` against the node token
-  (`enroll` is the exception — a Worker has no token yet, so it presents the one-time pairing
-  token). Three guards, one table: `TestAPIRouteInventoryGuardMatrix` is only worth its name
-  while every route in `Handler()` also has a row there, so add both or neither.
+- **Hub admin token** (`hubauth`) is generated at first start and compared with
+  `crypto/subtle`. Whether it is demanded is controlled by
+  `hub_security.admin_auth`: `required` always demands it; `trusted_network`
+  (the default) waives it for peers inside `admin_auth_networks` (LAN peers
+  skip the password, internet peers still need it); `off` never demands it. The
+  waiver is decided from `RemoteAddr` alone, exactly like the trusted-read
+  guard, and inherits that guard's blind spot: behind a reverse proxy or a
+  published Docker port every peer looks RFC1918, so a containerised Hub with
+  `trusted_network` and no explicit `admin_auth_networks` refuses to start
+  (see `ValidateContainerAdminAuth` in `cmd/timingdex`). New write endpoints
+  default to wrapped, not open. It is not the only mutation guard: agent-facing
+  plan writes use `requireAgentOrAdmin`, and the nine `/api/v1/worker/*` routes
+  authenticate in-handler through `s.authenticatedWorker(...)` against the node
+  token (`enroll` is the exception — a Worker has no token yet, so it presents
+  the one-time pairing token). Three guards, one table:
+  `TestAPIRouteInventoryGuardMatrix` is only worth its name while every route in
+  `Handler()` also has a row there, so add both or neither.
 - **Worker trust**: one-time pairing token, revocable node token, TLS certificate
   fingerprint pinning. A Worker gets a *lease-bound, memory-only* provider credential only
   when `hub_security.allow_worker_provider_credentials` is explicitly enabled (default

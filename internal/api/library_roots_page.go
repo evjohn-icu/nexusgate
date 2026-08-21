@@ -18,7 +18,25 @@ func (s *Server) libraryRootsPage(w http.ResponseWriter, _ *http.Request) {
 }
 
 const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · 添加素材目录</title><style>
-:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:var(--ui-bg);color:var(--ui-text);font:15px ui-sans-serif,system-ui,-apple-system,sans-serif}header{padding:15px 5vw;border-bottom:1px solid var(--ui-border);display:flex;gap:18px;align-items:center;background:color-mix(in srgb, var(--ui-bg) 93%, transparent);position:sticky;top:0;z-index:2;backdrop-filter:blur(12px)}a{color:#b8c8ff;text-decoration:none}.brand{color:#fff;font-weight:800;margin-right:auto}.wrap{max-width:960px;margin:auto;padding:30px 24px 80px}.step-nav{display:flex;gap:0;margin-bottom:28px;border-radius:10px;overflow:hidden;border:1px solid var(--ui-border)}.step-nav div{flex:1;text-align:center;padding:12px;font-size:13px;font-weight:700;background:var(--ui-surface-raised);color:#6c7fa2;border-right:1px solid var(--ui-border);transition:background .2s,color .2s}.step-nav div:last-child{border-right:0}.step-nav .active{background:#2b4070;color:#eef4ff}.step{display:none}.step.active{display:block}.panel{background:var(--ui-surface-raised);border:1px solid var(--ui-border);border-radius:14px;padding:20px;margin-bottom:16px}.panel h2{margin:0 0 14px;font-size:17px}.field{margin:12px 0}.field label{font-size:12px;color:#bfcae0;font-weight:800;display:block;margin:0 0 5px}input,select,textarea{width:100%;font:inherit;padding:10px;border-radius:8px;background:var(--ui-surface-inset);color:#fff;border:1px solid var(--ui-border-strong)}button{border:0;border-radius:8px;padding:10px 16px;font:inherit;font-weight:800;cursor:pointer}.primary{background:#8ca7ff;color:#0d1830}.secondary{background:#2e405e;color:#eaf1ff}.success{background:#3a9668;color:#d3fce4}.muted{color:var(--ui-text-muted);font-size:13px;line-height:1.6}.hint{font-size:13px;margin:8px 0;color:#ffc98d}.hint.ok{color:#82e4ad}.hint.bad{color:#ffb7ac}.health-table{width:100%;border-collapse:collapse;margin-top:6px}.health-table th,.health-table td{text-align:left;padding:9px 8px;border-bottom:1px solid #2b3b55;font-size:13px;vertical-align:top}.health-table th{color:#93a6c6;font-size:11px;font-weight:800;letter-spacing:.05em}.health-table tr:last-child td{border-bottom:0}.health-path{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;word-break:break-all}.health-pill{border-radius:99px;padding:3px 9px;font-size:12px;font-weight:700;white-space:nowrap}.health-pill.ok{background:#164b39;color:#9cf0c2}.health-pill.err{background:#612c3a;color:#ffc0c8}.health-pill.muted{background:#34445e;color:#b8c8d8}.health-warn{margin:8px 0 0;font-size:13px;color:#ffc0c8;line-height:1.7}.root-warning{font-size:12px;color:#ffd88a;line-height:1.5;margin:5px 0 0}.step-actions{display:flex;gap:10px;margin-top:16px}.nav-btn{background:#2b4070;color:#eef4ff}.share-line{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;color:#d9e5ff;word-break:break-all;background:var(--ui-surface-inset);border-radius:8px;padding:8px;margin:6px 0}.guide-step{margin:16px 0}.guide-step-title{font-weight:800;font-size:13px;color:#dce6fb;margin-bottom:7px}.cmd{display:flex;gap:8px;align-items:flex-start;background:var(--ui-surface-inset);border:1px solid var(--ui-border-strong);border-radius:8px;padding:9px 10px;margin:6px 0}.cmd code{flex:1;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:#d9e5ff;word-break:break-all;white-space:pre-wrap}.copy-btn{background:#4a618a;color:#fff;border:0;border-radius:7px;padding:6px 10px;font-size:12px;cursor:pointer;font-weight:700;white-space:nowrap}.notes{margin-top:14px;padding:12px 14px;background:var(--ui-surface-inset);border-radius:8px;color:#c7d3ea;font-size:12px;line-height:1.6}.notes ul{margin:6px 0 0;padding-left:18px}.center{text-align:center;margin:18px 0}.danger{background:#3f2230;color:#ffc2cc;border:1px solid #6d3547;border-radius:10px;padding:12px 14px;margin:10px 0 14px;font-size:13px;line-height:1.6}.danger b{color:#ffe1e6}@media(max-width:600px){.cmd{flex-direction:column}}
+
+.step{display:none}
+.step.active{display:block}
+.panel{padding:20px;margin-bottom:16px}
+.panel h2{margin:0 0 14px}
+.field{margin:12px 0}
+.health-path{font-family:var(--font-data);font-size:13px;word-break:break-all}
+.share-line{font-family:var(--font-data);font-size:13px;color:var(--text-muted);word-break:break-all;background:var(--inset);border-radius:8px;padding:8px;margin:6px 0}
+.guide-step{margin:16px 0}
+.guide-step-title{font-weight:800;font-size:13px;color:var(--text);margin-bottom:7px}
+.cmd{display:flex;gap:8px;align-items:flex-start;background:var(--inset);border:1px solid var(--rule-strong);border-radius:8px;padding:9px 10px;margin:6px 0}
+.cmd code{flex:1;font-family:var(--font-data);font-size:12px;line-height:1.55;color:var(--text-muted);word-break:break-all;white-space:pre-wrap}
+.notes{margin-top:14px;padding:12px 14px;background:var(--inset);border-radius:8px;color:var(--text-muted);font-size:12px;line-height:1.6}
+.notes ul{margin:6px 0 0;padding-left:18px}
+.center{text-align:center;margin:18px 0}
+.step-actions{display:flex;gap:10px;margin-top:16px}
+@media(max-width:600px){.cmd{flex-direction:column}
+}
+
 </style></head><body data-library-roots-wizard>
 <!--SHELL_HEADER-->
 <div class="wrap">
@@ -226,7 +244,7 @@ function renderComposeVolume(inspection){
     html+='<p class="muted">推荐路线：NFS 形式的挂载卷不需要任何凭据，是这两种形式里更安全的一种。</p>';
   }
   if(volume.warning){
-    html+='<div class="danger"><b>警告：</b>'+esc(tr(volume.warning_key,volume.warning))+'</div>';
+    html+='<div class="callout callout--contradicted"><b>警告：</b>'+esc(tr(volume.warning_key,volume.warning))+'</div>';
   }
   html+='<div class="guide-step"><div class="guide-step-title">1. 粘贴到 docker-compose.yml 顶层的 volumes: 下</div><div class="cmd"><code id="compose-yaml-code">'+esc(volume.yaml)+'</code><button type="button" class="copy-btn" onclick="copyCmd(\'compose-yaml-code\')">复制</button></div></div>';
   if(volume.service_yaml){

@@ -201,6 +201,34 @@ type HubSecurityConfig struct {
 	// "0.0.0.0/0" and "::/0" disables the guard, which serves the whole library
 	// to anyone who can reach the port.
 	TrustedReadNetworks []string `json:"trusted_read_networks,omitempty"`
+	// AdminAuth controls whether administrative and mutating routes require
+	// the Hub administrator credential. "required" always demands it. The
+	// default "trusted_network" waives it for peers inside AdminAuthNetworks,
+	// which makes a LAN-only Hub usable without a password while still refusing
+	// the internet. "off" never demands it -- every caller that can reach the
+	// port is an administrator, including for provider-key writes and paid
+	// pipeline runs.
+	//
+	// The waiver is decided from RemoteAddr alone, exactly like the
+	// trusted-read guard, and inherits that guard's documented blind spot:
+	// behind a reverse proxy or a published Docker port every peer looks
+	// RFC1918. See network_guard.go and the container guard in cmd/timingdex.
+	AdminAuth string `json:"admin_auth,omitempty"`
+	// AdminAuthNetworks are the CIDR ranges whose peers skip the admin
+	// credential when AdminAuth is "trusted_network". Empty means the same
+	// built-in private/loopback/Tailnet set the read guard uses.
+	AdminAuthNetworks []string `json:"admin_auth_networks,omitempty"`
+}
+
+// AdminAuthMode returns the normalized admin-auth mode. An empty value means
+// the documented default trusted_network, so a zero-value HubSecurityConfig
+// (for example the browser fixture, which builds a config.Config directly
+// without Load()) still answers with the default rather than an empty string.
+func (c HubSecurityConfig) AdminAuthMode() string {
+	if strings.TrimSpace(c.AdminAuth) == "" {
+		return "trusted_network"
+	}
+	return c.AdminAuth
 }
 
 // TrustedReadPrefixes parses TrustedReadNetworks. It is validated at load time
@@ -220,6 +248,38 @@ func (c HubSecurityConfig) TrustedReadPrefixes() ([]netip.Prefix, error) {
 		prefixes = append(prefixes, prefix.Masked())
 	}
 	return prefixes, nil
+}
+
+// AdminAuthPrefixes parses AdminAuthNetworks. It is validated at load time so
+// a typo fails at startup rather than silently widening or narrowing access
+// once the server is already serving.
+func (c HubSecurityConfig) AdminAuthPrefixes() ([]netip.Prefix, error) {
+	prefixes := make([]netip.Prefix, 0, len(c.AdminAuthNetworks))
+	for _, raw := range c.AdminAuthNetworks {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(entry)
+		if err != nil {
+			return nil, fmt.Errorf("hub_security.admin_auth_networks: %q is not a CIDR range: %w", entry, err)
+		}
+		prefixes = append(prefixes, prefix.Masked())
+	}
+	return prefixes, nil
+}
+
+// ValidateContainerAdminAuth fails closed when the Hub runs inside a container
+// with the default trusted_network mode and no explicit AdminAuthNetworks. A
+// published Docker port makes every peer appear to come from the bridge gateway
+// (an RFC1918 address), so the network guard cannot tell a LAN caller from the
+// internet; administrative writes would then be open to anyone who can reach
+// the port. Requiring an explicit list forces a deliberate answer.
+func ValidateContainerAdminAuth(isContainer bool, cfg Config) error {
+	if isContainer && cfg.HubSecurity.AdminAuth == "trusted_network" && len(cfg.HubSecurity.AdminAuthNetworks) == 0 {
+		return fmt.Errorf("在容器里运行时，hub_security.admin_auth: \"trusted_network\" 必须同时显式配置 hub_security.admin_auth_networks。容器发布端口后，所有请求都来自网桥网关（一个 RFC1918 地址），Hub 无法区分局域网和公网调用者，管理写入会对端口可达的任何人开放。要么列出真实的内网网段，要么改用 admin_auth: \"required\"。")
+	}
+	return nil
 }
 
 type Config struct {
@@ -296,6 +356,13 @@ func Load() (Config, error) {
 	if v := strings.TrimSpace(os.Getenv("TIMINGDEX_HUB_ADMIN_TOKEN")); v != "" {
 		cfg.HubSecurity.AdminToken = v
 	}
+	if v := strings.TrimSpace(os.Getenv("TIMINGDEX_HUB_ADMIN_AUTH")); v != "" {
+		cfg.HubSecurity.AdminAuth = v
+	}
+	cfg.HubSecurity.AdminAuth = strings.ToLower(strings.TrimSpace(cfg.HubSecurity.AdminAuth))
+	if cfg.HubSecurity.AdminAuth == "" {
+		cfg.HubSecurity.AdminAuth = "trusted_network"
+	}
 	if v := strings.TrimSpace(os.Getenv("TIMINGDEX_ALLOW_WORKER_PROVIDER_CREDENTIALS")); v != "" {
 		if enabled, err := strconv.ParseBool(v); err == nil {
 			cfg.HubSecurity.AllowWorkerProviderCredentials = enabled
@@ -325,6 +392,9 @@ func Load() (Config, error) {
 		cfg.HubSecurity.TrustedReadNetworks = strings.Split(v, ",")
 	}
 	if _, err := cfg.HubSecurity.TrustedReadPrefixes(); err != nil {
+		return Config{}, err
+	}
+	if _, err := cfg.HubSecurity.AdminAuthPrefixes(); err != nil {
 		return Config{}, err
 	}
 	resolve := func(p *ProviderConfig) {
@@ -387,6 +457,11 @@ func validate(cfg Config, explicit map[string]json.RawMessage) error {
 	}
 	if cfg.Pipeline.MinimumFreeSpaceBytes < 0 {
 		return fmt.Errorf("pipeline.minimum_free_space_bytes: must not be negative")
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.HubSecurity.AdminAuth)) {
+	case "required", "trusted_network", "off":
+	default:
+		return fmt.Errorf("hub_security.admin_auth: unsupported value %q (want required, trusted_network, or off)", cfg.HubSecurity.AdminAuth)
 	}
 	return nil
 }

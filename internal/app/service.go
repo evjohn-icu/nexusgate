@@ -537,6 +537,20 @@ func (s *Service) TrustedReadNetworks() ([]netip.Prefix, error) {
 	return s.cfg.HubSecurity.TrustedReadPrefixes()
 }
 
+// AdminAuth is the normalized admin-auth mode (required, trusted_network or
+// off). AdminAuthMode normalizes an empty value to the documented default
+// trusted_network, so the API layer can read it directly even for a
+// zero-value config.
+func (s *Service) AdminAuth() string { return s.cfg.HubSecurity.AdminAuthMode() }
+
+// AdminAuthNetworks are the CIDR ranges whose peers skip the admin credential
+// when AdminAuth is "trusted_network". Load() has already validated them, so a
+// parse failure here cannot happen; the API layer still falls back to its
+// restrictive defaults rather than assuming otherwise.
+func (s *Service) AdminAuthNetworks() ([]netip.Prefix, error) {
+	return s.cfg.HubSecurity.AdminAuthPrefixes()
+}
+
 // ErrShareNotMounted is returned when the operator gave a network share where a
 // path was expected. It is a distinct error because the caller can do something
 // useful with it — print the mount commands — that it cannot do with a generic

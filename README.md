@@ -806,8 +806,16 @@ These are load-bearing, not aspirational.
   store. Never in SQLite, API responses, browser storage, Worker config, logs or
   error strings.
 - **Administrator token** (`admin-token`, exact `0600`) is a raw bearer credential
-  reused across restarts and gates every mutating and administrative route,
-  compared in constant time. New write endpoints default to gated.
+  reused across restarts and compared in constant time. Whether it is demanded is
+  controlled by `hub_security.admin_auth`: `required` always demands it;
+  `trusted_network` (the default) waives it for peers inside
+  `hub_security.admin_auth_networks`, so LAN peers skip the password while
+  internet peers still need it; `off` never demands it. New write endpoints
+  default to gated. The waiver is decided from the peer address alone, exactly
+  like the read guard below — so behind a reverse proxy or a published Docker
+  port, where every peer looks like the RFC1918 bridge gateway, you MUST set
+  `admin_auth_networks` explicitly (or use `admin_auth: "required"`), or the
+  admin password is waived for anyone who can reach the port.
 - **Agent token** (`agent-token`, exact `0600`) follows the same raw-token file
   contract and restart reuse. It is a strictly narrower credential: it is
   accepted on exactly two routes — create and revise a *draft* Repurpose plan —
@@ -853,8 +861,9 @@ curl -H "Authorization: Bearer $(cat "$TIMINGDEX_DATA_DIR/admin-token")" \
   -X POST http://127.0.0.1:8787/api/v1/pipeline/run
 ```
 
-Read routes need no token from a trusted network; writes need the administrator
-token.
+Read routes need no token from a trusted network. Writes need the administrator
+token unless `hub_security.admin_auth` waives it (`trusted_network` for trusted
+peers, or `off` for everyone).
 
 ## Testing
 

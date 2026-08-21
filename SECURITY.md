@@ -71,9 +71,10 @@ the Hub-only encrypted store is a vulnerability, no matter how narrow the path:
 
 **Authentication and authorization bypass.**
 
-- Reaching a mutating or administrative route without the administrator token,
-  or defeating the constant-time comparison (timing oracle, prefix match,
-  header-parsing quirk).
+- Reaching a mutating or administrative route without the administrator token
+  when `hub_security.admin_auth` demands it (`required`, or `trusted_network`
+  for a peer outside `admin_auth_networks`), or defeating the constant-time
+  comparison (timing oracle, prefix match, header-parsing quirk).
 - Using the **agent token** outside the two routes it is accepted on (create and
   revise a *draft* Repurpose plan). Approving a plan, running the pipeline,
   reading provider configuration or reading raw media paths with the agent token
@@ -203,6 +204,15 @@ design, and changing them is a design discussion, not a security fix.
 - **Library read routes carry no token by design**, so the UI works without one.
   They are restricted by source network instead, and a valid token is admitted
   from any network.
+- **The administrator credential is optional by default.**
+  `hub_security.admin_auth` defaults to `trusted_network`: peers inside
+  `admin_auth_networks` (by default the same loopback/RFC1918/CGNAT set the
+  read guard uses) skip the admin password, while internet peers still need it.
+  `required` restores the always-demand behaviour; `off` never demands it. The
+  waiver is decided from the peer address alone, so behind a reverse proxy or a
+  published Docker port every peer looks RFC1918 — a containerised Hub running
+  `trusted_network` without an explicit `admin_auth_networks` refuses to start
+  rather than silently waiving the password for the whole internet.
 - **Capture coordinates are exposed as a region label.** Source precision is
   administrator-only, per asset, via
   `GET /api/v1/admin/assets/{id}/capture-location`. The coarse label is
@@ -221,6 +231,11 @@ design, and changing them is a design discussion, not a security fix.
 
 - Keep the Hub on a trusted LAN or a private overlay. If you must reach it
   remotely, use a VPN or Tailscale-style overlay rather than a forwarded port.
+- If you run the Hub in Docker with a published port, or behind a reverse proxy,
+  set `hub_security.admin_auth_networks` explicitly (or `admin_auth: "required"`):
+  the bridge gateway / proxy is an RFC1918 address, so the default
+  `trusted_network` would otherwise waive the admin password for anyone who can
+  reach the port.
 - Keep `$TIMINGDEX_DATA_DIR` on a filesystem that honours Unix permissions, and
   encrypt any backup of it — it contains both tokens and the secret store's key.
 - Treat the generated Worker install script as a credential: it embeds a

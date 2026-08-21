@@ -16,7 +16,7 @@ func TestShellSidebarMarkup(t *testing.T) {
 	for _, want := range []string{
 		`<aside class="shell-sidebar" data-app-shell>`,
 		`<span class="brand">Timingdex</span>`,
-		`<span class="shell-tagline">本地的素材智能库</span>`,
+		`<span class="shell-tagline">LOCAL FOOTAGE INDEX</span>`,
 		`<span class="nav-group-title">核心</span>`,
 		`<div class="nav-group nav-group-advanced"><span class="nav-group-title">高级 / 管理</span>`,
 		`id="admin-token"`,
@@ -28,6 +28,7 @@ func TestShellSidebarMarkup(t *testing.T) {
 		`id="status-pipeline"`,
 		`id="status-providers"`,
 		`id="status-workers"`,
+		`id="status-access"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("shell sidebar missing %q", want)
@@ -73,16 +74,17 @@ func TestShellCSSSidebarLayout(t *testing.T) {
 	for _, want := range []string{
 		`.shell-sidebar{position:fixed`,
 		`left:0`,
-		`width:220px`,
+		`width:var(--rail-w)`,
 		`z-index:30`,
-		`body{padding-left:220px}`,
-		`@media(max-width:860px)`,
+		`body{padding-left:var(--rail-w)}`,
+		`--rail-w:240px`,
+		`@media(max-width:900px)`,
 	} {
 		if !strings.Contains(shellCSS, want) {
 			t.Fatalf("shell CSS missing %q", want)
 		}
 	}
-	narrow := shellCSS[strings.Index(shellCSS, "@media(max-width:860px)"):]
+	narrow := shellCSS[strings.Index(shellCSS, "@media(max-width:900px)"):]
 	if !strings.Contains(narrow, `body{padding-left:0`) || !strings.Contains(narrow, `overflow-x:hidden`) {
 		t.Fatal("narrow-screen media query must remove the body gutter")
 	}
@@ -103,7 +105,7 @@ func TestShellSidebarServedOnEveryPage(t *testing.T) {
 		if !strings.Contains(served, `id="status-providers"`) {
 			t.Fatal("shelled page lost the status cells")
 		}
-		if !strings.Contains(served, `<span class="brand">`+productName+`</span>`) {
+		if !strings.Contains(served, `<span class="brand">Re<i>:</i>Footage</span>`) {
 			t.Fatal("shelled page lost the branded brand span")
 		}
 		if strings.Index(served, "<body") > strings.Index(served, `class="shell-sidebar"`) {

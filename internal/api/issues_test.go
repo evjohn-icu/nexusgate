@@ -36,7 +36,9 @@ func issuesRetryFixture(t *testing.T) (http.Handler, *app.Service, map[string]st
 		t.Fatal(err)
 	}
 	assetID := scanOneAsset(t, repo, "issues-clip.mov")
-	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	cfg := config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}}
+	cfg.HubSecurity.AdminAuth = "required"
+	service, err := app.NewService(repo, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -285,7 +285,7 @@ func TestLibraryPageShotDrawerPinsProxySeek(t *testing.T) {
 		`data-asset="'+esc(x.id)+'"`,
 		`data-drawer-close`,
 		`/proxy#t='+Math.floor(s/1000)+','+Math.ceil(clampEnd/1000)`, // absolute end, not duration
-		`document.addEventListener('click',function(e){const block=e.target.closest('.shot')`,
+		`document.addEventListener('click',function(e){const block=e.target.closest('.tickrule-span')`,
 		`document.addEventListener('keydown',function(e){if(e.key==='Escape')closeShotDrawer()`,
 	} {
 		if !strings.Contains(page, marker) {

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Optional admin auth (`hub_security.admin_auth`)**: the Hub administrator
+  credential is now optional. `required` keeps the previous always-demand
+  behaviour; `trusted_network` (the new default) waives the password for peers
+  inside `hub_security.admin_auth_networks` — LAN peers skip it, internet peers
+  still need it — and `off` never demands it. The waiver is decided from the
+  peer address alone, so behind a reverse proxy or a published Docker port every
+  peer looks RFC1918: a containerised Hub running `trusted_network` without an
+  explicit `admin_auth_networks` now refuses to start rather than silently
+  waiving the password for the whole internet. The nine `/api/v1/worker/*`
+  routes and the `provider_operations` trust chain are unchanged — Worker
+  authentication is not relaxed by this.
+
 ### v0.31.0-alpha — footage capability provider & release preparation
 
 - **Shot-level speech search no longer requires forced alignment**: the

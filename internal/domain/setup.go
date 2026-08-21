@@ -20,6 +20,7 @@ type SetupStatus struct {
 	// NextStep is one of "add_footage", "configure_providers",
 	// "scan_or_process", "search" or "ready" — see SetupNextStep* in
 	// internal/app for the ordering and why it is a heuristic.
-	NextStep string `json:"next_step"`
-	Ready    bool   `json:"ready"`
+	NextStep  string `json:"next_step"`
+	Ready     bool   `json:"ready"`
+	AdminAuth string `json:"admin_auth,omitempty"`
 }

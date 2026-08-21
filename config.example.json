@@ -21,7 +21,10 @@
     "minimum_free_space_bytes": 0
   },
   "hub_security": {
+    "_comment": "admin_auth controls whether mutating/admin routes require the Hub admin token: \"required\" always demands it; \"trusted_network\" (the default) waives it for peers inside admin_auth_networks, so LAN peers skip the password while internet peers still need it; \"off\" never demands it. Behind a reverse proxy or a published Docker port every peer looks RFC1918, so set admin_auth_networks explicitly (or use \"required\") there.",
     "allow_worker_provider_credentials": false,
+    "admin_auth": "trusted_network",
+    "admin_auth_networks": [],
     "trusted_read_networks": ["127.0.0.0/8", "192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "100.64.0.0/10", "::1/128", "fc00::/7", "fe80::/10"]
   },
   "providers": {

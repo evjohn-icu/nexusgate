@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 )
 
 // defaultTrustedReadNetworks is the fallback allowlist for the read routes that
@@ -61,6 +62,53 @@ func (s *Server) fromTrustedNetwork(r *http.Request) bool {
 		}
 	}
 	return false
+}
+
+// fromAdminAuthNetwork reports whether the request's peer address falls inside
+// the admin-auth allowlist. It is the same RemoteAddr-only decision as
+// fromTrustedNetwork — X-Forwarded-For and X-Real-IP are attacker-controlled on
+// a directly exposed listener — but against the adminAuthNetworks prefix set,
+// which is what decides whether a mutating request may skip the administrator
+// credential under admin_auth: "trusted_network".
+func (s *Server) fromAdminAuthNetwork(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		// Unix sockets and httptest's synthetic addresses land here. Neither is
+		// reachable from the network, so treat them as local rather than
+		// locking the operator out of their own machine.
+		return host == "" || host == "@" || host == "pipe"
+	}
+	// An IPv4 peer on a dual-stack listener arrives as ::ffff:a.b.c.d, which
+	// matches no IPv4 prefix until it is unmapped.
+	addr = addr.Unmap()
+	for _, prefix := range s.adminAuthNetworks {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// adminAuthWaived reports whether this request may skip the administrator
+// credential. It never waives on a credential mismatch — an explicitly
+// presented but wrong token is still a failure, so a stale bookmark or a
+// misconfigured worker does not silently succeed as an anonymous admin.
+func (s *Server) adminAuthWaived(r *http.Request) bool {
+	if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
+		return false
+	}
+	switch s.adminAuth {
+	case "off":
+		return true
+	case "trusted_network":
+		return s.fromAdminAuthNetwork(r)
+	default:
+		return false
+	}
 }
 
 // requireTrustedRead guards the read routes that have no credential of their

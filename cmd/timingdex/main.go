@@ -117,6 +117,15 @@ func run() error {
 		if err := fs.Parse(os.Args[2:]); err != nil {
 			return err
 		}
+		if err := config.ValidateContainerAdminAuth(detectContainer(), cfg); err != nil {
+			return err
+		}
+		switch cfg.HubSecurity.AdminAuth {
+		case "trusted_network":
+			fmt.Fprintf(os.Stderr, "WARNING: hub_security.admin_auth=trusted_network — 管理写入不需要口令\n")
+		case "off":
+			fmt.Fprintf(os.Stderr, "WARNING: hub_security.admin_auth=off — 管理写入不需要口令，包括 provider 密钥和付费流水线运行\n")
+		}
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
 		// Register this process in the executor registry BEFORE the startup
@@ -291,6 +300,23 @@ func run() error {
 	default:
 		return usage()
 	}
+}
+
+// detectContainer reports whether this process is running inside a container.
+// It uses the cheap, dependency-free checks: the presence of /.dockerenv, or a
+// cgroup hierarchy naming docker/containerd. The result only feeds
+// config.ValidateContainerAdminAuth, which decides whether the admin-auth mode
+// is safe for the detected environment.
+func detectContainer() bool {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	data, err := os.ReadFile("/proc/1/cgroup")
+	if err != nil {
+		return false
+	}
+	s := string(data)
+	return strings.Contains(s, "docker") || strings.Contains(s, "containerd")
 }
 
 // runReanalyzeCommand forces the analyze stage to run again for selected

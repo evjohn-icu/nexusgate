@@ -16,7 +16,7 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 )
 
-func newLibraryRootsTestService(t *testing.T, name string) *app.Service {
+func newLibraryRootsTestService(t *testing.T, name string, adminAuth ...string) *app.Service {
 	t.Helper()
 	repo, err := sqlite.Open(filepath.Join(t.TempDir(), name))
 	if err != nil {
@@ -26,7 +26,11 @@ func newLibraryRootsTestService(t *testing.T, name string) *app.Service {
 	if err := repo.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	service, err := app.NewService(repo, config.Config{DataDir: secureTestDataDir(t), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	cfg := config.Config{DataDir: secureTestDataDir(t), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}}
+	if len(adminAuth) > 0 {
+		cfg.HubSecurity.AdminAuth = adminAuth[0]
+	}
+	service, err := app.NewService(repo, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,10 +245,10 @@ func TestLibraryRootsPageRendersComposeWarningAboveYAML(t *testing.T) {
 		t.Fatal("could not find the end of renderComposeVolume")
 	}
 	body := libraryRootsHTML[start : start+end]
-	warningIdx := strings.Index(body, "danger")
+	warningIdx := strings.Index(body, "callout--contradicted")
 	yamlIdx := strings.Index(body, "compose-yaml-code")
 	if warningIdx < 0 {
-		t.Fatal("renderComposeVolume never renders the danger box")
+		t.Fatal("renderComposeVolume never renders the warning box")
 	}
 	if yamlIdx < 0 {
 		t.Fatal("renderComposeVolume never renders the YAML block")
@@ -277,7 +281,7 @@ func TestLibraryRootsPageRecommendsNFSOverSMBForCompose(t *testing.T) {
 // were reachable without the admin token, any device on the LAN could probe
 // which paths exist on the Hub.
 func TestInspectRootRejectsUnauthenticatedRequest(t *testing.T) {
-	service := newLibraryRootsTestService(t, "inspect-auth.db")
+	service := newLibraryRootsTestService(t, "inspect-auth.db", "required")
 	handler := NewServer("", service).Handler()
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, lanRequest(http.MethodPost, "/api/v1/roots/inspect", strings.NewReader(`{"path":"/tmp"}`)))

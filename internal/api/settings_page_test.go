@@ -17,7 +17,7 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 )
 
-func throttleTestService(t *testing.T, name string) *app.Service {
+func throttleTestService(t *testing.T, name string, adminAuth ...string) *app.Service {
 	t.Helper()
 	repo, err := sqlite.Open(filepath.Join(t.TempDir(), name))
 	if err != nil {
@@ -27,7 +27,11 @@ func throttleTestService(t *testing.T, name string) *app.Service {
 	if err := repo.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	service, err := app.NewService(repo, config.Config{DataDir: secureTestDataDir(t), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	cfg := config.Config{DataDir: secureTestDataDir(t), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}}
+	if len(adminAuth) > 0 {
+		cfg.HubSecurity.AdminAuth = adminAuth[0]
+	}
+	service, err := app.NewService(repo, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +42,7 @@ func throttleTestService(t *testing.T, name string) *app.Service {
 // throttle must be readable without a token from the LAN while changing it stays
 // administrative.
 func TestThrottleEndpointReadableWithoutTokenAndWritableOnlyByAdmin(t *testing.T) {
-	service := throttleTestService(t, "throttle-api.db")
+	service := throttleTestService(t, "throttle-api.db", "required")
 	handler := NewServer("", service).Handler()
 
 	read := httptest.NewRecorder()

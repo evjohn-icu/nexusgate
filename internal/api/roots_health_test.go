@@ -21,7 +21,7 @@ import (
 // the three health states the endpoint must distinguish: one that was healthy
 // and went unavailable (last_healthy_at preserved by MarkRootUnavailable),
 // one that is currently healthy, and one that was never scanned.
-func newRootsHealthFixture(t *testing.T, name string) (*app.Service, *sqlite.Repository) {
+func newRootsHealthFixture(t *testing.T, name string, adminAuth ...string) (*app.Service, *sqlite.Repository) {
 	t.Helper()
 	ctx := context.Background()
 	repo, err := sqlite.Open(filepath.Join(t.TempDir(), name))
@@ -56,7 +56,11 @@ func newRootsHealthFixture(t *testing.T, name string) (*app.Service, *sqlite.Rep
 		t.Fatal(err)
 	}
 
-	service, err := app.NewService(repo, config.Config{DataDir: secureTestDataDir(t), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	cfg := config.Config{DataDir: secureTestDataDir(t), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}}
+	if len(adminAuth) > 0 {
+		cfg.HubSecurity.AdminAuth = adminAuth[0]
+	}
+	service, err := app.NewService(repo, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +132,7 @@ func TestRootsHealthMapsFieldsAndPreservesLastHealthy(t *testing.T) {
 // from the LAN. TestInspectRootRejectsUnauthenticatedRequest pins the same
 // boundary for the inspect route; this one pins it for the read side.
 func TestRootsHealthAuthPostureMatchesListRoots(t *testing.T) {
-	service, _ := newRootsHealthFixture(t, "roots-health-auth.db")
+	service, _ := newRootsHealthFixture(t, "roots-health-auth.db", "required")
 	handler := NewServer("", service).Handler()
 	for _, target := range []string{"/api/v1/roots", "/api/v1/roots/health"} {
 		response := httptest.NewRecorder()
