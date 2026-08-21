@@ -18,4 +18,16 @@ fi
 
 go build -trimpath -ldflags="$ldflags" -o "$out/timingdex$suffix" "$root/cmd/timingdex"
 go build -trimpath -ldflags="$ldflags" -o "$out/timingdex-mcp$suffix" "$root/cmd/timingdex-mcp"
+
+# Worker binaries are the same timingdex binary, cross-compiled for the three
+# worker platforms (see internal/api/worker_setup_page.go workerPlatforms).
+# The Hub serves these from <DataDir>/worker-binaries/ so an operator does not
+# need a Go toolchain to enrol a node.
+for target in "linux amd64 timingdex-linux-amd64" \
+              "linux arm64 timingdex-linux-arm64" \
+              "windows amd64 timingdex-windows-amd64.exe"; do
+  set -- $target
+  GOOS=$1 GOARCH=$2 go build -trimpath -ldflags="$ldflags" -o "$out/$3" "$root/cmd/timingdex"
+done
+
 printf 'built timingdex %s in %s\n' "$version" "$out"
