@@ -69,26 +69,41 @@ func firstIP(addrs []net.IP) string {
 	return addrs[0].String()
 }
 
-// scanPort returns the local-network IPs that answered on port 445.
-// The local network is derived from the host's own unicast interfaces, so a
-// machine with no LAN route scans nothing.
+// localNet is one unicast IPv4 network this host belongs to, with the prefix
+// length the interface reports (the mask DHCP actually handed out, not a
+// hardcoded /24).
+type localNet struct {
+	// IP is the interface's own address (used only for diagnostics/ordering).
+	IP net.IP
+	// Base is the network address.
+	Base net.IP
+	// PrefixLen is the CIDR prefix length (8..30).
+	PrefixLen int
+	// HostCount is the number of usable host addresses (2^(32-prefix) - 2),
+	// excluding the network and broadcast addresses.
+	HostCount uint32
+}
+
+// scanPort returns the local-network IPs that answered on port 445. The local
+// network is derived from the host's own unicast interfaces, so a machine
+// with no LAN route scans nothing.
 func scanPort(ctx context.Context, dialTimeout time.Duration) []net.IP {
-	addrs := localNetworkAddresses()
-	if len(addrs) == 0 {
+	nets := localNetworks()
+	if len(nets) == 0 {
 		return nil
 	}
-	// Enumerate candidate IPs across the /24 of each local address.
 	var candidates []net.IP
 	seen := map[string]bool{}
-	for _, a := range addrs {
-		ip := a
-		if ip.To4() == nil {
+	for _, n := range nets {
+		// A subnet wider than the cap would mean scanning tens of thousands
+		// to millions of addresses; refuse rather than turn a library-root
+		// wizard click into a LAN-wide flood. /16 (65534 hosts) is the widest
+		// we will sweep.
+		if n.HostCount > maxScanHosts {
 			continue
 		}
-		ip4 := ip.To4()
-		base := int(ip4[0])<<24 | int(ip4[1])<<16 | int(ip4[2])<<8
-		for i := 1; i <= 254; i++ {
-			cand := net.IPv4(byte(base>>24), byte(base>>16&0xff), byte(base>>8&0xff), byte(i))
+		addrs := n.Hosts()
+		for _, cand := range addrs {
 			key := cand.String()
 			if !seen[key] {
 				seen[key] = true
@@ -127,14 +142,21 @@ func scanPort(ctx context.Context, dialTimeout time.Duration) []net.IP {
 	return hits
 }
 
-// localNetworkAddresses returns the machine's unicast interface addresses, the
-// basis for the port-scan target list.
-func localNetworkAddresses() []net.IP {
+// maxScanHosts caps how many addresses one discovery may sweep. A /16 is
+// 65534 usable hosts; anything wider is left to manual entry rather than
+// flooding the LAN. 64 concurrent dials at 1s each cover 65534 hosts in about
+// 17 minutes worst case, which is why the cap exists.
+const maxScanHosts uint32 = 65534
+
+// localNetworks returns the machine's unicast IPv4 networks (RFC1918 or link
+// local), derived from interface addresses so a DHCP-issued prefix other than
+// /24 is honoured.
+func localNetworks() []localNet {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil
 	}
-	var out []net.IP
+	var out []localNet
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
@@ -144,19 +166,76 @@ func localNetworkAddresses() []net.IP {
 			continue
 		}
 		for _, addr := range addrs {
-			var ip net.IP
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
 			}
-			if ip != nil && !ip.IsLoopback() {
-				out = append(out, ip)
+			ip4 := ipnet.IP.To4()
+			if ip4 == nil {
+				continue
 			}
+			ones, bits := ipnet.Mask.Size()
+			if bits != 32 {
+				continue
+			}
+			// Only private/link-local ranges are worth sweeping; a public IP
+			// on a carrier subnet is not our LAN.
+			if !isPrivateIPv4(ip4) {
+				continue
+			}
+			base := ip4.Mask(ipnet.Mask)
+			hostCount := (uint32(1) << (32 - uint32(ones))) - 2
+			if hostCount < 1 {
+				continue // /31 and /32 have no usable hosts
+			}
+			out = append(out, localNet{
+				IP:        append(net.IP(nil), ip4...),
+				Base:      append(net.IP(nil), base...),
+				PrefixLen: ones,
+				HostCount: hostCount,
+			})
 		}
 	}
 	return out
+}
+
+// Hosts enumerates the usable host addresses in the network (excluding the
+// network and broadcast addresses).
+func (n localNet) Hosts() []net.IP {
+	if n.HostCount == 0 {
+		return nil
+	}
+	base4 := n.Base.To4()
+	if base4 == nil {
+		return nil
+	}
+	base := uint32(base4[0])<<24 | uint32(base4[1])<<16 | uint32(base4[2])<<8 | uint32(base4[3])
+	out := make([]net.IP, 0, n.HostCount)
+	for i := uint32(1); i <= n.HostCount; i++ {
+		addr := base + i
+		out = append(out, net.IPv4(byte(addr>>24), byte(addr>>16&0xff), byte(addr>>8&0xff), byte(addr&0xff)))
+	}
+	return out
+}
+
+// isPrivateIPv4 reports whether addr is in an RFC 1918 private range or the
+// link-local 169.254.0.0/16 block.
+func isPrivateIPv4(ip net.IP) bool {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return false
+	}
+	switch {
+	case ip4[0] == 10:
+		return true // 10.0.0.0/8
+	case ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31:
+		return true // 172.16.0.0/12
+	case ip4[0] == 192 && ip4[1] == 168:
+		return true // 192.168.0.0/16
+	case ip4[0] == 169 && ip4[1] == 254:
+		return true // 169.254.0.0/16 link-local
+	}
+	return false
 }
 
 // enumerateShares fills Shares/NeedsAuth on each host in byIP using anonymous

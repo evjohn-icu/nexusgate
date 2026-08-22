@@ -231,3 +231,73 @@ func TestGuestShareNamesHangsBoundedByTimeout(t *testing.T) {
 		t.Fatalf("guestShareNames took %v, want it bounded by the ~2s timeout", elapsed)
 	}
 }
+
+// TestLocalNetHostsEnumeratesUsableAddresses verifies Hosts() produces the
+// full usable range for a /24, excluding network and broadcast addresses.
+func TestLocalNetHostsEnumeratesUsableAddresses(t *testing.T) {
+	n := localNet{
+		Base:      net.IPv4(192, 168, 1, 0),
+		PrefixLen: 24,
+		HostCount: 254,
+	}
+	hosts := n.Hosts()
+	if len(hosts) != 254 {
+		t.Fatalf("len(hosts) = %d, want 254", len(hosts))
+	}
+	if got := hosts[0].String(); got != "192.168.1.1" {
+		t.Fatalf("first host = %s, want 192.168.1.1", got)
+	}
+	if got := hosts[253].String(); got != "192.168.1.254" {
+		t.Fatalf("last host = %s, want 192.168.1.254", got)
+	}
+	// Network (.0) and broadcast (.255) must not be present.
+	for _, h := range hosts {
+		if h.String() == "192.168.1.0" || h.String() == "192.168.1.255" {
+			t.Fatalf("host %s must be excluded (network/broadcast)", h)
+		}
+	}
+}
+
+// TestLocalNetHostsSupportsNon24Prefix verifies a /20 (like the WSL NAT the
+// fixture above saw) enumerates the right first/last usable hosts.
+func TestLocalNetHostsSupportsNon24Prefix(t *testing.T) {
+	// 172.20.208.0/20 → usable 172.20.208.1 .. 172.20.223.254
+	n := localNet{
+		Base:      net.IPv4(172, 20, 208, 0),
+		PrefixLen: 20,
+		HostCount: 4094,
+	}
+	hosts := n.Hosts()
+	if len(hosts) != 4094 {
+		t.Fatalf("len(hosts) = %d, want 4094", len(hosts))
+	}
+	if got := hosts[0].String(); got != "172.20.208.1" {
+		t.Fatalf("first host = %s, want 172.20.208.1", got)
+	}
+	if got := hosts[4093].String(); got != "172.20.223.254" {
+		t.Fatalf("last host = %s, want 172.20.223.254", got)
+	}
+}
+
+// TestIsPrivateIPv4 verifies RFC1918 and link-local classification.
+func TestIsPrivateIPv4(t *testing.T) {
+	for _, tc := range []struct {
+		ip   string
+		want bool
+	}{
+		{"10.0.0.1", true},
+		{"10.255.255.255", true},
+		{"172.16.0.1", true},
+		{"172.31.255.254", true},
+		{"172.32.0.1", false}, // outside 172.16/12
+		{"192.168.1.50", true},
+		{"169.254.1.1", true},
+		{"8.8.8.8", false},    // public
+		{"100.64.0.1", false}, // CGNAT, not swept
+		{"192.0.0.1", false},
+	} {
+		if got := isPrivateIPv4(net.ParseIP(tc.ip)); got != tc.want {
+			t.Errorf("isPrivateIPv4(%s) = %v, want %v", tc.ip, got, tc.want)
+		}
+	}
+}
