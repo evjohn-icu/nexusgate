@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -726,4 +727,121 @@ func TestSimilarShotsBoundedTopKEdgeLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertShotIDOrder(t, one, referenceSimilarShots(shots, "shot-topk-000", 1))
+}
+
+func TestGetShotReturnsFullDetail(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "timingdex-getshot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	now := formatTime(time.Now().UTC())
+	assetID := "getshot-asset"
+	shotID := "getshot-shot"
+
+	// Insert a minimal asset
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES(?,?,0,'ready',?,?)`, assetID, assetID, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert a shot
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO asset_shots(id,asset_id,source_run_id,ordinal,start_ms,end_ms,description,tags_json,objects_json,actions_json,mood_json,confidence,created_at) VALUES(?,?,NULL,0,0,5000,'a test shot','["tag1"]','["person"]','["walking"]','["calm"]',0.95,?)`, shotID, assetID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test GetShot returns the detail
+	detail, err := repo.GetShot(ctx, shotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail == nil {
+		t.Fatal("GetShot returned nil for existing shot")
+	}
+	if detail.Shot.ID != shotID {
+		t.Fatalf("shot id = %q, want %q", detail.Shot.ID, shotID)
+	}
+	if detail.Shot.AssetID != assetID {
+		t.Fatalf("asset id = %q, want %q", detail.Shot.AssetID, assetID)
+	}
+	if detail.Shot.StartMS != 0 || detail.Shot.EndMS != 5000 {
+		t.Fatalf("time range = %d-%d, want 0-5000", detail.Shot.StartMS, detail.Shot.EndMS)
+	}
+	if detail.Shot.Description != "a test shot" {
+		t.Fatalf("description = %q, want 'a test shot'", detail.Shot.Description)
+	}
+	if len(detail.Shot.Tags) != 1 || detail.Shot.Tags[0] != "tag1" {
+		t.Fatalf("tags = %v, want [tag1]", detail.Shot.Tags)
+	}
+	if detail.Shot.Confidence != 0.95 {
+		t.Fatalf("confidence = %f, want 0.95", detail.Shot.Confidence)
+	}
+
+	// Asset card should be populated
+	if detail.Asset.ID != assetID {
+		t.Fatalf("asset card id = %q, want %q", detail.Asset.ID, assetID)
+	}
+
+	// Test GetShot returns nil for nonexistent shot
+	nilDetail, err := repo.GetShot(ctx, "nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nilDetail != nil {
+		t.Fatal("GetShot should return nil for nonexistent shot")
+	}
+}
+
+// TestGetShotOrphanedShotDoesNotPanic guards the nil-card path in GetShot: a
+// shot whose asset row is gone (a database written with foreign_keys off, or
+// one edited outside this process) must return an error, not panic the
+// process. With the repo's DSN foreign_keys=1 the CASCADE removes the shot on
+// DELETE, so the orphan is created through a second raw handle with FK off —
+// the same way a legacy or externally-managed DB would look.
+func TestGetShotOrphanedShotDoesNotPanic(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "timingdex-getshot-orphan.db")
+	repo, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	now := formatTime(time.Now().UTC())
+	assetID := "getshot-orphan-asset"
+	shotID := "getshot-orphan-shot"
+
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES(?,?,0,'ready',?,?)`, assetID, assetID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO asset_shots(id,asset_id,source_run_id,ordinal,start_ms,end_ms,description,tags_json,objects_json,actions_json,mood_json,confidence,created_at) VALUES(?,?,NULL,0,0,5000,'orphan shot','[]','[]','[]','[]',0.9,?)`, shotID, assetID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Orphan the shot through a raw handle with FK enforcement off, so the
+	// asset row disappears while the shot row survives.
+	rawDSN := "file:" + filepath.ToSlash(path) + "?_pragma=journal_mode(WAL)"
+	raw, err := sql.Open("sqlite", rawDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.ExecContext(ctx, `DELETE FROM assets WHERE id=?`, assetID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Must not panic; must surface an error naming the missing asset.
+	if _, err := repo.GetShot(ctx, shotID); err == nil {
+		t.Fatal("GetShot on an orphaned shot must return an error, not succeed")
+	}
 }

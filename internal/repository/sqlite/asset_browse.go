@@ -151,17 +151,12 @@ func appendShotDurationBounds(clauses []string, args []any, f domain.FacetFilter
 	return clauses, args
 }
 
-func (r *Repository) ListAssetCardsFiltered(ctx context.Context, filter domain.AssetCardFilter) ([]domain.AssetCard, error) {
-	if filter.Limit <= 0 {
-		filter.Limit = 100
-	}
-	if filter.Limit > 500 {
-		filter.Limit = 500
-	}
-	if filter.Offset < 0 {
-		filter.Offset = 0
-	}
-	query := `SELECT a.id, COALESCE(al.relative_path,''), a.state,` + processingStatusSQL + `,
+// assetCardColumns is the shared SELECT column list + FROM/JOIN clause for
+// building an AssetCard. Used by ListAssetCardsFiltered (batch browsing) and
+// assetCardForShot (single-shot detail); keeping the 22 columns and the six
+// joins in one place means adding a card field cannot silently drift between
+// the two callers.
+const assetCardColumns = `SELECT a.id, COALESCE(al.relative_path,''), a.state,` + processingStatusSQL + `,
 COALESCE(m.duration_ms,0), COALESCE(m.orientation,''), COALESCE(cm.captured_at,m.captured_at),
 COALESCE(an.summary,''), COALESCE(an.asset_type,''), COALESCE(an.camera_motion,''),
 COALESCE(an.lighting,''), COALESCE(an.has_speech,0), COALESCE(an.quality,''),
@@ -175,6 +170,45 @@ LEFT JOIN media_metadata m ON m.asset_id=a.id
 LEFT JOIN capture_metadata cm ON cm.asset_id=a.id
 LEFT JOIN asset_analysis an ON an.asset_id=a.id
 LEFT JOIN transcripts t ON t.id=(SELECT id FROM transcripts t2 WHERE t2.asset_id=a.id AND t2.status='succeeded' ORDER BY t2.created_at DESC LIMIT 1)`
+
+// scanAssetCardRow scans one row of assetCardColumns into a domain.AssetCard,
+// applying the same field post-processing (basename, has_speech bool, time
+// parsing, JSON arrays) as the batch path so the two stay in lockstep.
+func scanAssetCardRow(rows *sql.Rows) (domain.AssetCard, error) {
+	var card domain.AssetCard
+	var captured sql.NullString
+	var speech int
+	var usable, moods string
+	if err := rows.Scan(
+		&card.ID, &card.Filename, &card.State, &card.ProcessingStatus, &card.DurationMS, &card.Orientation, &captured,
+		&card.Summary, &card.AssetType, &card.CameraMotion, &card.Lighting, &speech, &card.Quality,
+		&usable, &moods, &card.Transcript, &card.CameraModel, &card.RegionLabel, &card.SessionID,
+		&card.SourceColor, &card.ColorProfile, &card.RawFormat, &card.PreviewStatus,
+	); err != nil {
+		return card, err
+	}
+	card.Filename = filepath.Base(card.Filename)
+	card.HasSpeech = speech != 0
+	if captured.Valid {
+		value, _ := time.Parse(time.RFC3339Nano, captured.String)
+		card.CapturedAt = &value
+	}
+	_ = json.Unmarshal([]byte(usable), &card.UsableAs)
+	_ = json.Unmarshal([]byte(moods), &card.MoodTags)
+	return card, nil
+}
+
+func (r *Repository) ListAssetCardsFiltered(ctx context.Context, filter domain.AssetCardFilter) ([]domain.AssetCard, error) {
+	if filter.Limit <= 0 {
+		filter.Limit = 100
+	}
+	if filter.Limit > 500 {
+		filter.Limit = 500
+	}
+	if filter.Offset < 0 {
+		filter.Offset = 0
+	}
+	query := assetCardColumns
 	where, args := assetBrowseWhere(filter)
 	query += where
 	query += ` ORDER BY COALESCE(cm.captured_at,m.captured_at,a.first_seen_at) DESC, a.id DESC LIMIT ? OFFSET ?`
@@ -186,26 +220,10 @@ LEFT JOIN transcripts t ON t.id=(SELECT id FROM transcripts t2 WHERE t2.asset_id
 	defer rows.Close()
 	var out []domain.AssetCard
 	for rows.Next() {
-		var card domain.AssetCard
-		var captured sql.NullString
-		var speech int
-		var usable, moods string
-		if err := rows.Scan(
-			&card.ID, &card.Filename, &card.State, &card.ProcessingStatus, &card.DurationMS, &card.Orientation, &captured,
-			&card.Summary, &card.AssetType, &card.CameraMotion, &card.Lighting, &speech, &card.Quality,
-			&usable, &moods, &card.Transcript, &card.CameraModel, &card.RegionLabel, &card.SessionID,
-			&card.SourceColor, &card.ColorProfile, &card.RawFormat, &card.PreviewStatus,
-		); err != nil {
+		card, err := scanAssetCardRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		card.Filename = filepath.Base(card.Filename)
-		card.HasSpeech = speech != 0
-		if captured.Valid {
-			value, _ := time.Parse(time.RFC3339Nano, captured.String)
-			card.CapturedAt = &value
-		}
-		_ = json.Unmarshal([]byte(usable), &card.UsableAs)
-		_ = json.Unmarshal([]byte(moods), &card.MoodTags)
 		out = append(out, card)
 	}
 	if err := rows.Err(); err != nil {

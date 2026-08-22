@@ -333,6 +333,10 @@ type AssetDetail struct {
 	ProxyPath     string              `json:"proxy_path,omitempty"`
 	Transcript    *Transcript         `json:"transcript,omitempty"`
 	Analysis      *StructuredAnalysis `json:"analysis,omitempty"`
+	// ShotCount reports how many indexed shots the asset has, so a caller can
+	// tell an analyzed-but-shotless asset from a fully indexed one without a
+	// second round trip to /shots.
+	ShotCount int `json:"shot_count"`
 }
 
 type ProviderFile struct {

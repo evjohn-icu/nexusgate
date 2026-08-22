@@ -1,19 +1,23 @@
 # Re:Footage
 
-> **Expired Footage, Reclaimed.**
-
-A local-first intelligence layer for a video footage library. It reads your
-existing folders, works out what is actually inside each clip, and makes that
-searchable down to the individual shot.
+> **本地优先的视频素材索引与检索基础设施**
+>
+> A local-first video footage indexing and retrieval infrastructure.
+> It reads your existing folders, understands what is inside each clip at
+> shot granularity, and makes that searchable with evidence-backed results.
 
 ```text
-NAS / Footage
-    ↓
-Understand
-    ↓
-Search
-    ↓
-Exact shot → export / reuse
+Footage / NAS
+      ↓
+Understand (probe → shot detect → ASR/VLM)
+      ↓
+Shot Index (canonical metadata + FTS5)
+      ↓
+Retrieval + Evidence (search + gate)
+      ↓
+HTTP / CLI / MCP
+      ↓
+Human / App / Agent
 ```
 
 `Re:Footage` is the product name; `timingdex` remains the binary and the
@@ -66,14 +70,18 @@ assumes a single trusted machine.
 
 ## What it is, and what it is not
 
-It is a **video asset intelligence layer**. It builds an index over footage you
-already have: per-shot descriptions, tags, transcripts, capture context, and a
-shot-level timeline you can scrub before deciding what to use.
+Timingdex does:
+- Ingest and probe footage
+- Detect shots and build a shot-level index
+- Understand content via ASR and VLM
+- Retrieve shots with evidence-backed results
+- Serve results over HTTP API, CLI, and MCP
 
-It is **not an AI editor**. It produces a reviewable plan with exact time ranges
-for a human editor to act on. It never edits, re-encodes over, or writes anything
-next to your source media — originals are opened read-only, and derived files go
-in a separate cache.
+Timingdex does not:
+- Make editorial decisions
+- Edit timelines or re-encode footage
+- Automatically produce finished videos
+- Do creative planning or storyboarding
 
 Two more deliberate non-claims:
 
@@ -164,6 +172,22 @@ governs tag governance (`raw tags → normalize → unresolved pool → staged
 proposals → human approval → canonical catalog`) and Repurpose plans (immutable
 revisions; approval is human-only and locks the plan). **Agents may draft; humans
 approve.**
+
+## Interfaces
+
+Timingdex exposes its library through three co-equal interfaces:
+
+| Interface | Transport | Use case |
+|---|---|---|
+| **HTTP API** | HTTPS (self-signed) | Web UI, custom integrations, scripts |
+| **CLI** | Local process | Maintenance, cache management, bulk operations |
+| **MCP** | stdio (JSON-RPC) | AI agents (Claude Code, Codex, Cursor) |
+
+The MCP server (`timingdex-mcp`) is a thin client of the HTTP API — it holds
+no database handle and never touches the NAS. Every tool calls the same
+`/api/v1/...` endpoints the browser uses, with the same agent-token and
+trusted-read contracts. MCP is read-only: search, inspect, retrieve. Agents
+draft plans; humans approve them in the browser UI.
 
 ## Requirements
 
@@ -291,14 +315,15 @@ separate Bearer credentials.
 | Page | Purpose |
 | --- | --- |
 | `/` | The library. Each row is **thumbnail → material context → shot-level timeline**, so you can see what exists at each point in a source before planning anything. Filter by capture date, region, camera or shoot session, or by asset type, shot size, camera motion, audio type, quality, usable-as and a duration range. |
-| `/progress` | Run the queue; watch counts, per-job attempts and failures. Failure text is administrator-only. |
+| `/progress` | Jobs — run the queue; watch counts, per-job attempts and failures. Failure text is administrator-only. |
 | `/settings` | Disk-load limits (below). |
-| `/repurpose` | Turn an editorial brief into a reviewable plan; choose, lock or exclude candidates per section, then approve a revision. |
 | `/tags` | Tag governance: review and approve staged proposals. |
 | `/providers` | Capability-scoped model channels; add, test, enable, disable, remove. Keys never come back to the browser. |
 | `/workers` | Paired node status, stage/progress, retry history, optional derive routing. |
 | `/worker-setup` | Generates an install script for a new Worker. |
 | `/setup` | Startup configuration help. |
+
+| `/repurpose` | Labs — turn an editorial brief into a reviewable plan; experimental workflow built on Timingdex retrieval |
 
 The settings page also exposes optional daily and monthly cost guides. They are
 operator references for the append-only post-call estimate ledger, never billing

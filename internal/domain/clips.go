@@ -37,6 +37,18 @@ type ShotSearchResult struct {
 	MetadataScore   float64 `json:"metadata_score,omitempty"`
 }
 
+// ShotDetail is the full detail for a single shot, returned by the
+// GET /api/v1/shots/{id} endpoint. It combines the shot's own metadata
+// with its owning asset, the transcript fragment within the shot's time
+// range, and thumbnail/proxy references.
+type ShotDetail struct {
+	Shot       AssetShot       `json:"shot"`
+	Asset      AssetCard       `json:"asset"`
+	Transcript []AlignmentWord `json:"transcript,omitempty"`
+	Thumbnail  string          `json:"thumbnail,omitempty"`
+	Proxy      string          `json:"proxy,omitempty"`
+}
+
 // RareShot is a library-relative discovery recommendation. Rarity describes
 // how uncommon a shot's semantic signature is inside this library, not an
 // absolute quality judgement.

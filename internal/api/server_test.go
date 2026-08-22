@@ -2387,6 +2387,68 @@ func TestParseBoundedIntClampsAtMax(t *testing.T) {
 // hash to sha256.Size bytes before ConstantTimeCompare, with the empty-token
 // rejection the only early return), so this behavioural guard on accept/reject
 // is the meaningful regression test.
+func TestShotDetailEndpoint(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "shot-detail.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{DataDir: secureTestDataDir(t), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer("", service)
+
+	// Test 404 for unknown shot
+	req := lanRequest(http.MethodGet, "/api/v1/shots/nonexistent", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("unknown shot: got status %d, want 404", w.Code)
+	}
+
+	// Test with a real shot - need to insert one first
+	now := time.Now().UTC()
+	assetID := "test-asset"
+	shotID := "test-shot"
+
+	// Insert a minimal asset
+	if _, err := repo.DB().ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES(?,?,0,'ready',?,?)`, assetID, assetID, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert a shot
+	if _, err := repo.DB().ExecContext(ctx, `INSERT INTO asset_shots(id,asset_id,source_run_id,ordinal,start_ms,end_ms,description,tags_json,objects_json,actions_json,mood_json,confidence,created_at) VALUES(?,?,NULL,0,0,5000,'test shot','[]','[]','[]','[]',0.9,?)`, shotID, assetID, now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test 200 for valid shot
+	req = lanRequest(http.MethodGet, "/api/v1/shots/"+shotID, nil)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("valid shot: got status %d, want 200", w.Code)
+	}
+
+	var detail domain.ShotDetail
+	if err := json.NewDecoder(w.Body).Decode(&detail); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if detail.Shot.ID != shotID {
+		t.Fatalf("shot id = %q, want %q", detail.Shot.ID, shotID)
+	}
+	if detail.Shot.AssetID != assetID {
+		t.Fatalf("asset id = %q, want %q", detail.Shot.AssetID, assetID)
+	}
+	if detail.Shot.StartMS != 0 || detail.Shot.EndMS != 5000 {
+		t.Fatalf("time range = %d-%d, want 0-5000", detail.Shot.StartMS, detail.Shot.EndMS)
+	}
+}
+
 func TestAdminAndAgentTokenComparisonAcceptsOnlyExactMatch(t *testing.T) {
 	server, _ := newAdminSessionTestServer(t)
 	admin := server.service.AdminToken()

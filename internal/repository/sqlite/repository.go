@@ -2153,6 +2153,103 @@ func (r *Repository) ShotExists(ctx context.Context, shotID string) (bool, error
 	return count > 0, nil
 }
 
+// GetShot returns a single shot's full detail: shot metadata, owning asset,
+// transcript fragment within the shot's time range, and thumbnail/proxy
+// references. Returns (nil, nil) when the shot does not exist.
+func (r *Repository) GetShot(ctx context.Context, shotID string) (*domain.ShotDetail, error) {
+	// 1. Query the shot row.
+	var shot domain.AssetShot
+	var tags, objects, actions, mood, created string
+	err := r.db.QueryRowContext(ctx, `SELECT id,asset_id,COALESCE(source_run_id,''),ordinal,start_ms,end_ms,description,tags_json,objects_json,actions_json,mood_json,confidence,created_at FROM asset_shots WHERE id=?`, shotID).Scan(
+		&shot.ID, &shot.AssetID, &shot.SourceRunID, &shot.Ordinal, &shot.StartMS, &shot.EndMS, &shot.Description,
+		&tags, &objects, &actions, &mood, &shot.Confidence, &created)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal([]byte(tags), &shot.Tags)
+	_ = json.Unmarshal([]byte(objects), &shot.Objects)
+	_ = json.Unmarshal([]byte(actions), &shot.Actions)
+	_ = json.Unmarshal([]byte(mood), &shot.Mood)
+	shot.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+
+	// 2. Build the asset card (this also sets the thumbnail/proxy URLs).
+	//    The shot's asset normally exists (asset_shots.asset_id has an
+	//    ON DELETE CASCADE FK), but a damaged or externally-edited database
+	//    could orphan a shot; guard against the nil card so a single bad row
+	//    cannot panic the whole process.
+	card, err := r.assetCardForShot(ctx, shot.AssetID)
+	if err != nil {
+		return nil, err
+	}
+	if card == nil {
+		return nil, fmt.Errorf("shot %s references missing asset %s", shotID, shot.AssetID)
+	}
+
+	// 3. Get alignment words within the shot's time range.
+	var words []domain.AlignmentWord
+	words, err = r.getAlignmentWordsInRange(ctx, shot.AssetID, shot.StartMS, shot.EndMS)
+	if err != nil {
+		return nil, err
+	}
+
+	return &domain.ShotDetail{
+		Shot:       shot,
+		Asset:      *card,
+		Transcript: words,
+		Thumbnail:  card.ThumbnailURL,
+		Proxy:      card.ProxyURL,
+	}, nil
+}
+
+// assetCardForShot returns the AssetCard for a single asset. Not as
+// full-featured as ListAssetCardsFiltered (no facet filtering, no batch
+// artifact presence query), but sufficient for the shot detail response.
+func (r *Repository) assetCardForShot(ctx context.Context, assetID string) (*domain.AssetCard, error) {
+	rows, err := r.db.QueryContext(ctx, assetCardColumns+` WHERE a.id=?`, assetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	card, err := scanAssetCardRow(rows)
+	if err != nil {
+		return nil, err
+	}
+	// Set thumbnail/proxy URLs.
+	if a, _ := r.GetArtifact(ctx, assetID, "thumbnail"); a != nil {
+		card.ThumbnailURL = "/api/v1/assets/" + assetID + "/thumbnail"
+	}
+	if a, _ := r.GetArtifact(ctx, assetID, "proxy"); a != nil {
+		card.ProxyURL = "/api/v1/assets/" + assetID + "/proxy"
+	}
+	return &card, nil
+}
+
+// getAlignmentWordsInRange returns alignment words for an asset that fall
+// within the given time range [startMS, endMS). Returns nil when no alignment
+// exists.
+func (r *Repository) getAlignmentWordsInRange(ctx context.Context, assetID string, startMS, endMS int64) ([]domain.AlignmentWord, error) {
+	words, err := r.GetAlignmentWords(ctx, assetID)
+	if err != nil || len(words) == 0 {
+		return nil, err
+	}
+	var filtered []domain.AlignmentWord
+	for _, w := range words {
+		if w.StartMS >= startMS && w.EndMS <= endMS {
+			filtered = append(filtered, w)
+		}
+	}
+	return filtered, nil
+}
+
 // SearchShots is the unfiltered entry point kept for existing callers.
 // Behaviourally identical to SearchShotsFiltered with a zero-value
 // domain.FacetFilter.
@@ -3376,6 +3473,9 @@ func (r *Repository) GetAssetDetail(ctx context.Context, assetID string) (*domai
 	}
 	if a, _ := r.GetArtifact(ctx, assetID, "proxy"); a != nil {
 		d.ProxyPath = a.LocalPath
+	}
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM asset_shots WHERE asset_id=?`, assetID).Scan(&d.ShotCount); err != nil {
+		slog.Debug("failed to count shots in GetAssetDetail", "asset_id", assetID, "error", err)
 	}
 	var raw string
 	if err := r.db.QueryRowContext(ctx, `SELECT json_object('asset_type',asset_type,'scene_tags',json(scene_tags_json),'subjects',json(subjects_json),'people_count',people_count,'shot_size',shot_size,'camera_motion',camera_motion,'lighting',lighting,'audio_type',audio_type,'has_speech',CASE WHEN has_speech=1 THEN json('true') ELSE json('false') END,'summary',summary,'usable_as',json(usable_as_json),'mood_tags',json(mood_tags_json),'quality',quality,'quality_flags',json(quality_flags_json),'extra_tags',json(extra_tags_json),'editorial_reason',editorial_reason) FROM asset_analysis WHERE asset_id=?`, assetID).Scan(&raw); err == nil {

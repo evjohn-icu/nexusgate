@@ -151,6 +151,7 @@ type Repository interface {
 	ListShootSessions(ctx context.Context, filter domain.ShootSessionFilter) ([]domain.ShootSession, error)
 	GetShootSession(ctx context.Context, id string) (*domain.ShootSession, error)
 	GetAssetDetail(ctx context.Context, assetID string) (*domain.AssetDetail, error)
+	GetShot(ctx context.Context, shotID string) (*domain.ShotDetail, error)
 	GetArtifact(ctx context.Context, assetID, typ string) (*domain.DerivedArtifact, error)
 	ListCanonicalTags(context.Context) ([]domain.CanonicalTag, error)
 	ListUnresolvedTags(context.Context, int) ([]domain.UnresolvedTag, error)
@@ -2079,6 +2080,13 @@ func (s *Service) GetShootSession(ctx context.Context, id string) (*domain.Shoot
 func (s *Service) GetAssetDetail(ctx context.Context, id string) (*domain.AssetDetail, error) {
 	return s.repo.GetAssetDetail(ctx, id)
 }
+
+// GetShot returns a single shot's full detail. Returns nil when the shot
+// does not exist.
+func (s *Service) GetShot(ctx context.Context, shotID string) (*domain.ShotDetail, error) {
+	return s.repo.GetShot(ctx, shotID)
+}
+
 func (s *Service) GetArtifact(ctx context.Context, id, typ string) (*domain.DerivedArtifact, error) {
 	return s.repo.GetArtifact(ctx, id, typ)
 }

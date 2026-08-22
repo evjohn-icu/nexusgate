@@ -1,11 +1,11 @@
-// Command timingdex-mcp exposes Timingdex's semantic library and edit-plan
-// workflow to MCP-capable agents (Codex, Claude Code, Cursor, ...) over stdio.
+// Command timingdex-mcp exposes Timingdex's semantic library to MCP-capable
+// agents (Codex, Claude Code, Cursor, ...) over stdio.
 //
-// It is a thin client of the Hub's HTTP API: every tool calls the same
-// /api/v1/... endpoints a browser or a skills-based agent would call, using
-// the agent token (and, for footage delivery, the administrator token) the
-// operator configured. Nothing in this binary reaches into the library
-// directly — the Hub remains the only process that touches the NAS.
+// It is a read-only thin client of the Hub's HTTP API: every tool calls the
+// same /api/v1/... endpoints a browser or a skills-based agent would call,
+// using the agent token the operator configured. Nothing in this binary
+// reaches into the library directly — the Hub remains the only process that
+// touches the NAS.
 package main
 
 import (
@@ -34,7 +34,6 @@ import (
 type hubClient struct {
 	baseURL    string
 	agentToken string
-	adminToken string
 	http       *http.Client
 }
 
@@ -44,8 +43,8 @@ type hubClient struct {
 // attacker in the path — the exact boundary fingerprint pinning exists for.
 // http:// stays available only for loopback/link-local development (see
 // httpAllowedForLocalDevelopment); pointing it at any other host would send
-// the agent and administrator tokens in cleartext, mirroring the worker CLI's
-// refusal of non-https Hubs.
+// the agent token in cleartext, mirroring the worker CLI's refusal of
+// non-https Hubs.
 func newHubClient() (*hubClient, error) {
 	baseURL := strings.TrimRight(os.Getenv("TIMINGDEX_BASE_URL"), "/")
 	fingerprint := strings.TrimSpace(os.Getenv("TIMINGDEX_HUB_FINGERPRINT"))
@@ -73,12 +72,11 @@ func newHubClient() (*hubClient, error) {
 		return nil, fmt.Errorf("TIMINGDEX_BASE_URL is https but TIMINGDEX_HUB_FINGERPRINT is not set: refusing to accept an unpinned Hub certificate")
 	}
 	if strings.HasPrefix(strings.ToLower(baseURL), "http://") && !httpAllowedForLocalDevelopment(hostFromBaseURL(baseURL)) {
-		return nil, fmt.Errorf("TIMINGDEX_BASE_URL is http:// and the host is not loopback or link-local: refusing to send the agent and administrator tokens in cleartext to a remote Hub; use https://")
+		return nil, fmt.Errorf("TIMINGDEX_BASE_URL is http:// and the host is not loopback or link-local: refusing to send the agent token in cleartext to a remote Hub; use https://")
 	}
 	return &hubClient{
 		baseURL:    baseURL,
 		agentToken: os.Getenv("TIMINGDEX_AGENT_TOKEN"),
-		adminToken: os.Getenv("TIMINGDEX_ADMIN_TOKEN"),
 		http:       &http.Client{Transport: transport, Timeout: 60 * time.Second},
 	}, nil
 }
@@ -94,11 +92,11 @@ func hostFromBaseURL(baseURL string) string {
 }
 
 // httpAllowedForLocalDevelopment reports whether an http:// Hub base URL may
-// carry the agent and administrator tokens in cleartext: only loopback
-// (127.0.0.0/8, ::1, plus the "localhost" hostname) and link-local
-// (169.254.0.0/16, fe80::/10) destinations qualify. Any other host is remote
-// and must be reached over https with a pinned fingerprint, matching the
-// worker CLI's https-only enrollment stance.
+// carry the agent token in cleartext: only loopback (127.0.0.0/8, ::1, plus
+// the "localhost" hostname) and link-local (169.254.0.0/16, fe80::/10)
+// destinations qualify. Any other host is remote and must be reached over
+// https with a pinned fingerprint, matching the worker CLI's https-only
+// enrollment stance.
 func httpAllowedForLocalDevelopment(host string) bool {
 	if host == "" {
 		return false
@@ -204,30 +202,34 @@ func (c *hubClient) inspectLibrary(ctx context.Context) (map[string]any, error) 
 	return result, nil
 }
 
-// searchFootage runs the structured Search v2 endpoint so results carry
+// searchShots runs the structured Search v2 endpoint so results carry
 // per-constraint evidence (confirmed/possible/contradicted/unknown), not just
 // a score — matching how the README positions the search surface. Uses the
 // agent token like the other trusted reads.
-func (c *hubClient) searchFootage(ctx context.Context, q string, limit int) (map[string]any, error) {
+func (c *hubClient) searchShots(ctx context.Context, q string, limit int, filters map[string]any) (map[string]any, error) {
 	if limit <= 0 {
 		limit = 20
 	}
-	var out map[string]any
-	if err := c.do(ctx, http.MethodPost, "/api/v1/search/shots", c.agentToken, map[string]any{
+	body := map[string]any{
 		"query":            q,
 		"mode":             "auto",
 		"limit":            limit,
 		"include_evidence": true,
-	}, &out); err != nil {
+	}
+	if filters != nil {
+		body["facets"] = filters
+	}
+	var out map[string]any
+	if err := c.do(ctx, http.MethodPost, "/api/v1/search/shots", c.agentToken, body, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// getShots returns every shot of one asset with exact time ranges and shot
+// getTimeline returns every shot of one asset with exact time ranges and shot
 // descriptions, so an agent can enumerate a whole clip's timeline (all shots,
 // not just the matched ones search returns).
-func (c *hubClient) getShots(ctx context.Context, assetID string) ([]map[string]any, error) {
+func (c *hubClient) getTimeline(ctx context.Context, assetID string) ([]map[string]any, error) {
 	var out []map[string]any
 	if err := c.do(ctx, http.MethodGet, "/api/v1/assets/"+url.PathEscape(assetID)+"/shots", c.agentToken, nil, &out); err != nil {
 		return nil, err
@@ -242,62 +244,61 @@ func (c *hubClient) getShots(ctx context.Context, assetID string) ([]map[string]
 // process allocate without bound. No real transcript approaches it.
 const maxTranscriptBytes int64 = 64 << 20
 
-// getTranscript returns the asset's word-level timeline transcript. The
-// response's source field tells the caller where the timestamps come from:
-// "aligned" (word-level forced alignment, the strongest timing evidence) or
-// "asr" (sentence-level segments only). Uses the agent token like the other
-// trusted reads.
-func (c *hubClient) getTranscript(ctx context.Context, assetID string) (map[string]any, error) {
-	path := "/api/v1/assets/" + url.PathEscape(assetID) + "/transcript"
+// getLarge GETs a path whose success body can legitimately exceed do()'s
+// 1 MiB bound and decodes it into out. Shared by getTranscript (a long
+// asset's word stream) and getAsset (AssetDetail embeds the same full
+// transcript), which would otherwise silently truncate and fail to decode.
+func (c *hubClient) getLarge(ctx context.Context, path string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base()+path, nil)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if c.agentToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.agentToken)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return nil, fmt.Errorf("Hub API %s %s: %s (%s)", http.MethodGet, path, strings.TrimSpace(string(raw)), resp.Status)
+		return fmt.Errorf("Hub API %s %s: %s (%s)", http.MethodGet, path, strings.TrimSpace(string(raw)), resp.Status)
 	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxTranscriptBytes)).Decode(out); err != nil {
+		return err
+	}
+	return nil
+}
+
+// getTranscript returns the asset's word-level timeline transcript. The
+// response's source field tells the caller where the timestamps come from:
+// "aligned" (word-level forced alignment, the strongest timing evidence) or
+// "asr" (sentence-level segments only). Uses the agent token like the other
+// trusted reads.
+func (c *hubClient) getTranscript(ctx context.Context, assetID string) (map[string]any, error) {
 	var out map[string]any
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxTranscriptBytes)).Decode(&out); err != nil {
+	if err := c.getLarge(ctx, "/api/v1/assets/"+url.PathEscape(assetID)+"/transcript", &out); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-type planResult struct {
-	ID string `json:"id"`
-}
-
-func (c *hubClient) createEditPlan(ctx context.Context, brief string) (planResult, error) {
-	var out planResult
-	if err := c.do(ctx, http.MethodPost, "/api/v1/repurpose/plans", c.agentToken, map[string]string{"brief": brief}, &out); err != nil {
-		return planResult{}, err
-	}
-	return out, nil
-}
-
-func (c *hubClient) reviseEditPlan(ctx context.Context, planID string, sections any) (planResult, error) {
-	var out planResult
-	if err := c.do(ctx, http.MethodPost, "/api/v1/repurpose/plans/"+url.PathEscape(planID)+"/revisions", c.agentToken, map[string]any{"sections": sections}, &out); err != nil {
-		return planResult{}, err
-	}
-	return out, nil
-}
-
-// requestSourceMedia links an asset's original media into the on-demand
-// WebDAV space and returns the path the editing software will mount it at.
-// This is the "对面要什么 → 我们软链进 WebDAV 空间" step of the delivery flow.
-func (c *hubClient) requestSourceMedia(ctx context.Context, spaceID, assetID string) (map[string]any, error) {
+// getAsset returns asset metadata by calling the existing asset detail
+// endpoint. The response embeds the asset's full transcript, which can exceed
+// do()'s 1 MiB bound, so it decodes through getLarge.
+func (c *hubClient) getAsset(ctx context.Context, assetID string) (map[string]any, error) {
 	var out map[string]any
-	if err := c.do(ctx, http.MethodPost, "/api/v1/admin/webdav/spaces/"+url.PathEscape(spaceID)+"/links", c.adminToken, map[string]string{"asset_id": assetID, "kind": "original"}, &out); err != nil {
+	if err := c.getLarge(ctx, "/api/v1/assets/"+url.PathEscape(assetID), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// getShot returns a single shot's full detail via the shot detail endpoint.
+func (c *hubClient) getShot(ctx context.Context, shotID string) (map[string]any, error) {
+	var out map[string]any
+	if err := c.do(ctx, http.MethodGet, "/api/v1/shots/"+url.PathEscape(shotID), c.agentToken, nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -368,13 +369,14 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 	)
 
 	srv.AddTool(
-		mcp.NewTool("search_footage",
-			mcp.WithDescription("Search the footage library using the structured Search v2 endpoint: results carry per-constraint evidence (confirmed/possible/contradicted/unknown) alongside scores, so you can tell a retrieval signal from an observational claim. Returns shot ids, asset ids, time ranges, scores, evidence and descriptions. Use to find material before creating an edit plan."),
-			mcp.WithString("q", mcp.Required(), mcp.Description("Search query, e.g. 'sunset over water', '城市夜景', or a tag")),
+		mcp.NewTool("search_shots",
+			mcp.WithDescription("Search the indexed footage library at shot granularity and return exact source time ranges with evidence-backed matches. Each result carries per-constraint evidence (confirmed/possible/contradicted/unknown) alongside scores — treat the score as a retrieval signal, the evidence as the claim. Returns shot IDs, asset IDs, time ranges, scores, evidence, and descriptions."),
+			mcp.WithString("query", mcp.Required(), mcp.Description("Search query, e.g. 'sunset over water', '城市夜景', or a tag")),
 			mcp.WithNumber("limit", mcp.Description("Maximum number of shots (default 20)")),
+			mcp.WithString("filters", mcp.Description("Optional JSON object of facet filters passed as the 'facets' body field. Supported keys: asset_types, shot_sizes, camera_motions, audio_types, qualities, usable_as (each a JSON array of strings), min_duration_ms, max_duration_ms (integers). Example: '{\"asset_types\":[\"broll\"]}'")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			q, rerr := requireString(req.GetArguments(), "q")
+			query, rerr := requireString(req.GetArguments(), "query")
 			if rerr != nil {
 				return rerr, nil
 			}
@@ -382,7 +384,13 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 			if v, ok := req.GetArguments()["limit"].(float64); ok && v > 0 {
 				limit = int(v)
 			}
-			result, err := client.searchFootage(ctx, q, limit)
+			var filters map[string]any
+			if raw, ok := req.GetArguments()["filters"].(string); ok && strings.TrimSpace(raw) != "" {
+				if err := json.Unmarshal([]byte(raw), &filters); err != nil {
+					return errResult(fmt.Errorf("filters is not valid JSON: %w", err)), nil
+				}
+			}
+			result, err := client.searchShots(ctx, query, limit, filters)
 			if err != nil {
 				return errResult(err), nil
 			}
@@ -392,16 +400,16 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 	)
 
 	srv.AddTool(
-		mcp.NewTool("get_shots",
-			mcp.WithDescription("Return every shot of one asset, with exact start_ms/end_ms time ranges and shot descriptions. Use to enumerate a whole clip's timeline (all shots, not just matched ones) before building an edit plan."),
-			mcp.WithString("asset_id", mcp.Required(), mcp.Description("The asset id from search_footage results")),
+		mcp.NewTool("get_timeline",
+			mcp.WithDescription("Return every shot of an asset in chronological order with exact start_ms/end_ms time ranges, descriptions, and tags. Use to understand the full timeline context around a matched shot — agents should call this after search_shots to see what comes before and after a candidate."),
+			mcp.WithString("asset_id", mcp.Required(), mcp.Description("The asset id from search_shots results")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			assetID, rerr := requireString(req.GetArguments(), "asset_id")
 			if rerr != nil {
 				return rerr, nil
 			}
-			shots, err := client.getShots(ctx, assetID)
+			shots, err := client.getTimeline(ctx, assetID)
 			if err != nil {
 				return errResult(err), nil
 			}
@@ -412,8 +420,8 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 
 	srv.AddTool(
 		mcp.NewTool("get_transcript",
-			mcp.WithDescription("Return an asset's word-level timeline transcript. The response's source field says where the timestamps come from: 'aligned' (word-level forced alignment — the strongest timing evidence) or 'asr' (sentence-level segments only, no word boundaries). Use to ground narration or dialogue in precise media time."),
-			mcp.WithString("asset_id", mcp.Required(), mcp.Description("The asset id from search_footage results")),
+			mcp.WithDescription("Return an asset's word-level timeline transcript. The response's source field indicates whether timestamps are word-aligned ('aligned', strongest timing evidence) or sentence-level ('asr'). Use to ground narration or dialogue in precise media time."),
+			mcp.WithString("asset_id", mcp.Required(), mcp.Description("The asset id from search_shots results")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			assetID, rerr := requireString(req.GetArguments(), "asset_id")
@@ -430,72 +438,39 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 	)
 
 	srv.AddTool(
-		mcp.NewTool("create_edit_plan",
-			mcp.WithDescription("Create a draft edit plan (repurpose plan) from a brief. The plan is a draft that a human approves later — this tool never approves or runs anything."),
-			mcp.WithString("brief", mcp.Required(), mcp.Description("Editorial brief describing the video to make")),
+		mcp.NewTool("get_asset",
+			mcp.WithDescription("Return asset metadata: source reference, duration, analysis state, shot count, capture metadata, transcript availability, and derived/proxy status. Use to assess whether an asset is fully analyzed — and how many indexed shots it has — before searching its shots."),
+			mcp.WithString("asset_id", mcp.Required(), mcp.Description("The asset id from search_shots results")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			brief, rerr := requireString(req.GetArguments(), "brief")
-			if rerr != nil {
-				return rerr, nil
-			}
-			plan, err := client.createEditPlan(ctx, brief)
-			if err != nil {
-				return errResult(err), nil
-			}
-			raw, _ := json.MarshalIndent(plan, "", "  ")
-			return toolResult(string(raw)), nil
-		},
-	)
-
-	srv.AddTool(
-		mcp.NewTool("revise_edit_plan",
-			mcp.WithDescription("Revise a draft edit plan with concrete sections (each section picks a shot). Revises only; approval stays human."),
-			mcp.WithString("plan_id", mcp.Required(), mcp.Description("The plan id returned by create_edit_plan")),
-			mcp.WithString("sections_json", mcp.Required(), mcp.Description("JSON array of sections: [{role, query, duration_ms, selected_shot_id, candidates:[{shot_id,asset_id,start_ms,end_ms}]}]")),
-		),
-		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			planID, rerr := requireString(req.GetArguments(), "plan_id")
-			if rerr != nil {
-				return rerr, nil
-			}
-			sectionsRaw, rerr := requireString(req.GetArguments(), "sections_json")
-			if rerr != nil {
-				return rerr, nil
-			}
-			var sections any
-			if err := json.Unmarshal([]byte(sectionsRaw), &sections); err != nil {
-				return errResult(fmt.Errorf("sections_json is not valid JSON: %w", err)), nil
-			}
-			plan, err := client.reviseEditPlan(ctx, planID, sections)
-			if err != nil {
-				return errResult(err), nil
-			}
-			raw, _ := json.MarshalIndent(plan, "", "  ")
-			return toolResult(string(raw)), nil
-		},
-	)
-
-	srv.AddTool(
-		mcp.NewTool("request_source_media",
-			mcp.WithDescription("Request that an asset's ORIGINAL media be made available in the on-demand WebDAV delivery space. Returns the WebDAV path the editing software can mount. The file is streamed from the NAS on demand; nothing is copied and the real path is never exposed."),
-			mcp.WithString("space_id", mcp.Required(), mcp.Description("The WebDAV space id (created by the operator for this editing session)")),
-			mcp.WithString("asset_id", mcp.Required(), mcp.Description("The asset id from search_footage results")),
-		),
-		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			spaceID, rerr := requireString(req.GetArguments(), "space_id")
-			if rerr != nil {
-				return rerr, nil
-			}
 			assetID, rerr := requireString(req.GetArguments(), "asset_id")
 			if rerr != nil {
 				return rerr, nil
 			}
-			path, err := client.requestSourceMedia(ctx, spaceID, assetID)
+			asset, err := client.getAsset(ctx, assetID)
 			if err != nil {
 				return errResult(err), nil
 			}
-			raw, _ := json.MarshalIndent(path, "", "  ")
+			raw, _ := json.MarshalIndent(asset, "", "  ")
+			return toolResult(string(raw)), nil
+		},
+	)
+
+	srv.AddTool(
+		mcp.NewTool("get_shot",
+			mcp.WithDescription("Return a single shot's full detail: shot metadata, owning asset, transcript fragment within the shot's time range, tags, canonical metadata, and thumbnail/proxy references. Use to inspect a specific shot returned by search_shots."),
+			mcp.WithString("shot_id", mcp.Required(), mcp.Description("The shot id from search_shots results")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			shotID, rerr := requireString(req.GetArguments(), "shot_id")
+			if rerr != nil {
+				return rerr, nil
+			}
+			shot, err := client.getShot(ctx, shotID)
+			if err != nil {
+				return errResult(err), nil
+			}
+			raw, _ := json.MarshalIndent(shot, "", "  ")
 			return toolResult(string(raw)), nil
 		},
 	)

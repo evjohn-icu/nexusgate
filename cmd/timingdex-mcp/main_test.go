@@ -15,7 +15,10 @@ import (
 // fakeHub is a minimal in-test Timingdex Hub API.
 type fakeHub struct {
 	searchHits []map[string]any
-	planID     string
+
+	// evidenceState is the evidence state returned in every search hit's
+	// evidence array. Defaults to "confirmed" when empty.
+	evidenceState string
 
 	// forceStatus, when non-zero, makes every handler return this HTTP status.
 	// Set alongside forceBody to simulate error responses.
@@ -62,6 +65,10 @@ func (f *fakeHub) handler() http.Handler {
 			return
 		}
 		results := make([]map[string]any, 0, len(f.searchHits))
+		state := f.evidenceState
+		if state == "" {
+			state = "confirmed"
+		}
 		for _, hit := range f.searchHits {
 			results = append(results, map[string]any{
 				"shot_id":  hit["id"],
@@ -69,7 +76,7 @@ func (f *fakeHub) handler() http.Handler {
 				"start_ms": 0,
 				"end_ms":   5000,
 				"score":    hit["score"],
-				"evidence": []map[string]any{{"constraint_type": "object", "constraint": "person", "state": "confirmed", "sources": []string{"objects"}}},
+				"evidence": []map[string]any{{"constraint_type": "object", "constraint": "person", "state": state, "sources": []string{"objects"}}},
 			})
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -96,33 +103,26 @@ func (f *fakeHub) handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"asset_id":"` + r.PathValue("id") + `","source":"aligned","language":"zh","text":"你好 世界","segments":[{"start_ms":0,"end_ms":260,"text":"你好"},{"start_ms":260,"end_ms":620,"text":"世界"}],"words":[{"start_ms":0,"end_ms":260,"text":"你好","confidence":0.94},{"start_ms":260,"end_ms":620,"text":"世界"}]}`))
 	}))
-	mux.HandleFunc("POST /api/v1/repurpose/plans", errWrapper(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/v1/assets/{id}", errWrapper(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
-			http.Error(w, "bad agent auth", http.StatusUnauthorized)
-			return
-		}
-		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte(`{"id":"` + f.planID + `"}`))
-	}))
-	mux.HandleFunc("GET /api/v1/repurpose/plans/{id}", errWrapper(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"id":"` + r.PathValue("id") + `","status":"draft","sections":[]}`))
-	}))
-	mux.HandleFunc("POST /api/v1/repurpose/plans/{id}/revisions", errWrapper(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
-			http.Error(w, "bad agent auth", http.StatusUnauthorized)
-			return
-		}
-		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte(`{"id":"` + f.planID + `"}`))
-	}))
-	mux.HandleFunc("POST /api/v1/admin/webdav/spaces/{id}/links", errWrapper(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer admin-tok" {
-			http.Error(w, "bad admin auth", http.StatusUnauthorized)
+			http.Error(w, "asset requires trusted read", http.StatusForbidden)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"path":"/assets/asset-1/original.mov"}`))
+		w.Write([]byte(`{"id":"` + r.PathValue("id") + `","duration":180000,"state":"analyzed","shot_count":12}`))
+	}))
+	mux.HandleFunc("GET /api/v1/shots/{id}", errWrapper(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
+			http.Error(w, "shot requires trusted read", http.StatusForbidden)
+			return
+		}
+		shotID := r.PathValue("id")
+		if shotID == "nonexistent" {
+			http.Error(w, "shot not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"shot_id":"` + shotID + `","asset_id":"asset-1","start_ms":0,"end_ms":5000,"description":"雨夜城市街道","tags":["rain","urban_night"],"thumbnail":"/thumbnails/` + shotID + `.jpg","evidence":[{"constraint_type":"object","constraint":"person","state":"confirmed","sources":["objects"]}]}`))
 	}))
 	return mux
 }
@@ -134,7 +134,6 @@ func newTestClient(t *testing.T, hub *fakeHub) *hubClient {
 	return &hubClient{
 		baseURL:    srv.URL,
 		agentToken: "agent-tok",
-		adminToken: "admin-tok",
 		http:       srv.Client(),
 	}
 }
@@ -151,12 +150,12 @@ func TestInspectLibrary(t *testing.T) {
 	}
 }
 
-func TestSearchFootage(t *testing.T) {
+func TestSearchShots(t *testing.T) {
 	hub := &fakeHub{searchHits: []map[string]any{
 		{"id": "shot-1", "asset_id": "asset-1", "score": 1.5},
 	}}
 	c := newTestClient(t, hub)
-	result, err := c.searchFootage(context.Background(), "sunset", 10)
+	result, err := c.searchShots(context.Background(), "sunset", 10, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,11 +173,11 @@ func TestSearchFootage(t *testing.T) {
 	}
 }
 
-func TestSearchFootageEmptyResults(t *testing.T) {
+func TestSearchShotsEmptyResults(t *testing.T) {
 	// Empty searchHits should return an empty results list, not an error.
 	hub := &fakeHub{searchHits: []map[string]any{}}
 	c := newTestClient(t, hub)
-	result, err := c.searchFootage(context.Background(), "nonexistent", 10)
+	result, err := c.searchShots(context.Background(), "nonexistent", 10, nil)
 	if err != nil {
 		t.Fatalf("empty search should not error: %v", err)
 	}
@@ -188,10 +187,10 @@ func TestSearchFootageEmptyResults(t *testing.T) {
 	}
 }
 
-func TestGetShots(t *testing.T) {
+func TestGetTimeline(t *testing.T) {
 	hub := &fakeHub{}
 	c := newTestClient(t, hub)
-	shots, err := c.getShots(context.Background(), "asset-1")
+	shots, err := c.getTimeline(context.Background(), "asset-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,11 +270,11 @@ func TestReadToolsWithoutAgentTokenSurfaceRemote403(t *testing.T) {
 	if _, err := client.inspectLibrary(context.Background()); err == nil {
 		t.Fatal("inspectLibrary without agent token must fail on a remote Hub")
 	}
-	if _, err := client.searchFootage(context.Background(), "sunset", 10); err == nil {
-		t.Fatal("searchFootage without agent token must fail on a remote Hub")
+	if _, err := client.searchShots(context.Background(), "sunset", 10, nil); err == nil {
+		t.Fatal("searchShots without agent token must fail on a remote Hub")
 	}
-	if _, err := client.getShots(context.Background(), "asset-1"); err == nil {
-		t.Fatal("getShots without agent token must fail on a remote Hub")
+	if _, err := client.getTimeline(context.Background(), "asset-1"); err == nil {
+		t.Fatal("getTimeline without agent token must fail on a remote Hub")
 	}
 }
 
@@ -283,7 +282,7 @@ func TestHub5xxPropagatesStatus(t *testing.T) {
 	// do() must include the HTTP status code in the error when Hub returns 5xx.
 	hub := &fakeHub{forceStatus: http.StatusInternalServerError, forceBody: "boom"}
 	c := newTestClient(t, hub)
-	_, err := c.searchFootage(context.Background(), "sunset", 10)
+	_, err := c.searchShots(context.Background(), "sunset", 10, nil)
 	if err == nil {
 		t.Fatal("expected error for 5xx response")
 	}
@@ -292,40 +291,90 @@ func TestHub5xxPropagatesStatus(t *testing.T) {
 	}
 }
 
-func TestRequestSourceMedia4xxPropagated(t *testing.T) {
-	// A 4xx from the Hub (e.g. 404 for unknown space) should be propagated as an error.
-	hub := &fakeHub{forceStatus: http.StatusNotFound, forceBody: "space not found"}
-	c := newTestClient(t, hub)
-	_, err := c.requestSourceMedia(context.Background(), "bad-space", "asset-1")
-	if err == nil {
-		t.Fatal("expected error for 4xx response")
-	}
-	if !strings.Contains(err.Error(), "space not found") || !strings.Contains(err.Error(), "404") {
-		t.Fatalf("error should contain body and status '404', got: %v", err)
-	}
-}
-
-func TestCreateEditPlanUsesAgentToken(t *testing.T) {
-	hub := &fakeHub{planID: "plan-42"}
-	c := newTestClient(t, hub)
-	plan, err := c.createEditPlan(context.Background(), "城市宣传片")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plan.ID != "plan-42" {
-		t.Fatalf("plan id = %q", plan.ID)
-	}
-}
-
-func TestRequestSourceMediaUsesAdminToken(t *testing.T) {
+func TestGetAsset(t *testing.T) {
 	hub := &fakeHub{}
 	c := newTestClient(t, hub)
-	out, err := c.requestSourceMedia(context.Background(), "space-9", "asset-1")
+	asset, err := c.getAsset(context.Background(), "asset-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out["path"] != "/assets/asset-1/original.mov" {
-		t.Fatalf("path = %v", out)
+	if asset["id"] != "asset-1" {
+		t.Fatalf("asset id = %v, want asset-1", asset["id"])
+	}
+	// The description tells agents to use get_asset's shot_count to decide
+	// whether to fetch the timeline — it must round-trip from the Hub.
+	if asset["shot_count"] != float64(12) {
+		t.Fatalf("shot_count = %v, want 12", asset["shot_count"])
+	}
+}
+
+func TestGetShot(t *testing.T) {
+	hub := &fakeHub{}
+	c := newTestClient(t, hub)
+	shot, err := c.getShot(context.Background(), "shot-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shot["shot_id"] != "shot-1" {
+		t.Fatalf("shot id = %v, want shot-1", shot["shot_id"])
+	}
+}
+
+func TestGetShotNotFound(t *testing.T) {
+	hub := &fakeHub{}
+	c := newTestClient(t, hub)
+	_, err := c.getShot(context.Background(), "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent shot")
+	}
+}
+
+func TestNoWriteTools(t *testing.T) {
+	client, err := newHubClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := server.NewMCPServer("timingdex", "v0.1", server.WithToolCapabilities(true))
+	registerTools(srv, client)
+	var names []string
+	for name := range srv.ListTools() {
+		names = append(names, name)
+	}
+	for _, prohibited := range []string{"create_edit_plan", "revise_edit_plan", "request_source_media"} {
+		for _, name := range names {
+			if name == prohibited {
+				t.Fatalf("write tool %q must not be registered", prohibited)
+			}
+		}
+	}
+}
+
+func TestEvidenceStatePreserved(t *testing.T) {
+	hub := &fakeHub{
+		searchHits: []map[string]any{
+			{"id": "shot-1", "asset_id": "asset-1", "score": 1.5},
+		},
+		evidenceState: "unknown",
+	}
+	c := newTestClient(t, hub)
+	result, err := c.searchShots(context.Background(), "sunset", 10, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, ok := result["results"].([]any)
+	if !ok || len(results) != 1 {
+		t.Fatalf("results = %v, want one result", result["results"])
+	}
+	hit := results[0].(map[string]any)
+	evidence, ok := hit["evidence"].([]any)
+	if !ok || len(evidence) != 1 {
+		t.Fatalf("evidence = %v, want evidence array", hit["evidence"])
+	}
+	// The unknown evidence state must be preserved as-is, not converted to
+	// false or stripped.
+	state, ok := evidence[0].(map[string]any)["state"].(string)
+	if !ok || state != "unknown" {
+		t.Fatalf("evidence state = %v, want 'unknown' (string)", evidence[0].(map[string]any)["state"])
 	}
 }
 
@@ -439,8 +488,38 @@ func TestToolNamesRegistered(t *testing.T) {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	want := []string{"create_edit_plan", "get_shots", "get_transcript", "inspect_library", "request_source_media", "revise_edit_plan", "search_footage"}
+	want := []string{"get_asset", "get_shot", "get_timeline", "get_transcript", "inspect_library", "search_shots"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("tools = %v, want %v", names, want)
+	}
+}
+
+// TestGetAssetDecodesLargeBody verifies that getAsset decodes through getLarge
+// (64 MiB cap) rather than do()'s 1 MiB bound, which would silently truncate
+// an AssetDetail response whose embedded transcript fills the response body.
+func TestGetAssetDecodesLargeBody(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/assets/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
+			http.Error(w, "asset requires trusted read", http.StatusForbidden)
+			return
+		}
+		// Generate a response comfortably over 1 MiB (do()'s bound) so the
+		// decode path must be getLarge to succeed. Keep the padding well under
+		// maxTranscriptBytes (64 MiB).
+		const target = 2 << 20 // 2 MiB
+		padding := strings.Repeat("x", target-200)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"` + r.PathValue("id") + `","state":"analyzed","duration":180000,"shot_count":999,"transcript":{"text":"` + padding + `"}}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := &hubClient{baseURL: srv.URL, agentToken: "agent-tok", http: srv.Client()}
+	asset, err := client.getAsset(context.Background(), "big-asset")
+	if err != nil {
+		t.Fatalf("getAsset must decode a >1MiB body: %v", err)
+	}
+	if asset["shot_count"] != float64(999) {
+		t.Fatalf("shot_count = %v, want 999", asset["shot_count"])
 	}
 }

@@ -54,7 +54,7 @@ func TestStdioHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tools.Tools) != 7 {
-		t.Fatalf("tools = %d, want 7", len(tools.Tools))
+	if len(tools.Tools) != 6 {
+		t.Fatalf("tools = %d, want 6", len(tools.Tools))
 	}
 }

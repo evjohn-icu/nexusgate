@@ -188,6 +188,7 @@ func (s *Server) searchRouteSpecs() []routeSpec {
 		newRouteSpec("search-shots-legacy", "GET /api/v1/search/shots", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.searchShots))),
 		newRouteSpec("search-shots-hybrid", "GET /api/v1/search/shots/hybrid", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.hybridSearchShots))),
 		newRouteSpec("search-shots-v2", "POST /api/v1/search/shots", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.searchShotsV2))),
+		newRouteSpec("shot-detail", "GET /api/v1/shots/{id}", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.shotDetail))),
 		newRouteSpec("similar-shots", "GET /api/v1/shots/{id}/similar", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.similarShots))),
 		newRouteSpec("rare-shots", "GET /api/v1/discover/rare-shots", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.rareShots))),
 		newRouteSpec("tags-list", "GET /api/v1/tags", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.listTags))),

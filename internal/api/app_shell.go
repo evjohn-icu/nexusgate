@@ -45,13 +45,16 @@ func shellHeaderHTML() string {
 		advanced bool
 		links    [][2]string // label, href
 	}{
-		{"核心", false, [][2]string{{"素材库", "/"}, {"收藏", "/collections"}, {"翻新方案", "/repurpose"}, {"处理进度", "/progress"}}},
+		{"核心", false, [][2]string{{"素材库", "/"}, {"收藏", "/collections"}, {"Jobs", "/progress"}}},
 		{"高级 / 管理", true, [][2]string{{"模型服务", "/providers"}, {"处理节点", "/workers"}, {"节点安装", "/worker-setup"}, {"素材目录", "/library-roots"}, {"Tags", "/tags"}, {"启动配置", "/setup"}, {"设置", "/settings"}}},
+		{"Labs", false, [][2]string{{"翻新方案", "/repurpose"}}},
 	}
 	for _, g := range groups {
 		className := "nav-group"
 		if g.advanced {
 			className += " nav-group-advanced"
+		} else if g.title == "Labs" {
+			className += " nav-group-labs"
 		}
 		b.WriteString(`<div class="` + className + `"><span class="nav-group-title">` + g.title + `</span>`)
 		for _, link := range g.links {

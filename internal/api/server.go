@@ -2293,6 +2293,19 @@ func (s *Server) assetCaptureLocation(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) shotDetail(w http.ResponseWriter, r *http.Request) {
+	detail, err := s.service.GetShot(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if detail == nil {
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
 func (s *Server) assetShots(w http.ResponseWriter, r *http.Request) {
 	shots, err := s.service.ListAssetShots(r.Context(), r.PathValue("id"))
 	if err != nil {
