@@ -166,6 +166,7 @@ func (s *Server) pipelineRouteSpecs() []routeSpec {
 		newRouteSpec("root-list", "GET /api/v1/roots", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.listRoots))),
 		newRouteSpec("root-create", "POST /api/v1/roots", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.createRoot))),
 		newRouteSpec("root-scan", "POST /api/v1/roots/{id}/scan", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.scanRoot))),
+		newRouteSpec("root-discover", "POST /api/v1/roots/discover", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.discoverRoots))),
 		newRouteSpec("root-inspect", "POST /api/v1/roots/inspect", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.inspectRoot))),
 		newRouteSpec("root-health", "GET /api/v1/roots/health", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.rootsHealth))),
 		newRouteSpec("worker-pairing-create", "POST /api/v1/hub/worker-pairings", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.createWorkerPairing))),

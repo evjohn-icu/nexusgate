@@ -30,6 +30,7 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/repurpose"
 	"github.com/evjohn-icu/timingdex/internal/search"
 	"github.com/evjohn-icu/timingdex/internal/secretstore"
+	"github.com/evjohn-icu/timingdex/internal/smbdiscover"
 	"github.com/evjohn-icu/timingdex/internal/staging"
 	"github.com/evjohn-icu/timingdex/internal/webdavspace"
 )
@@ -243,6 +244,11 @@ type Service struct {
 	// every method guards it.
 	searchV2 *search.Service
 
+	// discoverSMB performs the SMB network discovery behind DiscoverSMBHosts.
+	// It is a field (not a direct call) so tests can substitute a fast fake
+	// and never trigger a real 15-second LAN scan in the API test suite.
+	discoverSMB func(ctx context.Context) ([]smbdiscover.Host, error)
+
 	pipelineMu             sync.Mutex
 	pipelineRunning        bool
 	pipelineDrainRequested bool
@@ -370,6 +376,9 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 		scanFailures:    make(map[string]map[string]int),
 		scanRootLocks:   make(map[string]*sync.Mutex),
 		pipelineContext: context.Background(),
+		discoverSMB: func(ctx context.Context) ([]smbdiscover.Host, error) {
+			return smbdiscover.Discover(ctx, smbdiscover.DefaultOptions())
+		},
 	}
 	// Constructed for every command, started by none of them: only `serve`
 	// calls RunLibrarySupervisor, and a disabled supervisor's Run is a no-op.
@@ -585,6 +594,26 @@ func (s *Service) AddLibraryRoot(ctx context.Context, path string) (domain.Libra
 		return domain.LibraryRoot{}, fmt.Errorf("path is not a directory: %s", absolute)
 	}
 	return s.repo.CreateLibraryRoot(ctx, absolute)
+}
+
+// DiscoverSMBHosts probes the local network for SMB servers and enumerates
+// their guest-accessible shares. It is the backend of the library-roots
+// "discover" step: an operator picks a discovered share instead of typing a
+// path they have to already know. Only anonymous/guest sessions are ever
+// attempted; hosts that need credentials are reported with NeedsAuth and left
+// to the mount wizard's credential flow.
+func (s *Service) DiscoverSMBHosts(ctx context.Context) ([]smbdiscover.Host, error) {
+	if s.discoverSMB != nil {
+		return s.discoverSMB(ctx)
+	}
+	return smbdiscover.Discover(ctx, smbdiscover.DefaultOptions())
+}
+
+// SetSMBDiscoverer overrides the discovery implementation. It exists so the
+// API test suite can inject a fast fake and never trigger a real 15-second
+// LAN scan; production wiring is done inside NewService.
+func (s *Service) SetSMBDiscoverer(discover func(ctx context.Context) ([]smbdiscover.Host, error)) {
+	s.discoverSMB = discover
 }
 
 // RootWarnings reports what is true about a root's storage that the operator

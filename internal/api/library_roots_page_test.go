@@ -14,6 +14,7 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/media"
 	"github.com/evjohn-icu/timingdex/internal/mount"
 	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/timingdex/internal/smbdiscover"
 )
 
 func newLibraryRootsTestService(t *testing.T, name string, adminAuth ...string) *app.Service {
@@ -64,6 +65,13 @@ func TestLibraryRootsPageRendersWithStepMarkers(t *testing.T) {
 		"compose-section",
 		"Docker Compose",
 		"compose_volume",
+		// SMB discovery panel: the page must advertise the discover button, the
+		// endpoint it calls, and the click-a-share affordance.
+		"发现内网共享",
+		"discover-btn",
+		"runDiscover()",
+		"/api/v1/roots/discover",
+		"useShare(",
 	} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("page missing marker %q", marker)
@@ -457,5 +465,53 @@ func TestCreateRootWithUnmountedShareReturnsShareSpecificResponse(t *testing.T) 
 	}
 	if !payload.Inspection.IsShare || payload.Inspection.Guidance == nil {
 		t.Fatalf("response must carry the mount guidance, so an API caller that never opens /library-roots is still told what to do: %+v", payload.Inspection)
+	}
+}
+
+// The discover endpoint is an active LAN-wide network scan, so it must be
+// Hub-admin gated like every other root-mutating route: an unauthenticated
+// caller must not be able to trigger it.
+func TestDiscoverRootsRejectsUnauthenticatedRequest(t *testing.T) {
+	service := newLibraryRootsTestService(t, "discover-auth.db", "required")
+	handler := NewServer("", service).Handler()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, lanRequest(http.MethodPost, "/api/v1/roots/discover", nil))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s, want 401 — an unauthenticated caller must not trigger a LAN scan", response.Code, response.Body.String())
+	}
+}
+
+// With the Hub admin token the discover endpoint answers 200 with a hosts
+// array. A fake discover function is injected so the test never triggers a
+// real 15-second LAN scan; it returns one host with a share to prove the
+// handler passes the discovery result through.
+func TestDiscoverRootsAuthorizedReturnsHostsArray(t *testing.T) {
+	service := newLibraryRootsTestService(t, "discover-ok.db", "required")
+	// Inject a fast fake via the exported setter so the test never triggers a
+	// real LAN scan.
+	service.SetSMBDiscoverer(func(context.Context) ([]smbdiscover.Host, error) {
+		return []smbdiscover.Host{
+			{Name: "nas.local", IP: "192.168.1.50", Shares: []string{"video", "photos"}, Source: "mdns"},
+		}, nil
+	})
+	handler := NewServer("", service).Handler()
+	request := lanRequest(http.MethodPost, "/api/v1/roots/discover", nil)
+	request.Header.Set("Authorization", "Bearer "+service.AdminToken())
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s, want 200", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Hosts []smbdiscover.Host `json:"hosts"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Hosts == nil {
+		t.Fatal("hosts must be an empty array, not null")
+	}
+	if len(payload.Hosts) != 1 || payload.Hosts[0].Name != "nas.local" || len(payload.Hosts[0].Shares) != 2 {
+		t.Fatalf("hosts = %+v, want the injected nas.local with 2 shares", payload.Hosts)
 	}
 }

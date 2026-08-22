@@ -25,6 +25,10 @@ const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset=
 .panel h2{margin:0 0 14px}
 .field{margin:12px 0}
 .health-path{font-family:var(--font-data);font-size:13px;word-break:break-all}
+.discover-host{margin-bottom:10px;padding:12px 14px}
+.discover-host-name{font-weight:800;font-size:13px;margin-bottom:8px}
+.discover-share{display:inline-block;margin:3px 6px 3px 0;padding:4px 10px;background:var(--inset);border:1px solid var(--rule-strong);border-radius:6px;color:var(--text);font-family:var(--font-data);font-size:12px;cursor:pointer}
+.discover-share:hover{border-color:var(--accent,currentColor)}
 .share-line{font-family:var(--font-data);font-size:13px;color:var(--text-muted);word-break:break-all;background:var(--inset);border-radius:8px;padding:8px;margin:6px 0}
 .guide-step{margin:16px 0}
 .guide-step-title{font-weight:800;font-size:13px;color:var(--text);margin-bottom:7px}
@@ -47,6 +51,16 @@ const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset=
 </div>
 
 <div class="step-nav" id="step-nav"><div class="active" data-step="1">1. 输入路径</div><div data-step="2">2. 接入说明</div><div data-step="3">3. 验证接入</div><div data-step="4">4. 添加并扫描</div></div>
+
+<div class="panel" id="discover-section">
+<h2>发现内网共享</h2>
+<p class="muted">扫描局域网里的 NAS / SMB 服务器，找到可以直接添加的共享。这里只做匿名探测，需要密码的共享会标出来，接入密码走下一步向导、不会经过浏览器。</p>
+<div class="step-actions">
+  <button class="primary" id="discover-btn" onclick="runDiscover()">扫描内网共享</button>
+  <span class="hint" id="discover-status"></span>
+</div>
+<div id="discover-results"></div>
+</div>
 
 <div class="step active" id="step-1">
 <div class="panel"><h2>本机目录，或者 NAS / SMB 共享</h2>
@@ -172,6 +186,57 @@ loadRootHealth();
 var lastInput='';
 var lastVerifyPath='';
 var addedRoot=null;
+
+// runDiscover calls the Hub-admin-gated /api/v1/roots/discover endpoint (the
+// admin session is established through the shell's token input) and renders
+// the discovered SMB hosts. Clicking a share fills the path input and moves
+// into the existing mount wizard. Anonymous-only: hosts that need credentials
+// are shown as such and left to the mount flow.
+async function runDiscover(){
+  var btn=document.getElementById('discover-btn');
+  var status=document.getElementById('discover-status');
+  var wrap=document.getElementById('discover-results');
+  btn.disabled=true;status.textContent='正在扫描内网…（约 15 秒）';
+  wrap.innerHTML='';
+  try{
+    var data=await json('/api/v1/roots/discover',{method:'POST',headers:authHeaders({'Content-Type':'application/json'})});
+    var hosts=(data&&data.hosts)||[];
+    if(!hosts.length){
+      wrap.innerHTML='<div class="hint">没找到内网 SMB 服务器。可能是本机没有局域网接口、网络禁用了组播，或没有设备开放 445 端口。可以手动输入下方路径。</div>';
+      status.textContent='';return;
+    }
+    var rows=hosts.map(function(h){
+      var name=esc(h.name||h.ip);
+      var shares=(h.shares||[]);
+      var detail='';
+      if(shares.length){
+        detail='<div class="share-line">'+shares.map(function(s){
+          return '<button type="button" class="discover-share" onclick="useShare(\''+escAttr(h.ip)+'\',\''+escAttr(s)+'\')">'+esc(s)+'</button>';
+        }).join('')+'</div>';
+      }else if(h.needs_auth){
+        detail='<div class="hint">需要凭据（接入密码走下一步向导）</div>';
+      }else{
+        detail='<div class="hint">未发现可读共享</div>';
+      }
+      return '<div class="panel discover-host"><div class="discover-host-name">'+name+' <span class="muted">'+esc(h.ip)+'</span></div>'+detail+'</div>';
+    }).join('');
+    wrap.innerHTML=rows;
+    status.textContent='发现 '+hosts.length+' 台主机。';
+  }catch(e){
+    status.className='hint bad';status.textContent='扫描失败：'+esc(e.message);
+  }finally{
+    btn.disabled=false;
+  }
+}
+
+function escAttr(v){return String(v??'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','>':'&gt;','<':'&lt;','"':'&quot;',"'":'&#39;'}[c]})}
+
+// useShare fills the path input with the SMB share address and starts the
+// mount inspection (the same flow as typing //host/share manually).
+function useShare(host,share){
+  document.getElementById('root-input').value='//'+host+'/'+share;
+  startInspect();
+}
 
 async function addRoot(path){
   var response=await fetch('/api/v1/roots',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({path:path})});

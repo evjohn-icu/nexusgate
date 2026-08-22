@@ -27,6 +27,7 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/normalize"
 	"github.com/evjohn-icu/timingdex/internal/remote"
 	"github.com/evjohn-icu/timingdex/internal/search"
+	"github.com/evjohn-icu/timingdex/internal/smbdiscover"
 	"github.com/evjohn-icu/timingdex/internal/webdavspace"
 )
 
@@ -1201,6 +1202,22 @@ func (s *Server) scanRoot(w http.ResponseWriter, r *http.Request) {
 		PipelineBusy:    !started,
 		PipelineStatus:  pipelineTriggerStatus(started),
 	})
+}
+
+// discoverRoots probes the local network for SMB servers and returns the
+// discovered hosts with their guest-accessible shares. It is an active network
+// operation, so it is Hub-admin gated like every other root-mutating route;
+// an anonymous caller must not be able to trigger a LAN-wide scan.
+func (s *Server) discoverRoots(w http.ResponseWriter, r *http.Request) {
+	hosts, err := s.service.DiscoverSMBHosts(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if hosts == nil {
+		hosts = []smbdiscover.Host{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"hosts": hosts})
 }
 
 func pipelineTriggerStatus(started bool) string {
