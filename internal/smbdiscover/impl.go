@@ -2,6 +2,7 @@ package smbdiscover
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"sync"
@@ -100,6 +101,7 @@ func scanPort(ctx context.Context, dialTimeout time.Duration) []net.IP {
 	var hits []net.IP
 	sem := make(chan struct{}, 64)
 	var wg sync.WaitGroup
+	dialer := net.Dialer{Timeout: dialTimeout}
 	for _, cand := range candidates {
 		if ctx.Err() != nil {
 			break
@@ -109,7 +111,9 @@ func scanPort(ctx context.Context, dialTimeout time.Duration) []net.IP {
 		go func(ip net.IP) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip.String(), "445"), dialTimeout)
+			// DialContext (not DialTimeout) so a cancelled discovery context
+			// aborts in-flight probes instead of waiting out each dial timeout.
+			conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(ip.String(), smbPortStr))
 			if err != nil {
 				return
 			}
@@ -172,10 +176,14 @@ func enumerateShares(ctx context.Context, shareTimeout time.Duration, byIP map[s
 			defer func() { <-sem }()
 			shares, err := guestShareNames(ctx, h.IP, shareTimeout)
 			if err != nil {
-				// The host answered 445 but refused the guest session: it
-				// needs credentials. Never report an error upward; the host
-				// is still a useful discovery result.
-				h.NeedsAuth = true
+				// Only a definitive guest-session refusal is "needs
+				// credentials". A timeout (slow or wedged host) or a
+				// cancelled overall scan says nothing about credentials, so
+				// leave NeedsAuth false rather than promising a password
+				// will help against a blackholed host.
+				if ctx.Err() == nil && !errors.Is(err, context.DeadlineExceeded) {
+					h.NeedsAuth = true
+				}
 				return
 			}
 			h.Shares = shares
