@@ -188,6 +188,11 @@ func enumerateShares(ctx context.Context, shareTimeout time.Duration, byIP map[s
 // maxConcurrentEnumeration bounds how many SMB guest sessions run at once.
 const maxConcurrentEnumeration = 8
 
+// smbPortStr is the SMB-over-TCP port. It is a var (not a const) so tests can
+// point guestShareNames at a fake server on an ephemeral port without needing
+// root to bind 445.
+var smbPortStr = "445"
+
 // guestShareNames opens an anonymous/guest SMB session to host and lists the
 // share names. The guest session is the one credential-free probe SMB allows;
 // anything that needs a real user/password returns an error here.
@@ -196,23 +201,30 @@ func guestShareNames(ctx context.Context, host string, timeout time.Duration) ([
 	defer cancel()
 
 	var d net.Dialer
-	conn, err := d.DialContext(dialCtx, "tcp", net.JoinHostPort(host, "445"))
+	conn, err := d.DialContext(dialCtx, "tcp", net.JoinHostPort(host, smbPortStr))
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Close()
 
+	// DialContext (not Dial) and Session.WithContext propagate dialCtx into the
+	// SMB negotiation AND the share enumeration. Without both, a host that
+	// accepts TCP on 445 but then hangs mid-negotiation or mid-listing would
+	// block this goroutine for the TCP stack's keepalive timeout (hours on
+	// Linux), and enumerateShares' wg.Wait() would make the whole Discover
+	// call block with it.
 	session, err := (&smb2.Dialer{
 		Initiator: &smb2.NTLMInitiator{
 			User:     "Guest",
 			Password: "",
 			Domain:   "WORKGROUP",
 		},
-	}).Dial(conn)
+	}).DialContext(dialCtx, conn)
 	if err != nil {
 		return nil, err
 	}
 	defer session.Logoff()
+	session = session.WithContext(dialCtx)
 
 	names, err := session.ListSharenames()
 	if err != nil {

@@ -174,3 +174,60 @@ func TestDiscoverNameTrimsTrailingDot(t *testing.T) {
 		t.Fatalf("name = %q, want nas.local (no trailing dot)", got[0].Name)
 	}
 }
+
+// TestGuestShareNamesHangsBoundedByTimeout guards the context propagation fix:
+// a host that accepts TCP on 445 but never completes SMB negotiation must not
+// block guestShareNames for the TCP stack's keepalive timeout. Before the fix
+// (Dial instead of DialContext, no WithContext) this test would hang for
+// minutes; with the fix it returns within the short timeout.
+// TestGuestShareNamesHangsBoundedByTimeout guards the context propagation fix:
+// a host that accepts TCP on 445 but never completes SMB negotiation must not
+// block guestShareNames for the TCP stack's keepalive timeout. Before the fix
+// (Dial instead of DialContext, no WithContext) this test would hang for
+// minutes; with the fix it returns within the short timeout.
+func TestGuestShareNamesHangsBoundedByTimeout(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	host, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPort := smbPortStr
+	smbPortStr = port
+	defer func() { smbPortStr = oldPort }()
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Accept but never respond to SMB negotiation; a hostile or
+			// wedged host would keep the connection open.
+			go func() {
+				defer conn.Close()
+				// read to detect close; otherwise stall
+				buf := make([]byte, 1024)
+				for {
+					if _, err := conn.Read(buf); err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+
+	ctx := context.Background()
+	start := time.Now()
+	_, err = guestShareNames(ctx, host, 2*time.Second)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected an error from a host that never negotiates SMB")
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("guestShareNames took %v, want it bounded by the ~2s timeout", elapsed)
+	}
+}
