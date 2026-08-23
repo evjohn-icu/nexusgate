@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -186,7 +189,7 @@ func TestSettingsDiskSpaceProtectionRoundTripsInGB(t *testing.T) {
 	page := httptest.NewRecorder()
 	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/settings", nil))
 	for _, marker := range []string{
-		"磁盘空间保护", // the panel itself
+		"settings.diskProtection", // the panel itself (marker resolves to the key pre-merge)
 		"min-free-space",
 		"minimum_free_space_bytes", // the field both directions carry
 		"GB=1073741824",            // and the bytes conversion the page promises
@@ -236,12 +239,12 @@ func TestSettingsCostGuidePanelRoundTrips(t *testing.T) {
 	page := httptest.NewRecorder()
 	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/settings", nil))
 	for _, marker := range []string{
-		"成本参考", // the panel itself
+		"settings.costGuide", // the panel itself (marker resolves to the key pre-merge)
 		"daily-cost-guide",
 		"monthly-cost-guide",
 		"daily_cost_guide", // the field both directions carry
 		"monthly_cost_guide",
-		"不会限制或推迟", // guides never park work
+		"settings.costHint.lead", // guides never park work (marker resolves to the key pre-merge)
 	} {
 		if !strings.Contains(page.Body.String(), marker) {
 			t.Fatalf("settings page is missing %q", marker)
@@ -272,5 +275,192 @@ func TestSettingsPageCarriesTokenPlumbingAndBothLevers(t *testing.T) {
 	// on every page in this project.
 	if strings.Contains(page, "localStorage") || strings.Contains(page, "sessionStorage") {
 		t.Fatal("settings page must keep the admin token in page memory only")
+	}
+}
+
+// settingsFragmentKeys loads the page's fragment file and returns its zh-CN
+// key set. The fragment is not merged into the embedded catalogs yet, so the
+// page tests assert the key wiring against the fragment on disk rather than a
+// resolved zh-CN value.
+func settingsFragmentKeys(t *testing.T) map[string]bool {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("locales", "fragments", "settings.json"))
+	if err != nil {
+		t.Fatalf("read settings fragment: %v", err)
+	}
+	var frag struct {
+		Keys map[string]map[string]string `json:"keys"`
+	}
+	if err := json.Unmarshal(data, &frag); err != nil {
+		t.Fatalf("parse settings fragment: %v", err)
+	}
+	keys := make(map[string]bool, len(frag.Keys[string(localeZhCN)]))
+	for k := range frag.Keys[string(localeZhCN)] {
+		keys[k] = true
+	}
+	return keys
+}
+
+func TestSettingsPageI18nHasNoHardcodedChinese(t *testing.T) {
+	if hits := cjkRE.FindAllString(settingsHTML, -1); len(hits) > 0 {
+		t.Fatalf("settingsHTML still carries hardcoded CJK copy: %q", hits)
+	}
+}
+
+func TestSettingsPageI18nUsesSharedHelpers(t *testing.T) {
+	if strings.Contains(settingsHTML, "apiErrMsg") {
+		t.Fatal("page-local apiErrMsg must be deleted in favor of the shared tdApiErrorMessage")
+	}
+	if !strings.Contains(settingsHTML, "tdApiErrorMessage(") {
+		t.Fatal("settings page must call the shared tdApiErrorMessage helper")
+	}
+	for _, legacy := range []string{"toLocaleTimeString", "toLocaleString("} {
+		if strings.Contains(settingsHTML, legacy) {
+			t.Fatalf("settings page still uses browser-locale formatter %q", legacy)
+		}
+	}
+	if !strings.Contains(settingsHTML, "tdFormatNumber(") {
+		t.Fatal("settings page must use the shared tdFormatNumber formatter for UI numbers")
+	}
+}
+
+// Every static [[i18n:key]] marker and every literal key passed to
+// tdT/tdPlural (including the storage-row label/note keys) must resolve: to a
+// key the page fragment carries in all five locales, or to one of the shared
+// catalog keys (common.*) that every locale already ships. Plural bases are
+// resolved through their .one/.other siblings.
+func TestSettingsPageI18nKeysResolveFromFragment(t *testing.T) {
+	fragKeys := settingsFragmentKeys(t)
+
+	markerRE := regexp.MustCompile(`\[\[i18n:([a-zA-Z0-9._-]+)\]\]`)
+	callRE := regexp.MustCompile(`td(?:T|Plural)\('([a-zA-Z0-9._-]+)'`)
+	keyLitRE := regexp.MustCompile(`'(settings|common)\.[a-zA-Z0-9._-]+'`)
+
+	seen := make(map[string]bool)
+	for _, m := range markerRE.FindAllStringSubmatch(settingsHTML, -1) {
+		seen[m[1]] = true
+	}
+	for _, m := range callRE.FindAllStringSubmatch(settingsHTML, -1) {
+		seen[m[1]] = true
+	}
+	for _, m := range keyLitRE.FindAllStringSubmatch(settingsHTML, -1) {
+		seen[m[0][1:len(m[0])-1]] = true
+	}
+
+	if len(seen) == 0 {
+		t.Fatal("no keys detected in settingsHTML; the scan is broken")
+	}
+
+	var unresolved []string
+	for key := range seen {
+		if fragKeys[key] {
+			continue
+		}
+		// A plural base key resolves via its category siblings.
+		if fragKeys[key+".one"] || fragKeys[key+".other"] {
+			continue
+		}
+		if catalogs[localeZhCN].has(key) {
+			continue
+		}
+		unresolved = append(unresolved, key)
+	}
+	sort.Strings(unresolved)
+	if len(unresolved) > 0 {
+		t.Fatalf("settings keys that resolve to nothing (not in fragment, its plural siblings, or a shared catalog): %v", unresolved)
+	}
+}
+
+func TestSettingsPageI18nFragmentParityAcrossLocales(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("locales", "fragments", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frag struct {
+		Page string                       `json:"page"`
+		Keys map[string]map[string]string `json:"keys"`
+	}
+	if err := json.Unmarshal(data, &frag); err != nil {
+		t.Fatal(err)
+	}
+	if frag.Page != "settings" {
+		t.Fatalf("fragment page=%q, want settings", frag.Page)
+	}
+	for _, loc := range supportedLocales {
+		if _, ok := frag.Keys[string(loc)]; !ok {
+			t.Fatalf("fragment missing locale %s", loc)
+		}
+	}
+
+	base := frag.Keys[string(localeZhCN)]
+	for _, loc := range supportedLocales[1:] {
+		other := frag.Keys[string(loc)]
+		if len(other) != len(base) {
+			t.Fatalf("locale %s has %d keys, zh-CN has %d", loc, len(other), len(base))
+		}
+		for k := range base {
+			if _, ok := other[k]; !ok {
+				t.Fatalf("locale %s missing key %q", loc, k)
+			}
+		}
+	}
+
+	phRE := regexp.MustCompile(`\{[a-zA-Z]+\}`)
+	phSet := func(s string) string {
+		parts := phRE.FindAllString(s, -1)
+		sort.Strings(parts)
+		return strings.Join(parts, ",")
+	}
+	for k, zh := range base {
+		want := phSet(zh)
+		for _, loc := range supportedLocales[1:] {
+			if got := phSet(frag.Keys[string(loc)][k]); got != want {
+				t.Fatalf("placeholder set differs for %s in %s: %q vs zh-CN %q", k, loc, frag.Keys[string(loc)][k], zh)
+			}
+		}
+	}
+
+	// The fragment must define page-prefixed keys only, never the shared ones.
+	for k := range base {
+		for _, prefix := range []string{"common.", "api.", "status.", "facet.", "shell."} {
+			if strings.HasPrefix(k, prefix) {
+				t.Fatalf("fragment redefines shared key %q", k)
+			}
+		}
+	}
+}
+
+// Served in the default zh-CN locale, every static marker must be resolved by
+// the server (to the bare key before the fragment is merged, to the zh-CN
+// value after) rather than leaking as [[i18n:...]], and the structural
+// anchors the tests and wire rely on must survive.
+func TestSettingsPageI18nServedWithoutUnresolvedMarkers(t *testing.T) {
+	service := throttleTestService(t, "settings-i18n-serve.db")
+	response := httptest.NewRecorder()
+	NewServer("", service).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/settings", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d", response.Code)
+	}
+	body := response.Body.String()
+	if strings.Contains(body, "[[i18n:") {
+		t.Fatalf("unresolved marker leaked into the served page: %s", body)
+	}
+	for _, want := range []string{
+		`<html lang="zh-CN"`,
+		`data-app-shell`,
+		`id="read-rate"`, `id="cooldown"`, `id="off-peak"`, `id="off-start"`, `id="off-end"`,
+		`id="defer-mb"`, `id="immediate-mb"`, `id="min-free-space"`,
+		`id="daily-cost-guide"`, `id="monthly-cost-guide"`,
+		`id="state"`, `id="storage-rows"`, `id="server-time"`, `id="server-zone"`,
+		`id="save"`, `id="status"`,
+		`/api/v1/pipeline/throttle`, `/api/v1/storage/overview`,
+		`read_rate`, `cooldown_seconds`, `off_peak_start`, `off_peak_end`,
+		`defer_above_bytes`, `immediate_max_bytes`, `minimum_free_space_bytes`,
+		`daily_cost_guide`, `monthly_cost_guide`,
+		`tdApiErrorMessage`, `tdFormatNumber`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("served /settings missing %q", want)
+		}
 	}
 }

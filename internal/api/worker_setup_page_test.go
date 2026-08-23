@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -48,17 +50,13 @@ func TestWorkerSetupPageRendersWithStepMarkers(t *testing.T) {
 	body := response.Body.String()
 	for _, marker := range []string{
 		"data-worker-setup-wizard",
-		"处理节点安装向导",
-		"环境概览",
-		"配置处理节点",
-		"生成安装脚本",
-		"启动处理节点",
 		"admin-token",
 		`type="password"`,
 		"GOOS=windows GOARCH=amd64",
 		"worker-binaries",
 		"/api/v1/admin/hub/worker-setup/library-roots",
 		"X-CSRF-Token",
+		"tdApiErrorMessage",
 		"localStorage",
 		"sessionStorage",
 	} {
@@ -71,6 +69,23 @@ func TestWorkerSetupPageRendersWithStepMarkers(t *testing.T) {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("page missing marker %q", marker)
 		}
+	}
+	// The wizard steps and page title are static copy, resolved server-side
+	// from the locale catalog: the page constant must carry the markers, and
+	// the served body must never leak an unresolved [[i18n:...]] marker.
+	for _, marker := range []string{
+		`<title>Timingdex · [[i18n:workerSetup.title]]</title>`,
+		`1. [[i18n:workerSetup.environmentOverview]]`,
+		`2. [[i18n:workerSetup.configureNode]]`,
+		`3. [[i18n:workerSetup.generateScript]]`,
+		`4. [[i18n:workerSetup.startNode]]`,
+	} {
+		if !strings.Contains(workerSetupPageHTML, marker) {
+			t.Fatalf("worker setup page missing localization wiring %q", marker)
+		}
+	}
+	if strings.Contains(body, "[[i18n:") {
+		t.Fatalf("unresolved marker leaked into the served page")
 	}
 }
 
@@ -94,13 +109,237 @@ func TestWorkerSetupPagePreservesRedactedRootsWhenAdminDetailsFail(t *testing.T)
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
+	if strings.Contains(body, "[[i18n:") {
+		t.Fatalf("unresolved marker leaked into the served page")
+	}
 	for _, marker := range []string{
-		"管理员路径详情加载失败，已保留脱敏素材目录。",
-		"路径需管理员口令",
+		"tdT('workerSetup.adminDetailsFailed')",
+		"tdT('workerSetup.pathRequiresAdmin')",
 		"renderMounts()",
 	} {
-		if !strings.Contains(body, marker) {
-			t.Fatalf("page missing redacted-root fallback marker %q", marker)
+		if !strings.Contains(workerSetupPageHTML, marker) {
+			t.Fatalf("page missing redacted-root fallback wiring %q", marker)
+		}
+	}
+}
+
+// workerSetupCJKRE matches the CJK unified-ideograph and CJK-punctuation
+// blocks. The page source must carry none of them: every piece of product copy
+// now comes from the locale catalog, so a raw Chinese literal in
+// workerSetupPageHTML is a migration regression.
+var workerSetupCJKRE = regexp.MustCompile(`[\x{3000}-\x{303f}\x{3400}-\x{4dbf}\x{4e00}-\x{9fff}\x{f900}-\x{faff}]`)
+
+// workerSetupFragmentKeys loads the page's fragment file and returns its zh-CN
+// key set. The fragment is not merged into the embedded catalogs yet, so the
+// page tests assert the key wiring against the fragment on disk rather than a
+// resolved zh-CN value.
+func workerSetupFragmentKeys(t *testing.T) map[string]bool {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("locales", "fragments", "worker_setup.json"))
+	if err != nil {
+		t.Fatalf("read worker setup fragment: %v", err)
+	}
+	var frag struct {
+		Keys map[string]map[string]string `json:"keys"`
+	}
+	if err := json.Unmarshal(data, &frag); err != nil {
+		t.Fatalf("parse worker setup fragment: %v", err)
+	}
+	keys := make(map[string]bool, len(frag.Keys[string(localeZhCN)]))
+	for k := range frag.Keys[string(localeZhCN)] {
+		keys[k] = true
+	}
+	return keys
+}
+
+// The page source must be fully migrated: no hardcoded CJK copy, the shared
+// tdApiErrorMessage instead of a page-local apiErrMsg, and no browser-locale
+// number/date formatters.
+func TestWorkerSetupPageI18nHasNoHardcodedChinese(t *testing.T) {
+	if hits := workerSetupCJKRE.FindAllString(workerSetupPageHTML, -1); len(hits) > 0 {
+		t.Fatalf("workerSetupPageHTML still carries hardcoded CJK copy: %q", hits)
+	}
+	if strings.Contains(workerSetupPageHTML, "apiErrMsg") {
+		t.Fatal("page-local apiErrMsg must be deleted in favor of the shared tdApiErrorMessage")
+	}
+	if !strings.Contains(workerSetupPageHTML, "tdApiErrorMessage(") {
+		t.Fatal("worker setup page must call the shared tdApiErrorMessage helper")
+	}
+	for _, legacy := range []string{"toLocaleString(", "toLocaleTimeString", "toLocaleDateString"} {
+		if strings.Contains(workerSetupPageHTML, legacy) {
+			t.Fatalf("worker setup page still uses browser-locale formatter %q", legacy)
+		}
+	}
+}
+
+// Every product string goes through the shared locale machinery: static HTML
+// via [[i18n:*]] markers, dynamic copy via tdT/tdPlural, and API failures via
+// tdApiErrorMessage. A hardcoded Chinese string here means the migration
+// regressed.
+func TestWorkerSetupPageLocalizedCopy(t *testing.T) {
+	for _, marker := range []string{
+		`<title>Timingdex · [[i18n:workerSetup.title]]</title>`,
+		`1. [[i18n:workerSetup.environmentOverview]]`,
+		`2. [[i18n:workerSetup.configureNode]]`,
+		`3. [[i18n:workerSetup.generateScript]]`,
+		`4. [[i18n:workerSetup.startNode]]`,
+		`<a class="back-link" href="/workers">← [[i18n:common.back]]</a>`,
+		`[[i18n:workerSetup.hubConnectionInfo]]`,
+		`[[i18n:workerSetup.loadingEnvironment]]`,
+		`[[i18n:workerSetup.binaries]]`,
+		`[[i18n:workerSetup.binariesHint]]`,
+		`[[i18n:workerSetup.crossCompileLead]]`,
+		`[[i18n:workerSetup.placeFilesLead]]`,
+		`[[i18n:workerSetup.placeFilesTrail]]`,
+		`[[i18n:workerSetup.configuration]]`,
+		`[[i18n:workerSetup.targetPlatform]]`,
+		`[[i18n:workerSetup.workerNameOptional]]`,
+		`[[i18n:workerSetup.workerNamePlaceholder]]`,
+		`[[i18n:workerSetup.cacheDirOptional]]`,
+		`[[i18n:workerSetup.cacheDirPlaceholder]]`,
+		`[[i18n:workerSetup.mountMapping]]`,
+		`[[i18n:workerSetup.mountMappingHint]]`,
+		`[[i18n:workerSetup.previous]]`,
+		`[[i18n:workerSetup.scriptWarning]]`,
+		`[[i18n:workerSetup.generateButton]]`,
+		`[[i18n:workerSetup.runCommandHint]]`,
+		`[[i18n:workerSetup.doctorHintLead]]`,
+		`[[i18n:workerSetup.doctorHintTrail]]`,
+		`[[i18n:workerSetup.workersStatusHintLead]]`,
+		`<a href="/workers">[[i18n:workers.title]]</a>`,
+		`[[i18n:workerSetup.workersStatusHintTrail]]`,
+		`[[i18n:common.next]] →`,
+		`tdT('workerSetup.binaryAvailable')`,
+		`tdT('workerSetup.binaryUnavailable')`,
+		`tdT('workerSetup.binaryNotUploaded')`,
+		`tdT('workerSetup.noRoots')`,
+		`tdT('workerSetup.pathRequiresAdmin')`,
+		`tdT('workerSetup.localPath')`,
+		`tdT('workerSetup.adminDetailsFailed')`,
+		`tdT('workerSetup.hubUrl')`,
+		`tdT('workerSetup.tls')`,
+		`tdT('workerSetup.fingerprint')`,
+		`tdT('workerSetup.mediaFolders')`,
+		`tdT('workerSetup.tlsEnabled')`,
+		`tdT('workerSetup.tlsNotEnabled')`,
+		`tdPlural('workerSetup.rootCount'`,
+		`tdT('workerSetup.environmentLoadError'`,
+		`tdT('workerSetup.generating')`,
+		`tdT('workerSetup.copyScript')`,
+		`tdT('workerSetup.scriptOneTimeNote')`,
+		`tdT('workerSetup.viewStartupGuide')`,
+		`tdT('workerSetup.generateFailed'`,
+		`tdT('common.retry')`,
+		`tdT('common.copied')`,
+		`tdApiErrorMessage(`,
+	} {
+		if !strings.Contains(workerSetupPageHTML, marker) {
+			t.Fatalf("worker setup page missing localization wiring %q", marker)
+		}
+	}
+}
+
+// Every static [[i18n:key]] marker and every literal key passed to
+// tdT/tdPlural must resolve: to a key the page fragment carries in all five
+// locales, or to one of the shared catalog keys (common.*, status.*,
+// workers.*) that every locale already ships. Plural bases are resolved
+// through their .one/.other siblings.
+func TestWorkerSetupPageI18nKeysResolveFromFragment(t *testing.T) {
+	fragKeys := workerSetupFragmentKeys(t)
+
+	markerRE := regexp.MustCompile(`\[\[i18n:([a-zA-Z0-9._-]+)\]\]`)
+	callRE := regexp.MustCompile(`td(?:T|Plural)\('([a-zA-Z0-9._-]+)'`)
+
+	seen := make(map[string]bool)
+	for _, m := range markerRE.FindAllStringSubmatch(workerSetupPageHTML, -1) {
+		seen[m[1]] = true
+	}
+	for _, m := range callRE.FindAllStringSubmatch(workerSetupPageHTML, -1) {
+		seen[m[1]] = true
+	}
+
+	if len(seen) == 0 {
+		t.Fatal("no keys detected in workerSetupPageHTML; the scan is broken")
+	}
+
+	var unresolved []string
+	for key := range seen {
+		if fragKeys[key] {
+			continue
+		}
+		// A plural base key resolves via its category siblings.
+		if fragKeys[key+".one"] || fragKeys[key+".other"] {
+			continue
+		}
+		if catalogs[localeZhCN].has(key) {
+			continue
+		}
+		unresolved = append(unresolved, key)
+	}
+	sort.Strings(unresolved)
+	if len(unresolved) > 0 {
+		t.Fatalf("worker setup keys that resolve to nothing (not in fragment, its plural siblings, or a shared catalog): %v", unresolved)
+	}
+}
+
+// The fragment must be a valid UTF-8 JSON catalog fragment: the page name
+// matches, all five locales carry the identical key set, and every key's
+// {placeholder} set matches zh-CN. It must define only page-prefixed keys.
+func TestWorkerSetupPageI18nFragmentParityAcrossLocales(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("locales", "fragments", "worker_setup.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frag struct {
+		Page string                       `json:"page"`
+		Keys map[string]map[string]string `json:"keys"`
+	}
+	if err := json.Unmarshal(data, &frag); err != nil {
+		t.Fatal(err)
+	}
+	if frag.Page != "worker_setup" {
+		t.Fatalf("fragment page=%q, want worker_setup", frag.Page)
+	}
+	for _, loc := range supportedLocales {
+		if _, ok := frag.Keys[string(loc)]; !ok {
+			t.Fatalf("fragment missing locale %s", loc)
+		}
+	}
+
+	base := frag.Keys[string(localeZhCN)]
+	for _, loc := range supportedLocales[1:] {
+		other := frag.Keys[string(loc)]
+		if len(other) != len(base) {
+			t.Fatalf("locale %s has %d keys, zh-CN has %d", loc, len(other), len(base))
+		}
+		for k := range base {
+			if _, ok := other[k]; !ok {
+				t.Fatalf("locale %s missing key %q", loc, k)
+			}
+		}
+	}
+
+	phRE := regexp.MustCompile(`\{[a-zA-Z]+\}`)
+	phSet := func(s string) string {
+		parts := phRE.FindAllString(s, -1)
+		sort.Strings(parts)
+		return strings.Join(parts, ",")
+	}
+	for k, zh := range base {
+		want := phSet(zh)
+		for _, loc := range supportedLocales[1:] {
+			if got := phSet(frag.Keys[string(loc)][k]); got != want {
+				t.Fatalf("placeholder set differs for %s in %s: %q vs zh-CN %q", k, loc, frag.Keys[string(loc)][k], zh)
+			}
+		}
+	}
+
+	// The fragment must define page-prefixed keys only, never the shared ones.
+	for k := range base {
+		for _, prefix := range []string{"common.", "api.", "status.", "facet.", "shell."} {
+			if strings.HasPrefix(k, prefix) {
+				t.Fatalf("fragment redefines shared key %q", k)
+			}
 		}
 	}
 }

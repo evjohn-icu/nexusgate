@@ -9,93 +9,96 @@ import (
 
 var libraryIndexHTML = enhanceLibraryPage(legacyLibraryIndexHTML)
 
-// facetLabels maps a controlled-vocabulary value to the Chinese label shown
-// in the facet selects. The vocabularies and this map are separate sources of
+// facetLabels maps a controlled-vocabulary value to the catalog key that
+// names its label. The vocabularies and this map are separate sources of
 // truth; TestFacetLabelsCoverEveryVocabularyValue pins the seam so a value
 // added to a vocabulary fails loudly instead of rendering as its English slug
-// in a Chinese UI. Shared values (unknown, mixed, not_recommended) carry one
-// label across the fields that use them.
+// in a Chinese UI. The label keys (facet.*) exist in all five catalogs, and
+// facetSelectHTML renders them as [[i18n:facet.*]] markers so the option text
+// follows the selected UI locale. Shared values (unknown, mixed,
+// not_recommended) carry one key across the fields that use them.
 var facetLabels = map[string]string{
 	// asset_type
-	"b_roll":            "空镜",
-	"talking_to_camera": "对镜头讲述",
-	"conversation":      "对话",
-	"activity":          "活动",
-	"performance":       "表演",
-	"food":              "美食",
-	"transport":         "交通",
-	"architecture":      "建筑",
-	"landscape":         "风光",
-	"animal":            "动物",
-	"document":          "文档",
-	"screen_recording":  "录屏",
-	"accidental":        "误拍",
-	"other":             "其他",
+	"b_roll":            "facet.b_roll",
+	"talking_to_camera": "facet.talking_to_camera",
+	"conversation":      "facet.conversation",
+	"activity":          "facet.activity",
+	"performance":       "facet.performance",
+	"food":              "facet.food",
+	"transport":         "facet.transport",
+	"architecture":      "facet.architecture",
+	"landscape":         "facet.landscape",
+	"animal":            "facet.animal",
+	"document":          "facet.document",
+	"screen_recording":  "facet.screen_recording",
+	"accidental":        "facet.accidental",
+	"other":             "facet.other",
 	// camera_motion
-	"static":    "固定",
-	"pan_left":  "左摇",
-	"pan_right": "右摇",
-	"tilt_up":   "上摇",
-	"tilt_down": "下摇",
-	"forward":   "前进",
-	"backward":  "后退",
-	"tracking":  "跟拍",
-	"orbit":     "环绕",
-	"handheld":  "手持",
+	"static":    "facet.static",
+	"pan_left":  "facet.pan_left",
+	"pan_right": "facet.pan_right",
+	"tilt_up":   "facet.tilt_up",
+	"tilt_down": "facet.tilt_down",
+	"forward":   "facet.forward",
+	"backward":  "facet.backward",
+	"tracking":  "facet.tracking",
+	"orbit":     "facet.orbit",
+	"handheld":  "facet.handheld",
 	// shot_size
-	"extreme_wide":     "大远景",
-	"wide":             "远景",
-	"medium":           "中景",
-	"close_up":         "近景",
-	"extreme_close_up": "特写",
+	"extreme_wide":     "facet.extreme_wide",
+	"wide":             "facet.wide",
+	"medium":           "facet.medium",
+	"close_up":         "facet.close_up",
+	"extreme_close_up": "facet.extreme_close_up",
 	// audio_type
-	"silence":          "静音",
-	"ambient":          "环境声",
-	"speech":           "说话",
-	"music":            "音乐",
-	"singing":          "唱歌",
-	"speech_and_music": "人声与音乐",
-	"noise":            "噪声",
+	"silence":          "facet.silence",
+	"ambient":          "facet.ambient",
+	"speech":           "facet.speech",
+	"music":            "facet.music",
+	"singing":          "facet.singing",
+	"speech_and_music": "facet.speech_and_music",
+	"noise":            "facet.noise",
 	// quality
-	"excellent": "优秀",
-	"usable":    "可用",
-	"limited":   "受限",
+	"excellent": "facet.excellent",
+	"usable":    "facet.usable",
+	"limited":   "facet.limited",
 	// usable_as
-	"hook":              "开场钩子",
-	"opening":           "开场",
-	"establishing":      "交代镜头",
-	"transition":        "转场",
-	"montage":           "蒙太奇",
-	"narration_support": "旁白配图",
-	"character_intro":   "人物登场",
-	"activity_detail":   "活动细节",
-	"emotional_pause":   "情绪留白",
-	"behind_the_scenes": "花絮",
-	"ending":            "结尾",
+	"hook":              "facet.hook",
+	"opening":           "facet.opening",
+	"establishing":      "facet.establishing",
+	"transition":        "facet.transition",
+	"montage":           "facet.montage",
+	"narration_support": "facet.narration_support",
+	"character_intro":   "facet.character_intro",
+	"activity_detail":   "facet.activity_detail",
+	"emotional_pause":   "facet.emotional_pause",
+	"behind_the_scenes": "facet.behind_the_scenes",
+	"ending":            "facet.ending",
 	// shared by several fields
-	"mixed":           "混合",
-	"unknown":         "未知",
-	"not_recommended": "不推荐",
+	"mixed":           "facet.mixed",
+	"unknown":         "facet.unknown",
+	"not_recommended": "facet.not_recommended",
 }
 
 // facetFields drives the semantic filter section markup. The values list is
 // read straight from the normalize vocabularies, so a vocabulary addition
-// grows the control for free; nothing here is hardcoded in the JS.
+// grows the control for free; nothing here is hardcoded in the JS. The
+// name/empty fields are catalog keys resolved as [[i18n:...]] markers.
 var facetFields = []struct {
-	id, name, empty string
-	values          []string
-	multiple        bool
+	id, nameKey, emptyKey string
+	values                []string
+	multiple              bool
 }{
-	{id: "asset-type-select", name: "素材类型", empty: "全部类型", values: normalize.AssetTypeValues},
+	{id: "asset-type-select", nameKey: "library.facet.assetType", emptyKey: "library.facet.assetTypeEmpty", values: normalize.AssetTypeValues},
 	// The other five filters resolve through the shot's asset (they exist only
 	// in asset_analysis), so their labels say so: a close-up shot inside an
 	// asset that is mostly wide is legitimately matched by 景别(素材级)=wide,
 	// and nobody should read that as the shot itself being wide.
-	{id: "shot-size-select", name: "景别(素材级)", empty: "全部景别", values: normalize.ShotSizeValues, multiple: true},
-	{id: "camera-motion-select", name: "运镜(素材级)", empty: "全部运镜", values: normalize.MotionValues, multiple: true},
-	{id: "audio-type-select", name: "音频(素材级)", empty: "全部音频", values: normalize.AudioTypeValues, multiple: true},
-	{id: "quality-select", name: "质量(素材级)", empty: "全部质量", values: normalize.QualityValues, multiple: true},
-	{id: "usable-as-select", name: "用途(素材级)", empty: "全部用途", values: normalize.UsableAsValues, multiple: true},
+	{id: "shot-size-select", nameKey: "library.facet.shotSize", emptyKey: "library.facet.shotSizeEmpty", values: normalize.ShotSizeValues, multiple: true},
+	{id: "camera-motion-select", nameKey: "library.facet.cameraMotion", emptyKey: "library.facet.cameraMotionEmpty", values: normalize.MotionValues, multiple: true},
+	{id: "audio-type-select", nameKey: "library.facet.audioType", emptyKey: "library.facet.audioTypeEmpty", values: normalize.AudioTypeValues, multiple: true},
+	{id: "quality-select", nameKey: "library.facet.quality", emptyKey: "library.facet.qualityEmpty", values: normalize.QualityValues, multiple: true},
+	{id: "usable-as-select", nameKey: "library.facet.usableAs", emptyKey: "library.facet.usableAsEmpty", values: normalize.UsableAsValues, multiple: true},
 }
 
 // pagePatch is one exact-match string replacement over the legacy constant.
@@ -111,9 +114,11 @@ type pagePatch struct {
 // libraryPagePatches assemble the v0.15 library page on top of
 // legacyLibraryIndexHTML. Order is load-bearing: every later anchor sits
 // inside text an earlier patch inserted. The leading copy patch and the larger
-// style/script patches all use the same exactly-once rule.
+// style/script patches all use the same exactly-once rule. Product copy is
+// referenced as [[i18n:*]] markers (resolved by serveLocalizedPage) or tdT()
+// calls, never as raw Chinese.
 var libraryPagePatches = []pagePatch{
-	{anchor: "从缩略图、素材语义到每个时间段的镜头内容，一眼看清你的素材里有什么可以用。", replacement: "把被忘掉的镜头找回来：从缩略图、内容到准确时间段，找回还值得用的素材。"},
+	{anchor: "[[i18n:library.subtitle]]", replacement: "[[i18n:library.subtitleLead]]"},
 	{anchor: `.library{display:grid;gap:13px}`,
 		replacement: `html,body{overflow-x:clip}.filters,.semantic-filters{display:grid;grid-template-columns:repeat(6,minmax(0,1fr)) auto;gap:9px;margin:0 0 12px;padding:13px;background:var(--surface);border:1px solid var(--rule);border-radius:14px}.semantic-filters{grid-template-columns:repeat(8,minmax(110px,1fr))}.filters label,.semantic-filters label{display:block;color:var(--text-muted);font-size:10px;font-weight:800;letter-spacing:.06em;margin-bottom:5px}.filters input,.filters select,.semantic-filters input,.semantic-filters select{width:100%;padding:8px 9px}#collection-filter{max-width:180px}.filters button{align-self:end}.filters .collections-hint{margin:6px 0 0;font-size:11px;line-height:1.5}.filters .collections-hint.warn{color:var(--ev-contradicted)}.processing-summary{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 18px}.status-pill{border:1px solid var(--rule);border-radius:999px;padding:5px 9px;color:var(--text-muted);font-size:12px}.status-pill b{color:var(--text)}.group-title{margin:20px 2px 8px;color:var(--text-muted);font-size:13px;font-weight:850;letter-spacing:.02em}.search-bar{margin:0 0 12px}.search-bar input{width:100%;padding:11px 13px;border:1px solid var(--rule-strong);border-radius:12px;background:var(--surface);color:var(--text);font:inherit}.advanced-filters{margin:0 0 12px;border:1px solid var(--rule);border-radius:14px;background:var(--surface)}.advanced-filters summary{cursor:pointer;padding:11px 13px;color:var(--text-muted);font-weight:800;font-size:13px;user-select:none}.advanced-filters .advanced-grid{grid-template-columns:repeat(8,minmax(0,1fr));gap:9px;padding:0 13px 13px}.advanced-filters:not([open]) .advanced-grid{display:none}.advanced-filters[open] .advanced-grid{display:grid}.advanced-filters label{display:block;color:var(--text-muted);font-size:10px;font-weight:800;letter-spacing:.06em;margin-bottom:5px}.advanced-filters input,.advanced-filters select{width:100%;padding:8px 9px}.shot-results-head{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:0 0 14px}.link-button{background:none;border:0;color:var(--brand);font-weight:800;cursor:pointer;padding:0}.shot-result{display:grid;grid-template-columns:200px 1fr;gap:14px;align-items:start;padding:13px;background:var(--surface);border:1px solid var(--rule);border-radius:16px;cursor:pointer;margin:0 0 11px;transition:border-color .15s}.shot-result:hover{border-color:var(--rule-strong)}.shot-result .thumb{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:10px;background:var(--inset);min-height:0}.shot-result-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}.shot-result-file{color:var(--text);font-size:14px}.shot-result-time{color:var(--text-muted);font-size:13px;font-weight:700}.shot-result-desc{margin:8px 0;color:var(--text-muted);line-height:1.55}.shot-evidence{margin:6px 0 8px;padding:8px 10px;background:var(--inset);border:1px solid var(--rule);border-radius:10px;color:var(--text-muted);font-size:12px;line-height:1.7}.shot-evidence .ev-confirmed{color:var(--ev-confirmed)}.shot-evidence .ev-possible{color:var(--ev-draft)}.shot-evidence .ev-contradicted{color:var(--ev-contradicted)}.shot-evidence .ev-unknown{color:var(--ev-unknown)}.shot-drawer{position:fixed;inset:0;z-index:40;display:none;pointer-events:none}.shot-drawer.open{display:block;pointer-events:auto}.shot-drawer-backdrop{position:absolute;inset:0;background:rgba(6,12,24,.87)}.shot-drawer-panel{position:absolute;top:0;right:0;bottom:0;width:min(520px,94vw);background:var(--surface);border-left:1px solid var(--rule);display:flex;flex-direction:column}.shot-drawer.open .shot-drawer-panel{animation:shotDrawerIn .18s ease}@keyframes shotDrawerIn{from{transform:translateX(100%)}to{transform:translateX(0)}}.shot-drawer-head{display:flex;justify-content:flex-end;padding:12px 14px;border-bottom:1px solid var(--rule)}.shot-drawer-close{background:var(--rule);color:var(--text);border:0;border-radius:9px;width:34px;height:34px;font-size:17px;cursor:pointer}.shot-drawer-body{overflow:auto;padding:16px}.shot-drawer-body video{width:100%;border-radius:12px;background:var(--inset)}.shot-drawer-title{font-size:16px;font-weight:850;color:var(--text);margin:14px 0 4px}.shot-drawer-time{color:var(--brand);font-weight:800;font-size:13px}.shot-drawer-desc{color:var(--text-muted);line-height:1.6;margin:10px 0}.shot-drawer-fields{margin-top:10px;display:grid;gap:4px;color:var(--text-muted);font-size:12px}.root-health{display:grid;gap:8px;margin:0 0 18px}.root-health-warn{display:flex;align-items:center;gap:9px;padding:10px 13px;background:var(--ev-contradicted-wash);border:1px solid var(--ev-contradicted);border-radius:12px;color:var(--ev-contradicted);font-size:13px;font-weight:700}.library{display:grid;gap:13px}`},
 	// Selection affordances (加入收藏, drawer actions, test drive, saved-view
@@ -126,9 +131,9 @@ var libraryPagePatches = []pagePatch{
 	{anchor: `<section id="library" class="library"`,
 		replacement: filterPanelsHTML() + shotDrawerHTML() + `<section id="library" class="library"`},
 	{anchor: `async function load(ids)`,
-		replacement: `async function apiErrMsg(r){try{const d=await r.json();if(d&&d.error&&d.error.message)return d.error.action?(d.error.message+'（'+d.error.action+'）'):d.error.message}catch(_){}return (await r.text()).trim()}
-let activeCollection='';function filterQuery(){const values={date_from:document.getElementById('date-from').value,date_to:document.getElementById('date-to').value,region:document.getElementById('region-filter').value.trim(),camera:document.getElementById('camera-filter').value,session:document.getElementById('session-filter').value,status:document.getElementById('status-filter').value};const query=new URLSearchParams();Object.entries(values).forEach(([key,value])=>{if(value)query.set(key,value)});[['asset-type-select','asset_type']].forEach(([id,param])=>{const value=document.getElementById(id).value;if(value)query.set(param,value)});[['shot-size-select','asset_shot_size'],['camera-motion-select','asset_camera_motion'],['audio-type-select','asset_audio_type'],['quality-select','asset_quality'],['usable-as-select','asset_usable_as']].forEach(([id,param])=>{const sel=document.getElementById(id);const vals=Array.from(sel.selectedOptions).map(o=>o.value).filter(Boolean);if(vals.length)query.set(param,vals.join(','))});[['min-duration','min_duration_ms'],['max-duration','max_duration_ms']].forEach(([id,param])=>{const raw=document.getElementById(id).value.trim();if(raw==='')return;const sec=Number(raw);if(!Number.isFinite(sec)||sec<0)return;query.set(param,String(Math.round(sec*1000)))});return query.toString()?'&'+query.toString():''}function filterFacets(){const facets={};const pick=(id,key)=>{const sel=document.getElementById(id);const vals=Array.from(sel.selectedOptions).map(o=>o.value).filter(Boolean);if(vals.length)facets[key]=vals};pick('asset-type-select','asset_types');pick('shot-size-select','shot_sizes');pick('camera-motion-select','camera_motions');pick('audio-type-select','audio_types');pick('quality-select','qualities');pick('usable-as-select','usable_as');[['min-duration','min_duration_ms'],['max-duration','max_duration_ms']].forEach(([id,key])=>{const raw=document.getElementById(id).value.trim();if(raw==='')return;const sec=Number(raw);if(!Number.isFinite(sec)||sec<0)return;facets[key]=Math.round(sec*1000)});return facets}function clearFilters(){activeCollection='';['date-from','date-to','region-filter','camera-filter'].forEach(id=>document.getElementById(id).value='');document.getElementById('session-filter').value='';document.getElementById('status-filter').value='';document.getElementById('collection-filter').value='';document.getElementById('asset-type-select').value='';['shot-size-select','camera-motion-select','audio-type-select','quality-select','usable-as-select'].forEach(id=>document.getElementById(id).selectedIndex=-1);document.getElementById('min-duration').value='';document.getElementById('max-duration').value='';load()}function groupKey(x){const date=x.captured_at?String(x.captured_at).slice(0,10):'日期未知';return [date,x.region_label||'地区未知',x.camera_model||'相机未知',x.session_id||'未归类场次'].join(' · ')}async function loadSessions(){const select=document.getElementById('session-filter');try{const response=await fetch('/api/v1/shoot-sessions?limit=500');if(!response.ok)throw Error('sessions unavailable');const sessions=await response.json();(Array.isArray(sessions)?sessions:[]).forEach(s=>{const option=document.createElement('option');option.value=s.id;const date=s.starts_at?String(s.starts_at).slice(0,10):'日期未知';const details=[date,s.camera_label,s.region_label].filter(Boolean).join(' · ');option.textContent=(s.title||s.id)+(details?' · '+details:'');select.appendChild(option)})}catch(_){select.innerHTML='<option value="">场次列表暂不可用</option>'}}function collectionsHint(text,warn){const el=document.getElementById('collections-hint');if(!el)return;el.hidden=!text;el.textContent=text||'';el.classList.toggle('warn',!!warn)}function hasMeaningfulFilter(f){f=f||{};return !!(f.captured_from||f.captured_to||f.region_label||f.camera_model||f.session_id||f.status||(f.asset_types&&f.asset_types.length)||(f.shot_sizes&&f.shot_sizes.length)||(f.camera_motions&&f.camera_motions.length)||(f.audio_types&&f.audio_types.length)||(f.qualities&&f.qualities.length)||(f.usable_as&&f.usable_as.length)||f.min_duration_ms||f.max_duration_ms)}async function loadCollections(){const select=document.getElementById('collection-filter');try{const r=await fetch('/api/v1/collections');if(!r.ok)throw Error('HTTP '+r.status);const items=await r.json();const views=(Array.isArray(items)?items:[]).filter(c=>hasMeaningfulFilter(c&&c.filter));views.forEach(item=>{const option=document.createElement('option');option.value=item.id;option.textContent=item.name;select.appendChild(option)});if(activeCollection&&select.querySelector('option[value=\"'+activeCollection+'\"]'))select.value=activeCollection;collectionsHint(views.length?'':'还没有收藏的筛选。在搜索结果页可以把筛选保存为收藏的筛选。',false)}catch(_){collectionsHint('无法加载收藏的筛选，请稍后再试。',true)}}async function loadSummary(){try{const data=await fetch('/api/v1/library/processing-summary?limit=300'+filterQuery()).then(r=>r.ok?r.json():null);if(!data)return;const labels={ready:'可用',processing:'处理中',queued:'等待中',failed:'失败',discovered:'未处理',missing:'原始素材缺失'};document.getElementById('processing-summary').innerHTML=Object.entries(labels).map(([key,label])=>'<span class="status-pill">'+label+' <b>'+esc((data.by_status||{})[key]||0)+'</b></span>').join('')}catch(_){}}function adminToken(){const el=document.getElementById('admin-token');return el?el.value.trim():''}function authHeaders(base){const headers=new Headers(base||{});const token=adminToken();if(token)headers.set('Authorization','Bearer '+token);return headers}function fmtHealthTime(v){if(!v)return'—';const t=new Date(v);return isNaN(t.getTime())?esc(v):t.toLocaleString()}// Root health rides the same load() flow as the processing summary: /api/v1/roots/health is admin-only, so without a token this fetch 401s and the strip stays empty rather than nagging. When a root is unavailable the reconciliation gate is paused server-side; this line is the library page's answer to "why is nothing marked missing".
-async function loadRootHealth(){const el=document.getElementById('root-health');if(!el)return;try{const list=await fetch('/api/v1/roots/health',{headers:authHeaders()}).then(r=>r.ok?r.json():null);if(!list)return;const down=list.filter(h=>h.state==='unavailable');el.innerHTML=down.length?down.map(h=>'<div class="root-health-warn">⚠ '+esc(h.path)+' 离线 · 上次正常 '+esc(fmtHealthTime(h.last_healthy_at))+' · 暂停对账</div>').join(''):''}catch(_){}}async function loadCollection(id){activeCollection=id||'';load()}function loadLibrary(){loadSessions();loadCollections();load()}async function load(ids)`},
+		replacement: `
+let activeCollection='';function filterQuery(){const values={date_from:document.getElementById('date-from').value,date_to:document.getElementById('date-to').value,region:document.getElementById('region-filter').value.trim(),camera:document.getElementById('camera-filter').value,session:document.getElementById('session-filter').value,status:document.getElementById('status-filter').value};const query=new URLSearchParams();Object.entries(values).forEach(([key,value])=>{if(value)query.set(key,value)});[['asset-type-select','asset_type']].forEach(([id,param])=>{const value=document.getElementById(id).value;if(value)query.set(param,value)});[['shot-size-select','asset_shot_size'],['camera-motion-select','asset_camera_motion'],['audio-type-select','asset_audio_type'],['quality-select','asset_quality'],['usable-as-select','asset_usable_as']].forEach(([id,param])=>{const sel=document.getElementById(id);const vals=Array.from(sel.selectedOptions).map(o=>o.value).filter(Boolean);if(vals.length)query.set(param,vals.join(','))});[['min-duration','min_duration_ms'],['max-duration','max_duration_ms']].forEach(([id,param])=>{const raw=document.getElementById(id).value.trim();if(raw==='')return;const sec=Number(raw);if(!Number.isFinite(sec)||sec<0)return;query.set(param,String(Math.round(sec*1000)))});return query.toString()?'&'+query.toString():''}function filterFacets(){const facets={};const pick=(id,key)=>{const sel=document.getElementById(id);const vals=Array.from(sel.selectedOptions).map(o=>o.value).filter(Boolean);if(vals.length)facets[key]=vals};pick('asset-type-select','asset_types');pick('shot-size-select','shot_sizes');pick('camera-motion-select','camera_motions');pick('audio-type-select','audio_types');pick('quality-select','qualities');pick('usable-as-select','usable_as');[['min-duration','min_duration_ms'],['max-duration','max_duration_ms']].forEach(([id,key])=>{const raw=document.getElementById(id).value.trim();if(raw==='')return;const sec=Number(raw);if(!Number.isFinite(sec)||sec<0)return;facets[key]=Math.round(sec*1000)});return facets}function clearFilters(){activeCollection='';['date-from','date-to','region-filter','camera-filter'].forEach(id=>document.getElementById(id).value='');document.getElementById('session-filter').value='';document.getElementById('status-filter').value='';document.getElementById('collection-filter').value='';document.getElementById('asset-type-select').value='';['shot-size-select','camera-motion-select','audio-type-select','quality-select','usable-as-select'].forEach(id=>document.getElementById(id).selectedIndex=-1);document.getElementById('min-duration').value='';document.getElementById('max-duration').value='';load()}function groupKey(x){const date=x.captured_at?String(x.captured_at).slice(0,10):tdT('library.groupDateUnknown');return [date,x.region_label||tdT('library.groupRegionUnknown'),x.camera_model||tdT('library.groupCameraUnknown'),x.session_id||tdT('library.groupSessionUnknown')].join(' · ')}async function loadSessions(){const select=document.getElementById('session-filter');try{const response=await fetch('/api/v1/shoot-sessions?limit=500');if(!response.ok)throw Error('sessions unavailable');const sessions=await response.json();(Array.isArray(sessions)?sessions:[]).forEach(s=>{const option=document.createElement('option');option.value=s.id;const date=s.starts_at?String(s.starts_at).slice(0,10):tdT('library.groupDateUnknown');const details=[date,s.camera_label,s.region_label].filter(Boolean).join(' · ');option.textContent=(s.title||s.id)+(details?' · '+details:'');select.appendChild(option)})}catch(_){select.innerHTML='<option value="">'+tdT('library.sessionsUnavailable')+'</option>'}}function collectionsHint(text,warn){const el=document.getElementById('collections-hint');if(!el)return;el.hidden=!text;el.textContent=text||'';el.classList.toggle('warn',!!warn)}function hasMeaningfulFilter(f){f=f||{};return !!(f.captured_from||f.captured_to||f.region_label||f.camera_model||f.session_id||f.status||(f.asset_types&&f.asset_types.length)||(f.shot_sizes&&f.shot_sizes.length)||(f.camera_motions&&f.camera_motions.length)||(f.audio_types&&f.audio_types.length)||(f.qualities&&f.qualities.length)||(f.usable_as&&f.usable_as.length)||f.min_duration_ms||f.max_duration_ms)}async function loadCollections(){const select=document.getElementById('collection-filter');try{const r=await fetch('/api/v1/collections');if(!r.ok)throw Error('HTTP '+r.status);const items=await r.json();const views=(Array.isArray(items)?items:[]).filter(c=>hasMeaningfulFilter(c&&c.filter));views.forEach(item=>{const option=document.createElement('option');option.value=item.id;option.textContent=item.name;select.appendChild(option)});if(activeCollection&&select.querySelector('option[value=\"'+activeCollection+'\"]'))select.value=activeCollection;collectionsHint(views.length?'':tdT('library.filter.collectionsHint'),false)}catch(_){collectionsHint(tdT('library.filter.collectionsHintWarn'),true)}}async function loadSummary(){try{const data=await fetch('/api/v1/library/processing-summary?limit=300'+filterQuery()).then(r=>r.ok?r.json():null);if(!data)return;const labels={ready:tdT('status.ready'),processing:tdT('status.processing'),queued:tdT('status.queued'),failed:tdT('status.failed'),discovered:tdT('status.discovered'),missing:tdT('status.missing')};document.getElementById('processing-summary').innerHTML=Object.entries(labels).map(([key,label])=>'<span class="status-pill">'+label+' <b>'+esc((data.by_status||{})[key]||0)+'</b></span>').join('')}catch(_){}}function adminToken(){const el=document.getElementById('admin-token');return el?el.value.trim():''}function authHeaders(base){const headers=new Headers(base||{});const token=adminToken();if(token)headers.set('Authorization','Bearer '+token);return headers}function fmtHealthTime(v){if(!v)return'—';const t=new Date(v);return isNaN(t.getTime())?esc(v):tdFormatDateTime(t)}// Root health rides the same load() flow as the processing summary: /api/v1/roots/health is admin-only, so without a token this fetch 401s and the strip stays empty rather than nagging. When a root is unavailable the reconciliation gate is paused server-side; this line is the library page's answer to "why is nothing marked missing".
+async function loadRootHealth(){const el=document.getElementById('root-health');if(!el)return;try{const list=await fetch('/api/v1/roots/health',{headers:authHeaders()}).then(r=>r.ok?r.json():null);if(!list)return;const down=list.filter(h=>h.state==='unavailable');el.innerHTML=down.length?down.map(h=>'<div class="root-health-warn">'+esc(tdT('library.rootHealthWarn',{path:h.path,time:fmtHealthTime(h.last_healthy_at)}))+'</div>').join(''):''}catch(_){}}async function loadCollection(id){activeCollection=id||'';load()}function loadLibrary(){loadSessions();loadCollections();load()}async function load(ids)`},
 	// The test-drive section and the shot drawer need module-level state: the
 	// ids of the last-loaded asset cards (so 开始测试分析 can pick three
 	// samples without a round trip), the shot currently open in the drawer,
@@ -152,7 +157,7 @@ async function loadRootHealth(){const el=document.getElementById('root-health');
 	// prevent — so this throws with the server's message instead, same as
 	// the existing catch already renders.
 	{anchor: `fetch('/api/v1/assets?limit=300').then(r=>r.ok?r.json():[])`,
-		replacement: `(ids&&!ids.length?Promise.resolve([]):fetch(ids?'/api/v1/assets?ids='+ids.map(encodeURIComponent).join(','):(activeCollection?'/api/v1/collections/'+encodeURIComponent(activeCollection)+'/assets?limit=300':'/api/v1/assets?limit=300'+filterQuery())).then(async r=>{if(!r.ok)throw Error(await apiErrMsg(r));return r.json()}))`},
+		replacement: `(ids&&!ids.length?Promise.resolve([]):fetch(ids?'/api/v1/assets?ids='+ids.map(encodeURIComponent).join(','):(activeCollection?'/api/v1/collections/'+encodeURIComponent(activeCollection)+'/assets?limit=300':'/api/v1/assets?limit=300'+filterQuery())).then(async r=>{if(!r.ok)throw Error(await tdApiErrorMessage(r));return r.json()}))`},
 	// The fetch above already returns exactly the requested ids (or [] before
 	// it is even called), so re-filtering the result by ids here would only
 	// be the client-side intersection this task removes, now redundant
@@ -182,8 +187,8 @@ async function loadRootHealth(){const el=document.getElementById('root-health');
 	// The v2 structured endpoint carries the same facets in the body and
 	// returns per-constraint evidence, which renderShotResults shows as the
 	// "为什么命中" line. The GET hybrid endpoint stays for MCP and agents.
-	{anchor: `async function search(){const q=document.getElementById('q').value.trim();if(!q)return load();try{const ids=await fetch('/api/v1/search?q='+encodeURIComponent(q)).then(r=>r.ok?r.json():[]);load(Array.isArray(ids)?ids:[])}catch(e){library.innerHTML='<div class="empty error">搜索失败：'+esc(e.message)+'</div>'}}`,
-		replacement: `async function search(ev){if(ev&&ev.preventDefault)ev.preventDefault();const q=document.getElementById('q').value.trim();if(!q)return load();try{const data=await fetch('/api/v1/search/shots',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q,mode:'auto',limit:40,diversity:0.2,include_evidence:true,include_context:false,facets:filterFacets()})}).then(async r=>{if(!r.ok)throw Error(await apiErrMsg(r));return r.json()});renderShotResults(data&&data.results?data.results:[])}catch(e){library.innerHTML='<div class="empty error">搜索失败：'+esc(e.message)+'</div>'}}
+	{anchor: `async function search(){const q=document.getElementById('q').value.trim();if(!q)return load();try{const ids=await fetch('/api/v1/search?q='+encodeURIComponent(q)).then(r=>r.ok?r.json():[]);load(Array.isArray(ids)?ids:[])}catch(e){library.innerHTML='<div class="empty error">'+esc(tdT('library.searchFailed'))+esc(e.message)+'</div>'}}`,
+		replacement: `async function search(ev){if(ev&&ev.preventDefault)ev.preventDefault();const q=document.getElementById('q').value.trim();if(!q)return load();try{const data=await fetch('/api/v1/search/shots',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q,mode:'auto',limit:40,diversity:0.2,include_evidence:true,include_context:false,facets:filterFacets()})}).then(async r=>{if(!r.ok)throw Error(await tdApiErrorMessage(r));return r.json()});renderShotResults(data&&data.results?data.results:[])}catch(e){library.innerHTML='<div class="empty error">'+tdT('library.searchFailed')+esc(e.message)+'</div>'}}
 function clearSearch(){const q=document.getElementById('q');if(q)q.value='';load()}`},
 	// The legacy script binds Enter on #q itself; the search bar now carries
 	// the onkeydown attribute, so the duplicate listener would fire search()
@@ -198,7 +203,7 @@ function clearSearch(){const q=document.getElementById('q');if(q)q.value='';load
 	// opens with (no second round trip) and an aria-label for keyboard and
 	// screen-reader users: description + exact time range.
 	{anchor: `<div class="tickrule-span is-possible" style="left:'+left.toFixed(3)+'%;width:'+width.toFixed(3)+'%" title="'+esc(title)+'">`,
-		replacement: `<button type="button" class="tickrule-span is-possible" style="left:'+left.toFixed(3)+'%;width:'+width.toFixed(3)+'%" aria-label="'+esc(description)+'，'+fmt(start)+' 到 '+fmt(end)+'" title="'+esc(title)+'">`},
+		replacement: `<button type="button" class="tickrule-span is-possible" style="left:'+left.toFixed(3)+'%;width:'+width.toFixed(3)+'%" aria-label="'+esc(tdT('library.ariaTimeRange',{desc:description,start:fmt(start),end:fmt(end)}))+'" title="'+esc(title)+'">`},
 	// Timeline blocks become clickable shot evidence: each carries its own
 	// row (the same payload the drawer opens with) so the drawer never needs
 	// a second round trip.
@@ -208,8 +213,8 @@ function clearSearch(){const q=document.getElementById('q');if(q)q.value='';load
 	// test-drive coaching the search-empty state offers (below) goes here so
 	// the first-run library coaches from both modes. The status and chips
 	// boxes are class-based because every such card renders one.
-	{anchor: `if(!shots.length)return '<div class="timeline-empty">尚未生成镜头理解；完成分析后会显示可用时间段。</div>';`,
-		replacement: `if(!shots.length)return '<div class="timeline-empty"><span>还没看懂镜头；分析完会显示可用的时间段。</span><button class="shot-add" onclick="testDriveStart(this)">先试分析几个</button><div class="test-drive-status"></div><div class="test-drive-chips"></div></div>';`},
+	{anchor: `if(!shots.length)return '<div class="timeline-empty">'+tdT('library.timelineEmpty')+'</div>';`,
+		replacement: `if(!shots.length)return '<div class="timeline-empty"><span>'+esc(tdT('library.timelineEmptyTitle'))+'</span><button class="shot-add" onclick="testDriveStart(this)">'+esc(tdT('library.timelineEmptyTry'))+'</button><div class="test-drive-status"></div><div class="test-drive-chips"></div></div>';`},
 	// The drawer script lives inside the page's one <script> block (function
 	// declarations hoist, so search() can call renderShotResults and the
 	// blocks' delegated click handler is wired after load()).
@@ -223,9 +228,9 @@ function clearSearch(){const q=document.getElementById('q');if(q)q.value='';load
 // six vocabulary controls keep the 素材级 suffix because those fields exist
 // only in asset_analysis, and nobody should read them as shot truth.
 func filtersRowHTML() string {
-	return `<section class="filters" aria-label="素材筛选"><div><label for="date-from">开始日期</label><input id="date-from" type="date" onchange="load()"></div><div><label for="date-to">结束日期</label><input id="date-to" type="date" onchange="load()"></div>` +
-		facetSelectHTML("asset-type-select", "素材类型", "全部类型", normalize.AssetTypeValues, false) +
-		`<div><label for="camera-filter">相机</label><input id="camera-filter" placeholder="例如 Sony FX3" onchange="load()"></div><div><label for="session-filter">拍摄场次</label><select id="session-filter" onchange="load()"><option value="">全部场次</option></select></div><div><label for="status-filter">处理状态</label><select id="status-filter" onchange="load()"><option value="">全部状态</option><option value="ready">可用</option><option value="processing">处理中</option><option value="queued">等待中</option><option value="failed">失败</option><option value="discovered">未处理</option><option value="missing">原始素材缺失</option></select></div><div><label for="collection-filter">收藏的筛选</label><select id="collection-filter" onchange="loadCollection(this.value)"><option value="">不使用</option></select><p class="muted collections-hint" id="collections-hint" hidden>还没有存过筛选。在搜索结果页可以把筛选保存为视图。</p><button class="shot-add" onclick="saveCurrentView()" title="把当前筛选条件保存为视图，之后可从下拉框随时恢复">保存当前筛选</button></div><button onclick="clearFilters()">清除筛选</button></section>`
+	return `<section class="filters" aria-label="[[i18n:library.filter.aria]]"><div><label for="date-from">[[i18n:library.filter.dateFrom]]</label><input id="date-from" type="date" onchange="load()"></div><div><label for="date-to">[[i18n:library.filter.dateTo]]</label><input id="date-to" type="date" onchange="load()"></div>` +
+		facetSelectHTML("asset-type-select", "library.facet.assetType", "library.facet.assetTypeEmpty", normalize.AssetTypeValues, false) +
+		`<div><label for="camera-filter">[[i18n:library.filter.camera]]</label><input id="camera-filter" placeholder="[[i18n:library.filter.cameraPlaceholder]]" onchange="load()"></div><div><label for="session-filter">[[i18n:library.filter.session]]</label><select id="session-filter" onchange="load()"><option value="">[[i18n:library.filter.sessionEmpty]]</option></select></div><div><label for="status-filter">[[i18n:library.filter.status]]</label><select id="status-filter" onchange="load()"><option value="">[[i18n:library.filter.statusEmpty]]</option><option value="ready">[[i18n:status.ready]]</option><option value="processing">[[i18n:status.processing]]</option><option value="queued">[[i18n:status.queued]]</option><option value="failed">[[i18n:status.failed]]</option><option value="discovered">[[i18n:status.discovered]]</option><option value="missing">[[i18n:status.missing]]</option></select></div><div><label for="collection-filter">[[i18n:library.filter.collection]]</label><select id="collection-filter" onchange="loadCollection(this.value)"><option value="">[[i18n:library.filter.collectionNone]]</option></select><p class="muted collections-hint" id="collections-hint" hidden>[[i18n:library.filter.collectionsHint]]</p><button class="shot-add" onclick="saveCurrentView()" title="[[i18n:library.filter.saveCurrentTitle]]">[[i18n:library.filter.saveCurrent]]</button></div><button onclick="clearFilters()">[[i18n:library.filter.clear]]</button></section>`
 }
 
 // searchBarHTML is the shot-first search entry: it lives above the filters
@@ -234,7 +239,7 @@ func filtersRowHTML() string {
 // real form so Enter submits and the button gives keyboard/screen-reader
 // users an explicit activation point — the single #q on the page.
 func searchBarHTML() string {
-	return `<form class="searchbar" role="search" onsubmit="search(event)"><input id="q" name="q" placeholder="搜镜头内容、说了什么或标签" aria-label="镜头搜索"><button type="submit" class="search-submit">搜索</button><button type="button" class="search-clear" onclick="clearSearch()">清除</button></form>`
+	return `<form class="searchbar" role="search" onsubmit="search(event)"><input id="q" name="q" placeholder="[[i18n:library.searchPlaceholder]]" aria-label="[[i18n:library.searchAria]]"><button type="submit" class="search-submit">[[i18n:common.search]]</button><button type="button" class="search-clear" onclick="clearSearch()">[[i18n:common.clear]]</button></form>`
 }
 
 // filterPanelsHTML is the replacement for the <section id="library"> anchor:
@@ -242,7 +247,7 @@ func searchBarHTML() string {
 // options are generated from the normalize vocabularies, never typed into
 // the JS.
 func filterPanelsHTML() string {
-	return searchBarHTML() + filtersRowHTML() + semanticFiltersSection() + `<div id="processing-summary" class="processing-summary" aria-label="处理状态汇总"></div>` + `<div id="root-health" class="root-health" aria-label="素材目录状态"></div>`
+	return searchBarHTML() + filtersRowHTML() + semanticFiltersSection() + `<div id="processing-summary" class="processing-summary" aria-label="[[i18n:library.processingSummaryAria]]"></div>` + `<div id="root-health" class="root-health" aria-label="[[i18n:library.rootsStatusAria]]"></div>`
 }
 
 // semanticFiltersSection is the 高级筛选 details block: region plus the
@@ -250,31 +255,31 @@ func filterPanelsHTML() string {
 // bounds. Collapsed by default so the frequent conditions stay prominent.
 func semanticFiltersSection() string {
 	var b strings.Builder
-	b.WriteString(`<details class="advanced-filters" aria-label="高级筛选"><summary>高级筛选</summary><div class="advanced-grid">`)
-	b.WriteString(`<div><label for="region-filter">地区</label><input id="region-filter" placeholder="例如 中国 · 深圳 · 南山" onchange="load()"></div>`)
+	b.WriteString(`<details class="advanced-filters" aria-label="[[i18n:library.filter.advanced]]"><summary>[[i18n:library.filter.advanced]]</summary><div class="advanced-grid">`)
+	b.WriteString(`<div><label for="region-filter">[[i18n:library.filter.region]]</label><input id="region-filter" placeholder="[[i18n:library.filter.regionPlaceholder]]" onchange="load()"></div>`)
 	for _, f := range facetFields[1:] {
-		b.WriteString(facetSelectHTML(f.id, f.name, f.empty, f.values, f.multiple))
+		b.WriteString(facetSelectHTML(f.id, f.nameKey, f.emptyKey, f.values, f.multiple))
 	}
 	// Duration is entered in seconds, the unit an editor thinks in, and the JS
 	// converts to milliseconds before sending; empty means unset.
-	b.WriteString(`<div><label for="min-duration">最短时长（秒）</label><input id="min-duration" type="number" min="0" step="any" inputmode="numeric" placeholder="不限" onchange="load()"></div>`)
-	b.WriteString(`<div><label for="max-duration">最长时长（秒）</label><input id="max-duration" type="number" min="0" step="any" inputmode="numeric" placeholder="不限" onchange="load()"></div>`)
+	b.WriteString(`<div><label for="min-duration">[[i18n:library.filter.minDuration]]</label><input id="min-duration" type="number" min="0" step="any" inputmode="numeric" placeholder="[[i18n:library.filter.unlimited]]" onchange="load()"></div>`)
+	b.WriteString(`<div><label for="max-duration">[[i18n:library.filter.maxDuration]]</label><input id="max-duration" type="number" min="0" step="any" inputmode="numeric" placeholder="[[i18n:library.filter.unlimited]]" onchange="load()"></div>`)
 	b.WriteString(`</div></details>`)
 	return b.String()
 }
 
-func facetSelectHTML(id, name, empty string, values []string, multiple bool) string {
+func facetSelectHTML(id, nameKey, emptyKey string, values []string, multiple bool) string {
 	var b strings.Builder
-	b.WriteString(`<div><label for="` + id + `">` + name + `</label><select id="` + id + `" onchange="load()"`)
+	b.WriteString(`<div><label for="` + id + `">[[i18n:` + nameKey + `]]</label><select id="` + id + `" onchange="load()"`)
 	if multiple {
 		b.WriteString(` multiple size="4"`)
 	}
 	b.WriteString(`>`)
 	if !multiple {
-		b.WriteString(`<option value="">` + empty + `</option>`)
+		b.WriteString(`<option value="">[[i18n:` + emptyKey + `]]</option>`)
 	}
 	for _, v := range values {
-		fmt.Fprintf(&b, `<option value="%s">%s</option>`, v, facetLabels[v])
+		fmt.Fprintf(&b, `<option value="%s">[[i18n:%s]]</option>`, v, facetLabels[v])
 	}
 	b.WriteString(`</select></div>`)
 	return b.String()
@@ -286,7 +291,7 @@ func facetSelectHTML(id, name, empty string, values []string, multiple bool) str
 // tags, mood) is shown beside it. It is an overlay, never a navigation, so
 // the query, filters and scroll position survive.
 func shotDrawerHTML() string {
-	return `<div class="shot-drawer" id="shot-drawer" data-shot-drawer aria-hidden="true"><div class="shot-drawer-backdrop" data-drawer-close></div><aside class="shot-drawer-panel" aria-label="镜头预览"><div class="shot-drawer-head"><button class="shot-drawer-close" data-drawer-close aria-label="关闭预览">×</button></div><div class="shot-drawer-body"><video id="shot-video" data-shot-video controls autoplay playsinline></video><div class="shot-drawer-actions"><button id="copy-timecode-btn" onclick="copyTimecode(this)">复制时间标记</button><button onclick="loadSimilarShots()">相似镜头</button><button class="shot-add" onclick="addShotToCollection(this)">加入精选</button></div><div class="shot-drawer-title" id="shot-drawer-title">—</div><div class="shot-drawer-time" id="shot-drawer-time">—</div><p class="shot-drawer-desc" id="shot-drawer-desc">—</p><div class="chips" id="shot-drawer-chips"></div><div class="shot-drawer-fields" id="shot-drawer-fields"></div><div class="shot-drawer-similar" id="shot-drawer-similar"></div></div></aside></div>`
+	return `<div class="shot-drawer" id="shot-drawer" data-shot-drawer aria-hidden="true"><div class="shot-drawer-backdrop" data-drawer-close></div><aside class="shot-drawer-panel" aria-label="[[i18n:library.drawerAria]]"><div class="shot-drawer-head"><button class="shot-drawer-close" data-drawer-close aria-label="[[i18n:library.closePreview]]">×</button></div><div class="shot-drawer-body"><video id="shot-video" data-shot-video controls autoplay playsinline></video><div class="shot-drawer-actions"><button id="copy-timecode-btn" onclick="copyTimecode(this)">[[i18n:library.copyTimecode]]</button><button onclick="loadSimilarShots()">[[i18n:library.similarShots]]</button><button class="shot-add" onclick="addShotToCollection(this)">[[i18n:library.addToSelection]]</button></div><div class="shot-drawer-title" id="shot-drawer-title">—</div><div class="shot-drawer-time" id="shot-drawer-time">—</div><p class="shot-drawer-desc" id="shot-drawer-desc">—</p><div class="chips" id="shot-drawer-chips"></div><div class="shot-drawer-fields" id="shot-drawer-fields"></div><div class="shot-drawer-similar" id="shot-drawer-similar"></div></div></aside></div>`
 }
 
 // shotDrawerScript is appended inside the page's single script block. It
@@ -294,10 +299,11 @@ func shotDrawerHTML() string {
 // renders the shot-first result list (search() calls renderShotResults).
 const shotDrawerScript = `
 function shotChips(shot){const chips=[];['tags','objects','actions','mood'].forEach(k=>{(shot[k]||[]).forEach(v=>chips.push('<span class="chip">'+esc(v)+'</span>'))});return chips.join('')}
-function shotEvidence(shot){const ev=(shot.evidence||[]).filter(e=>!e.negated);if(!ev.length)return'';const marks=ev.map(e=>{const label=esc(e.constraint);if(e.state==='confirmed')return '<span class="ev-confirmed">'+label+' ✓</span>';if(e.state==='possible')return '<span class="ev-possible">'+label+' 可能</span>';if(e.state==='contradicted')return '<span class="ev-contradicted">'+label+' ✗</span>';return '<span class="ev-unknown">'+label+' 未确认</span>'}).join(' ');return '<div class="shot-evidence">为什么找到它：'+marks+'</div>'}
-function shotResultCard(s){const score=Math.round((s.score||0)*100);return '<article class="shot-result" data-shot-result data-shot="'+encodeURIComponent(JSON.stringify(s))+'" data-asset="'+esc(s.asset_id)+'" data-filename="'+esc(s.filename||'')+'" onclick="openShotDrawer(JSON.parse(decodeURIComponent(this.dataset.shot)),this.dataset.asset,this.dataset.filename)"><img class="thumb" loading="lazy" src="/api/v1/assets/'+encodeURIComponent(s.asset_id)+'/thumbnail" alt="镜头缩略图" onerror="this.style.visibility=\'hidden\'"><div class="shot-result-main"><div class="shot-result-head"><b class="shot-result-file">'+esc(s.filename||s.asset_id)+'</b><span class="shot-result-time">'+fmt(s.start_ms)+' — '+fmt(s.end_ms)+'</span><span class="status-pill">匹配 '+score+'%</span></div><p class="shot-result-desc">'+esc(s.description||'')+'</p>'+shotEvidence(s)+'<div class="chips">'+shotChips(s)+'</div></div><div class="shot-result-foot"><button class="shot-add" data-add-shot onclick="event.stopPropagation();addShotToCollection(this)">加入收藏</button></div></article>'}
-function renderShotResults(shots){if(!shots.length){library.innerHTML='<div class="empty">没有找到匹配的镜头。换个说法，或减少筛选条件后再试。</div>'+(lastLoadedAssets&&lastLoadedAssets.length?'<div class="test-drive-box" id="test-drive-box"><div class="group-title">先试分析几个</div><p class="muted">先让系统分析当前素材，几分钟后就能用一句话搜这些镜头。</p><button class="shot-add" onclick="testDriveStart()">先试分析几个</button><div class="test-drive-status"></div><div class="test-drive-chips"></div></div>':'');return}library.innerHTML='<div class="shot-results-head"><span class="eyebrow">镜头级搜索结果</span><button class="link-button" onclick="load()">返回素材浏览</button></div>'+shots.map(shotResultCard).join('')}
-function openShotDrawer(shot,assetId,filename){currentShot=shot;const d=document.getElementById('shot-drawer');if(!d)return;document.getElementById('shot-drawer-title').textContent=filename||assetId||'—';const s=Number(shot.start_ms)||0,e=Number(shot.end_ms)||s;document.getElementById('shot-drawer-time').textContent=fmt(s)+' — '+fmt(e)+' · 时长 '+fmt(e-s);document.getElementById('shot-drawer-desc').textContent=shot.description||'（该镜头没有描述）';document.getElementById('shot-drawer-chips').innerHTML=shotChips(shot);const fields=[];if(shot.confidence!=null)fields.push('<span><b>把握度</b> '+esc(String(shot.confidence))+'</span>');document.getElementById('shot-drawer-fields').innerHTML=fields.join('');const similar=document.getElementById('shot-drawer-similar');if(similar)similar.innerHTML='';// The proxy fragment is clamped to one minute past the shot start and rounded to whole seconds: some browsers treat a huge or sub-second-precise fragment range as a request to load the whole asset and hang the drawer's playback.
+function shotEvidence(shot){const ev=(shot.evidence||[]).filter(e=>!e.negated);if(!ev.length)return'';const marks=ev.map(e=>{const label=esc(e.constraint);if(e.state==='confirmed')return '<span class="ev-confirmed">'+label+' ✓</span>';if(e.state==='possible')return '<span class="ev-possible">'+label+' '+tdT('library.possible')+'</span>';if(e.state==='contradicted')return '<span class="ev-contradicted">'+label+' ✗</span>';return '<span class="ev-unknown">'+label+' '+tdT('library.unconfirmed')+'</span>'}).join(' ');return '<div class="shot-evidence">'+tdT('library.whyHit')+' '+marks+'</div>'}
+function shotResultCard(s){const score=Math.round((s.score||0)*100);return '<article class="shot-result" data-shot-result data-shot="'+encodeURIComponent(JSON.stringify(s))+'" data-asset="'+esc(s.asset_id)+'" data-filename="'+esc(s.filename||'')+'" onclick="openShotDrawer(JSON.parse(decodeURIComponent(this.dataset.shot)),this.dataset.asset,this.dataset.filename)"><img class="thumb" loading="lazy" src="/api/v1/assets/'+encodeURIComponent(s.asset_id)+'/thumbnail" alt="'+tdT('library.shotThumbAlt')+'" onerror="this.style.visibility=\'hidden\'"><div class="shot-result-main"><div class="shot-result-head"><b class="shot-result-file">'+esc(s.filename||s.asset_id)+'</b><span class="shot-result-time">'+fmt(s.start_ms)+' — '+fmt(s.end_ms)+'</span><span class="status-pill">'+esc(tdT('library.matchPct',{pct:score}))+'</span></div><p class="shot-result-desc">'+esc(s.description||'')+'</p>'+shotEvidence(s)+'<div class="chips">'+shotChips(s)+'</div></div><div class="shot-result-foot"><button class="shot-add" data-add-shot onclick="event.stopPropagation();addShotToCollection(this)">'+tdT('library.addToCollection')+'</button></div></article>'}
+function renderShotResults(shots){if(!shots.length){library.innerHTML='<div class="empty">'+esc(tdT('library.noMatch'))+'</div>'+(lastLoadedAssets&&lastLoadedAssets.length?'<div class="test-drive-box" id="test-drive-box"><div class="group-title">'+esc(tdT('library.timelineEmptyTry'))+'</div><p class="muted">'+esc(tdT('library.testDriveIntro'))+'</p><button class="shot-add" onclick="testDriveStart()">'+esc(tdT('library.timelineEmptyTry'))+'</button><div class="test-drive-status"></div><div class="test-drive-chips"></div></div>':'');return}library.innerHTML='<div class="shot-results-head"><span class="eyebrow">'+esc(tdT('library.shotResultsEyebrow'))+'</span><button class="link-button" onclick="load()">'+esc(tdT('library.backToBrowse'))+'</button></div>'+shots.map(shotResultCard).join('')}
+function openShotDrawer(shot,assetId,filename){currentShot=shot;const d=document.getElementById('shot-drawer');if(!d)return;document.getElementById('shot-drawer-title').textContent=filename||assetId||'—';const s=Number(shot.start_ms)||0,e=Number(shot.end_ms)||s;document.getElementById('shot-drawer-time').textContent=fmt(s)+' — '+fmt(e)+' · '+tdT('library.duration',{dur:fmt(e-s)});document.getElementById('shot-drawer-desc').textContent=shot.description||tdT('library.noDescription');document.getElementById('shot-drawer-chips').innerHTML=shotChips(shot);const fields=[];if(shot.confidence!=null)fields.push('<span><b>'+tdT('library.confidence')+'</b> '+esc(String(shot.confidence))+'</span>');document.getElementById('shot-drawer-fields').innerHTML=fields.join('');const similar=document.getElementById('shot-drawer-similar');if(similar)similar.innerHTML='';// The proxy fragment is clamped to one minute past the shot start and rounded to whole seconds: some browsers treat a huge or sub-second-precise fragment range as a request to load the whole asset and hang the drawer's playback.
+
 const clampEnd=Math.min(e,s+60000);const v=document.getElementById('shot-video');v.src='/api/v1/assets/'+encodeURIComponent(assetId)+'/proxy#t='+Math.floor(s/1000)+','+Math.ceil(clampEnd/1000);d.classList.add('open');d.setAttribute('aria-hidden','false');v.play().catch(function(){})}
 function closeShotDrawer(){const d=document.getElementById('shot-drawer');if(!d)return;d.classList.remove('open');d.setAttribute('aria-hidden','true');const v=document.getElementById('shot-video');if(v){v.pause();v.removeAttribute('src')}}
 function openShotDrawerInit(){document.addEventListener('click',function(e){const block=e.target.closest('.tickrule-span');if(!block)return;const raw=block.dataset.shot;let shot={};if(raw){try{shot=JSON.parse(decodeURIComponent(raw))}catch(_){shot={}}}openShotDrawer(shot,block.dataset.asset||'',block.dataset.filename||'')});document.querySelectorAll('[data-drawer-close]').forEach(function(el){el.addEventListener('click',closeShotDrawer)});document.addEventListener('keydown',function(e){if(e.key==='Escape')closeShotDrawer()})}
@@ -306,24 +312,24 @@ openShotDrawerInit();`
 // shotSelectionScript is the selection loop: 加入收藏 (card and drawer),
 // the drawer's 复制时间码 and 相似镜头 actions, the 保存当前筛选 view
 // builder, and the test-drive coaching on both empty states. Every fetch
-// goes through apiErrMsg; the modal, drawer and empty-state elements use ids
-// that collide with nothing else in the page.
+// goes through tdApiErrorMessage; the modal, drawer and empty-state elements
+// use ids that collide with nothing else in the page.
 const shotSelectionScript = `
 function fmtTimecode(ms){ms=Math.max(0,Math.floor(Number(ms)||0));const h=Math.floor(ms/3600000),m=Math.floor(ms%3600000/60000),s=Math.floor(ms%60000/1000),mm=ms%1000;return h+':'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0')+'.'+String(mm).padStart(3,'0')}
-async function copyTimecode(btn){if(!currentShot)return;const start=Number(currentShot.start_ms)||0,end=Math.max(start,Number(currentShot.end_ms)||start);const text=start===end?fmtTimecode(start):fmtTimecode(start)+'–'+fmtTimecode(end);try{if(!navigator.clipboard||!navigator.clipboard.writeText)throw Error('no clipboard api');await navigator.clipboard.writeText(text)}catch(_){const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();try{document.execCommand('copy')}catch(_){}ta.remove()}if(btn)btn.textContent='✓ 已复制'}
-async function loadSimilarShots(){const box=document.getElementById('shot-drawer-similar');if(!box)return;const shotId=currentShot&&(currentShot.shot_id||currentShot.id);if(!shotId)return;box.innerHTML='<div class="muted">正在查找相似镜头…</div>';try{const r=await fetch('/api/v1/shots/'+encodeURIComponent(shotId)+'/similar');if(!r.ok)throw Error(await apiErrMsg(r));const hits=await r.json();const items=Array.isArray(hits)?hits:[];box.innerHTML=items.length?'<div class="group-title">相似镜头</div>'+items.map(function(h){return '<div class="similar-item" data-s="'+encodeURIComponent(JSON.stringify({shot_id:h.id,asset_id:h.asset_id,filename:h.filename||'',start_ms:h.start_ms,end_ms:h.end_ms,description:h.description||'',confidence:h.confidence}))+'" onclick="openSimilarShot(JSON.parse(decodeURIComponent(this.dataset.s)))"><b>'+fmt(h.start_ms)+' — '+fmt(h.end_ms)+'</b>'+esc(h.description||'')+'</div>'}).join(''):'<div class="muted">没有找到相似镜头。</div>'}catch(_){box.innerHTML=''}}
+async function copyTimecode(btn){if(!currentShot)return;const start=Number(currentShot.start_ms)||0,end=Math.max(start,Number(currentShot.end_ms)||start);const text=start===end?fmtTimecode(start):fmtTimecode(start)+'–'+fmtTimecode(end);try{if(!navigator.clipboard||!navigator.clipboard.writeText)throw Error('no clipboard api');await navigator.clipboard.writeText(text)}catch(_){const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();try{document.execCommand('copy')}catch(_){}ta.remove()}if(btn)btn.textContent=tdT('library.copied')}
+async function loadSimilarShots(){const box=document.getElementById('shot-drawer-similar');if(!box)return;const shotId=currentShot&&(currentShot.shot_id||currentShot.id);if(!shotId)return;box.innerHTML='<div class="muted">'+esc(tdT('library.loadingSimilar'))+'</div>';try{const r=await fetch('/api/v1/shots/'+encodeURIComponent(shotId)+'/similar');if(!r.ok)throw Error(await tdApiErrorMessage(r));const hits=await r.json();const items=Array.isArray(hits)?hits:[];box.innerHTML=items.length?'<div class="group-title">'+tdT('library.similarShots')+'</div>'+items.map(function(h){return '<div class="similar-item" data-s="'+encodeURIComponent(JSON.stringify({shot_id:h.id,asset_id:h.asset_id,filename:h.filename||'',start_ms:h.start_ms,end_ms:h.end_ms,description:h.description||'',confidence:h.confidence}))+'" onclick="openSimilarShot(JSON.parse(decodeURIComponent(this.dataset.s)))"><b>'+fmt(h.start_ms)+' — '+fmt(h.end_ms)+'</b>'+esc(h.description||'')+'</div>'}).join(''):'<div class="muted">'+tdT('library.noSimilar')+'</div>'}catch(_){box.innerHTML=''}}
 function openSimilarShot(s){openShotDrawer(s,s.asset_id,s.filename||'')}
 function addShotToCollection(btn){let shot=null;const host=btn?btn.closest('[data-shot]'):null;if(host&&host.dataset.shot){try{shot=JSON.parse(decodeURIComponent(host.dataset.shot))}catch(_){shot=null}}if(!shot)shot=currentShot;if(!shot)return;addShotSourceBtn=btn||null;addShotModal(shot)}
-function addShotModal(shot){let overlay=document.getElementById('add-shot-modal');if(!overlay){overlay=document.createElement('div');overlay.id='add-shot-modal';overlay.className='shot-modal';overlay.innerHTML='<div class="shot-modal-card"><h3>加入精选</h3><div class="shot-modal-error"></div><div class="shot-modal-list"></div><div class="shot-modal-new"><input class="shot-modal-name" placeholder="新建收藏名称"><button class="shot-add" onclick="createAndAddCollection()">创建并加入</button></div><div style="text-align:right;margin-top:12px"><button class="shot-add" onclick="closeAddShotModal()">取消</button></div></div>';document.body.appendChild(overlay)}overlay.dataset.shot=encodeURIComponent(JSON.stringify(shot));overlay.classList.add('open');(async function(){const listEl=overlay.querySelector('.shot-modal-list'),errEl=overlay.querySelector('.shot-modal-error');errEl.textContent='';listEl.innerHTML='<div class="muted">正在读取收藏…</div>';try{const r=await fetch('/api/v1/collections',{headers:authHeaders()});if(!r.ok){if(r.status===401){errEl.textContent='需要 Hub 管理口令：请先在左侧栏填入';return}throw Error(await apiErrMsg(r))}const list=await r.json();const items=Array.isArray(list)?list:[];listEl.innerHTML=items.length?items.map(function(c){return '<div class="shot-modal-row"><span>'+esc(c.name)+'</span><span class="muted">'+c.shot_count+' 个镜头</span><button class="shot-add" data-cid="'+esc(c.id)+'" onclick="addToCollection(this.dataset.cid)">加入</button></div>'}).join(''):'<div class="muted">还没有收藏。可以先新建一个，或在筛选栏保存当前视图。</div>'}catch(e){errEl.textContent='无法读取收藏：'+e.message}}())}
+function addShotModal(shot){let overlay=document.getElementById('add-shot-modal');if(!overlay){overlay=document.createElement('div');overlay.id='add-shot-modal';overlay.className='shot-modal';overlay.innerHTML='<div class="shot-modal-card"><h3>'+esc(tdT('library.addToSelection'))+'</h3><div class="shot-modal-error"></div><div class="shot-modal-list"></div><div class="shot-modal-new"><input class="shot-modal-name" placeholder="'+esc(tdT('library.addShotModal.newName'))+'"><button class="shot-add" onclick="createAndAddCollection()">'+esc(tdT('library.addShotModal.createAndAdd'))+'</button></div><div style="text-align:right;margin-top:12px"><button class="shot-add" onclick="closeAddShotModal()">'+esc(tdT('common.cancel'))+'</button></div></div>';document.body.appendChild(overlay)}overlay.dataset.shot=encodeURIComponent(JSON.stringify(shot));overlay.classList.add('open');(async function(){const listEl=overlay.querySelector('.shot-modal-list'),errEl=overlay.querySelector('.shot-modal-error');errEl.textContent='';listEl.innerHTML='<div class="muted">'+tdT('library.addShotModal.loading')+'</div>';try{const r=await fetch('/api/v1/collections',{headers:authHeaders()});if(!r.ok){if(r.status===401){errEl.textContent=tdT('common.loginRequired');return}throw Error(await tdApiErrorMessage(r))}const list=await r.json();const items=Array.isArray(list)?list:[];listEl.innerHTML=items.length?items.map(function(c){return '<div class="shot-modal-row"><span>'+esc(c.name)+'</span><span class="muted">'+tdPlural('library.addShotModal.shotCount',c.shot_count)+'</span><button class="shot-add" data-cid="'+esc(c.id)+'" onclick="addToCollection(this.dataset.cid)">'+tdT('library.addShotModal.add')+'</button></div>'}).join(''):'<div class="muted">'+tdT('library.addShotModal.empty')+'</div>'}catch(e){errEl.textContent=tdT('library.addShotModal.readFailed')+e.message}}())}
 function closeAddShotModal(){const overlay=document.getElementById('add-shot-modal');if(overlay)overlay.classList.remove('open')}
-async function addToCollection(cid){const overlay=document.getElementById('add-shot-modal');if(!overlay)return;let shot={};try{shot=JSON.parse(decodeURIComponent(overlay.dataset.shot))}catch(_){return}const shotId=shot.shot_id||shot.id;if(!shotId)return;try{const r=await fetch('/api/v1/collections/'+encodeURIComponent(cid)+'/shots',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({shot_id:shotId})});if(!r.ok){if(r.status===401){overlay.querySelector('.shot-modal-error').textContent='需要 Hub 管理口令：请先在左侧栏填入';return}throw Error(await apiErrMsg(r))}closeAddShotModal();if(addShotSourceBtn){addShotSourceBtn.textContent='✓ 已加入';addShotSourceBtn.classList.add('ok')}}catch(e){overlay.querySelector('.shot-modal-error').textContent='加入收藏失败：'+e.message}}
-async function createAndAddCollection(){const overlay=document.getElementById('add-shot-modal');if(!overlay)return;const input=overlay.querySelector('.shot-modal-name'),errEl=overlay.querySelector('.shot-modal-error');const name=input.value.trim();if(!name){errEl.textContent='请输入收藏名称';return}let shot={};try{shot=JSON.parse(decodeURIComponent(overlay.dataset.shot))}catch(_){}const shotId=shot.shot_id||shot.id;try{const r=await fetch('/api/v1/collections',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name:name})});if(!r.ok){if(r.status===401){errEl.textContent='需要 Hub 管理口令：请先在左侧栏填入';return}throw Error(await apiErrMsg(r))}const created=await r.json();if(shotId){const r2=await fetch('/api/v1/collections/'+encodeURIComponent(created.id)+'/shots',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({shot_id:shotId})});if(!r2.ok&&r2.status!==409){if(r2.status===401){errEl.textContent='需要 Hub 管理口令：请先在左侧栏填入';return}throw Error(await apiErrMsg(r2))}}closeAddShotModal();resetCollectionSelect();await loadCollections();if(addShotSourceBtn){addShotSourceBtn.textContent='✓ 已加入';addShotSourceBtn.classList.add('ok')}}catch(e){errEl.textContent='创建收藏失败：'+e.message}}
-function resetCollectionSelect(){const select=document.getElementById('collection-filter');if(!select)return;select.innerHTML='<option value="">不使用</option>'}
+async function addToCollection(cid){const overlay=document.getElementById('add-shot-modal');if(!overlay)return;let shot={};try{shot=JSON.parse(decodeURIComponent(overlay.dataset.shot))}catch(_){return}const shotId=shot.shot_id||shot.id;if(!shotId)return;try{const r=await fetch('/api/v1/collections/'+encodeURIComponent(cid)+'/shots',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({shot_id:shotId})});if(!r.ok){if(r.status===401){overlay.querySelector('.shot-modal-error').textContent=tdT('common.loginRequired');return}throw Error(await tdApiErrorMessage(r))}closeAddShotModal();if(addShotSourceBtn){addShotSourceBtn.textContent=tdT('library.copiedAdded');addShotSourceBtn.classList.add('ok')}}catch(e){overlay.querySelector('.shot-modal-error').textContent=tdT('library.addShotModal.addFailed')+e.message}}
+async function createAndAddCollection(){const overlay=document.getElementById('add-shot-modal');if(!overlay)return;const input=overlay.querySelector('.shot-modal-name'),errEl=overlay.querySelector('.shot-modal-error');const name=input.value.trim();if(!name){errEl.textContent=tdT('library.addShotModal.nameRequired');return}let shot={};try{shot=JSON.parse(decodeURIComponent(overlay.dataset.shot))}catch(_){}const shotId=shot.shot_id||shot.id;try{const r=await fetch('/api/v1/collections',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name:name})});if(!r.ok){if(r.status===401){errEl.textContent=tdT('common.loginRequired');return}throw Error(await tdApiErrorMessage(r))}const created=await r.json();if(shotId){const r2=await fetch('/api/v1/collections/'+encodeURIComponent(created.id)+'/shots',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({shot_id:shotId})});if(!r2.ok&&r2.status!==409){if(r2.status===401){errEl.textContent=tdT('common.loginRequired');return}throw Error(await tdApiErrorMessage(r2))}}closeAddShotModal();resetCollectionSelect();await loadCollections();if(addShotSourceBtn){addShotSourceBtn.textContent=tdT('library.copiedAdded');addShotSourceBtn.classList.add('ok')}}catch(e){errEl.textContent=tdT('library.addShotModal.createFailed')+e.message}}
+function resetCollectionSelect(){const select=document.getElementById('collection-filter');if(!select)return;select.innerHTML='<option value="">'+esc(tdT('library.filter.collectionNone'))+'</option>'}
 function isoDate(id){const v=document.getElementById(id).value;return v?new Date(v+'T00:00:00Z').toISOString():undefined}
 function isoDatePlus1(id){const v=document.getElementById(id).value;if(!v)return undefined;const d=new Date(v+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+1);return d.toISOString()}
-async function saveCurrentView(){const name=prompt('把当前筛选存起来：');if(name===null)return;const filter={captured_from:isoDate('date-from'),captured_to:isoDatePlus1('date-to'),region_label:document.getElementById('region-filter').value.trim(),camera_model:document.getElementById('camera-filter').value,session_id:document.getElementById('session-filter').value,status:document.getElementById('status-filter').value};Object.assign(filter,filterFacets());try{const r=await fetch('/api/v1/collections',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name:name,filter:filter})});if(!r.ok){if(r.status===401)throw Error('需要 Hub 管理口令：请先在左侧填入');throw Error(await apiErrMsg(r))}resetCollectionSelect();await loadCollections();alert('已保存视图：'+name)}catch(e){alert('保存失败：'+e.message)}}
-async function testDriveStart(btn){let ids=(lastLoadedAssets||[]).slice(0,3);const box=btn?btn.parentElement:document.getElementById('test-drive-box');if(!box||!ids.length)return;const status=box.querySelector('.test-drive-status'),chipsBox=box.querySelector('.test-drive-chips');const b=btn||box.querySelector('button');if(b){b.disabled=true;b.textContent='正在启动…'}try{const r=await fetch('/api/v1/test-drive',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({asset_ids:ids})});if(!r.ok){if(r.status===401)throw Error('需要 Hub 管理口令：请先在左侧填入');throw Error(await apiErrMsg(r))}if(status)status.innerHTML='已开始处理，可在 <a href="/progress">处理任务</a> 查看进度。';testDriveChips(chipsBox,ids)}catch(e){if(status)status.textContent='测试分析启动失败：'+e.message}finally{if(b){b.disabled=false;b.textContent='开始测试分析'}}}
-async function testDriveChips(box,ids){if(!box)return;try{const r=await fetch('/api/v1/test-drive/suggestions?assets='+ids.map(encodeURIComponent).join(','));if(!r.ok)return;const d=await r.json();const items=Array.isArray(d.suggestions)?d.suggestions:[];box.innerHTML=items.length?'<div class="group-title">试试搜索</div><div class="chips">'+items.map(function(s){return '<button class="try-chip" data-q="'+esc(s)+'" onclick="document.getElementById(\'q\').value=this.dataset.q;search()">'+esc(s)+'</button>'}).join('')+'</div>':''}catch(_){box.innerHTML=''}}`
+async function saveCurrentView(){const name=prompt(tdT('library.saveViewPrompt'));if(name===null)return;const filter={captured_from:isoDate('date-from'),captured_to:isoDatePlus1('date-to'),region_label:document.getElementById('region-filter').value.trim(),camera_model:document.getElementById('camera-filter').value,session_id:document.getElementById('session-filter').value,status:document.getElementById('status-filter').value};Object.assign(filter,filterFacets());try{const r=await fetch('/api/v1/collections',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({name:name,filter:filter})});if(!r.ok){if(r.status===401)throw Error(tdT('common.loginRequired'));throw Error(await tdApiErrorMessage(r))}resetCollectionSelect();await loadCollections();alert(tdT('library.saveViewSaved',{name:name}))}catch(e){alert(tdT('library.saveViewFailed')+e.message)}}
+async function testDriveStart(btn){let ids=(lastLoadedAssets||[]).slice(0,3);const box=btn?btn.parentElement:document.getElementById('test-drive-box');if(!box||!ids.length)return;const status=box.querySelector('.test-drive-status'),chipsBox=box.querySelector('.test-drive-chips');const b=btn||box.querySelector('button');if(b){b.disabled=true;b.textContent=tdT('library.testDrive.starting')}try{const r=await fetch('/api/v1/test-drive',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({asset_ids:ids})});if(!r.ok){if(r.status===401)throw Error(tdT('common.loginRequired'));throw Error(await tdApiErrorMessage(r))}if(status)status.innerHTML=tdT('library.testDrive.started',{link:'<a href="/progress">'+esc(tdT('library.testDrive.progressLink'))+'</a>'});testDriveChips(chipsBox,ids)}catch(e){if(status)status.textContent=tdT('library.testDrive.failed')+e.message}finally{if(b){b.disabled=false;b.textContent=tdT('library.testDrive.start')}}}
+async function testDriveChips(box,ids){if(!box)return;try{const r=await fetch('/api/v1/test-drive/suggestions?assets='+ids.map(encodeURIComponent).join(','));if(!r.ok)return;const d=await r.json();const items=Array.isArray(d.suggestions)?d.suggestions:[];box.innerHTML=items.length?'<div class="group-title">'+esc(tdT('library.testDrive.trySearch'))+'</div><div class="chips">'+items.map(function(s){return '<button class="try-chip" data-q="'+esc(s)+'" onclick="document.getElementById(\'q\').value=this.dataset.q;search()">'+esc(s)+'</button>'}).join('')+'</div>':''}catch(_){box.innerHTML=''}}`
 
 func enhanceLibraryPage(page string) string {
 	for _, p := range libraryPagePatches {

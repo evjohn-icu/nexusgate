@@ -39,7 +39,7 @@ func TestShellStripProvidersParsesCapabilityArray(t *testing.T) {
 // The four status cells are the contract the rest of the UI (and the parallel
 // shell rework) depends on; a rename here must be deliberate.
 func TestShellStripHasAllFourCells(t *testing.T) {
-	html := shellHeaderHTML()
+	html := shellHeaderHTML(localeZhCN)
 	for _, id := range []string{"status-hub", "status-pipeline", "status-providers", "status-workers"} {
 		if !strings.Contains(html, `id="`+id+`"`) {
 			t.Errorf("strip is missing cell id %s", id)

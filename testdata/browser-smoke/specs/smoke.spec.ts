@@ -1,11 +1,26 @@
 import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 
 const adminToken = 'pw-admin-fixture';
-const pageRoutes = ['/', '/setup', '/progress', '/providers', '/collections', '/worker-setup', '/workers'];
+// Every grounded browser route. The list mirrors the route table rather than a
+// hand-picked sample; when a page route is added or removed, this must follow.
+const pageRoutes = ['/', '/setup', '/progress', '/workers', '/library-roots', '/repurpose', '/tags', '/providers', '/collections', '/settings', '/worker-setup'];
+// The closed set of UI locales; the config's default context locale is zh-CN.
+const supportedLocales = ['zh-CN', 'ja-JP', 'en-US', 'fr-FR', 'es-ES'];
 
-async function login(page: import('@playwright/test').Page) {
+const fixtureBaseUrl = process.env.TIMINGDEX_PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1:4173';
+
+async function login(page: Page) {
   await page.goto('/');
   const token = page.locator('#admin-token');
+  // On narrow viewports the auth controls live in the collapsed sidebar menu;
+  // open it so the token field is reachable.
+  if (!(await token.isVisible())) {
+    const toggle = page.locator('#shell-menu-toggle');
+    if (await toggle.isVisible()) {
+      await toggle.click();
+    }
+  }
   await expect(token).toBeVisible();
   await token.fill(adminToken);
   await Promise.all([
@@ -103,7 +118,7 @@ test.describe('core browser surface', () => {
     await login(page);
     await page.goto('/providers');
     await expect(page.locator('#channels')).toBeVisible();
-    await page.getByRole('button', { name: '加载通道' }).click();
+    await page.locator('#refresh-channels').click();
     await expect(page.locator('[data-channel="channel-fixture"]')).toBeVisible();
     const providerText = await page.locator('body').innerText();
     expect(providerText).toContain('Fixture channel');
@@ -122,5 +137,89 @@ test.describe('core browser surface', () => {
     await query.press('Enter');
     expect((await responsePromise).status()).toBe(200);
     expect(urls.join('\n')).not.toContain(adminToken);
+  });
+});
+
+test.describe('localization', () => {
+  test('renders every route in every locale cookie with matching lang and selector', async ({ browser }) => {
+    for (const locale of supportedLocales) {
+      const context = await browser.newContext();
+      await context.addCookies([{ name: 'timingdex_locale', value: locale, url: fixtureBaseUrl }]);
+      const page = await context.newPage();
+      for (const route of pageRoutes) {
+        const label = `${route} in ${locale}`;
+        const response = await page.goto(route);
+        expect(response?.status(), label).toBe(200);
+        await expect(page.locator('[data-app-shell]'), label).toBeVisible();
+        expect(await page.locator('html').getAttribute('lang'), label).toBe(locale);
+        await expect(page.locator('#shell-locale'), label).toHaveValue(locale);
+        const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+        expect(overflow, `${label} overflows horizontally`).toBe(false);
+      }
+      await context.close();
+    }
+  });
+
+  test('renders representative fetched/dynamic copy in each glossary locale', async ({ browser }) => {
+    const cases = [
+      { locale: 'ja-JP', route: '/', term: '素材ライブラリ' },
+      { locale: 'en-US', route: '/providers', term: 'Model services' },
+      { locale: 'fr-FR', route: '/settings', term: 'Paramètres' },
+      { locale: 'es-ES', route: '/collections', term: 'Colecciones' },
+    ];
+    for (const c of cases) {
+      const context = await browser.newContext();
+      await context.addCookies([{ name: 'timingdex_locale', value: c.locale, url: fixtureBaseUrl }]);
+      const page = await context.newPage();
+      await page.goto(c.route);
+      await expect(page.locator('body'), `${c.locale} on ${c.route}`).toContainText(c.term);
+      await context.close();
+    }
+  });
+
+  test('negotiates from Accept-Language, persists a switch, and falls back to zh-CN', async ({ browser }) => {
+    // Without a locale cookie, Accept-Language negotiates the UI language.
+    const ja = await browser.newContext({ locale: 'ja-JP' });
+    const jaPage = await ja.newPage();
+    await jaPage.goto('/');
+    await expect(jaPage.locator('html')).toHaveAttribute('lang', 'ja-JP');
+    await expect(jaPage.locator('body')).toContainText('素材ライブラリ');
+
+    // Switching through the shell selector writes the preference cookie and
+    // reloads the current path/query. On narrow viewports the selector lives
+    // inside the collapsed sidebar, so open the menu first.
+    const menuToggle = jaPage.locator('#shell-menu-toggle');
+    if (await menuToggle.isVisible()) {
+      await menuToggle.click();
+      await expect(jaPage.locator('#shell-locale')).toBeVisible();
+    }
+    await jaPage.locator('#shell-locale').selectOption('en-US');
+    await expect(jaPage.locator('html')).toHaveAttribute('lang', 'en-US', { timeout: 15000 });
+
+    // The preference persists into a fresh page of the same context.
+    const persisted = await ja.newPage();
+    await persisted.goto('/');
+    await expect(persisted.locator('html')).toHaveAttribute('lang', 'en-US');
+    await expect(persisted.locator('body')).toContainText('Library');
+
+    // The cookie value is the canonical supported tag, and no browser storage
+    // was used to remember the preference.
+    const cookies = await ja.cookies(fixtureBaseUrl);
+    const localeCookie = cookies.find((cookie) => cookie.name === 'timingdex_locale');
+    expect(localeCookie?.value).toBe('en-US');
+    const storage = await persisted.evaluate(() => ({
+      local: window.localStorage.length,
+      session: window.sessionStorage.length,
+    }));
+    expect(storage).toEqual({ local: 0, session: 0 });
+
+    // An unsupported browser language falls back to the zh-CN default.
+    const de = await browser.newContext({ locale: 'de-DE' });
+    const dePage = await de.newPage();
+    await dePage.goto('/');
+    await expect(dePage.locator('html')).toHaveAttribute('lang', 'zh-CN');
+
+    await de.close();
+    await ja.close();
   });
 });

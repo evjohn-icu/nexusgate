@@ -51,7 +51,7 @@ func New(ctx context.Context) (*Fixture, error) {
 		repo.Close()
 		return nil, err
 	}
-	service, err := app.NewService(repo, config.Config{DataDir: dir, HubSecurity: config.HubSecurityConfig{AdminToken: AdminToken}, Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	service, err := app.NewService(repo, config.Config{DataDir: dir, HubSecurity: config.HubSecurityConfig{AdminToken: AdminToken, AdminAuth: "required"}, Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
 	if err != nil {
 		repo.Close()
 		return nil, err

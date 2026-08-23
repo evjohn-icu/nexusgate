@@ -9,6 +9,7 @@ import (
 
 	"github.com/evjohn-icu/timingdex/internal/config"
 	"github.com/evjohn-icu/timingdex/internal/media"
+	"github.com/evjohn-icu/timingdex/internal/mount"
 )
 
 // fakeRootWarningsRepo implements just enough of Repository for
@@ -145,4 +146,85 @@ func TestListLibraryRootsDoctorAlwaysPassesRegistered(t *testing.T) {
 	// network-filesystem warnings. Either is fine — the point is the API
 	// accepts the argument.
 	_ = w
+}
+
+// TestRootWarningDetailsCodeAndMessageContract pins the additive root-warning
+// contract: RootWarningDetails emits only the four stable codes with the
+// documented params, and RootWarnings stays the exact Message projection of
+// those details (so Doctor/CLI English output and warning conditions are
+// unchanged byte-for-byte). It is mount-table agnostic: both entry points
+// return empty consistently when the table is unreadable.
+func TestRootWarningDetailsCodeAndMessageContract(t *testing.T) {
+	service := newRootWarningsService(t, map[string]bool{})
+	emptyDir := t.TempDir()
+
+	const (
+		codeEmptyUnmounted = "root.empty_unmounted"
+		codeNetworkMount   = "root.network_mount"
+		codeStagingCopy    = "root.staging_copy_disabled"
+		codeMountWritable  = "root.mount_writable"
+	)
+	knownCodes := map[string]bool{
+		codeEmptyUnmounted: true, codeNetworkMount: true, codeStagingCopy: true, codeMountWritable: true,
+	}
+
+	for _, registered := range []bool{false, true} {
+		details := service.RootWarningDetails(emptyDir, registered)
+		warnings := service.RootWarnings(emptyDir, registered)
+
+		if len(warnings) != len(details) {
+			t.Fatalf("registered=%v: RootWarnings and RootWarningDetails diverged in count: %d vs %d",
+				registered, len(warnings), len(details))
+		}
+		for i, d := range details {
+			if !knownCodes[d.Code] {
+				t.Errorf("registered=%v: unexpected warning code %q", registered, d.Code)
+			}
+			if d.Message == "" {
+				t.Errorf("registered=%v: code %q has an empty message", registered, d.Code)
+			}
+			if warnings[i] != d.Message {
+				t.Errorf("registered=%v: RootWarnings[%d]=%q != RootWarningDetails[%d].Message=%q",
+					registered, i, warnings[i], i, d.Message)
+			}
+			switch d.Code {
+			case codeEmptyUnmounted:
+				if d.Params["path"] != emptyDir {
+					t.Errorf("root.empty_unmounted must carry the path param, got %v", d.Params)
+				}
+			case codeNetworkMount:
+				if d.Params["path"] != emptyDir || d.Params["label"] == "" || d.Params["type"] == "" {
+					t.Errorf("root.network_mount must carry path/label/type params, got %v", d.Params)
+				}
+			case codeStagingCopy, codeMountWritable:
+				if len(d.Params) != 0 {
+					t.Errorf("%s must carry no params, got %v", d.Code, d.Params)
+				}
+			}
+		}
+	}
+}
+
+// TestRootWarningsStaysEnglishText pins that RootWarnings still produces the
+// exact English strings Doctor has always printed, so the structured addition
+// changes no CLI output. Guarded by a readable mount table like the existing
+// tests, since ReadMountTable is environment-dependent.
+func TestRootWarningsStaysEnglishText(t *testing.T) {
+	service := newRootWarningsService(t, map[string]bool{})
+	if mount.ReadMountTable() == "" {
+		t.Skip("mount table not readable in this environment")
+	}
+	// The four messages are fixed; assert the projection emits one of them
+	// verbatim whenever a detail appears (the exact combination depends on the
+	// environment's mount table and filesystem).
+	details := service.RootWarningDetails(t.TempDir(), false)
+	warnings := service.RootWarnings(t.TempDir(), false)
+	if len(details) != len(warnings) {
+		t.Fatalf("count divergence: %d vs %d", len(details), len(warnings))
+	}
+	for i := range details {
+		if !strings.Contains(details[i].Message, "mount") && details[i].Code != "root.empty_unmounted" {
+			t.Errorf("expected Doctor-style English mount advice, got %q", details[i].Message)
+		}
+	}
 }

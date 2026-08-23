@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Browser multilingual UI**: the 11 inline HTML pages (library, setup,
+  progress, workers, worker-setup, library-roots, repurpose, tags, providers,
+  collections, settings) now render in Simplified Chinese (the default),
+  Japanese, US English, French or Spanish from one embedded locale catalog. A
+  first visit negotiates from `Accept-Language`; a language selector in the
+  shared sidebar writes a non-sensitive `timingdex_locale` preference cookie
+  (SameSite=Lax, one-year, no browser storage) that overrides negotiation on
+  later loads. Dynamic copy calls the injected `tdT`/`tdPlural`/`tdFormat*`
+  helpers; API error envelopes are localized client-side through
+  `tdApiErrorMessage` without changing any API field, code, action or
+  English message. CLI, MCP, Agent and Worker output is unchanged. Root
+  storage diagnostics gained an additive structured form
+  (`RootWarningDetails`, `warning_details` beside the existing `warnings`) with
+  four stable codes, while Doctor/CLI English output stays byte-for-byte the
+  same.
+
 - **Optional admin auth (`hub_security.admin_auth`)**: the Hub administrator
   credential is now optional. `required` keeps the previous always-demand
   behaviour; `trusted_network` (the new default) waives the password for peers

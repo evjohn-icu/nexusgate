@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -31,6 +34,30 @@ func providerChannelTestService(t *testing.T, name string) *app.Service {
 		t.Fatal(err)
 	}
 	return service
+}
+
+// providersFragmentKeys loads the page's fragment file and returns its zh-CN
+// key set. The fragment is not merged into the embedded catalogs yet, so the
+// page tests assert the key wiring against the fragment on disk rather than a
+// resolved zh-CN value.
+func providersFragmentKeys(t *testing.T) map[string]bool {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("locales", "fragments", "providers.json"))
+	if err != nil {
+		t.Fatalf("read providers fragment: %v", err)
+	}
+	var frag struct {
+		Page string                       `json:"page"`
+		Keys map[string]map[string]string `json:"keys"`
+	}
+	if err := json.Unmarshal(data, &frag); err != nil {
+		t.Fatalf("parse providers fragment: %v", err)
+	}
+	keys := make(map[string]bool)
+	for k := range frag.Keys[string(localeZhCN)] {
+		keys[k] = true
+	}
+	return keys
 }
 
 // A channel is only useful as a quota pool if the operator can keep adding keys
@@ -80,26 +107,26 @@ func TestProvidersPageOffersMultiKeyAffordancesWithoutBrowserStorage(t *testing.
 }
 
 // 权重 and 并发上限 are defaults for all but the operator tuning them, so both
-// the create form and the add-key template hide them behind a collapsed 高级配置
-// disclosure. The ids and classes the page JS reads (formMembers and
-// addChannelKey query .m-*/row .a-* by class) must survive the wrapper.
+// the create form and the add-key template hide them behind a collapsed
+// [[i18n:providers.advanced]] disclosure. The ids and classes the page JS reads
+// (formMembers and addChannelKey query .m-*/row .a-* by class) must survive the
+// wrapper.
 func TestProvidersPageAdvancedConfigKeepsFieldIdsAndClasses(t *testing.T) {
-	response := httptest.NewRecorder()
-	service := providerChannelTestService(t, "providers-advanced-config-page.db")
-	NewServer("", service).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/providers", nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
-	}
-	body := response.Body.String()
+	body := providersHTML
 	for _, marker := range []string{
 		`<details class="advanced-config wide">`,
-		`<summary>高级设置</summary>`,
+		`<summary>[[i18n:providers.advanced]]</summary>`,
 		`id="weight"`,
 		`id="max-inflight"`,
 		`class="m-weight"`,
 		`class="m-inflight"`,
 		`+prefix+'weight"`,
 		`+prefix+'inflight"`,
+		`tdT('providers.advanced')`,
+		`tdT('providers.weight')`,
+		`tdT('providers.maxInflight')`,
+		`tdT('providers.memberLabel')`,
+		`tdT('providers.apiKey')`,
 	} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("providers page missing %q", marker)
@@ -115,9 +142,10 @@ func TestProvidersPageAdvancedConfigKeepsFieldIdsAndClasses(t *testing.T) {
 
 // The channels panel carries one runtime-health line fed by
 // /api/v1/admin/provider-channels/status: nothing without a token, a muted
-// 暂无运行数据 when no capability has been exercised yet, a warn pill when any
-// route's channel is unavailable, and an ok pill otherwise. It must render the
-// states verbatim so the pill semantics cannot drift from the endpoint.
+// tdT('providers.noUsage') line when no capability has been exercised yet, a
+// warn pill when any route's channel is unavailable, and an ok pill otherwise.
+// It must render the states through catalog keys so the pill semantics cannot
+// drift from the endpoint.
 func TestProvidersPageShowsRuntimeHealthStatusLine(t *testing.T) {
 	body := providersHTML
 	for _, marker := range []string{
@@ -125,9 +153,9 @@ func TestProvidersPageShowsRuntimeHealthStatusLine(t *testing.T) {
 		`/api/v1/admin/provider-channels/status`,
 		`has_runtime_data`,
 		`ch.available`,
-		`还没有使用记录`,
-		`部分服务降级`,
-		`服务正常`,
+		`tdT('providers.noUsage')`,
+		`tdT('providers.degraded')`,
+		`tdT('providers.healthy')`,
 	} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("providers page missing health marker %q", marker)
@@ -142,8 +170,8 @@ func TestProvidersPageShowsRuntimeHealthStatusLine(t *testing.T) {
 // state: loadProviderHealth stashes the parsed response (statusCache) plus a
 // channel-id → member lookup (channelHealth) and the render function builds
 // each member row's state pill and counter line from it. The pill states and
-// the meta-line labels must stay verbatim so the UI cannot drift from the
-// G1a MemberStatus fields.
+// the meta-line labels must render through catalog keys so the UI cannot drift
+// from the G1a MemberStatus fields.
 func TestProvidersPageRendersPerMemberHealth(t *testing.T) {
 	body := providersHTML
 	for _, marker := range []string{
@@ -157,17 +185,17 @@ func TestProvidersPageRendersPerMemberHealth(t *testing.T) {
 		`cooldown_until`,
 		`half_open`,
 		`last_failure_retryable`,
-		`<span class="pill bad">停用</span>`,
-		`<span class="pill warn">等待中`,
-		`<span class="pill ok">正常</span>`,
-		`<span class="pill warn">最近失败（可重试）</span>`,
-		`<span class="pill bad">最近失败</span>`,
-		`成功 '+(Number(s.successes)||0)`,
-		`限流 '+(Number(s.retryable_429)||0)`,
-		`服务端错误 '+(Number(s.server_error_5xx)||0)`,
-		`延迟 '+(Number(s.latency_ms)||0)`,
-		`上次成功`,
-		`无记录`,
+		`tdT('status.disabled')`,
+		`tdT('providers.cooling')`,
+		`tdT('status.healthy')`,
+		`tdT('providers.recentFailureRetryable')`,
+		`tdT('providers.recentFailure')`,
+		`tdT('providers.metaSuccess'`,
+		`tdT('providers.metaRateLimited'`,
+		`tdT('providers.metaServerError'`,
+		`tdT('providers.metaLatency'`,
+		`tdT('providers.metaLastSuccess'`,
+		`tdT('providers.noRecord')`,
 	} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("providers page missing per-member health marker %q", marker)
@@ -175,8 +203,8 @@ func TestProvidersPageRendersPerMemberHealth(t *testing.T) {
 	}
 	// Fresh restart: no capability has runtime data yet, so member rows render
 	// the muted line instead of any pill, and the health line agrees.
-	if !strings.Contains(body, `if(!anyRuntimeData)return'<div class="member-health muted">还没有使用记录</div>'`) {
-		t.Fatalf("member rows must show 暂无运行数据 when the status fetch has no runtime data")
+	if !strings.Contains(body, `if(!anyRuntimeData)return'<div class="member-health muted">'+esc(tdT('providers.noUsage'))+'</div>'`) {
+		t.Fatalf("member rows must show the no-usage line when the status fetch has no runtime data")
 	}
 	// The health line and the member rows must not fight over one fetch: the
 	// status request is awaited before renderChannels so the first paint
@@ -186,7 +214,7 @@ func TestProvidersPageRendersPerMemberHealth(t *testing.T) {
 	}
 }
 
-// Each channel card carries a 测试 button that POSTs
+// Each channel card carries a test button that POSTs
 // /api/v1/admin/provider-channels/{id}/test with the admin token and renders
 // the extended result inline under a channel-scoped id. The result span must
 // be per-channel (test-result-<channelId>) so two cards never fight over one
@@ -196,10 +224,10 @@ func TestProvidersPageHasTestChannelButton(t *testing.T) {
 	body := providersHTML
 	for _, marker := range []string{
 		`data-act="test-channel"`,
-		`试试能不能用</button>`,
+		`tdT('providers.testChannel')`,
 		`test-result-'+esc(c.id)`,
 		`model_responded`,
-		`模型已响应`,
+		`tdT('providers.testOk'`,
 		`encodeURIComponent(channel.id)+'/test'`,
 		"adminHeaders()",
 	} {
@@ -211,7 +239,7 @@ func TestProvidersPageHasTestChannelButton(t *testing.T) {
 
 // The channel dialog must let an operator configure a known provider by
 // pasting just the key: selecting the provider pre-fills its well-known
-// endpoint, and a 读取模型 button POSTs the still-open form's endpoint and key
+// endpoint, and the probe button POSTs the still-open form's endpoint and key
 // to /api/v1/admin/provider-channels/probe-models so the Hub can return the
 // account's model list into a datalist. The presets must never be applied over
 // an operator-typed endpoint (endpointTouched), and the probe must go through
@@ -219,7 +247,7 @@ func TestProvidersPageHasTestChannelButton(t *testing.T) {
 func TestProvidersPageHasOneClickModelProbe(t *testing.T) {
 	body := providersHTML
 	for _, marker := range []string{
-		`看看有哪些模型</button>`,
+		`[[i18n:providers.probeModels]]</button>`,
 		`id="probe-models"`,
 		`probe-models'`,
 		`list="model-options"`,
@@ -241,18 +269,20 @@ func TestProvidersPageHasOneClickModelProbe(t *testing.T) {
 	}
 }
 
-// The 一键配置 wizard must let an operator provision every missing capability
-// from one dialog and one submit with only the plan key pasted — endpoint and
-// model come pre-filled from presets, but the model field stays editable so a
-// user can specify their own model. Beside the plan presets there is a custom
-// endpoint mode: endpoint + key, the program probes the model list, and the
-// operator ticks which roles that endpoint should serve (each role's model
-// pre-filled, editable).
+// The one-click config wizard must let an operator provision every missing
+// capability from one dialog and one submit with only the plan key pasted —
+// endpoint and model come pre-filled from presets, but the model field stays
+// editable so a user can specify their own model. Beside the plan presets there
+// is a custom endpoint mode: endpoint + key, the program probes the model list,
+// and the operator ticks which roles that endpoint should serve (each role's
+// model pre-filled, editable). Plan names go through catalog keys
+// (providers.plan.*) so the label a wizard row displays matches the channel
+// label it writes.
 func TestProvidersPageHasOneClickQuickConfigWizard(t *testing.T) {
 	body := providersHTML
 	for _, marker := range []string{
 		`id="quick-config-btn"`,
-		`一键配置`,
+		`[[i18n:providers.quickConfig]]`,
 		`id="quick-dialog"`,
 		`id="quick-rows"`,
 		`id="quick-go"`,
@@ -260,17 +290,19 @@ func TestProvidersPageHasOneClickQuickConfigWizard(t *testing.T) {
 		`const planPresets=[`,
 		`function quickPlanRowHTML(plan)`,
 		`function quickChannelRowHTML(ch)`,
-		`火山 Agent Plan`,
-		`火山 Coding Plan`,
-		`Qwen Token Plan`,
+		`providers.plan.volc_agent_plan`,
+		`providers.plan.volc_coding_plan`,
+		`providers.plan.qwen_token_plan`,
+		`providers.plan.asr`,
 		`doubao-seed-2.0-lite`,
 		`qwen3.7-plus`,
-		`capNames`,
+		`capKeys`,
+		`capName(`,
 		`data-plan="'+plan.id+'"`,
 		`class="q-model" data-cap="'+ch.cap+'"`,
-		`可自定义`,
+		`providers.modelIdCustom`,
 		`row.dataset.configured`,
-		`已配置`,
+		`tdT('providers.quickConfigured')`,
 		`customProbe()`,
 		`custom-roles`,
 		`q-role-model`,
@@ -280,6 +312,15 @@ func TestProvidersPageHasOneClickQuickConfigWizard(t *testing.T) {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("providers page missing quick-config marker %q", marker)
 		}
+	}
+	// The plan name a quick-submit writes as the channel label must go through
+	// the same catalog lookup the row header uses, so display and stored label
+	// agree in every locale.
+	if !strings.Contains(body, `label:planName(plan)`) {
+		t.Fatalf("quickSubmit must write the localized plan name as the channel label")
+	}
+	if !strings.Contains(body, `label:tdT('providers.customEndpointLabel')`) {
+		t.Fatalf("quickSubmit must write the localized custom-endpoint label")
 	}
 }
 
@@ -356,5 +397,206 @@ func TestProviderChannelPatchAddsKeyWithoutWipingStoredSecrets(t *testing.T) {
 	}
 	if len(shrunk.Members) != 1 || shrunk.Members[0].ID != second.ID || !shrunk.Members[0].SecretReady {
 		t.Fatalf("remove left members=%+v", shrunk.Members)
+	}
+}
+
+// Every product string in the page constant must go through the shared locale
+// machinery: static HTML via [[i18n:*]] markers, dynamic copy via the runtime
+// helpers, API failures via the shared tdApiErrorMessage, and date output via
+// tdFormatDateTime. The page-local apiErrMsg must be gone.
+func TestProvidersPageLocalizedCopy(t *testing.T) {
+	body := providersHTML
+	if strings.Contains(body, "apiErrMsg") {
+		t.Fatalf("page-local apiErrMsg must be deleted in favor of the shared tdApiErrorMessage")
+	}
+	if !strings.Contains(body, "tdApiErrorMessage(") {
+		t.Fatalf("providers page must call the shared tdApiErrorMessage helper")
+	}
+	for _, legacy := range []string{"toLocaleTimeString", "toLocaleString("} {
+		if strings.Contains(body, legacy) {
+			t.Fatalf("providers page still uses browser-locale formatter %q", legacy)
+		}
+	}
+	if !strings.Contains(body, "tdFormatDateTime(") {
+		t.Fatalf("providers page must use the shared tdFormatDateTime formatter")
+	}
+	// The capability values stay wire data and the select options render from
+	// static markers, never from hardcoded labels.
+	for _, cap := range []string{"video_analysis", "asr", "embedding", "tag_curator", "repurpose"} {
+		if !strings.Contains(body, `<option value="`+cap+`">[[i18n:providers.cap.`+cap+`]]</option>`) {
+			t.Fatalf("capability %q option is not rendered from its catalog marker", cap)
+		}
+	}
+}
+
+// Every static [[i18n:key]] marker and every literal key passed to
+// tdT/tdPlural (including the value→key enum maps) must resolve: to a key the
+// page fragment carries in all five locales, or to one of the shared catalog
+// keys (status.* / shell.* / common.*) that every locale already ships. Plural
+// bases are resolved through their .one/.other siblings.
+func TestProvidersPageI18nKeysResolveFromFragment(t *testing.T) {
+	fragKeys := providersFragmentKeys(t)
+
+	markerRE := regexp.MustCompile(`\[\[i18n:([a-zA-Z0-9._-]+)\]\]`)
+	callRE := regexp.MustCompile(`td(?:T|Plural)\('([a-zA-Z0-9._-]+)'`)
+	keyLitRE := regexp.MustCompile(`'(providers|status|shell|common|api|facet)\.[a-zA-Z0-9._-]+'`)
+
+	seen := make(map[string]bool)
+	for _, m := range markerRE.FindAllStringSubmatch(providersHTML, -1) {
+		seen[m[1]] = true
+	}
+	for _, m := range callRE.FindAllStringSubmatch(providersHTML, -1) {
+		seen[m[1]] = true
+	}
+	for _, m := range keyLitRE.FindAllStringSubmatch(providersHTML, -1) {
+		seen[m[0][1:len(m[0])-1]] = true
+	}
+
+	if len(seen) == 0 {
+		t.Fatal("no keys detected in providersHTML; the scan is broken")
+	}
+
+	var unresolved []string
+	for key := range seen {
+		if fragKeys[key] {
+			continue
+		}
+		// A plural base key resolves via its category siblings.
+		if fragKeys[key+".one"] || fragKeys[key+".other"] {
+			continue
+		}
+		if catalogs[localeZhCN].has(key) {
+			continue
+		}
+		unresolved = append(unresolved, key)
+	}
+	sort.Strings(unresolved)
+	if len(unresolved) > 0 {
+		t.Fatalf("providers keys that resolve to nothing (not in fragment, its plural siblings, or a shared catalog): %v", unresolved)
+	}
+}
+
+// The value→key capability table must cover every wire value the page renders
+// (the channel card, the routing panel, the quick-config roles and the dialog
+// select). Adding a new capability must fail this test until the map, the
+// static markers and the fragment all cover it.
+func TestProvidersPageI18nEnumMapsCoverWireValues(t *testing.T) {
+	body := providersHTML
+	caps := []string{"video_analysis", "asr", "embedding", "tag_curator", "repurpose"}
+	for _, cap := range caps {
+		if !strings.Contains(body, cap+":'providers.cap."+cap+"'") {
+			t.Fatalf("capKeys missing capability %q", cap)
+		}
+		if !strings.Contains(body, `<option value="`+cap+`">[[i18n:providers.cap.`+cap+`]]</option>`) {
+			t.Fatalf("capability %q select option missing its marker", cap)
+		}
+	}
+	for _, cap := range []string{"repurpose", "tag_curator", "embedding", "video_analysis"} {
+		if !strings.Contains(body, "['"+cap+"','providers.cap."+cap+"']") {
+			t.Fatalf("customRoles missing capability %q", cap)
+		}
+	}
+	if !strings.Contains(body, "function capName(cap){return tdT(capKeys[cap]||cap)}") {
+		t.Fatalf("capName must render capability labels through the capKeys table with a raw fallback")
+	}
+}
+
+func TestProvidersPageI18nFragmentParityAcrossLocales(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("locales", "fragments", "providers.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frag struct {
+		Page string                       `json:"page"`
+		Keys map[string]map[string]string `json:"keys"`
+	}
+	if err := json.Unmarshal(data, &frag); err != nil {
+		t.Fatal(err)
+	}
+	if frag.Page != "providers" {
+		t.Fatalf("fragment page=%q, want providers", frag.Page)
+	}
+	for _, loc := range supportedLocales {
+		if _, ok := frag.Keys[string(loc)]; !ok {
+			t.Fatalf("fragment missing locale %s", loc)
+		}
+	}
+
+	base := frag.Keys[string(localeZhCN)]
+	for _, loc := range supportedLocales[1:] {
+		other := frag.Keys[string(loc)]
+		if len(other) != len(base) {
+			t.Fatalf("locale %s has %d keys, zh-CN has %d", loc, len(other), len(base))
+		}
+		for k := range base {
+			if _, ok := other[k]; !ok {
+				t.Fatalf("locale %s missing key %q", loc, k)
+			}
+		}
+	}
+
+	phRE := regexp.MustCompile(`\{[a-zA-Z]+\}`)
+	phSet := func(s string) string {
+		parts := phRE.FindAllString(s, -1)
+		sort.Strings(parts)
+		return strings.Join(parts, ",")
+	}
+	for k, zh := range base {
+		want := phSet(zh)
+		for _, loc := range supportedLocales[1:] {
+			if got := phSet(frag.Keys[string(loc)][k]); got != want {
+				t.Fatalf("placeholder set differs for %s in %s: %q vs zh-CN %q", k, loc, frag.Keys[string(loc)][k], zh)
+			}
+		}
+	}
+
+	// The fragment must define page-prefixed keys only, never the shared ones.
+	for k := range base {
+		for _, prefix := range []string{"common.", "api.", "status.", "facet.", "shell."} {
+			if strings.HasPrefix(k, prefix) {
+				t.Fatalf("fragment redefines shared key %q", k)
+			}
+		}
+	}
+}
+
+// Served in the default zh-CN locale, every static marker must be resolved by
+// the server (to the zh-CN value once the fragment is merged, to the bare key
+// before that) rather than leaking as [[i18n:...]], and the structural anchors
+// the other pages and tests rely on must survive.
+func TestProvidersPageI18nServedWithoutUnresolvedMarkers(t *testing.T) {
+	service := providerChannelTestService(t, "providers-served-page.db")
+	handler := NewServer("", service).Handler()
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, lanRequest(http.MethodGet, "/providers", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if strings.Contains(body, "[[i18n:") {
+		t.Fatalf("unresolved marker leaked into the served page: %s", body)
+	}
+	for _, want := range []string{
+		`<html lang="zh-CN"`,
+		`data-app-shell`,
+		`id="new-channel-btn"`, `id="quick-config-btn"`, `id="refresh-channels"`,
+		`id="channels"`, `id="routing"`, `id="provider-dialog"`, `id="quick-dialog"`,
+		`id="channel-form"`, `id="capability"`, `id="provider-name"`, `id="label"`,
+		`id="model"`, `id="endpoint"`, `id="route-order"`, `id="member-rows"`,
+		`id="api-key"`, `id="form-status"`, `id="quick-rows"`, `id="custom-roles"`,
+		`id="channels-status"`, `id="provider-health"`, `id="auth-callout"`,
+		`data-act="test-channel"`, `data-act="edit-channel"`, `data-act="toggle-channel"`,
+		`data-act="delete-channel"`, `data-act="toggle-add"`, `data-act="save-key"`,
+		`data-act="cancel-key"`, `data-act="remove-member"`,
+		`/api/v1/admin/provider-channels/status`, `/api/v1/admin/provider-channels/probe-models`,
+		`/api/v1/admin/provider-channels/'+encodeURIComponent(id)`,
+		`method:'PATCH'`,
+		`admin-token`, `loginAdmin`, `X-CSRF-Token`, `__Host-timingdex_csrf`,
+		`tdApiErrorMessage`, `tdFormatDateTime`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("served /providers missing %q", want)
+		}
 	}
 }

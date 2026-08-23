@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -16,6 +19,12 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 	"github.com/evjohn-icu/timingdex/internal/smbdiscover"
 )
+
+// rootsCJKRE matches the CJK unified-ideograph and CJK-punctuation blocks.
+// The page source must carry none of them: every piece of product copy now
+// comes from the locale catalog, so a raw Chinese literal in libraryRootsHTML
+// is a migration regression.
+var rootsCJKRE = regexp.MustCompile(`[\x{3000}-\x{303f}\x{3400}-\x{4dbf}\x{4e00}-\x{9fff}\x{f900}-\x{faff}]`)
 
 func newLibraryRootsTestService(t *testing.T, name string, adminAuth ...string) *app.Service {
 	t.Helper()
@@ -38,6 +47,40 @@ func newLibraryRootsTestService(t *testing.T, name string, adminAuth ...string) 
 	return service
 }
 
+// rootsFragment loads the page's fragment file and returns its per-locale
+// key→value maps. The fragment is not merged into the embedded catalogs yet,
+// so the page tests assert the key wiring against the fragment on disk rather
+// than a resolved zh-CN value.
+func rootsFragment(t *testing.T) map[string]map[string]string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("locales", "fragments", "roots.json"))
+	if err != nil {
+		t.Fatalf("read roots fragment: %v", err)
+	}
+	var frag struct {
+		Page string                       `json:"page"`
+		Keys map[string]map[string]string `json:"keys"`
+	}
+	if err := json.Unmarshal(data, &frag); err != nil {
+		t.Fatalf("parse roots fragment: %v", err)
+	}
+	if frag.Page != "roots" {
+		t.Fatalf("fragment page=%q, want roots", frag.Page)
+	}
+	return frag.Keys
+}
+
+// rootsHasCJK reports whether s contains a CJK unified ideograph -- the
+// signal that a value is real translated copy and not a bare catalog key.
+func rootsHasCJK(s string) bool {
+	for _, r := range s {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			return true
+		}
+	}
+	return false
+}
+
 // The wizard exists because /setup told operators to "add a mount directory
 // on the progress page" and /progress never had such a form -- a promise the
 // UI did not keep. This checks the page actually renders its four steps and,
@@ -53,28 +96,39 @@ func TestLibraryRootsPageRendersWithStepMarkers(t *testing.T) {
 		t.Fatalf("content-type=%q", ct)
 	}
 	body := response.Body.String()
+	// Every static step label is a [[i18n:roots.*]] marker in the source, and
+	// the server resolves markers (to the zh-CN value once the fragment is
+	// merged, to the bare key before that) rather than leaking [[i18n:...]].
 	for _, marker := range []string{
+		"[[i18n:roots.step1]]",
+		"[[i18n:roots.step2]]",
+		"[[i18n:roots.step3]]",
+		"[[i18n:roots.step4]]",
+		"[[i18n:roots.discoverTitle]]",
+		"[[i18n:roots.healthTitle]]",
 		"data-library-roots-wizard",
-		"输入路径",
-		"接入说明",
-		"验证接入",
-		"添加并扫描",
-		"admin-token",
-		`type="password"`,
 		"/api/v1/roots/inspect",
 		"compose-section",
-		"Docker Compose",
 		"compose_volume",
-		// SMB discovery panel: the page must advertise the discover button, the
-		// endpoint it calls, and the click-a-share affordance.
-		"发现内网共享",
+		// SMB discovery panel: the page must advertise the discover button,
+		// the endpoint it calls, and the click-a-share affordance.
 		"discover-btn",
 		"runDiscover()",
 		"/api/v1/roots/discover",
 		"useShare(",
 	} {
-		if !strings.Contains(body, marker) {
+		if !strings.Contains(libraryRootsHTML, marker) {
 			t.Fatalf("page missing marker %q", marker)
+		}
+	}
+	if strings.Contains(body, "[[i18n:") {
+		t.Fatalf("unresolved marker leaked into the served page: %s", body)
+	}
+	// The shell injects the memory-only admin token input; the served page
+	// must carry it (the shell is injected server-side, not in the constant).
+	for _, shellMarker := range []string{"admin-token", `type="password"`} {
+		if !strings.Contains(body, shellMarker) {
+			t.Fatalf("served page missing shell marker %q", shellMarker)
 		}
 	}
 	// The token must never be persisted by the browser; that promise is
@@ -84,36 +138,71 @@ func TestLibraryRootsPageRendersWithStepMarkers(t *testing.T) {
 	}
 }
 
+// The page source must be fully migrated: no hardcoded CJK copy, the shared
+// tdApiErrorMessage instead of a page-local apiErrMsg, and no browser-locale
+// number/date formatters.
+func TestLibraryRootsPageI18nHasNoHardcodedChinese(t *testing.T) {
+	if hits := rootsCJKRE.FindAllString(libraryRootsHTML, -1); len(hits) > 0 {
+		t.Fatalf("libraryRootsHTML still carries hardcoded CJK copy: %q", hits)
+	}
+	if strings.Contains(libraryRootsHTML, "apiErrMsg") {
+		t.Fatal("page-local apiErrMsg must be deleted in favor of the shared tdApiErrorMessage")
+	}
+	if !strings.Contains(libraryRootsHTML, "tdApiErrorMessage(") {
+		t.Fatal("library roots page must call the shared tdApiErrorMessage helper")
+	}
+	for _, legacy := range []string{"toLocaleString(", "toLocaleTimeString", "toLocaleDateString"} {
+		if strings.Contains(libraryRootsHTML, legacy) {
+			t.Fatalf("library roots page must use the shared tdFormat* helpers, not %s", legacy)
+		}
+	}
+}
+
 // The wizard now opens with a status table for the roots that already exist:
 // an operator coming to add a NAS share should first see whether the mounted
-// roots are still mounted. The unavailable verdict carries the exact Chinese
-// copy about the reconciliation pause — the scan service's gate, echoed here —
-// and the preserved "last healthy" time MarkRootUnavailable never clears.
+// roots are still mounted. The unavailable verdict carries the exact copy
+// about the reconciliation pause — the scan service's gate, echoed here — and
+// the preserved "last healthy" time MarkRootUnavailable never clears.
 func TestLibraryRootsPageShowsRootHealthSection(t *testing.T) {
-	body := brandedPage(shelledPage(libraryRootsHTML))
+	body := brandedPage(shelledPage(libraryRootsHTML, localeZhCN))
 	for _, marker := range []string{
-		"素材目录状态",
+		"[[i18n:roots.healthTitle]]",
+		"[[i18n:roots.loadingHealth]]",
 		"/api/v1/roots/health",
 		"loadRootHealth()",
-		"上次正常",
 		"health-table",
-		"暂停缺失文件核对（不会把素材标记为缺失）",
+		"tdT('roots.unavailablePause')",
+		"tdT('roots.colLastHealthy')",
 	} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("library roots page missing root-health marker %q", marker)
 		}
 	}
+	// The health copy is real translated text in the fragment, not a bare
+	// key: the reconciliation-pause verdict and the last-healthy label must
+	// read as Chinese in the zh-CN fragment.
+	frag := rootsFragment(t)
+	for _, key := range []string{"roots.healthTitle", "roots.healthIntro", "roots.unavailablePause", "roots.lastHealthy", "roots.colLastHealthy", "roots.colTips"} {
+		if !rootsHasCJK(frag[string(localeZhCN)][key]) {
+			t.Fatalf("roots fragment zh-CN %q does not look like translated copy: %q", key, frag[string(localeZhCN)][key])
+		}
+	}
 }
 
-// The root health table carries a 提示 column fed by the same RootWarnings
-// the CLI doctor prints — network-mount notice, staging-copy recommendation,
+// The root health table carries a 提示 column fed by the same warnings the
+// CLI doctor prints — network-mount notice, staging-copy recommendation,
 // writable-mount note — so an operator sees the advice for an already-added
 // root without running the CLI. The cell must escape every warning and render
-// one line each.
+// one line each. warning_details (code/params/message) is rendered through
+// the roots.warning.* catalog keys; warnings remains the fallback for older
+// payloads, and an unknown code falls back to the English message.
 func TestLibraryRootsPageRootHealthRendersWarnings(t *testing.T) {
 	body := libraryRootsHTML
 	for _, marker := range []string{
-		`<th>提示</th>`,
+		`tdT('roots.colTips')`,
+		`warning_details`,
+		`rootWarningKeyPrefix`,
+		`d.message`,
 		`h.warnings`,
 		`root-warning`,
 		`health-tips`,
@@ -127,10 +216,10 @@ func TestLibraryRootsPageRootHealthRendersWarnings(t *testing.T) {
 
 // CLAUDE.md requires product/UI copy to be Chinese while internal/mount
 // stays English -- it is also the CLI's doctor output. This wizard bridges
-// that by translating mount.Step/mount.Note by their stable Key in a table
-// baked into this page. A step or note whose Key was added to mount but
-// never given an entry in that table would silently render the raw English
-// text inside an otherwise fully Chinese page, which is exactly the defect
+// that by translating mount.Step/mount.Note by their stable Key through the
+// roots.guide.* catalog keys. A step or note whose Key was added to mount but
+// never given an entry in that catalog would silently render the raw English
+// text inside an otherwise fully localized page, which is exactly the defect
 // this whole feature exists to fix. Rather than hardcoding the key list
 // here -- which would stop catching anything the day a new step or note is
 // added -- this walks every host/share combination mount.Guidance can
@@ -166,33 +255,25 @@ func TestLibraryRootsPageTranslatesEveryGuidanceKey(t *testing.T) {
 	if len(keys) == 0 {
 		t.Fatal("derived no keys from mount.Guidance -- this test is not exercising the page at all")
 	}
+	frag := rootsFragment(t)
 	for key := range keys {
 		if key == "" {
 			t.Fatal("mount.Guidance produced an empty key; internal/mount's own test should have caught this first")
 		}
-		marker := "'" + key + "':'"
-		idx := strings.Index(libraryRootsHTML, marker)
-		if idx < 0 {
-			t.Errorf("page has no MOUNT_TR entry for guidance key %q", key)
-			continue
-		}
-		start := idx + len(marker)
-		end := strings.Index(libraryRootsHTML[start:], "'")
-		if end < 0 {
-			t.Errorf("MOUNT_TR entry for %q is not closed by a following quote", key)
-			continue
-		}
-		translation := libraryRootsHTML[start : start+end]
-		hasCJK := false
-		for _, r := range translation {
-			if r >= 0x4E00 && r <= 0x9FFF {
-				hasCJK = true
-				break
+		catKey := "roots.guide." + key
+		for _, loc := range supportedLocales {
+			if _, ok := frag[string(loc)][catKey]; !ok {
+				t.Errorf("roots fragment locale %s is missing %q for guidance key %q", loc, catKey, key)
 			}
 		}
-		if !hasCJK {
-			t.Errorf("MOUNT_TR entry for %q = %q does not look like a Chinese translation", key, translation)
+		if !rootsHasCJK(frag[string(localeZhCN)][catKey]) {
+			t.Errorf("roots fragment zh-CN %q = %q does not look like a Chinese translation", catKey, frag[string(localeZhCN)][catKey])
 		}
+	}
+	// The page must render these through the catalog, not a page-local table:
+	// the old MOUNT_TR table is gone and guideText maps key → roots.guide.*.
+	if !strings.Contains(libraryRootsHTML, "guideKeyPrefix='roots.guide.'") {
+		t.Fatal("the page must render mount keys through the roots.guide.* catalog keys")
 	}
 }
 
@@ -216,26 +297,99 @@ func TestLibraryRootsPageTranslatesComposeWarningKey(t *testing.T) {
 	if volume.WarningKey == "" {
 		t.Fatal("the SMB compose form must carry a WarningKey; internal/mount's own test should have caught this first")
 	}
-	marker := "'" + volume.WarningKey + "':'"
-	idx := strings.Index(libraryRootsHTML, marker)
-	if idx < 0 {
-		t.Fatalf("page has no MOUNT_TR entry for compose warning key %q", volume.WarningKey)
-	}
-	start := idx + len(marker)
-	end := strings.Index(libraryRootsHTML[start:], "'")
-	if end < 0 {
-		t.Fatalf("MOUNT_TR entry for %q is not closed by a following quote", volume.WarningKey)
-	}
-	translation := libraryRootsHTML[start : start+end]
-	hasCJK := false
-	for _, r := range translation {
-		if r >= 0x4E00 && r <= 0x9FFF {
-			hasCJK = true
-			break
+	frag := rootsFragment(t)
+	catKey := "roots.guide." + volume.WarningKey
+	for _, loc := range supportedLocales {
+		if _, ok := frag[string(loc)][catKey]; !ok {
+			t.Fatalf("roots fragment locale %s is missing %q for compose warning key %q", loc, catKey, volume.WarningKey)
 		}
 	}
-	if !hasCJK {
-		t.Errorf("MOUNT_TR entry for %q = %q does not look like a Chinese translation", volume.WarningKey, translation)
+	if !rootsHasCJK(frag[string(localeZhCN)][catKey]) {
+		t.Errorf("roots fragment zh-CN %q = %q does not look like a Chinese translation", catKey, frag[string(localeZhCN)][catKey])
+	}
+}
+
+// Every static [[i18n:key]] marker and literal tdT/tdPlural key on the page
+// must resolve: to a key the roots fragment carries in all five locales, or
+// to one of the shared catalog keys (common.* / status.* / progress.title)
+// that every locale already ships. Plural bases are resolved through their
+// .one/.other siblings.
+func TestLibraryRootsPageI18nKeysResolveFromFragment(t *testing.T) {
+	frag := rootsFragment(t)
+	fragKeys := frag[string(localeZhCN)]
+	shared := map[string]bool{}
+	for _, loc := range supportedLocales {
+		for k := range catalogs[loc] {
+			shared[k] = true
+		}
+	}
+	unresolved := map[string]bool{}
+	collect := func(key string) {
+		if fragKeys[key] != "" || shared[key] {
+			return
+		}
+		if fragKeys[key+".one"] != "" || fragKeys[key+".other"] != "" || shared[key+".one"] || shared[key+".other"] {
+			return
+		}
+		unresolved[key] = true
+	}
+	for _, m := range i18nMarkerRE.FindAllStringSubmatch(libraryRootsHTML, -1) {
+		collect(m[1])
+	}
+	for _, m := range tdKeyCallRE.FindAllStringSubmatch(libraryRootsHTML, -1) {
+		collect(m[1])
+	}
+	if len(unresolved) > 0 {
+		names := make([]string, 0, len(unresolved))
+		for k := range unresolved {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		t.Fatalf("roots keys that resolve to nothing (not in fragment, its plural siblings, or a shared catalog): %v", names)
+	}
+}
+
+// The fragment must be a valid UTF-8 JSON catalog fragment: the page name
+// matches, all five locales carry the identical key set, and every key's
+// {placeholder} set matches zh-CN. It must define only page-prefixed keys.
+func TestLibraryRootsPageI18nFragmentParityAcrossLocales(t *testing.T) {
+	frag := rootsFragment(t)
+	base := frag[string(localeZhCN)]
+	if len(base) == 0 {
+		t.Fatal("zh-CN fragment is empty")
+	}
+	for _, loc := range supportedLocales {
+		km := frag[string(loc)]
+		if len(km) != len(base) {
+			t.Fatalf("locale %s has %d keys, zh-CN has %d", loc, len(km), len(base))
+		}
+		for k := range base {
+			if _, ok := km[k]; !ok {
+				t.Fatalf("locale %s is missing key %q", loc, k)
+			}
+		}
+	}
+	phRE := regexp.MustCompile(`\{[a-z]+\}`)
+	phSet := func(s string) string {
+		parts := phRE.FindAllString(s, -1)
+		sort.Strings(parts)
+		return strings.Join(parts, ",")
+	}
+	for k, zh := range base {
+		want := phSet(zh)
+		for _, loc := range supportedLocales[1:] {
+			if got := phSet(frag[string(loc)][k]); got != want {
+				t.Fatalf("placeholder set differs for %s in %s: %q vs zh-CN %q", k, loc, frag[string(loc)][k], zh)
+			}
+		}
+	}
+	// The fragment must define page-prefixed keys only, never the shared ones.
+	for k := range base {
+		for _, prefix := range []string{"common.", "api.", "status.", "facet.", "shell."} {
+			if strings.HasPrefix(k, prefix) {
+				t.Fatalf("fragment redefines shared key %q", k)
+			}
+		}
 	}
 }
 
@@ -276,11 +430,8 @@ func TestLibraryRootsPageRecommendsNFSOverSMBForCompose(t *testing.T) {
 	}
 	end := strings.Index(libraryRootsHTML[start:], "\n}")
 	body := libraryRootsHTML[start : start+end]
-	if !strings.Contains(body, "protocol==='smb'") {
-		t.Fatal("renderComposeVolume must branch on the SMB case to offer the NFS alternative")
-	}
-	if !strings.Contains(body, "NFS") {
-		t.Fatal("the SMB branch must recommend NFS as the way to avoid the cleartext-credentials problem entirely")
+	if !strings.Contains(body, "tdT('roots.composeNfsRecommended')") {
+		t.Fatal("the SMB branch must recommend NFS through the roots.composeNfsRecommended catalog key as the way to avoid the cleartext-credentials problem entirely")
 	}
 }
 

@@ -11,6 +11,14 @@ export default defineConfig({
   use: {
     baseURL: process.env.TIMINGDEX_PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1:4173',
     ignoreHTTPSErrors: true,
+    // Use the system Google Chrome (v149, matching Playwright 1.61.1) instead
+    // of the bundled Chromium download, which this offline host cannot fetch.
+    channel: 'chrome',
+    // The default page fixture negotiates zh-CN (the Hub's default locale), so
+    // the established Chinese-language assertions in the core surface tests
+    // stay valid; the localization tests opt into other locales explicitly via
+    // per-context cookies or Accept-Language.
+    locale: 'zh-CN',
     // Several workflows establish an administrator session. Keep browser
     // artifacts credential-free; assertions and the HTML report retain the
     // regression signal without recording typed tokens or request bodies.

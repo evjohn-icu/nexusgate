@@ -34,10 +34,10 @@ func (s *Server) workerSetupRouteSpecs() []routeSpec {
 	}
 }
 
-func (s *Server) workerSetupPage(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) workerSetupPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write([]byte(brandedPage(shelledPage(workerSetupPageHTML))))
+	s.serveLocalizedPage(w, r, "/worker-setup", workerSetupPageHTML)
 }
 
 func (s *Server) workerSetupContext(w http.ResponseWriter, r *http.Request) {
@@ -304,7 +304,7 @@ func quotePOSIX(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-const workerSetupPageHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · 处理节点安装向导</title><style>
+const workerSetupPageHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · [[i18n:workerSetup.title]]</title><style>
 
 .step{display:none}
 .step.active{display:block}
@@ -332,42 +332,42 @@ const workerSetupPageHTML = `<!doctype html><html lang="zh-CN"><head><meta chars
 
 </style></head><body data-worker-setup-wizard>
 <!--SHELL_HEADER-->
-<div class="wrap"><div class="back-row"><a class="back-link" href="/workers">← 返回处理节点</a></div>
-<div class="step-nav" id="step-nav"><div class="active" data-step="1" aria-current="step">1. 环境概览</div><div data-step="2">2. 配置处理节点</div><div data-step="3">3. 生成安装脚本</div><div data-step="4">4. 启动处理节点</div></div>
+<div class="wrap"><div class="back-row"><a class="back-link" href="/workers">← [[i18n:common.back]]</a></div>
+<div class="step-nav" id="step-nav"><div class="active" data-step="1" aria-current="step">1. [[i18n:workerSetup.environmentOverview]]</div><div data-step="2">2. [[i18n:workerSetup.configureNode]]</div><div data-step="3">3. [[i18n:workerSetup.generateScript]]</div><div data-step="4">4. [[i18n:workerSetup.startNode]]</div></div>
 
 <div class="step active" id="step-1">
-<div class="panel"><h2>Hub 连接信息</h2><div id="hub-info"><div class="muted">正在加载环境信息…</div></div></div>
-<div class="panel"><h2>处理节点二进制文件</h2><p class="muted">将编译好的二进制文件放入 worker-binaries 目录后刷新页面即可生效。</p><div class="binary-grid" id="binary-grid"></div><div class="hint">💡 在本机交叉编译：<code>GOOS=windows GOARCH=amd64 go build -o timingdex-windows-amd64.exe ./cmd/timingdex</code><br>将文件放置在 <code>&lt;DataDir&gt;/worker-binaries/</code> 目录下。</div></div>
-<div class="step-actions"><button class="nav-btn primary" onclick="goStep(2)">下一步 →</button></div>
+<div class="panel"><h2>[[i18n:workerSetup.hubConnectionInfo]]</h2><div id="hub-info"><div class="muted">[[i18n:workerSetup.loadingEnvironment]]</div></div></div>
+<div class="panel"><h2>[[i18n:workerSetup.binaries]]</h2><p class="muted">[[i18n:workerSetup.binariesHint]]</p><div class="binary-grid" id="binary-grid"></div><div class="hint">💡 [[i18n:workerSetup.crossCompileLead]]<code>GOOS=windows GOARCH=amd64 go build -o timingdex-windows-amd64.exe ./cmd/timingdex</code><br>[[i18n:workerSetup.placeFilesLead]]<code>&lt;DataDir&gt;/worker-binaries/</code>[[i18n:workerSetup.placeFilesTrail]]</div></div>
+<div class="step-actions"><button class="nav-btn primary" onclick="goStep(2)">[[i18n:common.next]] →</button></div>
 </div>
 
 <div class="step" id="step-2">
-<div class="panel"><h2>处理节点配置</h2>
-<div class="field"><label for="platform">目标平台</label><select id="platform"><option value="linux-amd64">Linux AMD64</option><option value="linux-arm64">Linux ARM64</option><option value="windows-amd64">Windows AMD64</option></select></div>
-<div class="field"><label for="worker-name">处理节点名称（可选）</label><input id="worker-name" type="text" placeholder="例如：nas-worker-1"></div>
-<div class="field"><label for="cache-dir">缓存目录（可选）</label><input id="cache-dir" type="text" placeholder="例如：/opt/timingdex/cache"></div>
+<div class="panel"><h2>[[i18n:workerSetup.configuration]]</h2>
+<div class="field"><label for="platform">[[i18n:workerSetup.targetPlatform]]</label><select id="platform"><option value="linux-amd64">Linux AMD64</option><option value="linux-arm64">Linux ARM64</option><option value="windows-amd64">Windows AMD64</option></select></div>
+<div class="field"><label for="worker-name">[[i18n:workerSetup.workerNameOptional]]</label><input id="worker-name" type="text" placeholder="[[i18n:workerSetup.workerNamePlaceholder]]"></div>
+<div class="field"><label for="cache-dir">[[i18n:workerSetup.cacheDirOptional]]</label><input id="cache-dir" type="text" placeholder="[[i18n:workerSetup.cacheDirPlaceholder]]"></div>
 </div>
-<div class="panel"><h2>素材目录怎么对应</h2><p class="muted">把 Hub 上的每个素材目录，对应到处理节点上的本地路径。</p><div id="mounts-panel"></div></div>
-<div class="step-actions"><button class="nav-btn secondary" onclick="goStep(1)">← 上一步</button><button class="nav-btn primary" onclick="goStep(3)">下一步 →</button></div>
+<div class="panel"><h2>[[i18n:workerSetup.mountMapping]]</h2><p class="muted">[[i18n:workerSetup.mountMappingHint]]</p><div id="mounts-panel"></div></div>
+<div class="step-actions"><button class="nav-btn secondary" onclick="goStep(1)">← [[i18n:workerSetup.previous]]</button><button class="nav-btn primary" onclick="goStep(3)">[[i18n:common.next]] →</button></div>
 </div>
 
 <div class="step" id="step-3">
-<div class="panel"><h2>生成安装脚本</h2>
-<p class="muted">点击下方按钮后，系统会生成一次性的配对口令并生成完整的安装脚本。脚本里有一次性口令，别提交到代码仓库，也别分享。</p>
-<div id="script-area"><div class="center"><button class="primary" onclick="generateScript()" id="gen-btn">生成配对口令和安装脚本</button></div></div>
+<div class="panel"><h2>[[i18n:workerSetup.generateScript]]</h2>
+<p class="muted">[[i18n:workerSetup.scriptWarning]]</p>
+<div id="script-area"><div class="center"><button class="primary" onclick="generateScript()" id="gen-btn">[[i18n:workerSetup.generateButton]]</button></div></div>
 </div>
-<div class="step-actions"><button class="nav-btn secondary" onclick="goStep(2)">← 上一步</button></div>
+<div class="step-actions"><button class="nav-btn secondary" onclick="goStep(2)">← [[i18n:workerSetup.previous]]</button></div>
 </div>
 
 <div class="step" id="step-4">
-<div class="panel"><h2>启动处理节点</h2>
-<p class="muted">安装脚本执行完成后，在处理节点机器上运行以下命令启动持续处理：</p>
+<div class="panel"><h2>[[i18n:workerSetup.startNode]]</h2>
+<p class="muted">[[i18n:workerSetup.runCommandHint]]</p>
 <div class="script-box">timingdex worker run --config ./timingdex-worker.json</div>
-<p class="muted">也可以使用 <code>timingdex worker doctor --config ./timingdex-worker.json</code> 检查处理节点状态。</p>
-<p class="muted">在 Hub 的「<a href="/workers">处理节点</a>」页面可看处理节点的上线状态。</p>
+<p class="muted">[[i18n:workerSetup.doctorHintLead]]<code>timingdex worker doctor --config ./timingdex-worker.json</code>[[i18n:workerSetup.doctorHintTrail]]</p>
+<p class="muted">[[i18n:workerSetup.workersStatusHintLead]]<a href="/workers">[[i18n:workers.title]]</a>[[i18n:workerSetup.workersStatusHintTrail]]</p>
 </div>
 <div class="step-actions">
-<a class="nav-btn primary" href="/workers">返回处理节点</a>
+<a class="nav-btn primary" href="/workers">[[i18n:common.back]]</a>
 </div>
 </div>
 </div>
@@ -376,16 +376,15 @@ const workerSetupPageHTML = `<!doctype html><html lang="zh-CN"><head><meta chars
 const esc=function(v){return String(v??'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','>':'&gt;','<':'&lt;','"':'&quot;',"'":'&#39;'}[c]})};
 var ctx=null,pairingToken=null;
  function csrfToken(){var prefix='__Host-timingdex_csrf=';var item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
- function authHeaders(base){var headers=new Headers(base||{});var csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
-async function apiErrMsg(r){try{const d=await r.json();if(d&&d.error&&d.error.message)return d.error.action?(d.error.message+'（'+d.error.action+'）'):d.error.message}catch(_){}return (await r.text()).trim()}
-async function json(url,opt){opt=opt||{};var r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok)throw new Error(await apiErrMsg(r));return r.json()}
+  function authHeaders(base){var headers=new Headers(base||{});var csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
+async function json(url,opt){opt=opt||{};var r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok)throw new Error(await tdApiErrorMessage(r));return r.json()}
 function goStep(n){for(var i=1;i<=4;i++){document.getElementById('step-'+i).className='step'+(i===n?' active':'');document.querySelectorAll('.step-nav div')[i-1].className=(i===n?'active':'')}}
-function renderBinaries(){var html=[],bins=ctx.available_binaries||{},order=['linux-amd64','linux-arm64','windows-amd64'];for(var i=0;i<order.length;i++){var key=order[i],bin=bins[key]||{},name=key,exists=!!bin.exists,size=bin.size_bytes||0;html.push('<div class="binary-card"><div class="'+(exists?'avail':'unavail')+'">'+(exists?'\u2713 可用':'&times; 不可用')+'</div><div>'+esc(name)+'</div><div class="size">'+(exists?formatSize(size):'未上传')+'</div></div>')}document.getElementById('binary-grid').innerHTML=html.join('')}
+function renderBinaries(){var html=[],bins=ctx.available_binaries||{},order=['linux-amd64','linux-arm64','windows-amd64'];for(var i=0;i<order.length;i++){var key=order[i],bin=bins[key]||{},name=key,exists=!!bin.exists,size=bin.size_bytes||0;html.push('<div class="binary-card"><div class="'+(exists?'avail':'unavail')+'">'+(exists?'\u2713 '+tdT('workerSetup.binaryAvailable'):'&times; '+tdT('workerSetup.binaryUnavailable'))+'</div><div>'+esc(name)+'</div><div class="size">'+(exists?formatSize(size):tdT('workerSetup.binaryNotUploaded'))+'</div></div>')}document.getElementById('binary-grid').innerHTML=html.join('')}
 function formatSize(b){if(b<1024)return b+' B';if(b<1048576)return(b/1024).toFixed(1)+' KB';return(b/1048576).toFixed(1)+' MB'}
- function renderMounts(){var panel=document.getElementById('mounts-panel'),roots=ctx.library_roots||[];if(!roots.length){panel.innerHTML='<div class="muted">暂无素材目录。请先在启动配置中添加。</div>';return}var html=[];for(var i=0;i<roots.length;i++){var r=roots[i],label=r.path?esc(r.path):'路径需管理员口令';html.push('<div class="mount-row"><div><div class="path">'+esc(r.id)+'<br>'+label+'</div></div><div><label style="font-size:12px;color:#bfcae0;font-weight:800;display:block;margin-bottom:3px">处理节点本地路径</label><input aria-label="处理节点本地路径" class="mount-path" data-root-id="'+esc(r.id)+'" type="text" placeholder="/mnt/footage/'+esc(r.id)+'"></div></div>')}panel.innerHTML=html.join('')}
+ function renderMounts(){var panel=document.getElementById('mounts-panel'),roots=ctx.library_roots||[];if(!roots.length){panel.innerHTML='<div class="muted">'+esc(tdT('workerSetup.noRoots'))+'</div>';return}var html=[];for(var i=0;i<roots.length;i++){var r=roots[i],label=r.path?esc(r.path):esc(tdT('workerSetup.pathRequiresAdmin'));html.push('<div class="mount-row"><div><div class="path">'+esc(r.id)+'<br>'+label+'</div></div><div><label style="font-size:12px;color:#bfcae0;font-weight:800;display:block;margin-bottom:3px">'+esc(tdT('workerSetup.localPath'))+'</label><input aria-label="'+esc(tdT('workerSetup.localPath'))+'" class="mount-path" data-root-id="'+esc(r.id)+'" type="text" placeholder="/mnt/footage/'+esc(r.id)+'"></div></div>')}panel.innerHTML=html.join('')}
   async function refreshAdminDetails(authenticated){if(!ctx)return;if(authenticated){try{var rootsResponse=await fetch('/api/v1/admin/hub/worker-setup/library-roots',{credentials:'same-origin',headers:authHeaders()});if(!rootsResponse.ok)throw new Error('admin detail request failed');var details=await rootsResponse.json();ctx.library_roots=details.library_roots||[]}catch(_){return}}else{ctx.library_roots=(ctx.library_roots||[]).map(function(root){return{id:root.id}})}renderMounts()}
   window.addEventListener('timingdex:admin-auth-changed',function(event){refreshAdminDetails(!!(event.detail&&event.detail.authenticated))});
-  async function init(){try{var contextResponse=await fetch('/api/v1/hub/worker-setup/context',{credentials:'same-origin'});if(!contextResponse.ok)throw new Error(await apiErrMsg(contextResponse));ctx=await contextResponse.json();var detailWarning='';try{var rootsResponse=await fetch('/api/v1/admin/hub/worker-setup/library-roots',{credentials:'same-origin',headers:authHeaders()});if(!rootsResponse.ok)throw new Error('admin detail request failed');var details=await rootsResponse.json();ctx.library_roots=details.library_roots||[]}catch(_){detailWarning='<div class="muted">管理员路径详情加载失败，已保留脱敏素材目录。请先在顶部登录。</div>'}var hubInfo=document.getElementById('hub-info');hubInfo.innerHTML='<div class="kv"><span class="k">Hub URL</span><span class="v">'+esc(ctx.hub_url)+'</span></div><div class="kv"><span class="k">TLS</span><span class="v '+(ctx.tls?'tls-on':'tls-off')+'">'+(ctx.tls?'已启用':'未启用')+'</span></div>'+(ctx.fingerprint?'<div class="kv"><span class="k">证书指纹</span><span class="fingerprint">'+esc(ctx.fingerprint)+'</span></div>':'')+'<div class="kv"><span class="k">素材目录</span><span class="v">'+(ctx.library_roots||[]).length+' 个</span></div>'+detailWarning;renderBinaries();renderMounts()}catch(e){document.getElementById('hub-info').innerHTML='<div class="muted">无法获取环境信息：'+esc(e.message)+'</div>'}}
- async function generateScript(){var btn=document.getElementById('gen-btn');btn.disabled=true;btn.textContent='正在生成…';try{var pairing=await json('/api/v1/hub/worker-pairings',{method:'POST'});pairingToken=pairing.token;var platform=document.getElementById('platform').value;var name=document.getElementById('worker-name').value.trim();var cacheDir=document.getElementById('cache-dir').value.trim();var mountInputs=document.querySelectorAll('.mount-path');var mounts=[];for(var i=0;i<mountInputs.length;i++){var path=mountInputs[i].value.trim();if(path){mounts.push({root_id:mountInputs[i].getAttribute('data-root-id'),path:path})}}var body=JSON.stringify({platform:platform,name:name,pairing_token:pairingToken,mounts:mounts,cache_dir:cacheDir});var script=await fetch('/api/v1/hub/worker-setup/script',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:body});if(!script.ok)throw new Error(await apiErrMsg(script));var scriptText=await script.text();document.getElementById('script-area').innerHTML='<button class="copy-btn" onclick="copyScript()" id="copy-btn">复制脚本</button><div class="script-box" id="script-output">'+esc(scriptText)+'</div><div class="hint">脚本里有一次性配对口令，用过就失效。请在目标 Worker 机器上执行。</div><div class="step-actions"><button class="nav-btn primary" onclick="goStep(4)">查看启动说明 →</button></div>'}catch(e){document.getElementById('script-area').innerHTML='<div class="muted" style="color:#ffb7ac">生成失败：'+esc(e.message)+'</div><div class="center"><button class="primary" onclick="generateScript()">重试</button></div>'}finally{btn.disabled=false}}
-function copyScript(){var el=document.getElementById('script-output');if(!el)return;var range=document.createRange();range.selectNode(el);window.getSelection().removeAllRanges();window.getSelection().addRange(range);try{document.execCommand('copy');var btn=document.getElementById('copy-btn');btn.textContent='已复制'}catch(e){}}init();
+  async function init(){try{var contextResponse=await fetch('/api/v1/hub/worker-setup/context',{credentials:'same-origin'});if(!contextResponse.ok)throw new Error(await tdApiErrorMessage(contextResponse));ctx=await contextResponse.json();var detailWarning='';try{var rootsResponse=await fetch('/api/v1/admin/hub/worker-setup/library-roots',{credentials:'same-origin',headers:authHeaders()});if(!rootsResponse.ok)throw new Error('admin detail request failed');var details=await rootsResponse.json();ctx.library_roots=details.library_roots||[]}catch(_){detailWarning='<div class="muted">'+esc(tdT('workerSetup.adminDetailsFailed'))+'</div>'}var hubInfo=document.getElementById('hub-info');hubInfo.innerHTML='<div class="kv"><span class="k">'+esc(tdT('workerSetup.hubUrl'))+'</span><span class="v">'+esc(ctx.hub_url)+'</span></div><div class="kv"><span class="k">'+esc(tdT('workerSetup.tls'))+'</span><span class="v '+(ctx.tls?'tls-on':'tls-off')+'">'+(ctx.tls?tdT('workerSetup.tlsEnabled'):tdT('workerSetup.tlsNotEnabled'))+'</span></div>'+(ctx.fingerprint?'<div class="kv"><span class="k">'+esc(tdT('workerSetup.fingerprint'))+'</span><span class="fingerprint">'+esc(ctx.fingerprint)+'</span></div>':'')+'<div class="kv"><span class="k">'+esc(tdT('workerSetup.mediaFolders'))+'</span><span class="v">'+esc(tdPlural('workerSetup.rootCount',(ctx.library_roots||[]).length))+'</span></div>'+detailWarning;renderBinaries();renderMounts()}catch(e){document.getElementById('hub-info').innerHTML='<div class="muted">'+esc(tdT('workerSetup.environmentLoadError',{message:e.message}))+'</div>'}}
+ async function generateScript(){var btn=document.getElementById('gen-btn');btn.disabled=true;btn.textContent=tdT('workerSetup.generating');try{var pairing=await json('/api/v1/hub/worker-pairings',{method:'POST'});pairingToken=pairing.token;var platform=document.getElementById('platform').value;var name=document.getElementById('worker-name').value.trim();var cacheDir=document.getElementById('cache-dir').value.trim();var mountInputs=document.querySelectorAll('.mount-path');var mounts=[];for(var i=0;i<mountInputs.length;i++){var path=mountInputs[i].value.trim();if(path){mounts.push({root_id:mountInputs[i].getAttribute('data-root-id'),path:path})}}var body=JSON.stringify({platform:platform,name:name,pairing_token:pairingToken,mounts:mounts,cache_dir:cacheDir});var script=await fetch('/api/v1/hub/worker-setup/script',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:body});if(!script.ok)throw new Error(await tdApiErrorMessage(script));var scriptText=await script.text();document.getElementById('script-area').innerHTML='<button class="copy-btn" onclick="copyScript()" id="copy-btn">'+esc(tdT('workerSetup.copyScript'))+'</button><div class="script-box" id="script-output">'+esc(scriptText)+'</div><div class="hint">'+esc(tdT('workerSetup.scriptOneTimeNote'))+'</div><div class="step-actions"><button class="nav-btn primary" onclick="goStep(4)">'+esc(tdT('workerSetup.viewStartupGuide'))+'</button></div>'}catch(e){document.getElementById('script-area').innerHTML='<div class="muted" style="color:#ffb7ac">'+esc(tdT('workerSetup.generateFailed',{message:e.message}))+'</div><div class="center"><button class="primary" onclick="generateScript()">'+esc(tdT('common.retry'))+'</button></div>'}finally{btn.disabled=false}}
+function copyScript(){var el=document.getElementById('script-output');if(!el)return;var range=document.createRange();range.selectNode(el);window.getSelection().removeAllRanges();window.getSelection().addRange(range);try{document.execCommand('copy');var btn=document.getElementById('copy-btn');btn.textContent=tdT('common.copied')}catch(e){}}init();
 </script></body></html>`

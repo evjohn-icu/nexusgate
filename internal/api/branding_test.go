@@ -26,7 +26,7 @@ func TestBrandedPageAnchorsBite(t *testing.T) {
 		// The brand span now lives in the shared shell header rather than in
 		// each page constant (app_shell.go): the shell header is served on
 		// every page, so its markup is a branding carrier too.
-		shellHeaderHTML(),
+		shellHeaderHTML(localeZhCN),
 	}, "")
 	for i, p := range brandReplacements {
 		if !strings.Contains(all, p.anchor) {

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -31,10 +32,16 @@ func newCollectionsPageTestService(t *testing.T, name string) *app.Service {
 	return service
 }
 
+// hanRE matches any CJK ideograph: the page constant must not contain a
+// hardcoded Chinese string once the shared locale catalog owns all copy.
+var hanRE = regexp.MustCompile(`[\p{Han}]`)
+
 // The collections page serves the basket of pinned shots behind the shell
-// sidebar: the marker must be replaced by the sidebar, the 素材 nav group must
-// carry the 收藏 link, and the empty copy tells an operator where shots get
-// pinned. Like every other admin page here it never persists the Hub token.
+// sidebar: the marker must be replaced by the sidebar, the shell nav group
+// must carry the /collections link, and the localization wiring (tdT keys for
+// the empty/loading copy, tdApiErrorMessage for API failures) must be present
+// in the served script. Like every other admin page here it never persists the
+// Hub token.
 func TestCollectionsPageServesShellAndEmptyCopy(t *testing.T) {
 	service := newCollectionsPageTestService(t, "collections-page.db")
 	response := httptest.NewRecorder()
@@ -49,8 +56,8 @@ func TestCollectionsPageServesShellAndEmptyCopy(t *testing.T) {
 	for _, marker := range []string{
 		`<aside class="shell-sidebar" data-app-shell>`,
 		`href="/collections" data-nav="/collections" class="nav-link">收藏</a>`,
-		"还没有收藏。在素材库的搜索结果里把镜头加入收藏。",
-		"这个收藏还没有镜头。",
+		`tdT('collections.empty')`,
+		`tdT('collections.emptyShots')`,
 		"id=\"admin-token\"",
 		"type=\"password\"",
 		"/api/v1/collections/",
@@ -64,6 +71,45 @@ func TestCollectionsPageServesShellAndEmptyCopy(t *testing.T) {
 	}
 	if strings.Contains(body, "localStorage") || strings.Contains(body, "sessionStorage") {
 		t.Fatal("collections page must keep the admin token in page memory only")
+	}
+}
+
+// Every product string in the page constant must go through the shared locale
+// machinery: static HTML via [[i18n:*]] markers, dynamic copy via the runtime
+// helpers, API failures via the shared tdApiErrorMessage, and date output via
+// tdFormatDateTime. A hardcoded CJK string here means the migration regressed.
+func TestCollectionsPageLocalizedCopy(t *testing.T) {
+	for _, marker := range []string{
+		`<title>Timingdex · [[i18n:collections.title]]</title>`,
+		`<h1>[[i18n:collections.title]]</h1>`,
+		`<p class="muted">[[i18n:collections.intro]]</p>`,
+		`tdPlural('collections.shotCount'`,
+		`tdT('collections.duration'`,
+		`tdT('collections.createdAt'`,
+		`tdT('collections.loadingShots')`,
+		`tdT('collections.deleteCollection')`,
+		`tdT('collections.moveUp')`,
+		`tdT('collections.moveDown')`,
+		`tdT('collections.play')`,
+		`tdT('collections.copyTimecode')`,
+		`tdT('common.remove')`,
+		`tdT('collections.deleteConfirm')`,
+		`tdT('collections.timecodeCopied',{tc:text})`,
+		`tdApiErrorMessage(`,
+		`tdFormatDateTime(new Date(c.created_at))`,
+	} {
+		if !strings.Contains(collectionsHTML, marker) {
+			t.Fatalf("collections page missing localization wiring %q", marker)
+		}
+	}
+	if strings.Contains(collectionsHTML, "function apiErrMsg") {
+		t.Fatal("collections page must use the shared tdApiErrorMessage, not a page-local apiErrMsg")
+	}
+	if strings.Contains(collectionsHTML, "toLocaleString") {
+		t.Fatal("collections page must use tdFormatDateTime instead of toLocaleString")
+	}
+	if hit := hanRE.FindString(collectionsHTML); hit != "" {
+		t.Fatalf("collections page constant contains hardcoded CJK copy %q; every string must go through the locale catalog", hit)
 	}
 }
 

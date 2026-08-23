@@ -1090,12 +1090,13 @@ func (s *Server) listRoots(w http.ResponseWriter, r *http.Request) {
 // UIs render, with times preformatted the same way encoding/json formats
 // time.Time (RFC3339, fractional seconds only when nonzero).
 type RootHealth struct {
-	RootID      string   `json:"root_id"`
-	Path        string   `json:"path"`
-	State       string   `json:"state"` // unknown|healthy|unavailable
-	LastHealthy *string  `json:"last_healthy_at,omitempty"`
-	LastScan    *string  `json:"last_scan_at,omitempty"`
-	Warnings    []string `json:"warnings,omitempty"`
+	RootID         string                  `json:"root_id"`
+	Path           string                  `json:"path"`
+	State          string                  `json:"state"` // unknown|healthy|unavailable
+	LastHealthy    *string                 `json:"last_healthy_at,omitempty"`
+	LastScan       *string                 `json:"last_scan_at,omitempty"`
+	Warnings       []string                `json:"warnings,omitempty"`
+	WarningDetails []app.RootWarningDetail `json:"warning_details,omitempty"`
 }
 
 // rootsHealth is the read-only counterpart to listRoots: same data, same
@@ -1115,10 +1116,11 @@ func (s *Server) rootsHealth(w http.ResponseWriter, r *http.Request) {
 	health := make([]RootHealth, 0, len(roots))
 	for _, root := range roots {
 		item := RootHealth{
-			RootID:   root.ID,
-			Path:     root.Path,
-			State:    string(root.HealthState),
-			Warnings: s.service.RootWarnings(root.Path, true),
+			RootID:         root.ID,
+			Path:           root.Path,
+			State:          string(root.HealthState),
+			Warnings:       s.service.RootWarnings(root.Path, true),
+			WarningDetails: s.service.RootWarningDetails(root.Path, true),
 		}
 		if root.LastHealthyAt != nil {
 			value := root.LastHealthyAt.Format(time.RFC3339Nano)
@@ -2426,260 +2428,26 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/setup", http.StatusFound)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// The shell nav (app_shell.go) carries the Tags and 模型服务 links now;
 	// the legacy header's tags→providers splice died with the header.
-	_, _ = w.Write([]byte(brandedPage(shelledPage(libraryIndexHTML))))
+	s.serveLocalizedPage(w, r, "/", libraryIndexHTML)
 }
-
-const legacyLibraryIndexHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · 素材库</title><style>
-
-.legend{display:flex;gap:12px;color:var(--text-muted);font-size:12px;align-items:center}
-.library{display:grid;gap:13px}
-.asset-row{display:grid;grid-template-columns:220px minmax(220px,.75fr) minmax(380px,1.75fr);gap:18px;align-items:stretch;padding:13px;background:var(--surface);border:1px solid var(--rule);border-radius:16px;transition:border-color .15s,transform .15s}
-.asset-row:hover{border-color:var(--rule-strong);transform:translateY(-1px)}
-.thumb,.thumb-empty{width:100%;height:100%;min-height:126px;aspect-ratio:16/9;object-fit:cover;border-radius:10px;background:var(--inset)}
-.thumb-empty{display:grid;place-items:center;color:var(--text-muted);font-size:12px;border:1px dashed var(--rule-strong)}
-.asset-info{display:flex;min-width:0;flex-direction:column;justify-content:center;padding:4px 0}
-.filename{font-size:16px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:.01em}
-.asset-meta{margin-top:7px;color:var(--text-muted);font-size:12px;font-family:var(--font-data);font-variant-numeric:tabular-nums}
-.summary{margin:10px 0;color:var(--text-muted);line-height:1.45}
-.chips{display:flex;flex-wrap:wrap;gap:5px}
-.chip.voice{color:var(--ev-confirmed)}
-.asset-details{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
-.detail{font-size:11px;color:var(--text-muted);background:var(--inset);border-radius:6px;padding:3px 6px}
-.detail b{color:var(--text);margin-right:4px}
-.timeline-card{min-width:0;display:flex;flex-direction:column;justify-content:center;padding:4px 3px}
-.timeline-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
-.timeline-title{font-size:12px;font-weight:800;color:var(--text-muted)}
-.duration{color:var(--text-muted);font-size:12px;font-family:var(--font-data);font-variant-numeric:tabular-nums}
-.tickrule{display:flex;flex-direction:column;gap:6px;min-width:0}
-.tickrule-track{position:relative;height:34px;border:1px solid var(--rule);border-radius:var(--r-sm);background-color:var(--surface);background-image:repeating-linear-gradient(90deg,var(--graticule) 0 1px,transparent 1px 48px);overflow:hidden}
-.tickrule-span{position:absolute;top:0;bottom:0;border-right:1px solid var(--surface);background:var(--span-fill);display:flex;align-items:center;padding:0 8px;overflow:hidden}
-.tickrule-span>span{font-family:var(--font-data);font-size:11px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.tickrule-span.is-hit{background:var(--ev-confirmed-wash);box-shadow:inset 0 0 0 1px var(--ev-confirmed)}
-.tickrule-span.is-possible{background:var(--ev-draft-wash);box-shadow:inset 0 0 0 1px var(--ev-draft)}
-.tickrule-span:last-child{border-right:0}
-.tickrule-scale{display:flex;justify-content:space-between;font-family:var(--font-data);font-size:11px;font-variant-numeric:tabular-nums;color:var(--text-faint)}
-.timeline-empty{min-height:34px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:var(--s2);border:1px dashed var(--rule-strong);border-radius:var(--r-sm);color:var(--text-muted);font-size:12px;padding:var(--s2) var(--s3)}
-.empty.error{color:var(--ev-contradicted)}
-.loading{color:var(--text-muted);font-size:13px;padding:24px}
-@media(max-width:980px){.asset-row{grid-template-columns:170px minmax(190px,.8fr) minmax(280px,1.4fr)}}
-@media(max-width:720px){.wrap{padding:28px 20px 44px}
-.top{display:block}
-.legend{margin-top:16px}
-.asset-row{grid-template-columns:1fr;gap:13px}
-.thumb,.thumb-empty{min-height:auto;height:auto}
-.timeline-card{padding:0}
-.asset-info{padding:0}
-}
-
-</style></head><body><!--SHELL_HEADER--><main class="wrap" data-library-browser><section class="top"><div><div class="eyebrow">FOOTAGE LIBRARY · SHOT LEVEL</div><h1>素材库 · 镜头浏览</h1><p class="muted">从缩略图、素材语义到每个时间段的镜头内容，一眼看清你的素材里有什么可以用。</p></div><div class="legend"><span><i></i> 不同镜头</span><span><i></i> 时间范围</span><span><i></i> 语义描述</span></div></section><section id="library" class="library" aria-live="polite"><div class="loading">正在读取素材库…</div></section></main><script>
-const library=document.getElementById('library');const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=ms=>{ms=Math.max(0,Math.floor((ms||0)/1000));return String(Math.floor(ms/60)).padStart(2,'0')+':'+String(ms%60).padStart(2,'0')};
-function loadShots(id){return fetch('/api/v1/assets/'+encodeURIComponent(id)+'/shots').then(r=>r.ok?r.json():[]).then(x=>Array.isArray(x)?x:[]).catch(()=>[])}
-function chips(x){const values=[x.asset_type,x.camera_motion,x.lighting,...(x.mood_tags||[])].filter(Boolean).slice(0,5);return values.map(v=>'<span class="chip">'+esc(v)+'</span>').join('')+(x.has_speech?'<span class="chip voice">有口述</span>':'')}
-function timeline(x,shots){const duration=Math.max(Number(x.duration_ms)||0,1);if(!shots.length)return '<div class="timeline-empty">尚未生成镜头理解；完成分析后会显示可用时间段。</div>';const labels=['00:00',fmt(duration/2),fmt(duration)];const blocks=shots.map(s=>{const start=Math.max(0,Number(s.start_ms)||0),end=Math.max(start,Number(s.end_ms)||start),left=Math.min(100,start/duration*100),width=Math.max(1,(end-start)/duration*100),description=s.description||((s.tags||[]).join(' · '))||'未命名镜头',title=fmt(start)+' — '+fmt(end)+' · '+description;return '<div class="tickrule-span is-possible" style="left:'+left.toFixed(3)+'%;width:'+width.toFixed(3)+'%" title="'+esc(title)+'"><span>'+esc(description)+'</span></div>'}).join('');return '<div class="tickrule" aria-label="镜头语义时间轴"><div class="tickrule-track">'+blocks+'</div><div class="tickrule-scale"><span>'+labels[0]+'</span><span>'+labels[1]+'</span><span>'+labels[2]+'</span></div></div>'}
-function thumbnail(x){return x.thumbnail_url?'<img class="thumb" loading="lazy" src="'+esc(x.thumbnail_url)+'" alt="'+esc(x.filename)+' 的缩略图" onerror="this.outerHTML=\'<div class=&quot;thumb-empty&quot;>缩略图不可用</div>\'">':'<div class="thumb-empty">暂无缩略图</div>'}
-function optionalDetails(x){const fields=[['相机',x.camera_model],['区域',x.region_label],['场次',x.session_id],['色彩',x.source_color],['配置',x.color_profile],['原始格式',x.raw_format],['预览',x.preview_status]].filter(([,value])=>value);return fields.length?'<div class="asset-details" aria-label="拍摄与预览信息">'+fields.map(([label,value])=>'<span class="detail"><b>'+esc(label)+'</b>'+esc(value)+'</span>').join('')+'</div>':''}
-function row(x,shots){return '<article class="asset-row"><div>'+thumbnail(x)+'</div><div class="asset-info"><div class="filename" title="'+esc(x.filename)+'">'+esc(x.filename||'未命名素材')+'</div><div class="asset-meta">'+fmt(x.duration_ms)+' · '+esc(x.orientation||'方向未知')+' · '+esc(x.state||'未知状态')+'</div><p class="summary">'+esc(x.summary||'正在等待视频理解结果。')+'</p><div class="chips">'+chips(x)+'</div>'+optionalDetails(x)+'</div><div class="timeline-card"><div class="timeline-head"><span class="timeline-title">镜头语义时间轴</span><span class="duration">'+fmt(x.duration_ms)+'</span></div>'+timeline(x,shots)+'</div></article>'}
-async function load(ids){library.innerHTML='<div class="loading">正在整理镜头时间轴…</div>';try{let data=await fetch('/api/v1/assets?limit=300').then(r=>r.ok?r.json():[]);data=Array.isArray(data)?data:[];if(ids)data=data.filter(x=>ids.includes(x.id));if(!data.length){library.innerHTML='<div class="empty">暂无素材。先在<a href="/setup" style="color:#b7c8eb;text-decoration:underline">启动配置</a>添加素材目录并运行处理任务，镜头、缩略图和时间轴会出现在这里。<br><a href="/library-roots" style="display:inline-block;margin-top:14px;background:#324767;color:#eaf1ff;border-radius:9px;padding:10px 13px;font-weight:750">打开素材目录向导</a></div>';return}const rows=await Promise.all(data.map(async x=>row(x,await loadShots(x.id))));library.innerHTML=rows.join('')}catch(e){library.innerHTML='<div class="empty error">无法读取素材库：'+esc(e.message)+'</div>'}}
-async function search(){const q=document.getElementById('q').value.trim();if(!q)return load();try{const ids=await fetch('/api/v1/search?q='+encodeURIComponent(q)).then(r=>r.ok?r.json():[]);load(Array.isArray(ids)?ids:[])}catch(e){library.innerHTML='<div class="empty error">搜索失败：'+esc(e.message)+'</div>'}}document.getElementById('q').addEventListener('keydown',e=>{if(e.key==='Enter')search()});load();</script></body></html>`
 
 func (s *Server) providersPage(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(brandedPage(shelledPage(providersHTML))))
+	s.serveLocalizedPage(w, r, "/providers", providersHTML)
 }
 
 func (s *Server) setupPage(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(brandedPage(shelledPage(setupHTML))))
+	s.serveLocalizedPage(w, r, "/setup", setupHTML)
 }
 
 func (s *Server) progressPage(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(brandedPage(shelledPage(progressHTML))))
+	s.serveLocalizedPage(w, r, "/progress", progressHTML)
 }
-
-const progressHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · 处理进度</title><style>
-
-.top{justify-content:space-between}
-.console-hero{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;padding:16px 18px;margin:var(--s4) 0}
-.chain{margin:var(--s4) 0}
-.hero-title{display:grid;gap:4px}
-.hero-job{font-size:19px;font-weight:850;color:var(--text)}
-.hero-meta{font-size:12px}
-.panels{display:grid;grid-template-columns:1.4fr .8fr;gap:16px}
-.panel{padding:18px;min-width:0;overflow-x:auto}
-.panel h2{margin:0 0 14px}
-.log{font-family:var(--font-data);font-size:12px;line-height:1.55;color:var(--text-muted);min-height:280px;max-height:480px;overflow:auto;white-space:pre-wrap}
-.log div{padding:6px 0;border-bottom:1px solid var(--graticule)}
-@media(max-width:760px){.panels{grid-template-columns:1fr}
-.top{align-items:flex-start;flex-direction:column}
-}
-
-</style></head><body><!--SHELL_HEADER--><main class="wrap"><div class="top"><div><h1>处理进度</h1><p class="muted">状态每 2.5 秒刷新。服务商密钥全挂了（通常是套餐用量用完）时，任务会暂停，几小时后自动重试，不算失败次数。</p></div></div><div class="console-hero" data-console-hero aria-live="polite"><div class="hero-title"><span class="muted">正在处理</span><div class="hero-job" id="hero-job">当前没有运行中的作业</div><div class="hero-meta muted" id="hero-meta"></div></div><div class="hero-actions"><button id="run" class="primary" onclick="runPipeline()">运行待处理任务</button><button id="resume" onclick="resumeDeferred()">重试等用量的任务</button><button id="retry" onclick="retryFailed()">重试失败作业</button></div></div><section id="supervisor" class="muted" style="margin-top:18px">自动巡检：正在读取…</section><section id="pipeline-chain" class="chain" aria-label="处理流水线"><div class="chain-step" data-stage="probe"><span class="k">probe</span><span class="v">探测</span></div><div class="chain-step" data-stage="derive"><span class="k">derive</span><span class="v">生成</span></div><div class="chain-step" data-stage="speech_gate"><span class="k">speech_gate</span><span class="v">判音</span></div><div class="chain-step" data-stage="transcribe"><span class="k">transcribe</span><span class="v">转写</span></div><div class="chain-step" data-stage="analyze"><span class="k">analyze</span><span class="v">分析</span></div><div class="chain-step" data-stage="index"><span class="k">index</span><span class="v">索引</span></div></section><section id="metrics" class="metrics"></section><section id="issues" class="panel" style="display:none;margin-bottom:16px"><h2>需处理的问题</h2><div id="issues-body" class="muted">正在读取…</div></section><section class="panels"><div class="panel"><h2>最近作业</h2><div id="jobs" class="muted">正在读取…</div></div><div class="panel"><h2>本次操作</h2><div id="log" class="log"></div></div></section></main><script>
- function csrfToken(){const prefix='__Host-timingdex_csrf=';const item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
- function authHeaders(base){const headers=new Headers(base||{});const csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
-async function apiErrMsg(r){try{const d=await r.json();if(d&&d.error&&d.error.message)return d.error.action?(d.error.message+'（'+d.error.action+'）'):d.error.message}catch(_){}return (await r.text()).trim()}
-const logEl=document.getElementById('log');let logs=[];function log(m){logs.unshift(new Date().toLocaleTimeString()+'  '+esc(m));logs=logs.slice(0,30);logEl.innerHTML=logs.map(x=>'<div>'+x+'</div>').join('')}function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function when(v){const t=new Date(v);return isNaN(t.getTime())?String(v||''):t.toLocaleString()}
-function stateCell(j){if(j.deferred_reason)return '<span class="state deferred">等服务商用量</span>';return '<span class="state '+esc(j.state)+'">'+esc(j.terminal?j.state+'（不再重试）':j.state)+'</span>'}
-function detailCell(j){if(j.deferred_reason)return '所有密钥都失败（多为套餐用量用完）。已暂停，'+esc(when(j.run_after))+' 自动重试，不算失败次数。';return esc(j.last_error||(j.has_error?'有错误（填入管理口令查看详情）':'')||when(j.run_after)||'—')}
-// The metric row is counted by the database, not tallied from the rows below
-// it. Those rows are the newest hundred jobs, which during a scan are all
-// freshly enqueued work -- tallying them reported a library with thousands of
-// finished jobs as "0 done" and left it there.
-function renderMetrics(s){document.getElementById('metrics').innerHTML=[['待处理',s.pending],['处理中',s.running],['已完成',s.succeeded],['需处理',s.failed],['不再重试',s.terminal],['等用量',s.deferred]].map(m=>'<div class="metric"><span class="k">'+m[0]+'</span><span class="v">'+(m[1]||0)+'</span></div>').join('')}
-function highlightChain(jobType){const cells=document.querySelectorAll('#pipeline-chain .chain-step');cells.forEach(function(c){c.classList.remove('is-active')});if(!jobType)return;const cell=document.querySelector('#pipeline-chain [data-stage="'+esc(jobType)+'"]');if(cell)cell.classList.add('is-active')}function renderHero(jobs){const el=document.getElementById('hero-job'),meta=document.getElementById('hero-meta');if(!el||!meta)return;const running=jobs.find(j=>j.state==='running')||jobs.find(j=>j.state==='pending');if(!running){el.textContent='当前没有运行中的作业';meta.textContent=jobs.length?('队列 '+jobs.length+' 个作业，等待运行'):'队列为空。先在素材目录扫描视频。';highlightChain('');return}const label={probe:'探测',derive:'派生',speech_gate:'转写前检查',transcribe:'转写',align:'对齐',analyze:'分析',index:'索引',normalize:'统一格式'}[running.job_type]||running.job_type;el.textContent=(running.filename||running.asset_id||'素材')+' · '+label;meta.textContent='尝试 '+running.attempt_count+'/'+running.max_attempts+(running.deferred_reason?' · 等服务商用量':'');highlightChain(running.job_type)}function render(jobs){document.getElementById('jobs').innerHTML=jobs.length?'<table><tr><th>类型</th><th>状态</th><th>尝试</th><th>错误 / 下次运行</th></tr>'+jobs.map(j=>'<tr><td>'+esc(j.job_type)+'</td><td>'+stateCell(j)+'</td><td>'+j.attempt_count+'/'+j.max_attempts+'</td><td>'+detailCell(j)+'</td></tr>').join('')+'</table>':'暂无作业。先在<a href="/library-roots">素材目录</a>扫描视频。'}async function refresh(){try{const jobs=await fetch('/api/v1/jobs?limit=100',{headers:authHeaders()}).then(async r=>{if(!r.ok)throw Error(await apiErrMsg(r));return r.json()});render(jobs);renderHero(jobs)}catch(e){document.getElementById('jobs').textContent='无法读取作业：'+e.message}try{const s=await fetch('/api/v1/jobs/summary',{headers:authHeaders()}).then(async r=>{if(!r.ok)throw Error(await apiErrMsg(r));return r.json()});renderMetrics(s)}catch(e){log('无法读取队列统计：'+e.message)}refreshSupervisor()}
-function supervisorText(d){if(!d.enabled)return '自动巡检：<b>未开启</b>。在 Hub 的 config.json 设置 library_supervisor.enabled=true 并重启 Hub 后，Hub 会自动定时扫描素材目录并处理队列（会消耗服务商用量）。';
-if(!d.running)return '自动巡检：<b>已配置但未在运行</b>。当前进程可能不是 timingdex serve。';
-const parts=['自动巡检：<b>运行中</b>','每 '+Math.round(d.interval_seconds/60)+' 分钟扫描一次'];
-parts.push(d.last_pass_at?'上次 '+esc(when(d.last_pass_at)):'尚未扫描');
-parts.push(d.scanning?'正在扫描…':(d.next_pass_at?'下次 '+esc(when(d.next_pass_at)):'—'));
-if(d.last_outcome==='held_off_peak')parts.push('当前在凌晨时段之外，'+esc(d.held_until?when(d.held_until):'时段开始时')+'才会扫描');
-else if(d.last_outcome==='pipeline_busy')parts.push('已有处理任务在运行，本次只扫描');
-else if(d.last_outcome==='error')parts.push('上次巡检有错误：'+esc(d.last_error||'填入管理口令查看详情'));
-else if(d.last_outcome==='scanned')parts.push('上次扫描 '+d.roots_scanned+' 个目录，新增 '+d.discovered+' 个素材');
-return parts.join(' · ')}
-async function refreshSupervisor(){const el=document.getElementById('supervisor');try{const r=await fetch('/api/v1/pipeline/supervisor',{headers:authHeaders()});if(!r.ok)throw Error(await apiErrMsg(r));el.innerHTML=supervisorText(await r.json())}catch(e){el.textContent='无法读取自动巡检状态：'+e.message}}
-const issueLabels={'provider_quota':'服务商用量限制','provider_auth':'服务商密钥问题','provider_unavailable':'服务商不可用','provider_route_exhausted':'所有密钥都失败(等用量)','media_decode':'媒体解码失败','unsupported_media':'不支持的媒体','disk_space_low':'磁盘空间不足','budget_exhausted':'成本预算已用尽','source_missing':'原始素材缺失','worker_offline':'处理节点离线','configuration':'配置问题','unknown':'其他'};
-// The deferral codes are the categories that recover on their own — their
-// parked jobs wake when run_after passes, the disk frees, or the budget
-// period rolls over — so 重试此组 on them must also release the parked half,
-// not just requeue failed rows.
-const issueAutoRecover={'provider_route_exhausted':true,'disk_space_low':true,'budget_exhausted':true};
- function issuesRow(i){const label=issueLabels[i.category]||i.category;const auto=issueAutoRecover[i.category]?'是':'否';const count=Number.isFinite(Number(i.count))?Number(i.count):0;const assets=Number.isFinite(Number(i.asset_count))?Number(i.asset_count):0;const next=i.next_retry_at?esc(when(i.next_retry_at)):'—';return '<tr><td>'+esc(label)+'</td><td>'+count+'</td><td>'+assets+'</td><td>'+auto+'</td><td>'+next+'</td><td><button data-action="retry-issue" data-category="'+esc(i.category)+'">重试这组</button></td></tr>'}
- document.body.addEventListener('click',function(e){const b=e.target.closest('[data-action="retry-issue"]');if(b)retryIssueGroup(b.dataset.category,b)});
-async function issuesRefresh(){const el=document.getElementById('issues'),body=document.getElementById('issues-body');if(!el||!body)return;try{const r=await fetch('/api/v1/issues',{headers:authHeaders()});if(!r.ok)throw Error(await apiErrMsg(r));const issues=await r.json();if(!(issues||[]).reduce((n,i)=>n+(i.count||0),0)){el.style.display='none';return}el.style.display='';body.innerHTML='<table><tr><th>问题</th><th>作业数</th><th>素材数</th><th>会自动重试?</th><th>下次重试</th><th></th></tr>'+(issues||[]).map(issuesRow).join('')+'</table>'}catch(e){el.style.display='';body.textContent='无法读取问题列表：'+e.message}}
-async function retryIssueGroup(category,btn){const label=issueLabels[category]||category;if(btn)btn.disabled=true;log('已请求重试「'+label+'」问题组');try{const r=await fetch('/api/v1/pipeline/retry-failed',{method:'POST',headers:authHeaders({'content-type':'application/json'}),body:JSON.stringify({category})});if(!r.ok)throw Error(await apiErrMsg(r));const d=await r.json();let extra='';if(issueAutoRecover[category]){const z=await fetch('/api/v1/pipeline/resume-deferred',{method:'POST',headers:authHeaders({'content-type':'application/json'}),body:JSON.stringify({reason:category})});if(!z.ok)throw Error(await apiErrMsg(z));const zd=await z.json();extra='，并提前释放 '+zd.resumed+' 个等待中的作业'}log('已重新排队 '+d.requeued+' 个「'+label+'」作业'+extra+'；点击「运行待处理任务」开始处理')}catch(e){log('重试失败：'+e.message)}finally{if(btn)btn.disabled=false;refresh();issuesRefresh()}}
-async function retryFailed(){const b=document.getElementById('retry');b.disabled=true;log('已请求重试失败作业');try{const r=await fetch('/api/v1/pipeline/retry-failed',{method:'POST',headers:authHeaders()});if(!r.ok)throw Error(await apiErrMsg(r));const d=await r.json();log('已重新排队 '+d.requeued+' 个失败作业；点击「运行待处理任务」开始处理')}catch(e){log('重试失败：'+e.message)}finally{b.disabled=false;refresh()}}async function resumeDeferred(){const b=document.getElementById('resume');b.disabled=true;log('已请求提前释放等用量的作业');try{const r=await fetch('/api/v1/pipeline/resume-deferred',{method:'POST',headers:authHeaders()});if(!r.ok)throw Error(await apiErrMsg(r));const d=await r.json();log(d.resumed?'已释放 '+d.resumed+' 个等用量的作业；点击「运行待处理任务」开始处理':'当前没有等用量的作业')}catch(e){log('释放失败：'+e.message)}finally{b.disabled=false;refresh()}}
-async function runPipeline(){const b=document.getElementById('run');b.disabled=true;b.textContent='正在运行…';log('已请求执行待处理任务');try{const r=await fetch('/api/v1/pipeline/run',{method:'POST',headers:authHeaders()});if(!r.ok)throw Error(await apiErrMsg(r));const d=await r.json().catch(()=>({}));log(d.status==='already_running'?'已有处理任务在后台运行':'处理任务已在后台启动，可关闭本页')}catch(e){log('执行失败：'+e.message)}finally{b.disabled=false;b.textContent='运行待处理任务';refresh()}}refresh();issuesRefresh();setInterval(refresh,2500);setInterval(issuesRefresh,10000);log('进度面板已打开');</script></body></html>`
 
 func (s *Server) repurposePage(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(brandedPage(shelledPage(repurposeWorkspaceHTML))))
+	s.serveLocalizedPage(w, r, "/repurpose", repurposeWorkspaceHTML)
 }
-
-const repurposeWorkspaceHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · 改编工作台</title><style>
-
-.repurpose-head{justify-content:space-between}
-.head-actions{display:flex;gap:10px;align-items:center}
-.repurpose-layout{display:grid;grid-template-columns:300px 1fr;gap:20px;align-items:start}
-.plan-inbox{background:var(--surface);border:1px solid var(--rule);border-radius:14px;padding:14px;position:sticky;top:76px;max-height:calc(100vh - 100px);overflow:auto}
-.plan-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
-.plan-list .loading{color:var(--text-muted);font-size:13px;padding:10px 4px}
-.plan-list-item{width:100%;text-align:left;padding:10px 12px;cursor:pointer;color:var(--text);font:inherit}
-.plan-list-item:hover{border-color:var(--rule-strong)}
-.plan-list-item[aria-current="true"]{border-color:var(--brand);background:var(--nav-active)}
-.plan-list-item .pl-title{font-weight:700;font-size:14px;margin-bottom:3px}
-.plan-list-item .pl-meta{color:var(--text-muted);font-size:12px;display:flex;gap:8px;flex-wrap:wrap}
-.plan-workspace{min-width:0}
-.plan-head{display:flex;gap:14px;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;margin-bottom:14px}
-.plan-title-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.plan-head h2{font-size:clamp(20px,3vw,30px);margin:0;letter-spacing:.01em}
-.plan-id-row{display:flex;gap:8px;align-items:center;margin-top:8px}
-.plan-id-row code{font-family:var(--font-data);font-size:12px;color:var(--text-muted);background:var(--inset);border:1px solid var(--rule);border-radius:6px;padding:3px 8px}
-.plan-head-actions{display:flex;gap:8px}
-.plan{background:var(--surface);border:1px solid var(--rule);border-radius:14px;padding:18px}
-.section{border:1px solid var(--rule);border-radius:12px;padding:14px;margin-bottom:14px;background:var(--inset)}
-.sectionhead{display:flex;gap:10px;justify-content:space-between;align-items:flex-start;flex-wrap:wrap}
-.role{font-weight:800;color:var(--text)}
-.rationale{color:var(--text-muted);font-size:13px;margin:4px 0 10px}
-.candidates{display:flex;flex-direction:column;gap:8px}
-.candidate{display:flex;gap:12px;align-items:flex-start;padding:10px 12px}
-.candidate.selected{border-color:var(--ev-confirmed)}
-.candidate.excluded{opacity:.55}
-.candidate .thumb{width:150px;border-radius:8px;flex:none}
-.candidate .cand-body{flex:1;min-width:0}
-.candidate .cand-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
-.small{color:var(--text-muted);font-size:12px}
-.plan-command-bar{display:flex;gap:12px;justify-content:space-between;align-items:center;margin-top:16px;padding-top:14px;border-top:1px solid var(--rule);flex-wrap:wrap}
-.plan-command-bar .cmd-actions{display:flex;gap:10px}
-.statusline{display:inline;padding:0;border:0;background:transparent;color:var(--text-muted);font-size:13px}
-.error{display:none;color:var(--ev-contradicted);font-size:13px;margin-top:8px;padding:0;border:0;background:transparent}
-.error:not(:empty){display:block}
-.revision-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
-.revision-item{width:100%;text-align:left;padding:10px 12px;cursor:pointer;color:var(--text);font:inherit}
-.revision-item[aria-current="true"]{border-color:var(--brand)}
-.revision-item .rv-meta{color:var(--text-muted);font-size:12px;margin-top:3px}
-.revision-item .rv-note{color:var(--text-muted);font-size:13px;margin-top:4px}
-.ui-dialog{background:var(--surface);color:var(--text);border:1px solid var(--rule-strong);border-radius:14px;padding:20px;width:min(680px,92vw);max-height:86vh;overflow:auto}
-.ui-dialog::backdrop{background:rgba(6,12,24,.6)}
-.ui-dialog h3{margin:0 0 12px}
-.ui-dialog .field{margin-bottom:12px}
-.ui-dialog label{display:block;color:var(--text-muted);font-size:13px;margin-bottom:4px}
-.ui-dialog .row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
-.ui-dialog .dialog-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
-.dialog-close{position:absolute;top:12px;right:14px;background:transparent;border:none;color:var(--text-muted);font-size:20px;cursor:pointer}
-.ui-dialog--media{width:min(860px,94vw)}
-.shot-video{width:100%;border-radius:10px;background:var(--inset)}
-.shot-dialog-meta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;color:var(--text-muted);font-size:13px}
-.shot-dialog-meta b{color:var(--text)}
-@media(max-width:900px){.repurpose-layout{grid-template-columns:1fr}
-.plan-inbox{position:static;max-height:none}
-.ui-dialog .row{grid-template-columns:1fr}
-}
-@media(max-width:600px){.candidate{flex-direction:column}
-.candidate .thumb{width:100%}
-.plan-command-bar{flex-direction:column;align-items:stretch}
-.plan-command-bar .cmd-actions{justify-content:stretch}
-.plan-command-bar .btn{flex:1}
-}
-
-</style></head><body><!--SHELL_HEADER--><main class="wrap"><div class="repurpose-head"><div><div class="eyebrow">方案助手</div><h1>改编工作台</h1><p class="muted">AI 先起草方案，你来审核定夺：选候选片段、锁定关键选择、排除备选，存成独立版本；批准后定稿，可导出剪辑单（EDL/FCPXML）给剪辑软件用。原视频不会被改动。</p></div><div class="head-actions"><button type="button" class="btn primary" id="new-plan">新建方案</button><button type="button" class="btn" id="refresh-inbox">刷新</button></div></div><div class="repurpose-layout"><aside class="plan-inbox" aria-label="方案列表"><div class="tabs"><button type="button" class="is-active" data-filter="draft">待审核</button><button type="button" data-filter="approved">已批准</button><button type="button" data-filter="all">全部</button></div><ol class="plan-list" id="plan-list"><li class="loading">加载中…</li></ol></aside><section class="plan-workspace"><div class="ui-empty" id="workspace-empty">选择一个方案开始审核，或新建第一个方案。</div><div id="workspace" hidden><div class="plan-head"><div><div class="plan-title-row"><h2 id="plan-title"></h2><span id="plan-status" class="pill"></span></div><div class="muted" id="plan-meta"></div><div class="plan-id-row"><code id="plan-id"></code><button type="button" class="btn quiet" id="copy-id">复制编号</button></div></div><div class="plan-head-actions"><button type="button" class="btn" id="revision-history">版本历史</button></div></div><div class="history-banner" id="history-banner" hidden>正在查看历史版本（只读）。返回最新版本后可编辑。</div><div id="result" class="plan" aria-live="polite"></div><div class="plan-command-bar"><span class="statusline" id="statusline"></span><div class="cmd-actions"><button type="button" class="btn primary" id="save-rev">保存为新版本</button><button type="button" class="btn approve" id="approve">批准这一版</button></div></div></div></section></div></main>
-<dialog id="new-plan-dialog" class="ui-dialog"><button type="button" class="dialog-close" data-close="new-plan-dialog" aria-label="关闭">×</button><h3>新建方案</h3><form id="plan-form" onsubmit="createPlan(event)"><div class="field"><label for="brief">这次要做什么？</label><textarea id="brief" required placeholder="例如：做一个 30 秒深圳城市生活宣传片，要有夜景、通勤和人文气息"></textarea></div><div class="row"><div class="field"><label for="duration">总时长（秒）</label><input id="duration" type="number" min="5" value="30"></div><div class="field"><label for="style">风格</label><input id="style" placeholder="城市生活"></div><div class="field"><label for="audience">受众</label><input id="audience" placeholder="品牌客户"></div></div><div class="error" id="error"></div><div class="dialog-actions"><button type="button" class="btn" data-close="new-plan-dialog">取消</button><button type="submit" class="btn primary" id="create">生成可审核方案</button></div></form></dialog>
-<dialog id="plan-shot-dialog" class="ui-dialog ui-dialog--media"><button type="button" class="dialog-close" data-close="plan-shot-dialog" aria-label="关闭">×</button><h3 id="shot-title"></h3><video id="shot-video" class="shot-video" controls preload="metadata"></video><div class="shot-dialog-meta"><div><b>素材</b><br><span id="shot-asset"></span></div><div><b>时间</b><br><span id="shot-time"></span></div><div><b>时长</b><br><span id="shot-duration"></span></div><div><b>匹配</b><br><span id="shot-score"></span></div></div><div class="dialog-actions"><button type="button" class="btn primary" data-close="plan-shot-dialog">关闭</button></div></dialog>
-<dialog id="revision-dialog" class="ui-dialog"><button type="button" class="dialog-close" data-close="revision-dialog" aria-label="关闭">×</button><h3>版本历史</h3><ol class="revision-list" id="revision-list"></ol></dialog>
-<script>
-const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=ms=>{ms=Math.max(0,Math.floor((ms||0)/1000));return String(Math.floor(ms/60)).padStart(2,'0')+':'+String(ms%60).padStart(2,'0')};const fmtDateTime=iso=>{if(!iso)return '';const d=new Date(iso);return isNaN(d)?'':(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'))};
-const roleZh={opening:'开场',hook:'钩子',body:'主体',ending:'结尾',transition:'转场',broll:'空镜',cta:'收尾'};const roleName=role=>roleZh[role]||role;
-const state={plans:[],filter:'draft',active:null,revision:null,revisions:[],dirty:false};
-function csrfToken(){const prefix='__Host-timingdex_csrf=';const item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
-function authHeaders(base){const headers=new Headers(base||{});const csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
-async function apiErrMsg(r){try{const d=await r.json();if(d&&d.error&&d.error.message)return d.error.action?(d.error.message+'（'+d.error.action+'）'):d.error.message}catch(_){}return (await r.text()).trim()}
-async function api(url,opt){opt=opt||{};const r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok){if(r.status===401)throw Error('需要 Hub 管理口令：请先在顶部登录');throw Error(await apiErrMsg(r))}return r.json()}
-function status(text){const el=document.getElementById('statusline');if(el)el.textContent=text}
-function setDirty(v){state.dirty=v;const btn=document.getElementById('save-rev');if(btn)btn.disabled=!v}
-window.addEventListener('beforeunload',function(e){if(state.dirty){e.preventDefault();e.returnValue=''}});
-function confirmDiscard(){if(!state.dirty)return true;return confirm('当前编辑尚未保存，切换将丢失。确定继续吗？')}
-async function downloadExport(kind){if(!state.active)return;try{const r=await fetch('/api/v1/repurpose/plans/'+encodeURIComponent(state.active.id)+'/export.'+kind,{headers:authHeaders()});if(!r.ok){if(r.status===401)throw Error('需要 Hub 管理口令：请先在顶部登录');throw Error(await apiErrMsg(r))}const url=URL.createObjectURL(await r.blob());const a=document.createElement('a');a.href=url;a.download=state.active.id+'.'+kind;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)}catch(e){alert('导出失败：'+e.message)}}
-// --- inbox ------------------------------------------------------------
-async function loadInbox(){let items;try{items=await api('/api/v1/repurpose/plans?status='+encodeURIComponent(state.filter)+'&limit=50')}catch(e){document.getElementById('plan-list').innerHTML='<li class="empty">无法读取方案：'+esc(e.message)+'</li>';return}state.plans=Array.isArray(items)?items:[];renderInbox()}
-function renderInbox(){const list=document.getElementById('plan-list');if(!state.plans.length){list.innerHTML='<li class="empty">'+(state.filter==='approved'?'还没有已批准的方案。':'还没有方案。点击「新建方案」开始，或等 AI 起草后刷新。')+'</li>';return}list.innerHTML=state.plans.map(function(p){const active=state.active&&p.id===state.active.id;return '<li><button type="button" class="plan-list-item"'+(active?' aria-current="true"':'')+' data-plan="'+esc(p.id)+'"><div class="pl-title">'+esc(p.title||'未命名方案')+' <span class="state '+(p.status==='approved'?'state--confirmed':'state--draft')+'">'+(p.status==='approved'?'已批准':'待审核')+'</span></div><div class="pl-meta"><span>'+fmt(p.duration_ms)+'</span><span>v'+(p.latest_revision||0)+'</span>'+(p.missing_needs_count>0?'<span>还缺 '+(p.missing_needs_count||0)+' 项</span>':'')+'<span>'+fmtDateTime(p.updated_at)+'</span></div></button></li>'}).join('')}
-document.getElementById('plan-list').addEventListener('click',function(e){const b=e.target.closest('[data-plan]');if(b)openPlan(b.dataset.plan)});
-document.querySelectorAll('.tabs button').forEach(function(f){f.addEventListener('click',function(){document.querySelectorAll('.tabs button').forEach(function(x){x.classList.remove('is-active')});f.classList.add('is-active');state.filter=f.dataset.filter;loadInbox()})});
-document.getElementById('refresh-inbox').addEventListener('click',loadInbox);
-// --- workspace ---------------------------------------------------------
-async function openPlan(id){if(!confirmDiscard())return;try{const [plan,revisions]=await Promise.all([api('/api/v1/repurpose/plans/'+encodeURIComponent(id)),api('/api/v1/repurpose/plans/'+encodeURIComponent(id)+'/revisions')]);state.active=plan;state.revisions=Array.isArray(revisions)?revisions:[];state.revision=null;state.dirty=false;renderPlan(plan,null);const url=new URL(location.href);url.searchParams.set('plan',id);url.searchParams.delete('revision');history.replaceState(null,'',url);loadInbox();document.getElementById('workspace-empty').hidden=true;document.getElementById('workspace').hidden=false}catch(e){alert('无法打开方案：'+e.message)}}
-function revisionPlan(revision){const p=revision.plan||{};state.active=p;state.revision=revision.revision;state.dirty=false;renderPlan(p,revision.revision);const url=new URL(location.href);url.searchParams.set('plan',p.id);url.searchParams.set('revision',String(revision.revision));history.replaceState(null,'',url)}
-function renderPlan(plan,viewRevision){state.active=plan;const latest=state.revisions.length?state.revisions[0].revision:0;const viewOnly=viewRevision!=null&&viewRevision!==latest;document.getElementById('plan-title').textContent=plan.title||'未命名方案';const st=document.getElementById('plan-status');st.textContent=plan.status==='approved'?'已批准':'待审核';st.className='state '+(plan.status==='approved'?'state--confirmed':'state--draft');document.getElementById('plan-meta').textContent='目标 '+fmt(plan.duration_ms)+(plan.style?' · '+plan.style:'')+(plan.audience?' · '+plan.audience:'')+(plan.provider?' · '+plan.provider:'')+' · 更新于 '+fmtDateTime(plan.updated_at);document.getElementById('plan-id').textContent=plan.id;document.getElementById('history-banner').hidden=!viewOnly;const sections=(plan.sections||[]).map(function(s){return renderSection(s,viewOnly)}).join('');document.getElementById('result').innerHTML=sections||'<div class="muted">这个方案还没有段落。</div>';const saveBtn=document.getElementById('save-rev');const approveBtn=document.getElementById('approve');saveBtn.disabled=!state.dirty||viewOnly||plan.status==='approved';approveBtn.disabled=viewOnly||plan.status==='approved'||(state.revisions[0]?state.revisions[0].state!=='draft':false);setDirty(false);status(viewOnly?'正在查看历史版本 v'+viewRevision:'')}
-function renderSection(s,viewOnly){const cards=(s.candidates||[]).slice().sort(function(a,b){return (a.shot_id===s.selected_shot_id?-1:0)-(b.shot_id===s.selected_shot_id?-1:0)}).map(function(c){return candidate(s,c,viewOnly)}).join('');const secActions=viewOnly?'<span class="pill">'+(s.required?'必需':'可选')+'</span>'+(s.locked?' <span class="pill">已锁定</span>':''):'<span class="pill">'+(s.required?'必需':'可选')+'</span>'+(s.locked?' <span class="pill">已锁定</span>':'')+'<div class="cand-actions"><button type="button" class="btn" data-action="'+(s.locked?'unlock':'lock')+'" data-role="'+esc(s.role)+'">'+(s.locked?'解锁':'锁住选择')+'</button><button type="button" class="btn quiet" data-action="alternatives" data-role="'+esc(s.role)+'">找替代镜头</button></div>';return '<section class="section"><div class="sectionhead"><div><div class="role">'+esc(roleName(s.role))+'</div><div class="small">目标 '+fmt(s.duration_ms)+' · 找素材：'+esc(s.query)+'</div></div><div class="sectionactions">'+secActions+'</div></div><div class="rationale">'+esc(s.rationale||'')+'</div><div class="candidates">'+cards+'</div></section>'}
-function candidate(s,c,viewOnly){const selected=s.selected_shot_id===c.shot_id,excluded=(s.excluded_shot_ids||[]).includes(c.shot_id),image='/api/v1/assets/'+encodeURIComponent(c.asset_id)+'/thumbnail',why=(c.reasons||[]).map(esc).join(' · ')||'按搜索匹配度排序';const actions=viewOnly?'':'<div class="cand-actions"><button type="button" class="btn" data-action="preview" data-asset="'+esc(c.asset_id)+'" data-start="'+c.start_ms+'" data-end="'+c.end_ms+'">预览 '+fmt(c.start_ms)+'–'+fmt(c.end_ms)+'</button><button type="button" class="btn" data-action="choose" data-role="'+esc(s.role)+'" data-shot="'+esc(c.shot_id)+'"'+(selected||s.locked?' disabled':'')+'>选择</button><button type="button" class="btn quiet" data-action="exclude" data-role="'+esc(s.role)+'" data-shot="'+esc(c.shot_id)+'">'+(excluded?'取消排除':'排除')+'</button></div>';return '<article class="candidate '+(selected?'selected ':'')+(excluded?'excluded':'')+'"><img class="thumb" loading="lazy" src="'+image+'" onerror="this.style.visibility=\'hidden\'" alt="候选镜头缩略图"><div class="cand-body"><b>'+fmt(c.start_ms)+' — '+fmt(c.end_ms)+'</b> <span class="pill">匹配 '+Math.round(Number(c.score||0)*100)+'%</span>'+(c.reused?' <span class="pill">用过的镜头</span>':'')+(selected?' <span class="state state--confirmed">已选</span>':'')+(excluded?' <span class="pill">已排除</span>':'')+'<div class="small">素材 '+esc(c.asset_id)+' · 镜头 '+esc(c.shot_id)+'</div><div class="small">'+why+'</div>'+actions+'</div></article>'}
-document.getElementById('result').addEventListener('click',function(e){const b=e.target.closest('[data-action]');if(!b)return;const act=b.dataset.action;if(act==='preview'){openShotDialog(b.dataset.asset,Number(b.dataset.start),Number(b.dataset.end));return}const role=b.dataset.role;if(act==='choose')choose(role,b.dataset.shot);else if(act==='exclude')toggleExclude(role,b.dataset.shot);else if(act==='lock')lock(role);else if(act==='unlock')unlock(role);else if(act==='alternatives')findAlternatives(role)});
-function section(role){return (state.active.sections||[]).find(function(s){return s.role===role})}
-function choose(role,shot){const s=section(role);if(!s)return;if(s.locked){alert('此段已锁定，请先解除锁定。');return}s.selected_shot_id=shot;s.excluded_shot_ids=(s.excluded_shot_ids||[]).filter(id=>id!==shot);rerender()}
-function toggleExclude(role,shot){const s=section(role);if(!s)return;if(s.selected_shot_id===shot){alert('已选镜头不能同时被排除。');return}const ids=s.excluded_shot_ids||[];s.excluded_shot_ids=ids.includes(shot)?ids.filter(id=>id!==shot):ids.concat(shot);rerender()}
-function rerender(){renderPlan(state.active,state.revision);setDirty(true);status('有没保存的改动。保存后会生成新版本。')}
-async function findAlternatives(role){const s=section(role);if(!s)return;try{const hits=await api('/api/v1/search/shots/hybrid?q='+encodeURIComponent(s.query)+'&limit=12');let added=0;(hits||[]).forEach(h=>{if((s.candidates||[]).some(c=>c.shot_id===h.id))return;(s.candidates=s.candidates||[]).push({shot_id:h.id,asset_id:h.asset_id,start_ms:h.start_ms,end_ms:h.end_ms,score:h.score||0,reasons:[h.description||'',...(h.tags||[])].filter(Boolean)});added++});if(!added)alert('没有找到新的替代镜头。');rerender()}catch(e){alert('无法查找替代镜头：'+e.message)}}
-async function saveRevision(){if(!state.active||!state.dirty||state.revision)return;try{const r=await api('/api/v1/repurpose/plans/'+state.active.id+'/revisions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({sections:state.active.sections,editor_note:document.getElementById('editor-note')?document.getElementById('editor-note').value:''})});state.active=r.plan;state.revision=null;state.dirty=false;state.revisions=await api('/api/v1/repurpose/plans/'+state.active.id+'/revisions');renderPlan(state.active,null);status('已保存为版本 '+r.revision+'。');loadInbox()}catch(e){alert('保存失败：'+e.message)}}
-async function createPlan(e){e.preventDefault();const b=document.getElementById('create'),error=document.getElementById('error');if(b)b.disabled=true;if(error)error.textContent='';try{const p=await api('/api/v1/repurpose/plans',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({brief:document.getElementById('brief').value,duration_ms:Number(document.getElementById('duration').value)*1000,style:document.getElementById('style').value,audience:document.getElementById('audience').value})});closeDialog('new-plan-dialog');openPlan(p.id)}catch(err){if(error)error.textContent='无法生成方案：'+err.message}finally{if(b)b.disabled=false}}
-async function approve(){if(!state.active)return;if(state.dirty){alert('请先保存当前编辑，再批准。');return}if(!confirm('批准后方案会锁定，不能继续修改。确定吗？'))return;try{const revisions=state.revisions.length?state.revisions:await api('/api/v1/repurpose/plans/'+state.active.id+'/revisions');const latest=revisions[0];const approved=await api('/api/v1/repurpose/plans/'+state.active.id+'/revisions/'+latest.revision+'/approve',{method:'POST'});state.active=approved.plan;state.revision=null;state.dirty=false;renderPlan(approved.plan,null);status('已批准。方案已锁定。');loadInbox()}catch(e){alert('批准失败：'+e.message)}}
-document.getElementById('save-rev').addEventListener('click',saveRevision);
-document.getElementById('approve').addEventListener('click',approve);
-document.getElementById('copy-id').addEventListener('click',function(){navigator.clipboard.writeText(state.active.id).then(function(){const b=document.getElementById('copy-id');b.textContent='已复制';setTimeout(function(){b.textContent='复制编号'},1500)}).catch(function(){prompt('复制方案 ID',state.active.id)})});
-// --- dialogs -----------------------------------------------------------
-function openDialog(id){const d=document.getElementById(id);if(d&&typeof d.showModal==='function')d.showModal()}
-function closeDialog(id){const d=document.getElementById(id);if(!d)return;if(typeof d.close==='function')d.close();const v=document.getElementById('shot-video');if(id==='plan-shot-dialog'&&v){v.pause();v.removeAttribute('src');v.load()}}
-document.querySelectorAll('[data-close]').forEach(function(b){b.addEventListener('click',function(){closeDialog(b.dataset.close)})});
-document.getElementById('new-plan').addEventListener('click',function(){openDialog('new-plan-dialog');const f=document.getElementById('brief');if(f)f.focus()});
-document.getElementById('revision-history').addEventListener('click',function(){renderRevisionList();openDialog('revision-dialog')});
-function renderRevisionList(){const list=document.getElementById('revision-list');if(!state.revisions.length){list.innerHTML='<li class="empty">还没有版本。保存当前编辑会创建第一个。</li>';return}list.innerHTML=state.revisions.map(function(r){const current=state.revision===r.revision;return '<li><button type="button" class="revision-item"'+(current?' aria-current="true"':'')+' data-revision="'+r.revision+'"><b>v'+r.revision+'</b> <span class="state '+(r.state==='approved'?'state--confirmed':'state--draft')+'">'+(r.state==='approved'?'已批准':'草稿')+'</span><div class="rv-meta">'+fmtDateTime(r.created_at)+'</div>'+(r.editor_note?'<div class="rv-note">'+esc(r.editor_note)+'</div>':'')+'</button></li>'}).join('')}
-document.getElementById('revision-list').addEventListener('click',function(e){const b=e.target.closest('[data-revision]');if(b){if(state.dirty&&!confirmDiscard())return;const r=state.revisions.find(x=>x.revision===Number(b.dataset.revision));if(r)revisionPlan(r);closeDialog('revision-dialog')}});
-function openShotDialog(assetID,startMS,endMS){const v=document.getElementById('shot-video');document.getElementById('shot-title').textContent=fmt(startMS)+' – '+fmt(endMS);document.getElementById('shot-asset').textContent=assetID;document.getElementById('shot-time').textContent=fmt(startMS)+' – '+fmt(endMS);document.getElementById('shot-duration').textContent=fmt(endMS-startMS);document.getElementById('shot-score').textContent='预览播放';v.src='/api/v1/assets/'+encodeURIComponent(assetID)+'/proxy#t='+Math.floor(startMS/1000)+','+Math.floor(endMS/1000);openDialog('plan-shot-dialog');v.onloadedmetadata=function(){try{v.currentTime=startMS/1000}catch(_){}};v.ontimeupdate=function(){if(v.currentTime>=(endMS-startMS)/1000+startMS/1000){}}}
-// --- boot --------------------------------------------------------------
-const params=new URLSearchParams(location.search);const bootPlan=params.get('plan');const bootRevision=params.get('revision');
-(async function init(){await loadInbox();if(bootPlan){try{const [plan,revisions]=await Promise.all([api('/api/v1/repurpose/plans/'+encodeURIComponent(bootPlan)),api('/api/v1/repurpose/plans/'+encodeURIComponent(bootPlan)+'/revisions')]);state.active=plan;state.revisions=Array.isArray(revisions)?revisions:[];if(bootRevision){const r=state.revisions.find(x=>x.revision===Number(bootRevision));if(r){state.revision=r.revision;renderPlan(r.plan,r.revision)}else{state.revision=null;renderPlan(plan,null)}}else{state.revision=null;renderPlan(plan,null)}document.getElementById('workspace-empty').hidden=true;document.getElementById('workspace').hidden=false}catch(e){}}else{const draft=state.plans.find(p=>p.status==='draft');if(draft)openPlan(draft.id)}})().catch(function(){});
-setInterval(loadInbox,20000);
-</script></body></html>`
 
 func (s *Server) listTags(w http.ResponseWriter, r *http.Request) {
 	items, err := s.service.ListCanonicalTags(r.Context())
@@ -2935,45 +2703,5 @@ func writeExportError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 func (s *Server) tagsPage(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(brandedPage(shelledPage(tagsHTML))))
+	s.serveLocalizedPage(w, r, "/tags", tagsHTML)
 }
-
-const tagsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · 标签整理</title><style>
-
-.head-actions{display:flex;gap:10px}
-.summary{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
-.tags-status:empty{display:none}
-.panel{padding:16px;margin-bottom:16px}
-.panel h2{margin:0 0 12px}
-details{margin-top:12px}
-details summary{cursor:pointer;color:var(--text-muted);font-size:14px}
-details input{width:90px}
-@media(max-width:700px){table{display:block;overflow-x:auto}
-}
-
-</style></head><body><!--SHELL_HEADER--><main class="wrap"><div class="head"><div><div class="eyebrow">标签整理</div><h1>标签整理</h1><p class="muted">把乱七八糟的标签统一成标准标签：AI 先给建议，你批准或拒绝后生效。</p></div><div class="head-actions"><button type="button" class="btn primary" id="curate-btn">让 AI 提建议</button><button type="button" class="btn" id="refresh-tags">刷新</button></div></div><div class="summary"><span class="state state--attention">没统一的 <b id="count-unresolved">–</b></span><span class="state state--draft">待审核建议 <b id="count-proposals">–</b></span><span class="state state--confirmed">标准标签 <b id="count-canonical">–</b></span></div><div class="tags-status" id="tags-status"></div><details><summary>高级：自动归类</summary><div style="margin-top:8px;display:flex;gap:8px;align-items:center"><label for="cluster-threshold">灵敏度</label><input id="cluster-threshold" type="number" step="0.01" min="0" max="1" value="0.86"><button type="button" class="btn" id="cluster-btn">自动归类</button></div></details><section class="panel"><h2>待审核建议</h2><div id="proposals"><p class="muted">加载中…</p></div></section><section class="panel"><h2>没统一的标签</h2><div id="unresolved"><p class="muted">加载中…</p></div></section><section class="panel"><h2>标准标签</h2><div id="tags"><p class="muted">加载中…</p></div></section></main>
-<script>
-const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));
- function csrfToken(){const prefix='__Host-timingdex_csrf=';const item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
- function authHeaders(base){const headers=new Headers(base||{});const csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
-async function apiErrMsg(r){try{const d=await r.json();if(d&&d.error&&d.error.message)return d.error.action?(d.error.message+'（'+d.error.action+'）'):d.error.message}catch(_){}return (await r.text()).trim()}
-async function j(url,opt){opt=opt||{};const r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok){if(r.status===401)throw new Error('需要 Hub 管理口令：请先在顶部填入');throw new Error(await apiErrMsg(r))}return r.json()}
-async function curate(){await j('/api/v1/tags/curate',{method:'POST'});await load()}
-async function review(id,action){await j('/api/v1/tags/proposals/'+id+'/review',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action})});await load()}
- function unresolvedTable(xs){return '<table><tr><th>标准化值</th><th>原始形式</th><th>素材数</th></tr>'+xs.map(x=>'<tr><td>'+esc(x.normalized_tag)+'</td><td>'+x.display_forms.map(v=>'<span class="pill">'+esc(v)+'</span>').join('')+'</td><td>'+numeric(x.asset_count)+'</td></tr>').join('')+'</table>'}
- function proposalTable(xs){return '<table><tr><th>动作</th><th>标准标签</th><th>原因</th><th>影响</th><th></th></tr>'+xs.map(x=>'<tr><td>'+esc(x.proposal_type)+'</td><td>'+esc(x.canonical_name)+'</td><td>'+esc(x.reason)+'<div class="muted">置信度 '+Math.round(Number(x.confidence||0)*100)+'%</div></td><td>'+numeric(x.affected_assets)+'</td><td><button class="approve" data-action="review" data-id="'+esc(x.id)+'" data-review="approve">批准</button> <button class="reject" data-action="review" data-id="'+esc(x.id)+'" data-review="reject">拒绝</button></td></tr>').join('')+'</table>'}
- function numeric(v){const n=Number(v);return Number.isFinite(n)?String(n):'0'}
- function tagTable(xs){return '<table><tr><th>标准标签</th><th>分类</th><th>素材</th><th>别名</th></tr>'+xs.map(x=>'<tr><td>'+esc(x.canonical_name)+'</td><td>'+esc(x.category)+'</td><td>'+numeric(x.usage_count)+'</td><td>'+numeric(x.alias_count)+'</td></tr>').join('')+'</table>'}
- 
-let tagStatusText='';
-function tagStatus(msg,ok){const el=document.getElementById('tags-status');if(!el)return;el.textContent=msg;el.className='tags-status '+(ok===false?'bad':(ok?'ok':''))}
-async function safeLoad(){try{const [u,p,t]=await Promise.all([j('/api/v1/tags/unresolved'),j('/api/v1/tags/proposals?state=pending'),j('/api/v1/tags')]);document.getElementById('unresolved').innerHTML=(u&&u.length)?unresolvedTable(u):'<p class="muted">暂无没统一的标签</p>';document.getElementById('proposals').innerHTML=(p&&p.length)?proposalTable(p):'<p class="muted">暂无待审核建议</p>';document.getElementById('tags').innerHTML=(t&&t.length)?tagTable(t):'<p class="muted">尚未建立标准标签</p>';document.getElementById('count-unresolved').textContent=(u||[]).length;document.getElementById('count-proposals').textContent=(p||[]).length;document.getElementById('count-canonical').textContent=(t||[]).length;tagStatus('')}catch(e){tagStatus('无法加载标签数据：'+e.message,false)}}
-async function curate(){const b=document.getElementById('curate-btn');if(b)b.disabled=true;tagStatus('正在让 AI 提建议…');try{const r=await j('/api/v1/tags/curate',{method:'POST'});const scanned=r&&(r.scanned||r.total||0),created=r&&(r.proposals||r.created||0);tagStatus('整理了 '+scanned+' 个标签，生成 '+created+' 条建议。',true);await safeLoad()}catch(e){tagStatus('生成提案失败：'+e.message,false)}finally{if(b)b.disabled=false}}
-async function cluster(){const b=document.getElementById('cluster-btn');if(b)b.disabled=true;tagStatus('正在自动归类…');try{const th=document.getElementById('cluster-threshold').value||'0.86';const r=await j('/api/v1/tags/clusters?threshold='+encodeURIComponent(th),{method:'POST'});const n=r&&(r.proposals||r.created||0);tagStatus('归类完成，生成 '+n+' 条建议。',true);await safeLoad()}catch(e){tagStatus('自动归类失败：'+e.message,false)}finally{if(b)b.disabled=false}}
-async function review(id,action){try{const r=await j('/api/v1/tags/proposals/'+id+'/review',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action})});tagStatus((action==='approve'?'已批准':'已拒绝')+'建议。',true);await safeLoad()}catch(e){tagStatus('处理提案失败：'+e.message,false)}}
-document.getElementById('curate-btn').addEventListener('click',curate);
-document.getElementById('cluster-btn').addEventListener('click',cluster);
-safeLoad();
-document.getElementById('refresh-tags').addEventListener('click',safeLoad);
-</script></body></html>`

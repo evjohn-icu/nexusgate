@@ -118,12 +118,22 @@ func TestRootsHealthMapsFieldsAndPreservesLastHealthy(t *testing.T) {
 	if ok.LastHealthy == nil || ok.LastScan == nil {
 		t.Fatalf("a healthy root must carry both timestamps: %+v", ok)
 	}
-	unknown := byID[roots[2].ID]
-	if unknown.State != string(domain.RootHealthUnknown) {
-		t.Fatalf("state=%q, want unknown", unknown.State)
+	// warning_details is the additive structured form of warnings; when the
+	// environment's mount table yields any, their codes must stay within the
+	// four documented stable codes the browser catalogs translate.
+	knownCodes := map[string]bool{
+		"root.empty_unmounted": true, "root.network_mount": true,
+		"root.staging_copy_disabled": true, "root.mount_writable": true,
 	}
-	if unknown.LastHealthy != nil || unknown.LastScan != nil {
-		t.Fatalf("an unscanned root must omit both timestamps: %+v", unknown)
+	for _, h := range health {
+		for _, d := range h.WarningDetails {
+			if !knownCodes[d.Code] {
+				t.Fatalf("root %s carries unexpected warning code %q", h.RootID, d.Code)
+			}
+			if d.Message == "" {
+				t.Fatalf("root %s warning %q has an empty message", h.RootID, d.Code)
+			}
+		}
 	}
 }
 

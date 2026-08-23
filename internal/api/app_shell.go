@@ -25,29 +25,32 @@ const shellHeaderMarker = "<!--SHELL_HEADER-->"
 // must land INSIDE the style element: appending it after </style> makes the
 // browser treat it as raw text and the whole shell silently loses its
 // styling — the exact silent no-op this project's anchor tests exist for.
-func shelledPage(page string) string {
+func shelledPage(page string, loc locale) string {
 	page = strings.Replace(page, "</style>", shellCSS+"</style>", 1)
-	page = strings.Replace(page, shellHeaderMarker, shellHeaderHTML(), 1)
+	page = strings.Replace(page, shellHeaderMarker, shellHeaderHTML(loc), 1)
 	page = strings.Replace(page, "</body>", shellScriptBlock+"</body>", 1)
 	return page
 }
 
-// shellHeaderHTML builds the shared sidebar. The brand span keeps the exact
-// text brandedPage rewrites, so Re:Footage branding applies to every page
-// through the existing mechanism. The sidebar is always the first element in
-// <body> (every page constant carries the marker directly after the opening
-// tag), and body padding reserves its 220px gutter on wide screens.
-func shellHeaderHTML() string {
+// shellHeaderHTML builds the shared sidebar for one locale. The brand span
+// keeps the exact text brandedPage rewrites, so Re:Footage branding applies
+// to every page through the existing mechanism; the product mark and the
+// LOCAL FOOTAGE INDEX tagline are brand copy and stay untranslated. All other
+// labels are [[i18n:shell.*]] markers that serveLocalizedPage resolves with
+// the selected catalog. The locale selector's option values are the canonical
+// tags (asserted by the browser smoke), and the current locale is preselected.
+func shellHeaderHTML(loc locale) string {
 	var b strings.Builder
-	b.WriteString(`<aside class="shell-sidebar" data-app-shell><div class="shell-brand-row"><span class="brand">Timingdex</span><span class="shell-tagline">LOCAL FOOTAGE INDEX</span><button type="button" class="shell-menu-toggle" id="shell-menu-toggle" aria-expanded="false" aria-controls="shell-nav">导航</button></div><nav class="shell-nav" id="shell-nav" aria-label="主导航">`)
+	b.WriteString(`<aside class="shell-sidebar" data-app-shell><div class="shell-brand-row"><span class="brand">Timingdex</span><span class="shell-tagline">LOCAL FOOTAGE INDEX</span><button type="button" class="shell-menu-toggle" id="shell-menu-toggle" aria-expanded="false" aria-controls="shell-nav">[[i18n:shell.nav.toggle]]</button></div><nav class="shell-nav" id="shell-nav" aria-label="[[i18n:shell.nav.label]]">`)
 	groups := []struct {
+		titleKey string
 		title    string
 		advanced bool
-		links    [][2]string // label, href
+		links    [][2]string // key, href
 	}{
-		{"核心", false, [][2]string{{"素材库", "/"}, {"收藏", "/collections"}, {"Jobs", "/progress"}}},
-		{"高级 / 管理", true, [][2]string{{"模型服务", "/providers"}, {"处理节点", "/workers"}, {"节点安装", "/worker-setup"}, {"素材目录", "/library-roots"}, {"Tags", "/tags"}, {"启动配置", "/setup"}, {"设置", "/settings"}}},
-		{"Labs", false, [][2]string{{"翻新方案", "/repurpose"}}},
+		{"shell.nav.group.core", "", false, [][2]string{{"shell.nav.library", "/"}, {"shell.nav.collections", "/collections"}, {"shell.nav.jobs", "/progress"}}},
+		{"shell.nav.group.advanced", "", true, [][2]string{{"shell.nav.providers", "/providers"}, {"shell.nav.workers", "/workers"}, {"shell.nav.workerSetup", "/worker-setup"}, {"shell.nav.mediaFolders", "/library-roots"}, {"shell.nav.tags", "/tags"}, {"shell.nav.setup", "/setup"}, {"shell.nav.settings", "/settings"}}},
+		{"", "Labs", false, [][2]string{{"shell.nav.repurpose", "/repurpose"}}},
 	}
 	for _, g := range groups {
 		className := "nav-group"
@@ -56,27 +59,53 @@ func shellHeaderHTML() string {
 		} else if g.title == "Labs" {
 			className += " nav-group-labs"
 		}
-		b.WriteString(`<div class="` + className + `"><span class="nav-group-title">` + g.title + `</span>`)
+		title := g.title
+		if g.titleKey != "" {
+			title = "[[i18n:" + g.titleKey + "]]"
+		}
+		b.WriteString(`<div class="` + className + `"><span class="nav-group-title">` + title + `</span>`)
 		for _, link := range g.links {
-			b.WriteString(`<a href="` + link[1] + `" data-nav="` + link[1] + `" class="nav-link">` + link[0] + `</a>`)
+			b.WriteString(`<a href="` + link[1] + `" data-nav="` + link[1] + `" class="nav-link">[[i18n:` + link[0] + `]]</a>`)
 		}
 		b.WriteString(`</div>`)
 	}
-	b.WriteString(`</nav><div class="shell-actions"><div class="shell-auth"><input id="admin-token" type="password" autocomplete="off" placeholder="Hub 管理口令（仅用于登录）" aria-label="Hub 管理口令"><button type="button" class="btn btn--primary btn--sm" id="admin-login" onclick="loginAdmin()">登录</button><button type="button" class="btn btn--sm" id="admin-logout" onclick="logoutAdmin()" hidden>退出</button><span id="admin-session-state" class="shell-auth-state">未登录</span></div><div class="status-strip" data-status-strip aria-label="系统状态">`)
+	b.WriteString(`</nav><div class="shell-actions"><div class="shell-locale"><label for="shell-locale" class="visually-hidden">[[i18n:shell.locale.label]]</label><select id="shell-locale" aria-label="[[i18n:shell.locale.label]]" onchange="changeLocale(this)">`)
+	for _, opt := range shellLocaleOptions {
+		selected := ""
+		if opt.loc == loc {
+			selected = ` selected`
+		}
+		b.WriteString(`<option value="` + string(opt.loc) + `" data-locale="` + string(opt.loc) + `"` + selected + `>` + opt.label + `</option>`)
+	}
+	b.WriteString(`</select></div><div class="shell-auth"><input id="admin-token" type="password" autocomplete="off" placeholder="[[i18n:shell.auth.tokenPlaceholder]]" aria-label="[[i18n:shell.auth.tokenPlaceholder]]"><button type="button" class="btn btn--primary btn--sm" id="admin-login" onclick="loginAdmin()">[[i18n:shell.auth.login]]</button><button type="button" class="btn btn--sm" id="admin-logout" onclick="logoutAdmin()" hidden>[[i18n:shell.auth.logout]]</button><span id="admin-session-state" class="shell-auth-state">[[i18n:shell.auth.notLoggedIn]]</span></div><div class="status-strip" data-status-strip aria-label="[[i18n:shell.status.label]]">`)
 	cells := []struct {
-		id, title, label string
+		id, titleKey, labelKey string
 	}{
-		{"status-hub", "Hub 状态", "Hub"},
-		{"status-pipeline", "处理队列状态", "处理"},
-		{"status-providers", "模型服务状态", "模型"},
-		{"status-workers", "处理节点状态", "节点"},
-		{"status-access", "管理访问权限（hub_security.admin_auth）", "访问"},
+		{"status-hub", "shell.status.hub.title", "shell.status.hub.label"},
+		{"status-pipeline", "shell.status.pipeline.title", "shell.status.pipeline.label"},
+		{"status-providers", "shell.status.providers.title", "shell.status.providers.label"},
+		{"status-workers", "shell.status.workers.title", "shell.status.workers.label"},
+		{"status-access", "shell.status.access.title", "shell.status.access.label"},
 	}
 	for _, c := range cells {
-		b.WriteString(`<a class="status-cell" data-` + c.id + ` href="` + cellHref(c.id) + `" title="` + c.title + `"><i class="dot"></i><span class="k">` + c.label + `</span><b id="` + c.id + `">…</b></a>`)
+		b.WriteString(`<a class="status-cell" data-` + c.id + ` href="` + cellHref(c.id) + `" title="[[i18n:` + c.titleKey + `]]"><i class="dot"></i><span class="k">[[i18n:` + c.labelKey + `]]</span><b id="` + c.id + `">…</b></a>`)
 	}
 	b.WriteString(`</div></div></aside>`)
 	return b.String()
+}
+
+// shellLocaleOptions are the self-identifying native names shown in the
+// selector; they are intentionally not translated (a Japanese reader must be
+// able to find 日本語 regardless of the current UI language).
+var shellLocaleOptions = []struct {
+	loc   locale
+	label string
+}{
+	{localeZhCN, "简体中文"},
+	{localeJaJP, "日本語"},
+	{localeEnUS, "English (US)"},
+	{localeFrFR, "Français"},
+	{localeEsES, "Español"},
 }
 
 func cellHref(id string) string {
@@ -114,12 +143,12 @@ const shellCSS = `
   color-scheme:light dark;
 
   /* —— 字体：本地优先工具，禁用任何网络字体。三个角色。 —— */
-  --font-ui:"Inter","SF Pro Text",-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC",sans-serif;
-  --font-data:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Mono","Roboto Mono",Menlo,Consolas,"PingFang SC","Microsoft YaHei",monospace;
+  --font-ui:"Inter","SF Pro Text",-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Hiragino Kaku Gothic ProN","Yu Gothic","Meiryo","Microsoft YaHei","Noto Sans CJK SC","Noto Sans CJK JP","Source Han Sans SC","Source Han Sans JP",sans-serif;
+  --font-data:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Mono","Roboto Mono",Menlo,Consolas,"PingFang SC","Hiragino Sans","Yu Gothic UI","Meiryo","Microsoft YaHei",monospace;
 
   --fs-display:32px; --fs-title:20px; --fs-sub:15px; --fs-body:14px;
   --fs-small:13px; --fs-label:11px; --fs-data:13px; --fs-metric:28px;
-  --lh-cjk:1.75; --lh-tight:1.35;
+  --lh-cjk:1.75; --lh-latin:1.5; --lh-tight:1.35;
 
   /* —— 间距 / 形状 —— */
   --s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--s6:32px;--s7:48px;
@@ -211,6 +240,11 @@ body{padding-left:var(--rail-w)}
 .dot.warn{background:var(--ev-attention)}
 .dot.err{background:var(--ev-contradicted)}
 .dot.off{background:transparent;box-shadow:inset 0 0 0 1px var(--ev-unknown)}
+/* Latin UI locales (en-US, fr-FR, es-ES) read better at a tighter body
+   line-height; the CJK locales (zh-CN, ja-JP) keep the taller CJK spacing. */
+body:lang(en),body:lang(fr),body:lang(es){line-height:var(--lh-latin)}
+.shell-locale{display:flex;align-items:center}
+.shell-locale select{height:28px;width:auto;max-width:150px;padding:0 26px 0 8px;font-family:var(--font-data);font-size:12px}
 .shell-auth{display:flex;flex-wrap:wrap;gap:var(--s2);align-items:center}
 .shell-auth input{flex:1 1 100%}
 .shell-auth-state{font-family:var(--font-data);font-size:var(--fs-label);letter-spacing:.1em;text-transform:uppercase;color:var(--text-faint)}
@@ -513,6 +547,7 @@ input[type=search],input[type=email],input[type=url]){
 // session.
 const shellScriptBlock = `<script>
 function getAdminToken(){const el=document.getElementById('admin-token');return el?el.value.trim():''}
+function changeLocale(sel){const tag=sel&&sel.value;if(!tag)return;document.cookie='timingdex_locale='+encodeURIComponent(tag)+'; Path=/; Max-Age=31536000; SameSite=Lax';location.reload()}
 // Mobile nav: the toggle collapses .shell-nav/.shell-actions until opened, so
 // the ten nav links and status pills do not crowd every mobile page. Closing
 // when a link is chosen restores the compact bar after navigation.
@@ -520,9 +555,9 @@ document.addEventListener('DOMContentLoaded',function(){const toggle=document.ge
 function csrfToken(){const prefix='__Host-timingdex_csrf=';const item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
 function shellAuthHeaders(base){const headers=new Headers(base||{});const csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
 let adminAuthMode='required';
-function applyAdminAuthMode(){const auth=document.querySelector('.shell-auth');if(auth)auth.hidden=adminAuthMode!=='required';if(adminAuthMode==='required'){statusCell('status-access','ok','需口令')}else if(adminAuthMode==='trusted_network'){statusCell('status-access','warn','内网免口令')}else{statusCell('status-access','err','完全开放')}const callout=document.getElementById('admin-auth-callout');if(callout){if(adminAuthMode==='required'){callout.hidden=true}else if(adminAuthMode==='trusted_network'){callout.className='callout callout--attention';callout.hidden=false}else{callout.className='callout callout--contradicted';const s=callout.querySelector('span');if(s)s.textContent='口令已关闭：任何能访问这个端口的人都是管理员。';callout.hidden=false}}}
-function shellSetAuthState(authenticated){if(adminAuthMode!=='required'){applyAdminAuthMode();return}const state=document.getElementById('admin-session-state'),input=document.getElementById('admin-token'),login=document.getElementById('admin-login'),logout=document.getElementById('admin-logout');if(state)state.textContent=authenticated?'已登录':'未登录';if(input)input.hidden=authenticated;if(login)login.hidden=authenticated;if(logout)logout.hidden=!authenticated}
-async function loginAdmin(){const token=getAdminToken();if(!token){shellSetAuthState(false);return}const button=document.getElementById('admin-login');if(button)button.disabled=true;try{const r=await fetch('/api/v1/auth/admin/session',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:token})});if(!r.ok)throw Error('登录失败');const input=document.getElementById('admin-token');if(input)input.value='';shellSetAuthState(true);window.dispatchEvent(new CustomEvent('timingdex:admin-auth-changed',{detail:{authenticated:true}}));refreshStatus()}catch(e){const state=document.getElementById('admin-session-state');if(state)state.textContent=e.message}finally{if(button)button.disabled=false}}
+function applyAdminAuthMode(){const auth=document.querySelector('.shell-auth');if(auth)auth.hidden=adminAuthMode!=='required';if(adminAuthMode==='required'){statusCell('status-access','ok',tdT('shell.auth.required'))}else if(adminAuthMode==='trusted_network'){statusCell('status-access','warn',tdT('shell.auth.trustedNetwork'))}else{statusCell('status-access','err',tdT('shell.auth.open'))}const callout=document.getElementById('admin-auth-callout');if(callout){if(adminAuthMode==='required'){callout.hidden=true}else if(adminAuthMode==='trusted_network'){callout.className='callout callout--attention';callout.hidden=false}else{callout.className='callout callout--contradicted';const s=callout.querySelector('span');if(s)s.textContent=tdT('shell.auth.openWarning');callout.hidden=false}}}
+function shellSetAuthState(authenticated){if(adminAuthMode!=='required'){applyAdminAuthMode();return}const state=document.getElementById('admin-session-state'),input=document.getElementById('admin-token'),login=document.getElementById('admin-login'),logout=document.getElementById('admin-logout');if(state)state.textContent=authenticated?tdT('shell.auth.loggedIn'):tdT('shell.auth.notLoggedIn');if(input)input.hidden=authenticated;if(login)login.hidden=authenticated;if(logout)logout.hidden=!authenticated}
+async function loginAdmin(){const token=getAdminToken();if(!token){shellSetAuthState(false);return}const button=document.getElementById('admin-login');if(button)button.disabled=true;try{const r=await fetch('/api/v1/auth/admin/session',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:token})});if(!r.ok)throw Error(tdT('shell.auth.loginFailed'));const input=document.getElementById('admin-token');if(input)input.value='';shellSetAuthState(true);window.dispatchEvent(new CustomEvent('timingdex:admin-auth-changed',{detail:{authenticated:true}}));refreshStatus()}catch(e){const state=document.getElementById('admin-session-state');if(state)state.textContent=e.message}finally{if(button)button.disabled=false}}
  async function logoutAdmin(){try{await fetch('/api/v1/auth/admin/session',{method:'DELETE',credentials:'same-origin',headers:shellAuthHeaders()})}finally{shellSetAuthState(false);window.dispatchEvent(new CustomEvent('timingdex:admin-auth-changed',{detail:{authenticated:false}}));refreshStatus()}}
 function statusCell(id,state,text){const el=document.getElementById(id);if(!el)return;el.textContent=text;const cell=el.closest('.status-cell');if(cell){const dot=cell.querySelector('.dot');if(dot)dot.className='dot '+state}}
 // The old per-page headers marked the current page with nav-active; the
@@ -530,10 +565,10 @@ function statusCell(id,state,text){const el=document.getElementById(id);if(!el)r
 // page can never forget to pass it. Runs at end of body, so the DOM is ready.
 document.querySelectorAll('.nav-link').forEach(function(a){if(a.getAttribute('href')===location.pathname){a.classList.add('active');a.setAttribute('aria-current','page')}});
 async function refreshStatus(){
-  try{const r=await fetch('/api/v1/health');statusCell('status-hub',r.ok?'ok':'err',r.ok?'正常':'异常')}catch(e){statusCell('status-hub','err','异常')}
-  try{const s=await fetch('/api/v1/jobs/summary',{credentials:'same-origin',headers:shellAuthHeaders()}).then(r=>r.ok?r.json():null);if(s){let state='idle',text='空闲';if(s.running>0){state='ok';text='运行中 '+s.running}else if(s.deferred>0){state='warn';text='等用量 '+s.deferred}else if((s.failed||0)+(s.terminal||0)>0){state='err';text='失败 '+(s.failed+s.terminal)}else if(s.pending>0){text='排队 '+s.pending}statusCell('status-pipeline',state,text)}else{statusCell('status-pipeline','off','—')}}catch(e){statusCell('status-pipeline','off','—')}
-  try{const r=await fetch('/api/v1/admin/provider-channels/status',{headers:shellAuthHeaders()});if(r.ok){const caps=await r.json();const list=Array.isArray(caps)?caps:[];const anyData=list.some(c=>c&&c.has_runtime_data);let okN=0,degradedN=0;list.forEach(function(c){if(!c||!c.has_runtime_data||!c.snapshot||!Array.isArray(c.snapshot.channels))return;c.snapshot.channels.forEach(function(ch){if(!ch||!ch.enabled)return;if(ch.available)okN++;else degradedN++})});if(!anyData||(okN+degradedN)===0){statusCell('status-providers','off','未配置')}else if(degradedN>0){statusCell('status-providers','warn','降级 '+degradedN)}else{statusCell('status-providers','ok','正常 '+okN)}}else{statusCell('status-providers','err','异常')}}catch(e){statusCell('status-providers','off','—')}
-  try{const w=await fetch('/api/v1/hub/workers',{headers:shellAuthHeaders()}).then(r=>r.ok?r.json():null);if(Array.isArray(w)){const on=w.filter(x=>x.status==='online').length;const off=w.length-on;statusCell('status-workers',off>0?'warn':'ok',on+' 在线'+(off?' / '+off+' 离线':''))}else{statusCell('status-workers','off','—')}}catch(e){statusCell('status-workers','off','—')}
+  try{const r=await fetch('/api/v1/health');statusCell('status-hub',r.ok?'ok':'err',r.ok?tdT('shell.status.ok'):tdT('shell.status.err'))}catch(e){statusCell('status-hub','err',tdT('shell.status.err'))}
+  try{const s=await fetch('/api/v1/jobs/summary',{credentials:'same-origin',headers:shellAuthHeaders()}).then(r=>r.ok?r.json():null);if(s){let state='idle',text=tdT('shell.status.idle');if(s.running>0){state='ok';text=tdPlural('shell.status.running',s.running)}else if(s.deferred>0){state='warn';text=tdPlural('shell.status.deferred',s.deferred)}else if((s.failed||0)+(s.terminal||0)>0){state='err';text=tdPlural('shell.status.failed',(s.failed+s.terminal))}else if(s.pending>0){text=tdPlural('shell.status.pending',s.pending)}statusCell('status-pipeline',state,text)}else{statusCell('status-pipeline','off','—')}}catch(e){statusCell('status-pipeline','off','—')}
+  try{const r=await fetch('/api/v1/admin/provider-channels/status',{headers:shellAuthHeaders()});if(r.ok){const caps=await r.json();const list=Array.isArray(caps)?caps:[];const anyData=list.some(c=>c&&c.has_runtime_data);let okN=0,degradedN=0;list.forEach(function(c){if(!c||!c.has_runtime_data||!c.snapshot||!Array.isArray(c.snapshot.channels))return;c.snapshot.channels.forEach(function(ch){if(!ch||!ch.enabled)return;if(ch.available)okN++;else degradedN++})});if(!anyData||(okN+degradedN)===0){statusCell('status-providers','off',tdT('shell.status.notConfigured'))}else if(degradedN>0){statusCell('status-providers','warn',tdPlural('shell.status.degraded',degradedN))}else{statusCell('status-providers','ok',tdPlural('shell.status.okCount',okN))}}else{statusCell('status-providers','err',tdT('shell.status.err'))}}catch(e){statusCell('status-providers','off','—')}
+  try{const w=await fetch('/api/v1/hub/workers',{headers:shellAuthHeaders()}).then(r=>r.ok?r.json():null);if(Array.isArray(w)){const on=w.filter(x=>x.status==='online').length;const off=w.length-on;statusCell('status-workers',off>0?'warn':'ok',tdPlural('shell.status.online',on)+(off?' / '+tdPlural('shell.status.offline',off):''))}else{statusCell('status-workers','off','—')}}catch(e){statusCell('status-workers','off','—')}
 }
 fetch('/api/v1/setup/status').then(function(r){return r.ok?r.json():null}).then(function(s){if(!s)return;adminAuthMode=s.admin_auth||'required';applyAdminAuthMode()}).catch(function(){});
 fetch('/api/v1/auth/admin/session',{credentials:'same-origin'}).then(function(r){shellSetAuthState(r.ok);window.dispatchEvent(new CustomEvent('timingdex:admin-auth-changed',{detail:{authenticated:r.ok}}))}).catch(function(){shellSetAuthState(false);window.dispatchEvent(new CustomEvent('timingdex:admin-auth-changed',{detail:{authenticated:false}}))});refreshStatus();setInterval(refreshStatus,15000);

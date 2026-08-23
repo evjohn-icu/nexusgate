@@ -616,28 +616,69 @@ func (s *Service) SetSMBDiscoverer(discover func(ctx context.Context) ([]smbdisc
 	s.discoverSMB = discover
 }
 
-// RootWarnings reports what is true about a root's storage that the operator
-// cannot see from the path alone and that will otherwise show up as unexplained
-// slowness or as a library that scans to nothing.
-func (s *Service) RootWarnings(path string, registered bool) []string {
+// RootWarningDetail is one fixed root-storage diagnostic with a stable code and
+// the data fields the browser needs to render it in the selected UI language.
+// The browser maps code/params through the locale catalog (roots.warning.*) and
+// falls back to Message for an unknown future code; CLI, MCP, Agent and Worker
+// consumers keep using the English Message via RootWarnings, so this additive
+// shape changes nothing they see.
+type RootWarningDetail struct {
+	Code    string            `json:"code"`
+	Params  map[string]string `json:"params,omitempty"`
+	Message string            `json:"message"`
+}
+
+// RootWarningDetails emits the fixed root-storage diagnostics as structured
+// details. Exactly four codes are produced: root.empty_unmounted (param path),
+// root.network_mount (params path/label/type), root.staging_copy_disabled, and
+// root.mount_writable. RootWarnings projects Message from these, so Doctor/CLI
+// English output and warning conditions stay byte-for-byte unchanged.
+func (s *Service) RootWarningDetails(path string, registered bool) []RootWarningDetail {
 	table := mount.ReadMountTable()
 	if table == "" {
 		return nil
 	}
-	var warnings []string
+	var details []RootWarningDetail
 	if registered && mount.LooksUnmounted(path, table) {
-		warnings = append(warnings, fmt.Sprintf("%s is empty and is not itself a mount point. If the share should be mounted there, mount it before scanning: a scan of an unmounted directory marks every asset in it as missing.", path))
+		details = append(details, RootWarningDetail{
+			Code:    "root.empty_unmounted",
+			Params:  map[string]string{"path": path},
+			Message: fmt.Sprintf("%s is empty and is not itself a mount point. If the share should be mounted there, mount it before scanning: a scan of an unmounted directory marks every asset in it as missing.", path),
+		})
 	}
 	filesystem, known := mount.FilesystemFor(path, table)
 	if !known || !filesystem.Network {
-		return warnings
+		return details
 	}
-	warnings = append(warnings, fmt.Sprintf("%s is on a %s mount (%s).", path, filesystem.Label, filesystem.Type))
+	details = append(details, RootWarningDetail{
+		Code:    "root.network_mount",
+		Params:  map[string]string{"path": path, "label": filesystem.Label, "type": filesystem.Type},
+		Message: fmt.Sprintf("%s is on a %s mount (%s).", path, filesystem.Label, filesystem.Type),
+	})
 	if s.cfg.SourceStaging.Mode != "copy" {
-		warnings = append(warnings, `Set "source_staging": {"mode": "copy"} in config.json. Every derive stage re-reads the source, and doing that over the network is what makes a NAS library take days rather than hours.`)
+		details = append(details, RootWarningDetail{
+			Code:    "root.staging_copy_disabled",
+			Message: `Set "source_staging": {"mode": "copy"} in config.json. Every derive stage re-reads the source, and doing that over the network is what makes a NAS library take days rather than hours.`,
+		})
 	}
 	if !filesystem.ReadOnly {
-		warnings = append(warnings, "The mount is writable. Nothing here writes to source footage, but mounting the share read-only makes that true of every other process too.")
+		details = append(details, RootWarningDetail{
+			Code:    "root.mount_writable",
+			Message: "The mount is writable. Nothing here writes to source footage, but mounting the share read-only makes that true of every other process too.",
+		})
+	}
+	return details
+}
+
+// RootWarnings reports what is true about a root's storage that the operator
+// cannot see from the path alone and that will otherwise show up as unexplained
+// slowness or as a library that scans to nothing. It is the Message projection
+// of RootWarningDetails, kept for Doctor/CLI English output.
+func (s *Service) RootWarnings(path string, registered bool) []string {
+	details := s.RootWarningDetails(path, registered)
+	warnings := make([]string, 0, len(details))
+	for _, d := range details {
+		warnings = append(warnings, d.Message)
 	}
 	return warnings
 }
@@ -701,6 +742,12 @@ type RootInspection struct {
 	// Warnings is the same advice Doctor prints for an existing root, offered
 	// here before the root is even created.
 	Warnings []string `json:"warnings,omitempty"`
+
+	// WarningDetails is the structured form of Warnings: each entry carries a
+	// stable code and the params the browser needs to render the advice in the
+	// selected UI language. It is additive — Warnings keeps the exact English
+	// strings Doctor prints, so existing consumers are unaffected.
+	WarningDetails []RootWarningDetail `json:"warning_details,omitempty"`
 }
 
 // ShareSummary is the share half of a RootInspection.
@@ -852,6 +899,7 @@ func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string) 
 		result.LooksUnmounted = mount.LooksUnmounted(inspected, table)
 	}
 	result.Warnings = s.RootWarnings(trimmed, registered)
+	result.WarningDetails = s.RootWarningDetails(trimmed, registered)
 	return result
 }
 

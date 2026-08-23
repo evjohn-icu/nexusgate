@@ -8,10 +8,12 @@ import (
 // TestShellSidebarMarkup pins the sidebar shape the shell now injects: the
 // <aside> shell, the brand row the branding layer rewrites, the two
 // navigation groups of the IA (核心/高级), the browser-session login
-// controls, and the four status cells. It also pins the one thing
-// the shell deliberately does NOT do — no legacy top header.
+// controls, the four status cells, and the locale selector. The header is
+// locale-aware, so the Chinese assertions run against the marker-resolved
+// zh-CN rendering (the plan's rule: page markers are asserted as localized
+// rendering, not as raw literals).
 func TestShellSidebarMarkup(t *testing.T) {
-	html := shellHeaderHTML()
+	html := catalogs[localeZhCN].resolveMarkers(shellHeaderHTML(localeZhCN))
 
 	for _, want := range []string{
 		`<aside class="shell-sidebar" data-app-shell>`,
@@ -33,6 +35,23 @@ func TestShellSidebarMarkup(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("shell sidebar missing %q", want)
 		}
+	}
+
+	// The locale selector must expose every canonical tag with its native
+	// name and preselect the rendered locale.
+	if !strings.Contains(html, `id="shell-locale"`) {
+		t.Fatal("shell sidebar missing the locale selector")
+	}
+	for _, loc := range supportedLocales {
+		if !strings.Contains(html, `value="`+string(loc)+`" data-locale="`+string(loc)+`"`) {
+			t.Fatalf("locale selector missing option %q", loc)
+		}
+	}
+	if !strings.Contains(html, `<option value="zh-CN" data-locale="zh-CN" selected>简体中文</option>`) {
+		t.Fatal("locale selector must preselect the rendered zh-CN locale")
+	}
+	if !strings.Contains(html, `<option value="ja-JP" data-locale="ja-JP">日本語</option>`) {
+		t.Fatal("locale selector must list 日本語 with its canonical value")
 	}
 
 	// The core group carries the normal user loop; Search lives on /.
@@ -98,7 +117,7 @@ func TestShellCSSSidebarLayout(t *testing.T) {
 func TestShellSidebarServedOnEveryPage(t *testing.T) {
 	pages := []string{libraryIndexHTML, progressHTML, providersHTML, settingsHTML, workersPageHTML, tagsHTML, repurposeWorkspaceHTML, libraryRootsHTML, setupHTML, workerSetupPageHTML, collectionsHTML}
 	for _, page := range pages {
-		served := brandedPage(shelledPage(page))
+		served := brandedPage(shelledPage(page, localeZhCN))
 		if !strings.Contains(served, `<aside class="shell-sidebar" data-app-shell>`) {
 			t.Fatal("shelled page lost the sidebar aside")
 		}

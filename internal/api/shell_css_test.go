@@ -13,7 +13,7 @@ import (
 func TestShellCSSLandsInsideStyleBlock(t *testing.T) {
 	pages := []string{libraryIndexHTML, progressHTML, providersHTML, settingsHTML, workersPageHTML, tagsHTML, repurposeWorkspaceHTML, libraryRootsHTML, setupHTML, workerSetupPageHTML, collectionsHTML}
 	for _, page := range pages {
-		served := brandedPage(shelledPage(page))
+		served := brandedPage(shelledPage(page, localeZhCN))
 		styleOpen := strings.Index(served, "<style>")
 		styleClose := strings.Index(served, "</style>")
 		shellAt := strings.Index(served, ".shell-sidebar{")

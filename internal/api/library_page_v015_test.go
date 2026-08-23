@@ -69,7 +69,7 @@ func TestFacetLabelsCoverEveryVocabularyValue(t *testing.T) {
 // forget when a control is added.
 func TestLibraryPageRendersSemanticFacetControls(t *testing.T) {
 	page := libraryIndexHTML
-	if !strings.Contains(page, `aria-label="高级筛选"`) {
+	if !strings.Contains(page, `aria-label="[[i18n:library.filter.advanced]]"`) || !strings.Contains(page, `<summary>[[i18n:library.filter.advanced]]</summary>`) {
 		t.Fatalf("library page missing the advanced-filter section")
 	}
 	selects := []string{
@@ -103,7 +103,7 @@ func TestLibraryPageRendersSemanticFacetControls(t *testing.T) {
 			t.Fatalf("clearFilters() does not reset duration input %q", id)
 		}
 	}
-	if !strings.Contains(page, `<label for="min-duration">最短时长（秒）</label>`) || !strings.Contains(page, `<label for="max-duration">最长时长（秒）</label>`) {
+	if !strings.Contains(page, `<label for="min-duration">[[i18n:library.filter.minDuration]]</label>`) || !strings.Contains(page, `<label for="max-duration">[[i18n:library.filter.maxDuration]]</label>`) {
 		t.Fatalf("duration inputs must be labelled in seconds")
 	}
 	// Options come from the vocabularies, never typed into JS: an English slug
@@ -122,8 +122,8 @@ func TestLibraryPageRendersSemanticFacetControls(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(page, `<option value="extreme_close_up">特写</option>`) {
-		t.Fatalf("facet options are not rendered from the vocabulary with Chinese labels")
+	if !strings.Contains(page, `<option value="extreme_close_up">[[i18n:facet.extreme_close_up]]</option>`) {
+		t.Fatalf("facet options are not rendered from the vocabulary through their catalog label key")
 	}
 	// The select ids must be wired to the API's asset_* facet parameter names
 	// (the un-prefixed names are legacy aliases, kept only for old callers).
@@ -138,7 +138,7 @@ func TestLibraryPageRendersSemanticFacetControls(t *testing.T) {
 	// A 400 from parseFacetFilter must surface as an error, not as an empty
 	// library: the old fetch chain mapped any non-ok response to [], which is
 	// the exact failure the 400 was written to prevent.
-	if !strings.Contains(page, `if(!r.ok)throw Error(await apiErrMsg(r));return r.json()`) {
+	if !strings.Contains(page, `if(!r.ok)throw Error(await tdApiErrorMessage(r));return r.json()`) {
 		t.Fatalf("load() must surface the server message on a non-ok response")
 	}
 	if strings.Contains(page, `'assets?limit=300'+filterQuery()).then(r=>r.ok?r.json():[])`) {
@@ -186,8 +186,8 @@ func TestLibraryPageEmptyStateLinksToSetupAndRoots(t *testing.T) {
 	}
 	body := response.Body.String()
 	for _, marker := range []string{
-		`暂无素材。先在<a href="/setup"`,
-		`打开素材目录向导`,
+		`esc(tdT('library.emptyTitle'))+'<a href="/setup"`,
+		`esc(tdT('library.emptyRootsLink'))`,
 		`href="/library-roots"`,
 	} {
 		if !strings.Contains(body, marker) {
@@ -205,16 +205,16 @@ func TestLibraryPageCollectionsEmptyStateHasGuidance(t *testing.T) {
 	if !strings.Contains(page, `<p class="muted collections-hint" id="collections-hint" hidden>`) {
 		t.Fatalf("library page must ship a hidden collections hint next to the select")
 	}
-	if !strings.Contains(page, `还没有收藏的筛选。在搜索结果页可以把筛选保存为收藏的筛选。`) {
+	if !strings.Contains(page, `[[i18n:library.filter.collectionsHint]]`) {
 		t.Fatalf("library page collections hint copy missing")
 	}
-	if !strings.Contains(page, `<option value="">不使用</option>`) {
+	if !strings.Contains(page, `<option value="">[[i18n:library.filter.collectionNone]]</option>`) {
 		t.Fatalf("the 不使用 option must stay in place when no collections exist")
 	}
-	if !strings.Contains(page, `collectionsHint(views.length?'':'还没有收藏的筛选。在搜索结果页可以把筛选保存为收藏的筛选。',false)`) {
+	if !strings.Contains(page, `collectionsHint(views.length?'':tdT('library.filter.collectionsHint'),false)`) {
 		t.Fatalf("loadCollections() must show the hint when the fetched list is empty")
 	}
-	if !strings.Contains(page, `collectionsHint('无法加载收藏的筛选，请稍后再试。',true)`) {
+	if !strings.Contains(page, `collectionsHint(tdT('library.filter.collectionsHintWarn'),true)`) {
 		t.Fatalf("loadCollections() must surface a fetch failure as a warning hint")
 	}
 }
@@ -244,13 +244,13 @@ func TestLibraryPageSearchIsShotFirst(t *testing.T) {
 		t.Fatalf("search() must render shot-level results from the v2 response")
 	}
 	for _, marker := range []string{
-		`data-shot-result`, // result cards are shot rows
-		`shot-result-time`, // start — end rendered
-		`shot-result-file`, // owning asset filename rendered
-		`s.filename`,       // filename comes from the joined asset
-		`shotEvidence(s)`,  // the evidence line renders per card
-		`为什么找到它：`,          // the evidence line is human-readable
-		`未确认`,              // unknown evidence must render, not vanish
+		`data-shot-result`,           // result cards are shot rows
+		`shot-result-time`,           // start — end rendered
+		`shot-result-file`,           // owning asset filename rendered
+		`s.filename`,                 // filename comes from the joined asset
+		`shotEvidence(s)`,            // the evidence line renders per card
+		`tdT('library.whyHit')`,      // the evidence line is human-readable
+		`tdT('library.unconfirmed')`, // unknown evidence must render, not vanish
 		`/api/v1/assets/'+encodeURIComponent(s.asset_id)+'/thumbnail`, // shot thumb via asset endpoint
 	} {
 		if !strings.Contains(page, marker) {
@@ -259,7 +259,7 @@ func TestLibraryPageSearchIsShotFirst(t *testing.T) {
 	}
 	// No-match must be honest: a clear message, not a fall-through to the
 	// whole-asset listing.
-	if !strings.Contains(page, `没有找到匹配的镜头`) {
+	if !strings.Contains(page, `tdT('library.noMatch')`) {
 		t.Fatalf("empty shot results must render a no-match message")
 	}
 	if strings.Contains(page, `if(ids)data=data.filter(x=>ids.includes(x.id));`) {
@@ -304,27 +304,27 @@ func TestLibraryPageShotDrawerPinsProxySeek(t *testing.T) {
 func TestLibraryPageSelectionFeatures(t *testing.T) {
 	page := libraryIndexHTML
 	for _, marker := range []string{
-		`加入收藏`,
+		`tdT('library.addToCollection')`,
 		`data-add-shot onclick="event.stopPropagation();addShotToCollection(this)"`,
 		`addShotToCollection(this)`,
 		`/api/v1/collections',{headers:authHeaders()}`,
 		`/api/v1/collections/'+encodeURIComponent(cid)+'/shots'`,
 		`createAndAddCollection()`,
-		`需要 Hub 管理口令：请先在左侧栏填入`,
-		`复制时间标记`,
+		`tdT('common.loginRequired')`,
+		`[[i18n:library.copyTimecode]]`,
 		`copyTimecode(this)`,
 		`navigator.clipboard.writeText`,
 		`document.execCommand('copy')`,
 		`fmtTimecode(start)`,
-		`相似镜头`,
+		`tdT('library.similarShots')`,
 		`loadSimilarShots()`,
 		`/api/v1/shots/'+encodeURIComponent(shotId)+'/similar'`,
-		`先试分析几个`,
+		`tdT('library.timelineEmptyTry')`,
 		`testDriveStart`,
 		`'/api/v1/test-drive'`,
 		`test-drive/suggestions?assets='+ids.map(encodeURIComponent).join(',')`,
-		`试试搜索`,
-		`保存当前筛选`,
+		`tdT('library.testDrive.trySearch')`,
+		`[[i18n:library.filter.saveCurrent]]`,
 		`saveCurrentView()`,
 		`captured_from`,
 		`Object.assign(filter,filterFacets())`,
@@ -335,7 +335,7 @@ func TestLibraryPageSelectionFeatures(t *testing.T) {
 	}
 	// The test-drive coaching must also reach the browse-mode timeline-empty
 	// state, not just the search-empty state.
-	if !strings.Contains(page, `<div class="timeline-empty"><span>还没看懂镜头；分析完会显示可用的时间段。</span><button class="shot-add" onclick="testDriveStart(this)">先试分析几个</button>`) {
+	if !strings.Contains(page, `'<div class="timeline-empty"><span>'+esc(tdT('library.timelineEmptyTitle'))+'</span><button class="shot-add" onclick="testDriveStart(this)">'+esc(tdT('library.timelineEmptyTry'))+'</button>`) {
 		t.Fatalf("timeline-empty state missing the test-drive coaching")
 	}
 }

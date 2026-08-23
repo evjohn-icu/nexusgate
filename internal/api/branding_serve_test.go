@@ -8,7 +8,7 @@ import (
 func TestServedPagesCarryBranding(t *testing.T) {
 	pages := []string{libraryIndexHTML, progressHTML, providersHTML, settingsHTML, workersPageHTML, tagsHTML, repurposeWorkspaceHTML, libraryRootsHTML, setupHTML, workerSetupPageHTML}
 	for _, page := range pages {
-		served := brandedPage(shelledPage(page))
+		served := brandedPage(shelledPage(page, localeZhCN))
 		if !strings.Contains(served, `<span class="brand">Re<i>:</i>Footage</span>`) {
 			t.Errorf("served page shows un-branded shell header (order bug): brand=%q", extractBrand(served))
 		}
