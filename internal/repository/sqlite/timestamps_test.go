@@ -178,7 +178,7 @@ func TestMigration0021CoversEveryTimestampColumn(t *testing.T) {
 	// is nothing for 0021 to rewrite. Keeping this set explicit (rather than
 	// inferring from sqlite_master order) makes the exemption auditable when
 	// the next post-0021 table is added.
-	post0021Tables := map[string]bool{"webdav_accounts": true, "reanalysis_requests": true, "shot_text_embeddings": true, "collection_shots": true, "cost_ledger": true}
+	post0021Tables := map[string]bool{"webdav_accounts": true, "reanalysis_requests": true, "shot_text_embeddings": true, "collection_shots": true, "cost_ledger": true, "pipeline_executors": true}
 
 	// Timestamp columns added to a pre-0021 table by a later migration share
 	// the same birth-formatTime property, but land under a table 0021 must
