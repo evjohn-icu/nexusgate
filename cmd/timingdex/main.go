@@ -80,13 +80,15 @@ func run() error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	if os.Args[1] != "worker" {
+	if os.Args[1] != "worker" && os.Args[1] != "doctor" {
 		// Fail fast on a selected provider whose key never resolved (see
 		// providers.ValidateProviderConfig). config.Load already resolved
 		// api_key_env into api_key, so this catches an enabled ASR/vision/
 		// repurpose route with an unset key env before serve claims to be
-		// healthy. The worker pulls provider work (and keys) from the Hub and
-		// never runs these providers itself, so it is exempt.
+		// healthy. doctor is exempt so a broken legacy providers.* config can
+		// still be diagnosed (the report carries the reason instead); the
+		// worker pulls provider work (and keys) from the Hub and never runs
+		// these providers itself, so it too is exempt.
 		if err := providers.ValidateProviderConfig(cfg.Providers); err != nil {
 			return fmt.Errorf("invalid provider config: %w", err)
 		}
@@ -447,7 +449,20 @@ func runRootCommand(ctx context.Context, service *app.Service, args []string) er
 			}
 			return err
 		}
-		fmt.Printf("discovered=%d linked=%d missing=%d errors=%d\n", result.Discovered, result.Linked, result.Missing, len(result.Errors))
+		fmt.Printf("discovered=%d linked=%d missing=%d skipped=%d errors=%d supported=%s\n",
+			result.Discovered, result.Linked, result.Missing, result.SkippedFiles, len(result.Errors),
+			strings.Join(result.SupportedExtensions, ","))
+		if result.SkippedFiles > 0 {
+			exts := strings.Join(result.SkippedExtensions, ", ")
+			if result.SkippedOther > 0 {
+				exts += fmt.Sprintf(" (+%d more types)", result.SkippedOther)
+			}
+			fmt.Printf("skipped: %d non-video file(s) (%s)\n", result.SkippedFiles, exts)
+		}
+		if result.Discovered == 0 && result.SkippedFiles > 0 {
+			fmt.Printf("warning: no footage discovered in this root; every regular file was skipped (supported formats: %s)\n",
+				strings.Join(result.SupportedExtensions, ", "))
+		}
 		for _, scanErr := range result.Errors {
 			fmt.Printf("warning: %s\n", scanErr)
 		}
@@ -477,12 +492,16 @@ Usage:
   timingdex pipeline run
   timingdex pipeline retry-failed
   timingdex reanalyze [-asset <asset-id> | -root <root-id> | -all] [-reason <text>]
+  timingdex search rebuild
   timingdex search rebuild-embeddings
-  timingdex cache inspect|gc|verify
+  timingdex cache inspect
+  timingdex cache gc
+  timingdex cache verify
+  timingdex cache repair-derived
   timingdex doctor [-json]
   timingdex secrets rekey
   timingdex support bundle [-out path]
-  timingdex worker enroll --hub https://nas:8787 --fingerprint <sha256> --pairing <token> [--name worker] [--mount root-id=/mounted/path] [--provider-operation video_analysis]
+  timingdex worker enroll [--root <path>] [--cache <path>] [--config <path>] --hub https://nas:8787 --fingerprint <sha256> --pairing <token> [--name worker] [--mount root-id=/mounted/path] [--provider-operation video_analysis]
   timingdex worker run [--config path] [--tray]
   timingdex worker doctor [--config path]
   timingdex worker revoke <worker-id>`)

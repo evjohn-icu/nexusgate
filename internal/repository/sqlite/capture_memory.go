@@ -62,9 +62,11 @@ ON CONFLICT(id) DO UPDATE SET root_id=excluded.root_id,title=excluded.title,stat
 	return tx.Commit()
 }
 
-// ListShootSessions returns the browse-safe session projection. Exact
-// latitude/longitude values are not selected or populated by this API.
-func (r *Repository) ListShootSessions(ctx context.Context, filter domain.ShootSessionFilter) ([]domain.ShootSession, error) {
+// shootSessionFilterWhere compiles a ShootSessionFilter into a WHERE clause
+// and its bound arguments (excluding limit/offset, which callers append). It
+// is shared by ListShootSessions and PagedShootSessions so the two can never
+// disagree about which sessions a filter selects.
+func shootSessionFilterWhere(filter domain.ShootSessionFilter) (string, []any) {
 	where := []string{"1=1"}
 	args := make([]any, 0, 10)
 	if value := strings.TrimSpace(filter.RootID); value != "" {
@@ -99,7 +101,13 @@ func (r *Repository) ListShootSessions(ctx context.Context, filter domain.ShootS
 		where = append(where, "ends_at<=?")
 		args = append(args, formatTime(*filter.EndsBefore))
 	}
+	return strings.Join(where, " AND "), args
+}
 
+// ListShootSessions returns the browse-safe session projection. Exact
+// latitude/longitude values are not selected or populated by this API.
+func (r *Repository) ListShootSessions(ctx context.Context, filter domain.ShootSessionFilter) ([]domain.ShootSession, error) {
+	where, args := shootSessionFilterWhere(filter)
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = defaultShootSessionLimit
@@ -114,18 +122,67 @@ func (r *Repository) ListShootSessions(ctx context.Context, filter domain.ShootS
 	args = append(args, limit, offset)
 
 	query := `SELECT id,COALESCE(root_id,''),title,state,starts_at,ends_at,region_label,camera_label,confidence,created_at,updated_at
-FROM shoot_sessions WHERE ` + strings.Join(where, " AND ") + ` ORDER BY starts_at DESC,id LIMIT ? OFFSET ?`
+FROM shoot_sessions WHERE ` + where + ` ORDER BY starts_at DESC,id LIMIT ? OFFSET ?`
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
+	sessions, err := r.scanShootSessions(rows)
+	if err != nil {
+		return nil, err
+	}
+	return r.populateShootSessionAssets(ctx, sessions)
+}
 
+// PagedShootSessions is the paged form of ListShootSessions: one probe row
+// past the requested page so the caller can distinguish "this page is full"
+// from "this is the last page" without a second query. The existing ordering
+// already carries the id tie-break.
+func (r *Repository) PagedShootSessions(ctx context.Context, filter domain.ShootSessionFilter) ([]domain.ShootSession, bool, error) {
+	where, args := shootSessionFilterWhere(filter)
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = defaultShootSessionLimit
+	}
+	if limit > maxShootSessionLimit {
+		limit = maxShootSessionLimit
+	}
+	offset := filter.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	args = append(args, limit+1, offset)
+
+	query := `SELECT id,COALESCE(root_id,''),title,state,starts_at,ends_at,region_label,camera_label,confidence,created_at,updated_at
+FROM shoot_sessions WHERE ` + where + ` ORDER BY starts_at DESC,id LIMIT ? OFFSET ?`
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	sessions, err := r.scanShootSessions(rows)
+	if err != nil {
+		return nil, false, err
+	}
+	hasMore := len(sessions) > limit
+	if hasMore {
+		sessions = sessions[:limit]
+	}
+	sessions, err = r.populateShootSessionAssets(ctx, sessions)
+	if err != nil {
+		return nil, false, err
+	}
+	return sessions, hasMore, nil
+}
+
+// scanShootSessions scans a materialized shoot-session result set into
+// browse-safe projections.
+func (r *Repository) scanShootSessions(rows *sql.Rows) ([]domain.ShootSession, error) {
+	defer rows.Close()
 	sessions := make([]domain.ShootSession, 0)
 	for rows.Next() {
 		var session domain.ShootSession
 		var rootID, startsAt, endsAt, createdAt, updatedAt sql.NullString
 		if err := rows.Scan(&session.ID, &rootID, &session.Title, &session.State, &startsAt, &endsAt, &session.RegionLabel, &session.CameraLabel, &session.Confidence, &createdAt, &updatedAt); err != nil {
-			rows.Close()
 			return nil, err
 		}
 		session.RootID = rootID.String
@@ -136,13 +193,14 @@ FROM shoot_sessions WHERE ` + strings.Join(where, " AND ") + ` ORDER BY starts_a
 		sessions = append(sessions, session)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return nil, err
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
+	return sessions, nil
+}
 
+// populateShootSessionAssets fills the AssetIDs of a page of sessions with one
+// batched membership lookup instead of one query per session.
+func (r *Repository) populateShootSessionAssets(ctx context.Context, sessions []domain.ShootSession) ([]domain.ShootSession, error) {
 	if len(sessions) == 0 {
 		return sessions, nil
 	}

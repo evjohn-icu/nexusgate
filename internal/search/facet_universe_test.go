@@ -18,6 +18,9 @@ type facetUniverseStore struct {
 func (f *facetUniverseStore) ScoreCandidates(_ context.Context, _ string, _ domain.FacetFilter) ([]domain.ShotSearchResult, error) {
 	return f.candidates, nil
 }
+func (f *facetUniverseStore) ScoreCandidatesV2(_ context.Context, _ string, _ domain.FacetFilter, _ domain.AssetContextFilter) ([]domain.ShotSearchResult, error) {
+	return f.ScoreCandidates(context.Background(), "", domain.FacetFilter{})
+}
 
 func (f *facetUniverseStore) LexicalRankedShots(_ context.Context, _ string, _ [5]float64, _ int) ([]domain.ShotSearchResult, error) {
 	return f.lexical, nil

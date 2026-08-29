@@ -16,7 +16,14 @@ services:
       # anonymous read access to anything that reaches the port unless this is
       # also set to a range no peer can match, which forces reads to carry a
       # token. Empty keeps the built-in loopback/LAN/CGNAT allowlist.
-      TIMINGDEX_TRUSTED_READ_NETWORKS: ${TIMINGDEX_TRUSTED_READ_NETWORKS:-}
+      # `required` is the shipped default: every admin/mutating request must
+      # carry the Hub's generated admin-token (in the data volume) instead of
+      # being waived for the bridge gateway's RFC1918 address, which Docker
+      # NAT makes indistinguishable from any other peer. An operator who
+      # deliberately selects `trusted_network` must also name the real client
+      # CIDRs in TIMINGDEX_HUB_ADMIN_AUTH_NETWORKS or startup fails closed.
+      TIMINGDEX_HUB_ADMIN_AUTH: ${TIMINGDEX_HUB_ADMIN_AUTH:-required}
+      TIMINGDEX_HUB_ADMIN_AUTH_NETWORKS: ${TIMINGDEX_HUB_ADMIN_AUTH_NETWORKS:-}
       # `auto` generates a self-signed Hub certificate in the data volume.
       # Use `files` with the two paths below for a managed certificate, or `off`
       # only behind an HTTPS reverse proxy.

@@ -56,9 +56,25 @@ func TestUsageListsAllCommands(t *testing.T) {
 	}
 }
 
-func TestUsageDocumentsReanalyzeAndSecretsRekey(t *testing.T) {
+// TestUsageDocumentsCompleteSubcommands proves the synopsis enumerates every
+// implemented subcommand and Worker enrollment flag, not just the top-level
+// commands.
+func TestUsageDocumentsCompleteSubcommands(t *testing.T) {
 	text := captureUsageText(t)
-	for _, want := range []string{"timingdex reanalyze", "timingdex secrets rekey"} {
+	for _, want := range []string{
+		"timingdex search rebuild",
+		"timingdex search rebuild-embeddings",
+		"timingdex cache inspect",
+		"timingdex cache gc",
+		"timingdex cache verify",
+		"timingdex cache repair-derived",
+		"--root",
+		"--cache",
+		"--config",
+		"--fingerprint",
+		"--pairing",
+		"--hub",
+	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("usage() output missing %q", want)
 		}
@@ -372,30 +388,58 @@ func TestRunServeDispatchTLSFilesMissing(t *testing.T) {
 	t.Logf("serve with missing TLS files returned: %v", err)
 }
 
-func TestRunRootAdd(t *testing.T) {
+// TestDoctorReportsInvalidProviderConfig proves `doctor` stays runnable when
+// the legacy providers.* config is broken (an enabled selected Gemini block
+// with GEMINI_API_KEY unset): it must emit every Doctor section plus the
+// secret-free provider diagnosis, while an operational command (`serve`) still
+// fails fast before any service work.
+func TestDoctorReportsInvalidProviderConfig(t *testing.T) {
 	dataDir := secureTestDataDir(t)
-	rootPath := filepath.Join(dataDir, "footage")
-	if err := os.MkdirAll(rootPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
 	t.Setenv("TIMINGDEX_DATA_DIR", dataDir)
 	t.Setenv("TIMINGDEX_TLS_MODE", "off")
 	t.Setenv("TIMINGDEX_LOG_LEVEL", "error")
-	setArgs(t, []string{"timingdex", "root", "add", rootPath})
-	err := run()
-	if err != nil {
-		t.Fatalf("root add: %v", err)
+	t.Setenv("GEMINI_API_KEY", "") // deliberately unset
+	if err := os.WriteFile(filepath.Join(dataDir, "config.json"), []byte(`{"providers":{"vision_primary":"gemini","gemini":{"enabled":true}}}`), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	// Verify the root was persisted.
-	setArgs(t, []string{"timingdex", "root", "list"})
-	// Reconstruct because run() reuses os.Args; we need a fresh setup.
-	// run() opens the DB again, which is fine.
-	// But run() calls config.Load() which reads TIMINGDEX_DATA_DIR.
-	// That's still set from t.Setenv above.
-	origArgs := os.Args
-	os.Args = []string{"timingdex", "root", "list"}
-	defer func() { os.Args = origArgs }()
-	if err := run(); err != nil {
-		t.Fatalf("root list after add: %v", err)
+
+	// doctor must run to completion and print every section plus the reason.
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = origStdout })
+	setArgs(t, []string{"timingdex", "doctor"})
+	runErr := run()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runErr != nil {
+		t.Fatalf("doctor must not fail on an invalid provider config: %v", runErr)
+	}
+	out := string(data)
+	for _, section := range []string{"SYSTEM", "DB", "STORAGE", "MEDIA ROOTS", "FFMPEG", "FFPROBE", "EXIFTOOL", "GPU", "PROVIDERS", "SEARCH INDEX", "WORKERS", "QUEUE", "TEMP FILES"} {
+		if !strings.Contains(out, section) {
+			t.Errorf("doctor output missing section %q", section)
+		}
+	}
+	if !strings.Contains(out, "✗ legacy provider config:") {
+		t.Errorf("doctor output missing the legacy provider config diagnosis")
+	}
+	if !strings.Contains(out, `"GEMINI_API_KEY"`) {
+		t.Errorf("doctor output missing the missing-variable diagnosis")
+	}
+
+	// An operational command must still fail before any service work.
+	setArgs(t, []string{"timingdex", "serve"})
+	err = run()
+	if err == nil || !strings.Contains(err.Error(), "invalid provider config") {
+		t.Fatalf("serve with invalid provider config = %v, want invalid provider config failure", err)
 	}
 }

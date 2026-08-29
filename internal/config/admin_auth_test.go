@@ -128,14 +128,69 @@ func TestLoadNormalizesEmptyAdminAuthToTrustedNetwork(t *testing.T) {
 	}
 }
 
-// TestAdminAuthModeNormalizesEmptyToTrustedNetwork pins the access-point
-// default: a zero-value HubSecurityConfig (which never went through Load)
-// must answer trusted_network, and an explicit mode passes through unchanged.
-func TestAdminAuthModeNormalizesEmptyToTrustedNetwork(t *testing.T) {
-	if got := (HubSecurityConfig{}).AdminAuthMode(); got != "trusted_network" {
-		t.Fatalf("AdminAuthMode()=%q want trusted_network", got)
+// TestLoadReadsAdminAuthNetworksFromEnvironment pins that the container
+// deployment variable TIMINGDEX_HUB_ADMIN_AUTH_NETWORKS lands in
+// HubSecurity.AdminAuthNetworks after a comma split, alongside the mode
+// override, so a Compose/Unraid operator can deliberately select
+// trusted_network and name the real client CIDRs in one place.
+func TestLoadReadsAdminAuthNetworksFromEnvironment(t *testing.T) {
+	t.Setenv("TIMINGDEX_DATA_DIR", t.TempDir())
+	t.Setenv("TIMINGDEX_HUB_ADMIN_AUTH", "trusted_network")
+	t.Setenv("TIMINGDEX_HUB_ADMIN_AUTH_NETWORKS", "10.9.0.0/16, fd00::/8")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := (HubSecurityConfig{AdminAuth: "off"}).AdminAuthMode(); got != "off" {
-		t.Fatalf("AdminAuthMode()=%q want off", got)
+	if cfg.HubSecurity.AdminAuth != "trusted_network" {
+		t.Fatalf("admin_auth=%q want trusted_network", cfg.HubSecurity.AdminAuth)
+	}
+	if len(cfg.HubSecurity.AdminAuthNetworks) != 2 {
+		t.Fatalf("admin_auth_networks=%v want 2 entries", cfg.HubSecurity.AdminAuthNetworks)
+	}
+	prefixes, err := cfg.HubSecurity.AdminAuthPrefixes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prefixes) != 2 || prefixes[0].String() != "10.9.0.0/16" || prefixes[1].String() != "fd00::/8" {
+		t.Fatalf("prefixes=%v", prefixes)
+	}
+}
+
+// TestLoadRejectsMalformedAdminAuthNetworksFromEnvironment pins that a typo
+// in the container variable fails startup instead of silently widening or
+// narrowing the admin waiver.
+func TestLoadRejectsMalformedAdminAuthNetworksFromEnvironment(t *testing.T) {
+	t.Setenv("TIMINGDEX_DATA_DIR", t.TempDir())
+	t.Setenv("TIMINGDEX_HUB_ADMIN_AUTH_NETWORKS", "192.168.1.0/16, not-a-cidr")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected Load to reject a malformed admin_auth_networks CIDR")
+	}
+}
+
+// TestDeploymentContainerDefaultsPassGuard pins the repository deployment
+// defaults: both shipped NAT/container entry points (docker-compose.yml and
+// the Unraid template) default TIMINGDEX_HUB_ADMIN_AUTH to "required", which
+// loads and clears the container guard with no networks configured. The
+// bare-metal default trusted_network with an empty networks list still fails
+// closed inside a container, so an operator who wants the waiver must name
+// the real CIDRs explicitly.
+func TestDeploymentContainerDefaultsPassGuard(t *testing.T) {
+	t.Setenv("TIMINGDEX_DATA_DIR", t.TempDir())
+	t.Setenv("TIMINGDEX_HUB_ADMIN_AUTH", "required")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateContainerAdminAuth(true, cfg); err != nil {
+		t.Fatalf("required container default must pass the guard: %v", err)
+	}
+
+	t.Setenv("TIMINGDEX_HUB_ADMIN_AUTH", "trusted_network")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateContainerAdminAuth(true, cfg); err == nil {
+		t.Fatal("expected trusted_network container default with an empty networks list to fail the guard")
 	}
 }

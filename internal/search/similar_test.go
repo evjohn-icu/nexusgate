@@ -23,6 +23,9 @@ type similarFakeStore struct {
 func (f *similarFakeStore) ScoreCandidates(_ context.Context, _ string, _ domain.FacetFilter) ([]domain.ShotSearchResult, error) {
 	return f.candidates, nil
 }
+func (f *similarFakeStore) ScoreCandidatesV2(_ context.Context, _ string, _ domain.FacetFilter, _ domain.AssetContextFilter) ([]domain.ShotSearchResult, error) {
+	return f.ScoreCandidates(context.Background(), "", domain.FacetFilter{})
+}
 
 func (f *similarFakeStore) LexicalRankedShots(_ context.Context, _ string, _ [5]float64, _ int) ([]domain.ShotSearchResult, error) {
 	return nil, nil

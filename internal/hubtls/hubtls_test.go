@@ -4,9 +4,11 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -84,4 +86,63 @@ func TestEnsureSelfSignedCreatesAndReusesECDSACertificate(t *testing.T) {
 	if filepath.Dir(certPath) != dataDir || filepath.Dir(keyPath) != dataDir {
 		t.Fatalf("assets are outside data directory: cert=%q key=%q", certPath, keyPath)
 	}
+}
+
+// TestCertificateSPKIPinDerivesCurlCompatiblePin pins the SPKI pin shape a
+// generated bootstrap script must embed: `sha256//<base64>` over the leaf's
+// SubjectPublicKeyInfo, so curl --pinnedpubkey accepts it against the same
+// self-signed certificate the fingerprint was computed from.
+func TestCertificateSPKIPinDerivesCurlCompatiblePin(t *testing.T) {
+	certPath, _, fingerprint, err := EnsureSelfSigned(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := LoadCertificate(certPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := CertificateSPKIPin(certificate)
+	if !strings.HasPrefix(pin, "sha256//") {
+		t.Fatalf("SPKI pin %q does not carry the curl sha256// prefix", pin)
+	}
+	encoded := strings.TrimPrefix(pin, "sha256//")
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("SPKI pin is not valid base64: %v", err)
+	}
+	if len(decoded) != sha256.Size {
+		t.Fatalf("SPKI pin digest length=%d, want %d", len(decoded), sha256.Size)
+	}
+	manual := sha256.Sum256(certificate.RawSubjectPublicKeyInfo)
+	if !strings.EqualFold(pin, "sha256//"+base64.StdEncoding.EncodeToString(manual[:])) {
+		t.Fatalf("SPKI pin %q does not match manual SubjectPublicKeyInfo hash", pin)
+	}
+	fingerprintSum := sha256.Sum256(certificate.Raw)
+	if fingerprint != hex.EncodeToString(fingerprintSum[:]) {
+		t.Fatalf("LoadCertificate fingerprint does not match the certificate DER")
+	}
+}
+
+// TestCertificateSPKIPinDiffersAcrossKeys proves the pin is key-bound: two
+// freshly generated certificates never share an SPKI pin, so a stale pin
+// cannot authenticate a different Hub identity.
+func TestCertificateSPKIPinDiffersAcrossKeys(t *testing.T) {
+	pinA := CertificateSPKIPin(loadTestCertificate(t, t.TempDir()))
+	pinB := CertificateSPKIPin(loadTestCertificate(t, t.TempDir()))
+	if pinA == pinB {
+		t.Fatalf("two independent Hubs produced the same SPKI pin %q", pinA)
+	}
+}
+
+func loadTestCertificate(t *testing.T, dataDir string) *x509.Certificate {
+	t.Helper()
+	certPath, _, _, err := EnsureSelfSigned(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := LoadCertificate(certPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return certificate
 }

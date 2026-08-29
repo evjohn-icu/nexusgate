@@ -128,3 +128,20 @@ func (s *Service) SimilarByHeuristic(ctx context.Context, query string, limit in
 	}
 	return scored, nil
 }
+
+// similarUniverse is the v2 candidate universe for mode=similar: the set of
+// shot ids whose owning asset passes the facet + asset-context filter, as
+// ScoreCandidatesV2 reports it. The ranked nearest-neighbour list is
+// intersected with it so an asset_filter (or facet) is never silently
+// ignored in similar mode.
+func (s *Service) similarUniverse(ctx context.Context, q string, facets domain.FacetFilter, assetFilter domain.AssetContextFilter) (map[string]bool, error) {
+	shots, err := s.store.ScoreCandidatesV2(ctx, q, facets, assetFilter)
+	if err != nil {
+		return nil, err
+	}
+	universe := make(map[string]bool, len(shots))
+	for _, shot := range shots {
+		universe[shot.ID] = true
+	}
+	return universe, nil
+}

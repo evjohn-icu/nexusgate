@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/evjohn-icu/timingdex/internal/apiclient"
 	"github.com/evjohn-icu/timingdex/internal/credentials"
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	"github.com/evjohn-icu/timingdex/internal/remote"
@@ -119,7 +120,7 @@ func (c *Client) Lease(ctx context.Context, token string) (*remote.WorkerJob, er
 	}
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return nil, fmt.Errorf("Hub %s: %s", response.Status, strings.TrimSpace(string(body)))
+		return nil, apiclient.DecodeError(response.StatusCode, response.Status, body)
 	}
 	var job remote.WorkerJob
 	if err := json.NewDecoder(response.Body).Decode(&job); err != nil {
@@ -268,7 +269,7 @@ func (c *Client) UploadArtifact(ctx context.Context, token, jobID string, artifa
 	}
 	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusAccepted && response.StatusCode != http.StatusNoContent {
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return fmt.Errorf("Hub %s: %s", response.Status, strings.TrimSpace(string(message)))
+		return apiclient.DecodeError(response.StatusCode, response.Status, message)
 	}
 	return nil
 }
@@ -307,7 +308,7 @@ func (c *Client) postJSON(ctx context.Context, path, token string, input, output
 	defer response.Body.Close()
 	if response.StatusCode != accepted {
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return fmt.Errorf("Hub %s: %s", response.Status, strings.TrimSpace(string(message)))
+		return apiclient.DecodeError(response.StatusCode, response.Status, message)
 	}
 	if output != nil {
 		return json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(output)

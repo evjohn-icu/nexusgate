@@ -20,17 +20,43 @@ WHEN EXISTS (SELECT 1 FROM derived_artifacts dready WHERE dready.asset_id=a.id A
 ELSE 'discovered' END`
 
 func assetBrowseWhere(filter domain.AssetCardFilter) (string, []any) {
+	ctxFilter := domain.AssetContextFilter{
+		CapturedFrom: filter.CapturedFrom,
+		CapturedTo:   filter.CapturedTo,
+		RegionLabel:  filter.RegionLabel,
+		CameraModel:  filter.CameraModel,
+		SessionID:    filter.SessionID,
+		Status:       filter.Status,
+	}
+	where, args := assetContextClauses(ctxFilter)
+	facetClauses, facetArgs := assetFacetWhereClauses(filter.Facets)
+	where = append(where, facetClauses...)
+	args = append(args, facetArgs...)
+	if len(filter.IDs) > 0 {
+		where = append(where, `a.id IN (`+strings.TrimRight(strings.Repeat(`?,`, len(filter.IDs)), `,`)+`)`)
+		for _, id := range filter.IDs {
+			args = append(args, id)
+		}
+	}
+	if len(where) == 0 {
+		return "", args
+	}
+	return ` WHERE ` + strings.Join(where, ` AND `), args
+}
+
+// assetContextClauses builds the capture/session/status predicates shared by
+// asset browse (assetBrowseWhere) and the Search v2 asset-context filter
+// (ScoreCandidatesV2). This is the single definition of "ready" and of the
+// capture interval: CapturedTo is the exclusive upper bound (<), the session
+// check is an EXISTS over asset_shoot_sessions, and status derives from
+// processingStatusSQL. The aliases are those of assetCardColumns (a, cm, m).
+func assetContextClauses(filter domain.AssetContextFilter) ([]string, []any) {
 	where := make([]string, 0, 6)
 	args := make([]any, 0, 6)
 	if filter.CapturedFrom != nil {
 		where = append(where, `COALESCE(cm.captured_at,m.captured_at)>=?`)
 		args = append(args, formatTime(filter.CapturedFrom.UTC()))
 	}
-	// CapturedTo is the exclusive upper bound (<) — the interval is
-	// [CapturedFrom, CapturedTo). This differs from FacetFilter
-	// MaxDurationMS which uses <= (inclusive). The HTTP API compensates
-	// by advancing date_to by one day so callers perceive "up to and
-	// including" semantics.
 	if filter.CapturedTo != nil {
 		where = append(where, `COALESCE(cm.captured_at,m.captured_at)<?`)
 		args = append(args, formatTime(filter.CapturedTo.UTC()))
@@ -51,19 +77,7 @@ func assetBrowseWhere(filter domain.AssetCardFilter) (string, []any) {
 		where = append(where, processingStatusSQL+`=?`)
 		args = append(args, value)
 	}
-	facetClauses, facetArgs := assetFacetWhereClauses(filter.Facets)
-	where = append(where, facetClauses...)
-	args = append(args, facetArgs...)
-	if len(filter.IDs) > 0 {
-		where = append(where, `a.id IN (`+strings.TrimRight(strings.Repeat(`?,`, len(filter.IDs)), `,`)+`)`)
-		for _, id := range filter.IDs {
-			args = append(args, id)
-		}
-	}
-	if len(where) == 0 {
-		return "", args
-	}
-	return ` WHERE ` + strings.Join(where, ` AND `), args
+	return where, args
 }
 
 // facetWhere builds the WHERE-clause fragments for the six normalize.*Values
@@ -198,6 +212,10 @@ func scanAssetCardRow(rows *sql.Rows) (domain.AssetCard, error) {
 	return card, nil
 }
 
+// ListAssetCardsFiltered returns the browse projection for the given filter,
+// most recently captured first, with a deterministic id tie-break so paging
+// cannot duplicate or drop rows. It is the shared workhorse behind the asset
+// list, collections, and the v1 browser.
 func (r *Repository) ListAssetCardsFiltered(ctx context.Context, filter domain.AssetCardFilter) ([]domain.AssetCard, error) {
 	if filter.Limit <= 0 {
 		filter.Limit = 100
@@ -217,6 +235,51 @@ func (r *Repository) ListAssetCardsFiltered(ctx context.Context, filter domain.A
 	if err != nil {
 		return nil, err
 	}
+	return r.assetCardsFromRows(ctx, rows)
+}
+
+// PagedAssetCardsFiltered is the paged form of ListAssetCardsFiltered: the
+// same filter and ordering, but one probe row past the requested page so the
+// caller can tell "this page is full" from "this is the last page" without a
+// second query. The API list handler is its only consumer; ListAssetCards and
+// ListAssetCardsInCollection keep using the un-paged form.
+func (r *Repository) PagedAssetCardsFiltered(ctx context.Context, filter domain.AssetCardFilter) ([]domain.AssetCard, bool, error) {
+	if filter.Limit <= 0 {
+		filter.Limit = 100
+	}
+	if filter.Limit > 500 {
+		filter.Limit = 500
+	}
+	if filter.Offset < 0 {
+		filter.Offset = 0
+	}
+	limit := filter.Limit
+	filter.Limit = limit + 1
+	query := assetCardColumns
+	where, args := assetBrowseWhere(filter)
+	query += where
+	query += ` ORDER BY COALESCE(cm.captured_at,m.captured_at,a.first_seen_at) DESC, a.id DESC LIMIT ? OFFSET ?`
+	args = append(args, filter.Limit, filter.Offset)
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	cards, err := r.assetCardsFromRows(ctx, rows)
+	if err != nil {
+		return nil, false, err
+	}
+	hasMore := len(cards) > limit
+	if hasMore {
+		cards = cards[:limit]
+	}
+	return cards, hasMore, nil
+}
+
+// assetCardsFromRows scans a fully-materialized asset-card result set and
+// enriches it with thumbnail/proxy artifact presence in one batched query.
+// Both ListAssetCardsFiltered and PagedAssetCardsFiltered share it so the two
+// can never disagree about what a card row means.
+func (r *Repository) assetCardsFromRows(ctx context.Context, rows *sql.Rows) ([]domain.AssetCard, error) {
 	defer rows.Close()
 	var out []domain.AssetCard
 	for rows.Next() {

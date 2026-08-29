@@ -48,6 +48,29 @@ func (r *Repository) CreateWorkerPairing(ctx context.Context, ttl time.Duration)
 	return remote.PairingToken{Token: raw, ExpiresAt: expires}, nil
 }
 
+// WorkerPairingValid reports whether rawToken names an unredeemed, unexpired
+// pairing row. It is a pure read that never consumes the token: the bootstrap
+// binary download checks validity on its way to enrollment, and the credential
+// must survive until EnrollWorker redeems it exactly once.
+func (r *Repository) WorkerPairingValid(ctx context.Context, rawToken string, now time.Time) (bool, error) {
+	if strings.TrimSpace(rawToken) == "" {
+		return false, nil
+	}
+	var expires string
+	err := r.db.QueryRowContext(ctx, `SELECT expires_at FROM worker_pairing_tokens WHERE token_hash=? AND redeemed_at IS NULL`, tokenDigest(rawToken)).Scan(&expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, expires)
+	if err != nil {
+		return false, err
+	}
+	return expiresAt.After(now), nil
+}
+
 func (r *Repository) EnrollWorker(ctx context.Context, pairingToken string, registration remote.WorkerRegistration) (remote.Worker, string, error) {
 	if strings.TrimSpace(registration.Name) == "" || strings.TrimSpace(registration.Platform) == "" {
 		return remote.Worker{}, "", errors.New("worker name and platform are required")
@@ -1775,6 +1798,50 @@ func (r *Repository) ListJobs(ctx context.Context, limit int) ([]domain.Job, err
 	return out, rows.Err()
 }
 
+// PagedJobs is the paged form of ListJobs: it adds a deterministic id
+// tie-break to the existing created_at ordering and fetches one probe row
+// past the requested page so the caller can distinguish "this page is full"
+// from "this is the last page" without a second query. It does not replace
+// ListJobs — pipeline and other callers keep using the un-paged form.
+func (r *Repository) PagedJobs(ctx context.Context, limit, offset int) ([]domain.Job, bool, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT j.id,COALESCE(j.asset_id,''),j.job_type,j.state,j.priority,j.attempt_count,j.max_attempts,j.run_after,j.input_hash,COALESCE(j.last_error_message,''),j.terminal,COALESCE(j.last_error_code,''),COALESCE((SELECT loc.relative_path FROM asset_locations loc JOIN library_roots lr ON lr.id=loc.root_id WHERE loc.asset_id=j.asset_id AND loc.is_primary=1 AND loc.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY loc.last_seen_at DESC,lr.created_at,lr.id,loc.relative_path,loc.id LIMIT 1),'') FROM jobs j ORDER BY j.created_at DESC, j.id LIMIT ? OFFSET ?`, limit+1, offset)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	now := time.Now()
+	out := make([]domain.Job, 0, limit+1)
+	for rows.Next() {
+		var j domain.Job
+		var run, code, location string
+		if err := rows.Scan(&j.ID, &j.AssetID, &j.Type, &j.State, &j.Priority, &j.AttemptCount, &j.MaxAttempts, &run, &j.InputHash, &j.LastError, &j.Terminal, &code, &location); err != nil {
+			return nil, false, err
+		}
+		if location != "" {
+			j.Filename = filepath.Base(location)
+		}
+		j.RunAfter, _ = time.Parse(time.RFC3339Nano, run)
+		if isDeferCode(code) && j.State == domain.JobPending && j.RunAfter.After(now) {
+			j.DeferredReason = code
+		}
+		out = append(out, j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
+}
+
 // JobSummary counts the queue by category in one pass. The deferred predicate
 // is deliberately the same pair ListJobs uses — the error code alone would keep
 // reporting "waiting on quota" long after the job resumed, because nothing
@@ -2153,6 +2220,19 @@ func (r *Repository) ShotExists(ctx context.Context, shotID string) (bool, error
 	return count > 0, nil
 }
 
+// AssetExists is a cheap existence probe for the assets table. The API uses
+// it at the parent/child boundary so an unknown asset id answers 404 while a
+// known asset with zero canonical shots answers 200 with an empty list —
+// ListAssetShots itself must stay untouched because pipeline callers treat an
+// empty canonical set as a valid (unanalyzed) asset.
+func (r *Repository) AssetExists(ctx context.Context, assetID string) (bool, error) {
+	var count int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM assets WHERE id=?`, assetID).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // GetShot returns a single shot's full detail: shot metadata, owning asset,
 // transcript fragment within the shot's time range, and thumbnail/proxy
 // references. Returns (nil, nil) when the shot does not exist.
@@ -2460,6 +2540,14 @@ func (r *Repository) hybridSearchShots(ctx context.Context, q string, limit int,
 // contributes a zero lexical score. Facets are applied once, here, to the
 // candidate set that actually becomes the result.
 func (r *Repository) scoreShotCandidates(ctx context.Context, q string, facets domain.FacetFilter) ([]domain.ShotSearchResult, error) {
+	return r.scoreShotCandidatesWithContext(ctx, q, facets, domain.AssetContextFilter{})
+}
+
+// scoreShotCandidatesWithContext is the shared candidate scorer. A zero
+// assetFilter produces exactly the legacy query (no asset joins, no context
+// clauses); a non-zero one narrows the universe by the owning asset's
+// capture/session/status predicates through assetContextClauses.
+func (r *Repository) scoreShotCandidatesWithContext(ctx context.Context, q string, facets domain.FacetFilter, assetFilter domain.AssetContextFilter) ([]domain.ShotSearchResult, error) {
 	lexical := make(map[string]float64)
 	if ftsQuery := buildFTSQuery(q); ftsQuery != "" {
 		rows, err := r.db.QueryContext(ctx, `SELECT shot_id,bm25(asset_shot_search) FROM asset_shot_search WHERE asset_shot_search MATCH ?`, ftsQuery)
@@ -2502,7 +2590,14 @@ func (r *Repository) scoreShotCandidates(ctx context.Context, q string, facets d
 	// never replace this filter.
 	clauses, args := facetWhere(facets)
 	clauses, args = appendShotDurationBounds(clauses, args, facets)
-	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,v.vector_json,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),'') FROM asset_shots s JOIN shot_semantic_vectors v ON v.shot_id=s.id LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id WHERE v.model=?`
+	assetJoins := ""
+	if hasAssetContext(assetFilter) {
+		ctxClauses, ctxArgs := assetContextClauses(assetFilter)
+		clauses = append(clauses, ctxClauses...)
+		args = append(args, ctxArgs...)
+		assetJoins = ` JOIN assets a ON a.id=s.asset_id LEFT JOIN media_metadata m ON m.asset_id=a.id LEFT JOIN capture_metadata cm ON cm.asset_id=a.id`
+	}
+	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,v.vector_json,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),'') FROM asset_shots s JOIN shot_semantic_vectors v ON v.shot_id=s.id LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id` + assetJoins + ` WHERE v.model=?`
 	queryArgs := append([]any{discovery.HeuristicVectorModel}, args...)
 	if len(clauses) > 0 {
 		query += ` AND ` + strings.Join(clauses, ` AND `)
@@ -3595,6 +3690,41 @@ func (r *Repository) ListUnresolvedTags(ctx context.Context, limit int) ([]domai
 	return out, rows.Err()
 }
 
+// PagedUnresolvedTags is the paged form of ListUnresolvedTags with a
+// normalized_tag tie-break on top of the usage-count ordering and a probe row
+// so the API can report whether another page exists.
+func (r *Repository) PagedUnresolvedTags(ctx context.Context, limit, offset int) ([]domain.UnresolvedTag, bool, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT normalized_tag,COUNT(*),COUNT(DISTINCT asset_id),json_group_array(DISTINCT raw_tag) FROM asset_tag_links WHERE canonical_tag_id IS NULL GROUP BY normalized_tag ORDER BY COUNT(*) DESC, normalized_tag LIMIT ? OFFSET ?`, limit+1, offset)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	out := make([]domain.UnresolvedTag, 0, limit+1)
+	for rows.Next() {
+		var t domain.UnresolvedTag
+		var forms string
+		if err := rows.Scan(&t.NormalizedTag, &t.UsageCount, &t.AssetCount, &forms); err != nil {
+			return nil, false, err
+		}
+		_ = json.Unmarshal([]byte(forms), &t.DisplayForms)
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
+}
+
 func (r *Repository) UpsertTagEmbeddings(ctx context.Context, model string, tags []domain.UnresolvedTag, vectors [][]float64) error {
 	if len(tags) != len(vectors) {
 		return fmt.Errorf("embedding tag/vector count mismatch")
@@ -3807,6 +3937,55 @@ func (r *Repository) ListRepurposePlans(ctx context.Context, status string, limi
 	return out, rows.Err()
 }
 
+// PagedRepurposePlans is the paged form of ListRepurposePlans with an id
+// tie-break on the updated_at ordering and a probe row for has-more.
+func (r *Repository) PagedRepurposePlans(ctx context.Context, status string, limit, offset int) ([]domain.RepurposePlanSummary, bool, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	query := `SELECT p.id,p.title,p.brief,p.status,p.duration_ms,p.updated_at,
+	COALESCE((SELECT COUNT(*) FROM repurpose_plan_revisions r WHERE r.plan_id=p.id),0),
+	COALESCE((SELECT MAX(r.revision) FROM repurpose_plan_revisions r WHERE r.plan_id=p.id),0),
+	COALESCE(json_array_length(COALESCE(json_extract(p.plan_json,'$.missing_needs'),'[]')),0)
+	FROM repurpose_plans p`
+	args := make([]any, 0, 2)
+	if status == "draft" || status == "approved" {
+		query += ` WHERE p.status=?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY p.updated_at DESC, p.id LIMIT ? OFFSET ?`
+	args = append(args, limit+1, offset)
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	out := make([]domain.RepurposePlanSummary, 0, limit+1)
+	for rows.Next() {
+		var s domain.RepurposePlanSummary
+		var updated string
+		if err := rows.Scan(&s.ID, &s.Title, &s.Brief, &s.Status, &s.DurationMS, &updated, &s.RevisionCount, &s.LatestRevision, &s.MissingNeedsCount); err != nil {
+			return nil, false, err
+		}
+		s.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
+}
+
 func (r *Repository) SaveRepurposePlanRevision(ctx context.Context, plan domain.RepurposePlan, editorNote string) (domain.RepurposePlanRevision, error) {
 	current, err := r.GetRepurposePlan(ctx, plan.ID)
 	if err != nil {
@@ -3987,6 +4166,54 @@ func (r *Repository) ListTagProposals(ctx context.Context, state string, limit i
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// PagedTagProposals is the paged form of ListTagProposals with an id
+// tie-break on the created_at ordering and a probe row for has-more.
+func (r *Repository) PagedTagProposals(ctx context.Context, state string, limit, offset int) ([]domain.TagProposal, bool, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	q := `SELECT id,run_id,state,proposal_type,COALESCE(canonical_name,''),payload_json,confidence,reason,affected_assets,created_at,reviewed_at,COALESCE(review_note,'') FROM tag_change_proposals`
+	args := []any{}
+	if state != "" {
+		q += ` WHERE state=?`
+		args = append(args, state)
+	}
+	q += ` ORDER BY created_at DESC, id LIMIT ? OFFSET ?`
+	args = append(args, limit+1, offset)
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	out := make([]domain.TagProposal, 0, limit+1)
+	for rows.Next() {
+		var p domain.TagProposal
+		var payload, created string
+		var reviewed sql.NullString
+		if err := rows.Scan(&p.ID, &p.RunID, &p.State, &p.ProposalType, &p.CanonicalName, &payload, &p.Confidence, &p.Reason, &p.AffectedAssets, &created, &reviewed, &p.ReviewNote); err != nil {
+			return nil, false, err
+		}
+		_ = json.Unmarshal([]byte(payload), &p.Payload)
+		p.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		if reviewed.Valid {
+			t, _ := time.Parse(time.RFC3339Nano, reviewed.String)
+			p.ReviewedAt = &t
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
 }
 func (r *Repository) ReviewTagProposal(ctx context.Context, id, action, note string) error {
 	tx, err := r.db.BeginTx(ctx, nil)

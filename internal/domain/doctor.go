@@ -97,6 +97,13 @@ type ProviderInfo struct {
 	Channels           int `json:"channels"`
 	MembersWithSecrets int `json:"members_with_secrets"`
 	Degraded           int `json:"degraded"`
+	// ConfigValid and ConfigError record the legacy providers.* config
+	// validation result. `doctor` deliberately runs even when that config is
+	// broken (the pre-dispatch fail-fast is skipped for it), so the report
+	// carries the secret-free reason instead of the command refusing to
+	// produce any diagnostics.
+	ConfigValid bool   `json:"config_valid"`
+	ConfigError string `json:"config_error,omitempty"`
 }
 
 // SearchIndexInfo is the retrieval-layer health view. FTSReady is the

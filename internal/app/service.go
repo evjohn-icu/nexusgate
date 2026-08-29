@@ -135,10 +135,20 @@ type Repository interface {
 	TotalSourceBytes(ctx context.Context) (int64, error)
 	ListAssetCards(ctx context.Context, limit, offset int) ([]domain.AssetCard, error)
 	ListAssetCardsFiltered(ctx context.Context, filter domain.AssetCardFilter) ([]domain.AssetCard, error)
+	PagedAssetCardsFiltered(ctx context.Context, filter domain.AssetCardFilter) ([]domain.AssetCard, bool, error)
+	// PagedJobs is the paged form of ListJobs (which lives on the embedded
+	// PipelineRepository): deterministic id tie-break plus a probe row so the
+	// API can report has-more without a second query. Pipeline callers keep
+	// using ListJobs.
+	PagedJobs(ctx context.Context, limit, offset int) ([]domain.Job, bool, error)
 	SaveAssetCollection(ctx context.Context, collection domain.AssetCollection) (domain.AssetCollection, error)
 	ListAssetCollections(ctx context.Context) ([]domain.CollectionSummary, error)
 	GetAssetCollection(ctx context.Context, id string) (*domain.CollectionSummary, error)
 	DeleteAssetCollection(ctx context.Context, id string) error
+	// CollectionExists is a cheap parent-existence probe the API consults at
+	// the collections/{id}/assets boundary so an unknown collection answers
+	// 404 while a known empty one answers 200 with [].
+	CollectionExists(ctx context.Context, id string) (bool, error)
 	// The shot-basket methods are deliberately on the full Repository, not on
 	// PipelineRepository: the pipeline has no reason to read or mutate a
 	// collection's pins, and the narrow interface's fakes should not have to
@@ -150,14 +160,17 @@ type Repository interface {
 	ListAssetCardsInCollection(ctx context.Context, collectionID string, limit, offset int) ([]domain.AssetCard, error)
 	GetAssetProcessingSummary(ctx context.Context, filter domain.AssetCollectionFilter) (domain.AssetProcessingSummary, error)
 	ListShootSessions(ctx context.Context, filter domain.ShootSessionFilter) ([]domain.ShootSession, error)
+	PagedShootSessions(ctx context.Context, filter domain.ShootSessionFilter) ([]domain.ShootSession, bool, error)
 	GetShootSession(ctx context.Context, id string) (*domain.ShootSession, error)
 	GetAssetDetail(ctx context.Context, assetID string) (*domain.AssetDetail, error)
 	GetShot(ctx context.Context, shotID string) (*domain.ShotDetail, error)
 	GetArtifact(ctx context.Context, assetID, typ string) (*domain.DerivedArtifact, error)
 	ListCanonicalTags(context.Context) ([]domain.CanonicalTag, error)
 	ListUnresolvedTags(context.Context, int) ([]domain.UnresolvedTag, error)
+	PagedUnresolvedTags(context.Context, int, int) ([]domain.UnresolvedTag, bool, error)
 	CreateTagCurationRun(context.Context, []domain.TagProposal, int, string) (domain.TagCurationResult, error)
 	ListTagProposals(context.Context, string, int) ([]domain.TagProposal, error)
+	PagedTagProposals(context.Context, string, int, int) ([]domain.TagProposal, bool, error)
 	ReviewTagProposal(context.Context, string, string, string) error
 	UpsertTagEmbeddings(context.Context, string, []domain.UnresolvedTag, [][]float64) error
 	CreateTagClusterRun(context.Context, string, string, float64, []domain.TagCluster, int) (string, error)
@@ -167,6 +180,7 @@ type Repository interface {
 	JobIssues(context.Context) ([]domain.JobIssue, error)
 	ListAssetShots(context.Context, string) ([]domain.AssetShot, error)
 	ShotExists(context.Context, string) (bool, error)
+	AssetExists(context.Context, string) (bool, error)
 	SearchShots(context.Context, string, int) ([]domain.ShotSearchResult, error)
 	SearchShotsFiltered(context.Context, string, int, domain.FacetFilter) ([]domain.ShotSearchResult, error)
 	// SearchFiltered is deliberately not on PipelineRepository: that narrow
@@ -181,6 +195,7 @@ type Repository interface {
 	SaveRepurposePlan(context.Context, domain.RepurposePlan) (domain.RepurposePlan, error)
 	GetRepurposePlan(context.Context, string) (*domain.RepurposePlan, error)
 	ListRepurposePlans(context.Context, string, int) ([]domain.RepurposePlanSummary, error)
+	PagedRepurposePlans(context.Context, string, int, int) ([]domain.RepurposePlanSummary, bool, error)
 	SaveRepurposePlanRevision(context.Context, domain.RepurposePlan, string) (domain.RepurposePlanRevision, error)
 	ListRepurposePlanRevisions(context.Context, string) ([]domain.RepurposePlanRevision, error)
 	ApproveRepurposePlanRevision(context.Context, string, int) (domain.RepurposePlanRevision, error)
@@ -193,6 +208,7 @@ type Repository interface {
 	RebuildAutomaticShootSessions(context.Context, string) error
 	CreateWorkerPairing(context.Context, time.Duration) (remote.PairingToken, error)
 	EnrollWorker(context.Context, string, remote.WorkerRegistration) (remote.Worker, string, error)
+	WorkerPairingValid(context.Context, string, time.Time) (bool, error)
 	AuthenticateWorker(context.Context, string) (remote.Worker, error)
 	HeartbeatWorker(context.Context, string, string, remote.WorkerCapabilities) error
 	ListWorkers(context.Context) ([]remote.Worker, error)
@@ -917,6 +933,13 @@ func (s *Service) EnrollWorker(ctx context.Context, pairingToken string, registr
 		return remote.Worker{}, "", fmt.Errorf("worker enrollment: %w", err)
 	}
 	return worker, token, nil
+}
+
+// WorkerPairingValid is a pure read: it reports whether a raw pairing token
+// is still redeemable without consuming it, which the Worker binary bootstrap
+// download relies on before enrollment redeems the token exactly once.
+func (s *Service) WorkerPairingValid(ctx context.Context, rawToken string, now time.Time) (bool, error) {
+	return s.repo.WorkerPairingValid(ctx, rawToken, now)
 }
 
 func (s *Service) AuthenticateWorker(ctx context.Context, token string) (remote.Worker, error) {
@@ -1749,6 +1772,13 @@ func (s *Service) ListJobs(ctx context.Context, limit int) ([]domain.Job, error)
 	return s.pipeline.repo.ListJobs(ctx, limit)
 }
 
+// ListJobsPage is the paged form of ListJobs: it reports whether another page
+// exists so the API can set X-Timingdex-Has-More. ListJobs itself stays on
+// the pipeline path unchanged.
+func (s *Service) ListJobsPage(ctx context.Context, limit, offset int) ([]domain.Job, bool, error) {
+	return s.repo.PagedJobs(ctx, limit, offset)
+}
+
 func (s *Service) JobSummary(ctx context.Context) (domain.JobSummary, error) {
 	return s.pipeline.repo.JobSummary(ctx)
 }
@@ -1781,6 +1811,13 @@ func (s *Service) SearchFiltered(ctx context.Context, q string, limit int, facet
 
 func (s *Service) ListAssetShots(ctx context.Context, assetID string) ([]domain.AssetShot, error) {
 	return s.repo.ListAssetShots(ctx, assetID)
+}
+
+// AssetExists is the cheap parent probe the API consults before answering
+// assets/{id}/shots, so an unknown asset id is a 404 while a known asset with
+// zero canonical shots is a 200 with an empty list.
+func (s *Service) AssetExists(ctx context.Context, assetID string) (bool, error) {
+	return s.repo.AssetExists(ctx, assetID)
 }
 
 // AssetTranscript is the API-facing transcript view for one asset: word-level
@@ -1963,6 +2000,12 @@ func (s *Service) ListRepurposePlans(ctx context.Context, status string, limit i
 	return s.repo.ListRepurposePlans(ctx, status, limit)
 }
 
+// ListRepurposePlansPage is the paged form of ListRepurposePlans for the API
+// list handler; it adds a has-more flag from the repository's probe row.
+func (s *Service) ListRepurposePlansPage(ctx context.Context, status string, limit, offset int) ([]domain.RepurposePlanSummary, bool, error) {
+	return s.repo.PagedRepurposePlans(ctx, status, limit, offset)
+}
+
 // ReviseRepurposePlan validates a proposed set of sections against the plan's
 // current one and records the result as a new draft revision.
 //
@@ -2130,6 +2173,13 @@ func (s *Service) ListAssetCards(ctx context.Context, limit, offset int) ([]doma
 func (s *Service) ListAssetCardsFiltered(ctx context.Context, filter domain.AssetCardFilter) ([]domain.AssetCard, error) {
 	return s.repo.ListAssetCardsFiltered(ctx, filter)
 }
+
+// ListAssetCardsPage is the paged form of ListAssetCardsFiltered for the API
+// list handler: it adds a has-more flag from the repository's probe row.
+func (s *Service) ListAssetCardsPage(ctx context.Context, filter domain.AssetCardFilter) ([]domain.AssetCard, bool, error) {
+	return s.repo.PagedAssetCardsFiltered(ctx, filter)
+}
+
 func (s *Service) SaveAssetCollection(ctx context.Context, collection domain.AssetCollection) (domain.AssetCollection, error) {
 	return s.repo.SaveAssetCollection(ctx, collection)
 }
@@ -2139,6 +2189,14 @@ func (s *Service) ListAssetCollections(ctx context.Context) ([]domain.Collection
 func (s *Service) GetAssetCollection(ctx context.Context, id string) (*domain.CollectionSummary, error) {
 	return s.repo.GetAssetCollection(ctx, id)
 }
+
+// CollectionExists is the cheap parent probe the API consults before answering
+// collections/{id}/assets, so an unknown collection id is a 404 while a known
+// empty collection is a 200 with an empty list.
+func (s *Service) CollectionExists(ctx context.Context, id string) (bool, error) {
+	return s.repo.CollectionExists(ctx, id)
+}
+
 func (s *Service) DeleteAssetCollection(ctx context.Context, id string) error {
 	return s.repo.DeleteAssetCollection(ctx, id)
 }
@@ -2150,6 +2208,12 @@ func (s *Service) GetAssetProcessingSummary(ctx context.Context, filter domain.A
 }
 func (s *Service) ListShootSessions(ctx context.Context, filter domain.ShootSessionFilter) ([]domain.ShootSession, error) {
 	return s.repo.ListShootSessions(ctx, filter)
+}
+
+// ListShootSessionsPage is the paged form of ListShootSessions for the API
+// list handler; it adds a has-more flag from the repository's probe row.
+func (s *Service) ListShootSessionsPage(ctx context.Context, filter domain.ShootSessionFilter) ([]domain.ShootSession, bool, error) {
+	return s.repo.PagedShootSessions(ctx, filter)
 }
 func (s *Service) GetShootSession(ctx context.Context, id string) (*domain.ShootSession, error) {
 	return s.repo.GetShootSession(ctx, id)
@@ -2342,6 +2406,12 @@ func (s *Service) ListCanonicalTags(ctx context.Context) ([]domain.CanonicalTag,
 func (s *Service) ListUnresolvedTags(ctx context.Context, limit int) ([]domain.UnresolvedTag, error) {
 	return s.repo.ListUnresolvedTags(ctx, limit)
 }
+
+// ListUnresolvedTagsPage is the paged form of ListUnresolvedTags for the API
+// list handler; it adds a has-more flag from the repository's probe row.
+func (s *Service) ListUnresolvedTagsPage(ctx context.Context, limit, offset int) ([]domain.UnresolvedTag, bool, error) {
+	return s.repo.PagedUnresolvedTags(ctx, limit, offset)
+}
 func (s *Service) RunTagCurator(ctx context.Context, limit int) (domain.TagCurationResult, error) {
 	unresolved, err := s.repo.ListUnresolvedTags(ctx, limit)
 	if err != nil {
@@ -2372,6 +2442,12 @@ func (s *Service) RunTagCurator(ctx context.Context, limit int) (domain.TagCurat
 }
 func (s *Service) ListTagProposals(ctx context.Context, state string, limit int) ([]domain.TagProposal, error) {
 	return s.repo.ListTagProposals(ctx, state, limit)
+}
+
+// ListTagProposalsPage is the paged form of ListTagProposals for the API list
+// handler; it adds a has-more flag from the repository's probe row.
+func (s *Service) ListTagProposalsPage(ctx context.Context, state string, limit, offset int) ([]domain.TagProposal, bool, error) {
+	return s.repo.PagedTagProposals(ctx, state, limit, offset)
 }
 func (s *Service) ReviewTagProposal(ctx context.Context, id, action, note string) error {
 	if action != "approve" && action != "reject" {

@@ -2461,13 +2461,24 @@ func TestAdminAndAgentTokenComparisonAcceptsOnlyExactMatch(t *testing.T) {
 		r.Header.Set("Authorization", "Bearer "+token)
 		return r
 	}
+	// sameLengthWrong flips the first byte, so the probe is provably different
+	// from the real token at the same length. The old "x"+token[1:] accident-
+	// ally equaled the token whenever it happened to start with 'x' (a 1/64
+	// chance for a base64url token), which surfaced as an intermittent
+	// "wrong token accepted" failure that was really the fixture, not the
+	// comparison.
+	sameLengthWrong := func(token string) string {
+		flipped := []byte(token)
+		flipped[0] ^= 0x01
+		return string(flipped)
+	}
 	if !server.isHubAdmin(bearer(admin)) {
 		t.Fatal("exact admin token rejected")
 	}
 	if server.isHubAdmin(bearer("short")) {
 		t.Fatal("wrong-length admin token accepted")
 	}
-	if server.isHubAdmin(bearer("x" + admin[1:])) {
+	if server.isHubAdmin(bearer(sameLengthWrong(admin))) {
 		t.Fatal("same-length wrong admin token accepted")
 	}
 	if server.isHubAdmin(bearer("")) {
@@ -2479,10 +2490,141 @@ func TestAdminAndAgentTokenComparisonAcceptsOnlyExactMatch(t *testing.T) {
 	if server.isHubAgent(bearer("nope")) {
 		t.Fatal("wrong-length agent token accepted")
 	}
-	if server.isHubAgent(bearer("y" + agent[1:])) {
+	if server.isHubAgent(bearer(sameLengthWrong(agent))) {
 		t.Fatal("same-length wrong agent token accepted")
 	}
 	if server.isHubAgent(bearer("")) {
 		t.Fatal("empty agent token accepted")
+	}
+}
+
+// POST /api/v1/search/shots carries asset_filter beside facets, and a shot
+// whose owning asset falls outside the selected captured-date/status window is
+// excluded even when it semantically matches. The filter reuses the exact
+// capture/session/status semantics the browse layer derives, so "ready" means
+// the same thing in both surfaces. Without the filter both shots match.
+func TestSearchShotsV2AssetContextFilterExcludesOutsideShot(t *testing.T) {
+	ctx := context.Background()
+	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "search-v2-assetfilter.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := t.TempDir()
+	videoA := filepath.Join(rootPath, "a.mp4")
+	videoB := filepath.Join(rootPath, "b.mp4")
+	for _, p := range []string{videoA, videoB} {
+		if err := os.WriteFile(p, []byte("fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root, err := repo.CreateLibraryRoot(ctx, rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pair := range []struct{ name, path string }{
+		{"a.mp4", videoA}, {"b.mp4", videoB},
+	} {
+		info, err := os.Stat(pair.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.UpsertScannedFile(ctx, root, pair.name, pair.path, info, "fp-"+pair.name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assets, err := repo.ListAssets(ctx, 10, 0)
+	if err != nil || len(assets) != 2 {
+		t.Fatalf("assets=%+v err=%v", assets, err)
+	}
+	// Both assets get semantically matching shots.
+	for i, asset := range assets {
+		if err := repo.ReplaceAssetShots(ctx, asset.ID, "", []domain.AssetShot{{ID: fmt.Sprintf("shot-%d", i), Ordinal: i, StartMS: 0, EndMS: 5000, Description: "雨夜城市街道", Tags: []string{"rain", "urban_night", "street"}}}, "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inAsset, outAsset := assets[0], assets[1]
+	now := time.Now().UTC()
+	// inAsset: captured yesterday, and "ready" (a proxy artifact exists).
+	inCaptured := now.AddDate(0, 0, -1)
+	if err := repo.SaveMediaMetadata(ctx, inAsset.ID, domain.MediaMetadata{CapturedAt: &inCaptured, CameraModel: "Sony FX3"}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.DB().ExecContext(ctx, `INSERT INTO derived_artifacts(id,asset_id,artifact_type,profile_hash,local_path,size_bytes,created_at) VALUES(?,?,?,?,?,?,?)`, "proxy-in", inAsset.ID, "proxy", "sw", "/cache/proxy-in.mp4", 20, now); err != nil {
+		t.Fatal(err)
+	}
+	// outAsset: captured ten days ago (outside the window).
+	outCaptured := now.AddDate(0, 0, -10)
+	if err := repo.SaveMediaMetadata(ctx, outAsset.ID, domain.MediaMetadata{CapturedAt: &outCaptured}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer("", service)
+
+	send := func(body string) (*httptest.ResponseRecorder, error) {
+		request := lanRequest(http.MethodPost, "/api/v1/search/shots", bytes.NewBufferString(body))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		return response, nil
+	}
+	type envelope struct {
+		Results []struct {
+			ShotID string `json:"shot_id"`
+		} `json:"results"`
+	}
+
+	// Without a filter, both shots match.
+	unfiltered, err := send(`{"query":"雨夜 城市 街道","mode":"auto","limit":10,"facets":{}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unfiltered.Code != http.StatusOK {
+		t.Fatalf("unfiltered status=%d body=%s", unfiltered.Code, unfiltered.Body.String())
+	}
+	var all envelope
+	if err := json.NewDecoder(unfiltered.Body).Decode(&all); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, r := range all.Results {
+		seen[r.ShotID] = true
+	}
+	if !seen["shot-0"] || !seen["shot-1"] {
+		t.Fatalf("unfiltered search must match both shots, got %+v", all.Results)
+	}
+
+	// With captured_from/captured_to (yesterday..tomorrow) + status ready, only
+	// the in-window, ready asset's shot survives.
+	from := inCaptured.UTC().Format(time.RFC3339Nano)
+	to := now.AddDate(0, 0, 1).UTC().Format(time.RFC3339Nano)
+	filtered, err := send(fmt.Sprintf(`{"query":"雨夜 城市 街道","mode":"auto","limit":10,"facets":{},"asset_filter":{"captured_from":%q,"captured_to":%q,"status":"ready"}}`, from, to))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filtered.Code != http.StatusOK {
+		t.Fatalf("filtered status=%d body=%s", filtered.Code, filtered.Body.String())
+	}
+	var only envelope
+	if err := json.NewDecoder(filtered.Body).Decode(&only); err != nil {
+		t.Fatal(err)
+	}
+	if len(only.Results) != 1 || only.Results[0].ShotID != "shot-0" {
+		t.Fatalf("filtered search must keep only the in-window ready shot, got %+v", only.Results)
+	}
+
+	// An unknown status literal is rejected.
+	bad, err := send(`{"query":"x","mode":"auto","limit":10,"facets":{},"asset_filter":{"status":"bogus"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("invalid status must be rejected, got %d", bad.Code)
 	}
 }

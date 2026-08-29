@@ -28,6 +28,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+
+	"github.com/evjohn-icu/timingdex/internal/apiclient"
 )
 
 // hubClient talks to the Timingdex Hub HTTP API.
@@ -47,6 +49,13 @@ type hubClient struct {
 // non-https Hubs.
 func newHubClient() (*hubClient, error) {
 	baseURL := strings.TrimRight(os.Getenv("TIMINGDEX_BASE_URL"), "/")
+	if baseURL == "" {
+		// The default Hub endpoint is the local self-signed HTTPS server.
+		// Defaulting to https is what makes the unconfigured case safe: it
+		// forces TIMINGDEX_HUB_FINGERPRINT below instead of silently talking
+		// to an unpinned Hub identity over plaintext.
+		baseURL = "https://127.0.0.1:8787"
+	}
 	fingerprint := strings.TrimSpace(os.Getenv("TIMINGDEX_HUB_FINGERPRINT"))
 	if fingerprint != "" && !ValidFingerprint(fingerprint) {
 		return nil, fmt.Errorf("TIMINGDEX_HUB_FINGERPRINT must be a 64-character SHA-256 hex fingerprint")
@@ -69,7 +78,7 @@ func newHubClient() (*hubClient, error) {
 		}
 	}
 	if strings.HasPrefix(strings.ToLower(baseURL), "https://") && fingerprint == "" {
-		return nil, fmt.Errorf("TIMINGDEX_BASE_URL is https but TIMINGDEX_HUB_FINGERPRINT is not set: refusing to accept an unpinned Hub certificate")
+		return nil, fmt.Errorf("TIMINGDEX_HUB_FINGERPRINT is not set: the Hub base URL is https (%s) and accepting an unpinned certificate would silently trust any attacker in the path; set TIMINGDEX_HUB_FINGERPRINT, or use an explicit loopback http:// base URL for TLS-off development", baseURL)
 	}
 	if strings.HasPrefix(strings.ToLower(baseURL), "http://") && !httpAllowedForLocalDevelopment(hostFromBaseURL(baseURL)) {
 		return nil, fmt.Errorf("TIMINGDEX_BASE_URL is http:// and the host is not loopback or link-local: refusing to send the agent token in cleartext to a remote Hub; use https://")
@@ -174,7 +183,7 @@ func (c *hubClient) do(ctx context.Context, method, path string, token string, b
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("Hub API %s %s: %s (%s)", method, path, strings.TrimSpace(string(raw)), resp.Status)
+		return apiclient.DecodeError(resp.StatusCode, resp.Status, raw)
 	}
 	if out != nil && len(raw) > 0 {
 		return json.Unmarshal(raw, out)
@@ -199,6 +208,20 @@ func (c *hubClient) inspectLibrary(ctx context.Context) (map[string]any, error) 
 		return nil, err
 	}
 	result["hardware"] = hardware
+	// Readiness is not just health and hardware: the setup status (healthy
+	// roots, runnable providers, searchable shots, index state) and the job
+	// summary (queued/running/failed) describe whether the library can
+	// actually serve searches, so they ride along with the agent token.
+	var setupStatus map[string]any
+	if err := c.do(ctx, http.MethodGet, "/api/v1/setup/status", c.agentToken, nil, &setupStatus); err != nil {
+		return nil, err
+	}
+	result["setup_status"] = setupStatus
+	var jobsSummary map[string]any
+	if err := c.do(ctx, http.MethodGet, "/api/v1/jobs/summary", c.agentToken, nil, &jobsSummary); err != nil {
+		return nil, err
+	}
+	result["jobs_summary"] = jobsSummary
 	return result, nil
 }
 
@@ -206,14 +229,18 @@ func (c *hubClient) inspectLibrary(ctx context.Context) (map[string]any, error) 
 // per-constraint evidence (confirmed/possible/contradicted/unknown), not just
 // a score — matching how the README positions the search surface. Uses the
 // agent token like the other trusted reads.
-func (c *hubClient) searchShots(ctx context.Context, q string, limit int, filters map[string]any) (map[string]any, error) {
+func (c *hubClient) searchShots(ctx context.Context, q string, limit, offset int, filters map[string]any) (map[string]any, error) {
 	if limit <= 0 {
 		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
 	}
 	body := map[string]any{
 		"query":            q,
 		"mode":             "auto",
 		"limit":            limit,
+		"offset":           offset,
 		"include_evidence": true,
 	}
 	if filters != nil {
@@ -231,23 +258,27 @@ func (c *hubClient) searchShots(ctx context.Context, q string, limit int, filter
 // not just the matched ones search returns).
 func (c *hubClient) getTimeline(ctx context.Context, assetID string) ([]map[string]any, error) {
 	var out []map[string]any
-	if err := c.do(ctx, http.MethodGet, "/api/v1/assets/"+url.PathEscape(assetID)+"/shots", c.agentToken, nil, &out); err != nil {
+	// A valid 2,000-shot timeline can exceed do()'s 1 MiB success-body
+	// bound, so the full shot list decodes through getLarge like the
+	// transcript and asset detail bodies.
+	if err := c.getLarge(ctx, "/api/v1/assets/"+url.PathEscape(assetID)+"/shots", &out); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// maxTranscriptBytes bounds a transcript response body. A word-level
-// transcript is the one API response that legitimately outgrows do()'s 1 MiB
-// success-body bound (a long asset's full word stream), so getTranscript
-// decodes its own body; the cap still stops a misbehaving Hub from making the
-// process allocate without bound. No real transcript approaches it.
+// maxTranscriptBytes bounds the large-body responses getLarge decodes (a long
+// asset's full word stream, an AssetDetail embedding it, and a multi-shot
+// timeline), all of which legitimately outgrow do()'s 1 MiB success-body
+// bound. The cap still stops a misbehaving Hub from making the process
+// allocate without bound; no real response approaches it.
 const maxTranscriptBytes int64 = 64 << 20
 
 // getLarge GETs a path whose success body can legitimately exceed do()'s
 // 1 MiB bound and decodes it into out. Shared by getTranscript (a long
-// asset's word stream) and getAsset (AssetDetail embeds the same full
-// transcript), which would otherwise silently truncate and fail to decode.
+// asset's word stream), getAsset (AssetDetail embeds the same full
+// transcript), and getTimeline (a multi-thousand-shot shot list), which
+// would otherwise silently truncate and fail to decode.
 func (c *hubClient) getLarge(ctx context.Context, path string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base()+path, nil)
 	if err != nil {
@@ -263,7 +294,7 @@ func (c *hubClient) getLarge(ctx context.Context, path string, out any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return fmt.Errorf("Hub API %s %s: %s (%s)", http.MethodGet, path, strings.TrimSpace(string(raw)), resp.Status)
+		return apiclient.DecodeError(resp.StatusCode, resp.Status, raw)
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxTranscriptBytes)).Decode(out); err != nil {
 		return err
@@ -313,9 +344,19 @@ func toolResult(text string) *mcp.CallToolResult {
 }
 
 func errResult(err error) *mcp.CallToolResult {
+	text := "error: " + err.Error()
+	var apiErr *apiclient.Error
+	if errors.As(err, &apiErr) {
+		// A Hub-envelope failure emits its stable fields as JSON text so an
+		// MCP client can switch on code, respect retryable, and follow action
+		// instead of parsing prose.
+		if raw, marshalErr := json.Marshal(apiErr); marshalErr == nil {
+			text = "error: " + string(raw)
+		}
+	}
 	return &mcp.CallToolResult{
 		IsError: true,
-		Content: []mcp.Content{mcp.TextContent{Type: "text", Text: "error: " + err.Error()}},
+		Content: []mcp.Content{mcp.TextContent{Type: "text", Text: text}},
 	}
 }
 
@@ -356,7 +397,7 @@ func main() {
 func registerTools(srv *server.MCPServer, client *hubClient) {
 	srv.AddTool(
 		mcp.NewTool("inspect_library",
-			mcp.WithDescription("Inspect the Timingdex library readiness: health and hardware report. Use before searching so you do not plan against an incomplete library."),
+			mcp.WithDescription("Inspect the Timingdex library readiness: health, hardware, setup status (healthy roots, runnable providers, searchable shots, index state) and job summary (queued/running/failed). Use before searching so you do not plan against an incomplete library."),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			info, err := client.inspectLibrary(ctx)
@@ -373,6 +414,7 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 			mcp.WithDescription("Search the indexed footage library at shot granularity and return exact source time ranges with evidence-backed matches. Each result carries per-constraint evidence (confirmed/possible/contradicted/unknown) alongside scores — treat the score as a retrieval signal, the evidence as the claim. Returns shot IDs, asset IDs, time ranges, scores, evidence, and descriptions."),
 			mcp.WithString("query", mcp.Required(), mcp.Description("Search query, e.g. 'sunset over water', '城市夜景', or a tag")),
 			mcp.WithNumber("limit", mcp.Description("Maximum number of shots (default 20)")),
+			mcp.WithNumber("offset", mcp.Description("Optional zero-based offset into the full result list for pagination (default 0)")),
 			mcp.WithString("filters", mcp.Description("Optional JSON object of facet filters passed as the 'facets' body field. Supported keys: asset_types, shot_sizes, camera_motions, audio_types, qualities, usable_as (each a JSON array of strings), min_duration_ms, max_duration_ms (integers). Example: '{\"asset_types\":[\"broll\"]}'")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -384,13 +426,17 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 			if v, ok := req.GetArguments()["limit"].(float64); ok && v > 0 {
 				limit = int(v)
 			}
+			offset := 0
+			if v, ok := req.GetArguments()["offset"].(float64); ok && v >= 0 {
+				offset = int(v)
+			}
 			var filters map[string]any
 			if raw, ok := req.GetArguments()["filters"].(string); ok && strings.TrimSpace(raw) != "" {
 				if err := json.Unmarshal([]byte(raw), &filters); err != nil {
 					return errResult(fmt.Errorf("filters is not valid JSON: %w", err)), nil
 				}
 			}
-			result, err := client.searchShots(ctx, query, limit, filters)
+			result, err := client.searchShots(ctx, query, limit, offset, filters)
 			if err != nil {
 				return errResult(err), nil
 			}

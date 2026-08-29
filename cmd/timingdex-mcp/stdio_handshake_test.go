@@ -31,7 +31,11 @@ func TestStdioHandshake(t *testing.T) {
 		t.Fatalf("build timingdex-mcp: %v\n%s", err, out)
 	}
 
-	cli, err := client.NewStdioMCPClient(bin, nil)
+	// The binary refuses to start without a pinned Hub identity when
+	// TIMINGDEX_BASE_URL is unset (it defaults to https), so give it an
+	// explicit loopback http base URL, which is the TLS-off development form
+	// that needs no fingerprint.
+	cli, err := client.NewStdioMCPClient(bin, []string{"TIMINGDEX_BASE_URL=http://127.0.0.1:8787"})
 	if err != nil {
 		t.Fatal(err)
 	}

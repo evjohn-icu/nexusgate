@@ -40,6 +40,10 @@ func (s *benchmarkStore) ScoreCandidates(context.Context, string, domain.FacetFi
 	return s.candidates, nil
 }
 
+func (s *benchmarkStore) ScoreCandidatesV2(context.Context, string, domain.FacetFilter, domain.AssetContextFilter) ([]domain.ShotSearchResult, error) {
+	return s.candidates, nil
+}
+
 func (s *benchmarkStore) LexicalRankedShots(context.Context, string, [5]float64, int) ([]domain.ShotSearchResult, error) {
 	return s.candidates, nil
 }

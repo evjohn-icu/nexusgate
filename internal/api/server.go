@@ -1261,12 +1261,12 @@ func parseInt(value string, fallback int) int {
 
 // legacyLimitMax caps the limit parameter of the legacy trusted-read GET
 // endpoints (listJobs, searchShots, hybridSearchShots, similarShots, rareShots,
-// listAssetCards). Those endpoints pass a caller-supplied limit straight into
-// SQL LIMIT with no upper bound, so an unbounded value lets any trusted-network
-// caller force the Hub to allocate and serialize an arbitrarily large result
-// set. The v2 POST search path already clamps via search.ValidatePagination and
-// the asset-card listing caps its own id set, so only these legacy paths need
-// the bound here.
+// listAssetCards, and the paged list endpoints via parseListPagination). Those
+// endpoints pass a caller-supplied limit straight into SQL LIMIT with no upper
+// bound, so an unbounded value lets any trusted-network caller force the Hub
+// to allocate and serialize an arbitrarily large result set. The v2 POST
+// search path already clamps via search.ValidatePagination and the asset-card
+// listing caps its own id set, so only these legacy paths need the bound here.
 const legacyLimitMax = 500
 
 // parseBoundedInt is parseInt with an upper bound. A value above max clamps to
@@ -1280,6 +1280,51 @@ func parseBoundedInt(value string, fallback, max int) int {
 		return max
 	}
 	return parsed
+}
+
+// parseListPagination reads the optional limit and offset of the paged legacy
+// list endpoints. An absent value keeps the endpoint's existing default; a
+// malformed or negative value is an error so a bad parameter is a 400 rather
+// than a silent fallback. An explicit limit above max clamps to max — the cap
+// must match what the repository layer will actually return, so the reported
+// X-Timingdex-Limit header is always the page size a client can page with.
+// An explicit 0 is semantically "no limit given": every paged repository
+// method treats limit<=0 as the endpoint default, so the header must report
+// that same default page size, or a client deriving its next offset from the
+// header would never advance.
+func parseListPagination(query url.Values, defaultLimit, maxLimit int) (int, int, error) {
+	limit := defaultLimit
+	if raw := strings.TrimSpace(query.Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			return 0, 0, fmt.Errorf("invalid limit value %q", raw)
+		}
+		if parsed > maxLimit {
+			parsed = maxLimit
+		}
+		if parsed == 0 {
+			parsed = defaultLimit
+		}
+		limit = parsed
+	}
+	offset := 0
+	if raw := strings.TrimSpace(query.Get("offset")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			return 0, 0, fmt.Errorf("invalid offset value %q", raw)
+		}
+		offset = parsed
+	}
+	return limit, offset, nil
+}
+
+// writeListPaginationHeaders reports the effective page the paged legacy list
+// endpoints answered: the limit actually applied (after clamping), the offset,
+// and whether another page exists.
+func writeListPaginationHeaders(w http.ResponseWriter, limit, offset int, hasMore bool) {
+	w.Header().Set("X-Timingdex-Limit", strconv.Itoa(limit))
+	w.Header().Set("X-Timingdex-Offset", strconv.Itoa(offset))
+	w.Header().Set("X-Timingdex-Has-More", strconv.FormatBool(hasMore))
 }
 
 // facetQueryFields pairs each controlled-vocabulary facet with the vocabulary
@@ -1399,6 +1444,25 @@ func validateFacetFilter(f *domain.FacetFilter) error {
 		return fmt.Errorf("invalid duration range: min_duration_ms=%d exceeds max_duration_ms=%d", *f.MinDurationMS, *f.MaxDurationMS)
 	}
 	return nil
+}
+
+// validateAssetContextFilter rejects an asset-context status that is not one
+// of the six ProcessingStatus literals. The date/region/camera/session fields
+// are free text and need no vocabulary check; the status derives from the
+// same processingStatusSQL the browse layer renders, so a typo here would
+// silently match nothing.
+func validateAssetContextFilter(f *domain.AssetContextFilter) error {
+	if f == nil || f.Status == "" {
+		return nil
+	}
+	switch f.Status {
+	case domain.ProcessingStatusDiscovered, domain.ProcessingStatusQueued,
+		domain.ProcessingStatusProcessing, domain.ProcessingStatusReady,
+		domain.ProcessingStatusFailed, domain.ProcessingStatusMissing:
+		return nil
+	default:
+		return fmt.Errorf("asset_filter.status: unsupported value %q", f.Status)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -1555,11 +1619,17 @@ type jobView struct {
 }
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
-	jobs, err := s.service.ListJobs(r.Context(), parseBoundedInt(r.URL.Query().Get("limit"), 100, legacyLimitMax))
+	limit, offset, err := parseListPagination(r.URL.Query(), 100, legacyLimitMax)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
+		return
+	}
+	jobs, hasMore, err := s.service.ListJobsPage(r.Context(), limit, offset)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	writeListPaginationHeaders(w, limit, offset, hasMore)
 	admin := s.isHubAdmin(r)
 	views := make([]jobView, 0, len(jobs))
 	for _, job := range jobs {
@@ -1895,6 +1965,10 @@ func (s *Server) searchShotsV2(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 		return
 	}
+	if err := validateAssetContextFilter(req.AssetFilter); err != nil {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
+		return
+	}
 	response, err := s.service.SearchV2(r.Context(), req)
 	if err != nil {
 		writeError(w, err)
@@ -2008,9 +2082,14 @@ func (s *Server) listAssetCards(w http.ResponseWriter, r *http.Request) {
 	if len(ids) > 0 && strings.TrimSpace(query.Get("limit")) == "" {
 		defaultLimit = len(ids)
 	}
+	limit, offset, err := parseListPagination(query, defaultLimit, legacyLimitMax)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
+		return
+	}
 	filter := domain.AssetCardFilter{
-		Limit:       parseBoundedInt(query.Get("limit"), defaultLimit, legacyLimitMax),
-		Offset:      parseInt(query.Get("offset"), 0),
+		Limit:       limit,
+		Offset:      offset,
 		RegionLabel: query.Get("region"),
 		CameraModel: query.Get("camera"),
 		SessionID:   query.Get("session"),
@@ -2025,11 +2104,12 @@ func (s *Server) listAssetCards(w http.ResponseWriter, r *http.Request) {
 		value = value.AddDate(0, 0, 1)
 		filter.CapturedTo = &value
 	}
-	cards, err := s.service.ListAssetCardsFiltered(r.Context(), filter)
+	cards, hasMore, err := s.service.ListAssetCardsPage(r.Context(), filter)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	writeListPaginationHeaders(w, limit, offset, hasMore)
 	writeJSON(w, http.StatusOK, cards)
 }
 
@@ -2115,6 +2195,18 @@ func (s *Server) getCollection(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listCollectionAssets(w http.ResponseWriter, r *http.Request) {
+	// A known collection with zero matching assets is a valid empty page; an
+	// unknown collection id is a 404, so a stale client gets told to check the
+	// identifier instead of an empty list it would read as "no footage".
+	exists, err := s.service.CollectionExists(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !exists {
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found", Action: "check_the_identifier"})
+		return
+	}
 	items, err := s.service.ListAssetCardsInCollection(r.Context(), r.PathValue("id"), parseInt(r.URL.Query().Get("limit"), 100), parseInt(r.URL.Query().Get("offset"), 0))
 	if err != nil {
 		writeError(w, err)
@@ -2235,26 +2327,45 @@ func (s *Server) reorderCollectionShots(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) listShootSessions(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
+	limit, offset, err := parseListPagination(query, 100, legacyLimitMax)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
+		return
+	}
 	filter := domain.ShootSessionFilter{
 		RootID:      query.Get("root"),
 		State:       query.Get("state"),
 		RegionLabel: query.Get("region"),
 		CameraLabel: query.Get("camera"),
-		Limit:       parseInt(query.Get("limit"), 100),
-		Offset:      parseInt(query.Get("offset"), 0),
+		Limit:       limit,
+		Offset:      offset,
 	}
-	if value, err := time.Parse("2006-01-02", query.Get("date_from")); err == nil {
+	// A present but unparseable date is a 400, not a silently-ignored filter
+	// that would read as "no footage in range". An absent value keeps the
+	// default.
+	if raw := strings.TrimSpace(query.Get("date_from")); raw != "" {
+		value, err := time.Parse("2006-01-02", raw)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: fmt.Sprintf("invalid date_from value %q", raw)})
+			return
+		}
 		filter.StartsAfter = &value
 	}
-	if value, err := time.Parse("2006-01-02", query.Get("date_to")); err == nil {
+	if raw := strings.TrimSpace(query.Get("date_to")); raw != "" {
+		value, err := time.Parse("2006-01-02", raw)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: fmt.Sprintf("invalid date_to value %q", raw)})
+			return
+		}
 		value = value.AddDate(0, 0, 1)
 		filter.StartsBefore = &value
 	}
-	sessions, err := s.service.ListShootSessions(r.Context(), filter)
+	sessions, hasMore, err := s.service.ListShootSessionsPage(r.Context(), filter)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	writeListPaginationHeaders(w, limit, offset, hasMore)
 	if sessions == nil {
 		sessions = []domain.ShootSession{}
 	}
@@ -2326,10 +2437,25 @@ func (s *Server) shotDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) assetShots(w http.ResponseWriter, r *http.Request) {
+	// A known asset with zero canonical shots is a valid empty page; an
+	// unknown asset id is a 404 so a stale client gets told to check the
+	// identifier instead of an empty list it would read as "not analyzed".
+	exists, err := s.service.AssetExists(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !exists {
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found", Action: "check_the_identifier"})
+		return
+	}
 	shots, err := s.service.ListAssetShots(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
 		return
+	}
+	if shots == nil {
+		shots = []domain.AssetShot{}
 	}
 	writeJSON(w, http.StatusOK, shots)
 }
@@ -2455,13 +2581,25 @@ func (s *Server) listTags(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	if items == nil {
+		items = []domain.CanonicalTag{}
+	}
 	writeJSON(w, http.StatusOK, items)
 }
 func (s *Server) listUnresolvedTags(w http.ResponseWriter, r *http.Request) {
-	items, err := s.service.ListUnresolvedTags(r.Context(), parseInt(r.URL.Query().Get("limit"), 200))
+	limit, offset, err := parseListPagination(r.URL.Query(), 200, legacyLimitMax)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
+		return
+	}
+	items, hasMore, err := s.service.ListUnresolvedTagsPage(r.Context(), limit, offset)
 	if err != nil {
 		writeError(w, err)
 		return
+	}
+	writeListPaginationHeaders(w, limit, offset, hasMore)
+	if items == nil {
+		items = []domain.UnresolvedTag{}
 	}
 	writeJSON(w, http.StatusOK, items)
 }
@@ -2488,10 +2626,20 @@ func (s *Server) runTagEmbeddingClusters(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusCreated, result)
 }
 func (s *Server) listTagProposals(w http.ResponseWriter, r *http.Request) {
-	items, err := s.service.ListTagProposals(r.Context(), r.URL.Query().Get("state"), parseInt(r.URL.Query().Get("limit"), 200))
+	state := r.URL.Query().Get("state")
+	limit, offset, err := parseListPagination(r.URL.Query(), 200, legacyLimitMax)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
+		return
+	}
+	items, hasMore, err := s.service.ListTagProposalsPage(r.Context(), state, limit, offset)
 	if err != nil {
 		writeError(w, err)
 		return
+	}
+	writeListPaginationHeaders(w, limit, offset, hasMore)
+	if items == nil {
+		items = []domain.TagProposal{}
 	}
 	writeJSON(w, http.StatusOK, items)
 }
@@ -2565,10 +2713,19 @@ func (s *Server) listRepurposePlans(w http.ResponseWriter, r *http.Request) {
 	if status == "" {
 		status = "all"
 	}
-	items, err := s.service.ListRepurposePlans(r.Context(), status, parseInt(r.URL.Query().Get("limit"), 50))
+	limit, offset, err := parseListPagination(r.URL.Query(), 50, 200)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
+		return
+	}
+	items, hasMore, err := s.service.ListRepurposePlansPage(r.Context(), status, limit, offset)
 	if err != nil {
 		writeError(w, err)
 		return
+	}
+	writeListPaginationHeaders(w, limit, offset, hasMore)
+	if items == nil {
+		items = []domain.RepurposePlanSummary{}
 	}
 	writeJSON(w, http.StatusOK, items)
 }

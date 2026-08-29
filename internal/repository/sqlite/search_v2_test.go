@@ -840,3 +840,84 @@ func TestSearchV2ShotSessionsEmptyInput(t *testing.T) {
 		}
 	}
 }
+
+// TestSearchV2AssetContextFilters pins the asset-context candidate universe:
+// a semantically matching shot whose owning asset falls outside the selected
+// captured-date/ready window is excluded by ScoreCandidatesV2, while the zero
+// filter delegates to the legacy scorer unchanged.
+func TestSearchV2AssetContextFilters(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "v2-assetcontext.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]string{}
+	ids = seedOneAsset(t, repo, ids, goldenAssetSpec{
+		id:       "asset-rain-in",
+		analysis: domain.StructuredAnalysis{Summary: "rainy night street"},
+		shots:    []goldenShotSpec{{startMS: 0, endMS: 10_000, description: "雨夜城市街道", tags: []string{"rain", "urban_night"}}},
+	})
+	ids = seedOneAsset(t, repo, ids, goldenAssetSpec{
+		id:       "asset-rain-out",
+		analysis: domain.StructuredAnalysis{Summary: "rainy night street"},
+		shots:    []goldenShotSpec{{startMS: 0, endMS: 10_000, description: "雨夜城市街道", tags: []string{"rain", "urban_night"}}},
+	})
+	inShot, outShot := ids["asset-rain-in:0"], ids["asset-rain-out:0"]
+	if inShot == "" || outShot == "" {
+		t.Fatalf("seed shot ids missing: in=%q out=%q", inShot, outShot)
+	}
+
+	now := time.Now().UTC()
+	inCaptured := now.AddDate(0, 0, -1)
+	if err := repo.SaveMediaMetadata(ctx, "asset-rain-in", domain.MediaMetadata{CapturedAt: &inCaptured}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	outCaptured := now.AddDate(0, 0, -10)
+	if err := repo.SaveMediaMetadata(ctx, "asset-rain-out", domain.MediaMetadata{CapturedAt: &outCaptured}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	// in is "ready" (a proxy artifact exists); out stays "discovered".
+	if _, err := repo.DB().ExecContext(ctx, `INSERT INTO derived_artifacts(id,asset_id,artifact_type,profile_hash,local_path,size_bytes,created_at) VALUES(?,?,?,?,?,?,?)`, "proxy-in", "asset-rain-in", "proxy", "sw", "/cache/proxy-in.mp4", 20, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Zero asset filter delegates to the legacy scorer: both shots match.
+	all, err := repo.ScoreCandidatesV2(ctx, "雨夜 城市 街道", domain.FacetFilter{}, domain.AssetContextFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("zero filter must return both shots, got %d", len(all))
+	}
+
+	// Date + status window keeps only the in-window, ready shot.
+	from := inCaptured
+	to := now.AddDate(0, 0, 1)
+	filtered, err := repo.ScoreCandidatesV2(ctx, "雨夜 城市 街道", domain.FacetFilter{}, domain.AssetContextFilter{
+		CapturedFrom: &from,
+		CapturedTo:   &to,
+		Status:       domain.ProcessingStatusReady,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered) != 1 || filtered[0].ID != inShot {
+		t.Fatalf("filtered universe = %d shots, want only %q; got %+v", len(filtered), inShot, filtered)
+	}
+
+	// The date window alone (no status) also excludes the ten-day-old shot.
+	dateOnly, err := repo.ScoreCandidatesV2(ctx, "雨夜 城市 街道", domain.FacetFilter{}, domain.AssetContextFilter{
+		CapturedFrom: &from,
+		CapturedTo:   &to,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dateOnly) != 1 || dateOnly[0].ID != inShot {
+		t.Fatalf("date-only universe = %d shots, want only %q", len(dateOnly), inShot)
+	}
+}

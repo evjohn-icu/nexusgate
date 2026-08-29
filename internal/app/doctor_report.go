@@ -15,6 +15,7 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/domain"
 	"github.com/evjohn-icu/timingdex/internal/media"
 	"github.com/evjohn-icu/timingdex/internal/mount"
+	"github.com/evjohn-icu/timingdex/internal/providers"
 	"github.com/evjohn-icu/timingdex/internal/remote"
 )
 
@@ -188,6 +189,15 @@ func ffmpegVersionLine(ctx context.Context, path string) string {
 }
 
 func (s *Service) collectProviders(ctx context.Context, report *domain.DoctorReport) error {
+	// The pre-dispatch fail-fast is skipped for `doctor` so a broken legacy
+	// providers.* config can be diagnosed; carry the secret-free reason in the
+	// report instead of aborting collection. ValidateProviderConfig only
+	// reports configuration facts (selected, enabled, keyed) — never secrets.
+	if err := providers.ValidateProviderConfig(s.cfg.Providers); err != nil {
+		report.Providers.ConfigError = err.Error()
+	} else {
+		report.Providers.ConfigValid = true
+	}
 	channels, err := s.ListProviderChannels(ctx, "")
 	if err != nil {
 		return err
@@ -352,6 +362,9 @@ func printDoctorReport(w io.Writer, report domain.DoctorReport) {
 	fmt.Fprintln(w, report.GPU.HardwareReport)
 
 	fmt.Fprintln(w, "PROVIDERS")
+	if report.Providers.ConfigError != "" {
+		fmt.Fprintf(w, "✗ legacy provider config: %s\n", report.Providers.ConfigError)
+	}
 	if report.Providers.Channels == 0 {
 		fmt.Fprintln(w, "⚠ no provider channels configured (legacy providers.* config may still serve)")
 	} else {

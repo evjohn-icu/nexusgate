@@ -33,7 +33,7 @@ func TestPipelineSourcePathStagesNetworkSourceBeforeMediaWork(t *testing.T) {
 	}
 }
 
-func TestPipelineProbeReadsNASSourceWithoutStaging(t *testing.T) {
+func TestPipelineProbeUsesStagedNASSource(t *testing.T) {
 	sourcePath := filepath.Join(t.TempDir(), "mounted-nas-footage.mov")
 	if err := os.WriteFile(sourcePath, []byte("remote footage"), 0o600); err != nil {
 		t.Fatal(err)
@@ -43,11 +43,14 @@ func TestPipelineProbeReadsNASSourceWithoutStaging(t *testing.T) {
 		t.Fatal(err)
 	}
 	pipeline := &Pipeline{sourceStager: stager}
-	got, err := pipeline.sourcePathForJob(context.Background(), domain.JobProbe, domain.AssetLocation{AssetID: "asset-1", AbsolutePath: sourcePath, ModifiedNS: 42})
+	got, err := pipeline.sourcePath(context.Background(), domain.AssetLocation{AssetID: "asset-1", AbsolutePath: sourcePath, ModifiedNS: 42})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != sourcePath {
-		t.Fatalf("probe must inspect NAS source directly; got %q", got)
+	if got == sourcePath {
+		t.Fatalf("probe must read the staged copy in copy mode, not the NAS path; got source %q", got)
+	}
+	if _, err := os.Stat(got); err != nil {
+		t.Fatalf("staged probe source is unavailable: %v", err)
 	}
 }

@@ -1,6 +1,10 @@
 package api
 
-import "net/http"
+import (
+	"net/http"
+	"strings"
+	"time"
+)
 
 // routeAuthClass is audit metadata for a route. It deliberately does not
 // apply middleware: handlers are wrapped at construction time so the route
@@ -8,16 +12,17 @@ import "net/http"
 type routeAuthClass string
 
 const (
-	routeAuthPublic         routeAuthClass = "public"
-	routeAuthTrustedRead    routeAuthClass = "trusted-read"
-	routeAuthHubAdmin       routeAuthClass = "hub-admin"
-	routeAuthAgentOrAdmin   routeAuthClass = "agent-or-admin"
-	routeAuthWorker         routeAuthClass = "worker"
-	routeAuthWorkerEnroll   routeAuthClass = "worker-enroll"
-	routeAuthBrowserSession routeAuthClass = "browser-session"
-	routeAuthBrowserPage    routeAuthClass = "browser-page"
-	routeAuthWebDAVBasic    routeAuthClass = "webdav-basic"
-	routeAuthCatchAll       routeAuthClass = "catch-all"
+	routeAuthPublic          routeAuthClass = "public"
+	routeAuthTrustedRead     routeAuthClass = "trusted-read"
+	routeAuthHubAdmin        routeAuthClass = "hub-admin"
+	routeAuthAgentOrAdmin    routeAuthClass = "agent-or-admin"
+	routeAuthWorker          routeAuthClass = "worker"
+	routeAuthWorkerBootstrap routeAuthClass = "worker-bootstrap"
+	routeAuthWorkerEnroll    routeAuthClass = "worker-enroll"
+	routeAuthBrowserSession  routeAuthClass = "browser-session"
+	routeAuthBrowserPage     routeAuthClass = "browser-page"
+	routeAuthWebDAVBasic     routeAuthClass = "webdav-basic"
+	routeAuthCatchAll        routeAuthClass = "catch-all"
 )
 
 // routeSpec is the single auditable description of a registered ServeMux
@@ -236,5 +241,37 @@ func (s *Server) catchAllRouteSpecs() []routeSpec {
 		newRouteSpec("api-catch-all", "/api/v1/", routeAuthCatchAll, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found"})
 		})),
+	}
+}
+
+// routeAuthWorkerBootstrap guards the Worker binary download. It admits the
+// existing trusted-read path (a trusted source address, or a Hub admin/agent
+// token) for requests that carry no pairing credential, OR a valid, unredeemed
+// X-Timingdex-Pairing-Token header, so an operator can bootstrap a Worker from
+// a remote network before enrollment without making the route public. A token
+// that IS presented is validated strictly — a redeemed or expired token gets a
+// 403 even from a trusted network, never a silent trusted-read fallback, so a
+// spent credential cannot be replayed after enrollment. The pairing token never
+// travels in the URL and is never consumed here: only the worker enroll
+// endpoint redeems it, so the same token can authorize the download and then
+// enroll the Worker once.
+func (s *Server) routeAuthWorkerBootstrap(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		raw := strings.TrimSpace(r.Header.Get("X-Timingdex-Pairing-Token"))
+		if raw == "" {
+			if s.fromTrustedNetwork(r) || s.isHubAdmin(r) || s.isHubAgent(r) {
+				next(w, r)
+				return
+			}
+			writeAPIError(w, http.StatusForbidden, APIError{Code: "trusted_read_denied", Message: "Worker binaries are restricted to trusted networks, a Hub token, or a valid pairing token", Action: "present_hub_token_or_pairing_token"})
+			return
+		}
+		valid, err := s.service.WorkerPairingValid(r.Context(), raw, time.Now())
+		if err != nil || !valid {
+			writeAPIError(w, http.StatusForbidden, APIError{Code: "pairing_token_invalid", Message: "pairing token is invalid or expired", Action: "generate_a_new_pairing_token"})
+			return
+		}
+		next(w, r)
 	}
 }

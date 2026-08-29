@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
@@ -64,20 +65,36 @@ func EnsureSelfSigned(dataDir string) (certificatePath, keyPath, fingerprint str
 // having to be threaded through startup and held in memory — the certificate
 // file is already the authoritative copy.
 func FingerprintCertificate(certificatePath string) (string, error) {
-	raw, err := os.ReadFile(certificatePath)
-	if err != nil {
-		return "", err
-	}
-	block, _ := pem.Decode(raw)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return "", fmt.Errorf("%s does not contain a PEM certificate", certificatePath)
-	}
-	certificate, err := x509.ParseCertificate(block.Bytes)
+	certificate, err := LoadCertificate(certificatePath)
 	if err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256(certificate.Raw)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// LoadCertificate parses the leaf certificate from a PEM certificate file.
+// Both the Worker fingerprint and the curl-compatible SPKI pin derive from
+// the same parsed certificate so the two can never disagree.
+func LoadCertificate(certificatePath string) (*x509.Certificate, error) {
+	raw, err := os.ReadFile(certificatePath)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, fmt.Errorf("%s does not contain a PEM certificate", certificatePath)
+	}
+	return x509.ParseCertificate(block.Bytes)
+}
+
+// CertificateSPKIPin returns the curl-compatible `sha256//<base64>` pin for a
+// leaf certificate's SubjectPublicKeyInfo. curl --pinnedpubkey accepts exactly
+// this shape, so a generated bootstrap script can pin the Hub's key with the
+// same public value the Worker's own fingerprint check trusts.
+func CertificateSPKIPin(certificate *x509.Certificate) string {
+	sum := sha256.Sum256(certificate.RawSubjectPublicKeyInfo)
+	return "sha256//" + base64.StdEncoding.EncodeToString(sum[:])
 }
 
 func validExistingPair(certificatePath, keyPath string) (string, bool) {

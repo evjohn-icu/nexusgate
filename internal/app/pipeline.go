@@ -710,7 +710,7 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 	if err != nil {
 		return err
 	}
-	sourcePath, err := p.sourcePathForJob(ctx, j.Type, loc)
+	sourcePath, err := p.sourcePath(ctx, loc)
 	if err != nil {
 		return err
 	}
@@ -1025,14 +1025,10 @@ func (p *Pipeline) sourcePath(ctx context.Context, location domain.AssetLocation
 	return p.sourceStager.Stage(ctx, location.AbsolutePath, location.AssetID, version)
 }
 
-// sourcePathForJob keeps Hub probe work on the NAS path. Only jobs that need
-// to decode or transform the whole source use the disposable Worker/local cache.
-func (p *Pipeline) sourcePathForJob(ctx context.Context, typ domain.JobType, location domain.AssetLocation) (string, error) {
-	if typ == domain.JobProbe {
-		return location.AbsolutePath, nil
-	}
-	return p.sourcePath(ctx, location)
-}
+// sourcePath stages the source once with a versioned cache key (or returns
+// the NAS path verbatim when staging is off), and every stage — including the
+// probe — reads that same staged file, so copy mode copies once per scan
+// version instead of re-reading the network share for each media stage.
 
 // maxAnalysisShots bounds how many shots one analysis may commit. The per-shot
 // checks below validate shape but not cardinality, so a model stuck in a

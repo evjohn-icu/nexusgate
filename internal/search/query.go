@@ -63,8 +63,10 @@ type Constraint struct {
 
 // SearchFilters narrows retrieval; the zero value matches everything.
 // Facets are validated by callers (see domain.FacetFilter's doc comment).
+// AssetFilter is stored as a value copy of the request's pointer.
 type SearchFilters struct {
-	Facets domain.FacetFilter
+	Facets      domain.FacetFilter
+	AssetFilter domain.AssetContextFilter
 }
 
 // SearchQuery is the compiled form of a raw search string. Recall may use the
@@ -106,6 +108,9 @@ type SearchRequest struct {
 	IncludeEvidence bool               `json:"include_evidence"`
 	IncludeContext  bool               `json:"include_context"`
 	Facets          domain.FacetFilter `json:"facets,omitempty"`
+	// AssetFilter narrows by the owning asset's capture/session/status
+	// context. A nil or all-empty filter matches everything.
+	AssetFilter *domain.AssetContextFilter `json:"asset_filter,omitempty"`
 }
 
 // DefaultLimit applies when SearchRequest.Limit is <= 0.
@@ -151,12 +156,23 @@ type SearchQueryInfo struct {
 
 // SearchResponse is the structured v2 search response. SearchID and QueryHash
 // exist so future feedback hooks can correlate a result with the query and
-// session that produced it (spec: feedback hooks round).
+// session that produced it (spec: feedback hooks round). Offset/Limit echo the
+// effective paging of this page; HasMore reports whether another page exists
+// inside the search window (with NextOffset naming it), and WindowExhausted
+// marks a page that ends exactly at the hard MaxSearchWindow boundary — more
+// may exist beyond it, but the window caps how far one request may traverse.
 type SearchResponse struct {
 	Query     SearchQueryInfo `json:"query"`
 	SearchID  string          `json:"search_id"`
 	QueryHash string          `json:"query_hash"` // query/mode/profile fingerprint; kept for wire compatibility
 	Results   []ResultItem    `json:"results"`
+	Offset    int             `json:"offset"`
+	Limit     int             `json:"limit"`
+	HasMore   bool            `json:"has_more"`
+	// NextOffset is present exactly when HasMore is true and names the offset
+	// the caller should request for the next page.
+	NextOffset      *int `json:"next_offset,omitempty"`
+	WindowExhausted bool `json:"window_exhausted"`
 }
 
 // ResultItem is one selected shot with its fused score, per-signal scores,

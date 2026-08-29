@@ -814,3 +814,78 @@ func TestScanUpsertErrorStillReturnsSeenList(t *testing.T) {
 		t.Error("upsert failure must make scan incomplete")
 	}
 }
+
+// TestScanReportsSkippedExtensionsBounded pins the skipped-file census: a
+// supported .mp4 is discovered, an unsupported .mkv and a sidecar are counted
+// with their extension types, and a hostile directory with more than
+// maxSkippedExtensionTypes distinct extension types folds the excess into
+// SkippedOther instead of growing an unbounded map. The supported list is the
+// declaration-ordered set the scanner accepts.
+func TestScanReportsSkippedExtensionsBounded(t *testing.T) {
+	root := writeDir(t, t.TempDir(), "root")
+	writeFile(t, root, "clip.mp4")     // supported → discovered
+	writeFile(t, root, "clip.mkv")     // unsupported → skipped, named
+	writeFile(t, root, "DJI_0001.srt") // sidecar → skipped, named
+	writeFile(t, root, "clip2.mkv")    // same extension → one named type
+	// 25 distinct invented extensions: 20 are named, 5 fold into SkippedOther.
+	for i := 0; i < maxSkippedExtensionTypes+5; i++ {
+		writeFile(t, root, "odd"+string(rune('a'+i))+"."+fmt.Sprintf("x%03d", i))
+	}
+
+	repo := &stubScanRepo{}
+	s := NewScanner(repo)
+	result, err := s.Scan(context.Background(), domain.LibraryRoot{ID: "r1", Path: root})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Discovered != 1 {
+		t.Fatalf("Discovered = %d, want 1 (only the .mp4)", result.Discovered)
+	}
+	// .mkv×2 + .srt + 25 invented = 28 skipped files total.
+	if result.SkippedFiles != 28 {
+		t.Fatalf("SkippedFiles = %d, want 28", result.SkippedFiles)
+	}
+	if len(result.SkippedExtensions) > maxSkippedExtensionTypes {
+		t.Fatalf("SkippedExtensions has %d types, want at most %d", len(result.SkippedExtensions), maxSkippedExtensionTypes)
+	}
+	// .mkv and .srt must be among the named types.
+	named := strings.Join(result.SkippedExtensions, ",")
+	if !strings.Contains(named, ".mkv") || !strings.Contains(named, ".srt") {
+		t.Fatalf("SkippedExtensions = %v, want .mkv and .srt named", result.SkippedExtensions)
+	}
+	// 25 invented distinct types: 20 named (the first 20), 5 folded. The first
+	// two named slots are .mkv and .srt, so the invented types fill the rest:
+	// 25 invented + 2 real = 27 distinct types → 20 named, 7 folded.
+	if result.SkippedOther != 7 {
+		t.Fatalf("SkippedOther = %d, want 7 (distinct types beyond the first 20)", result.SkippedOther)
+	}
+	// The supported list is present and declaration-ordered.
+	want := strings.Join(supportedVideoExtensions, ",")
+	if got := strings.Join(result.SupportedExtensions, ","); got != want {
+		t.Fatalf("SupportedExtensions = %v, want %v", got, want)
+	}
+}
+
+// TestSkippedCensusFoldsDistinctTypesNotFiles pins that SkippedOther counts
+// distinct extension types beyond the named 20, never files: 100 files sharing
+// one extra extension fold into a single "other type", while the file count
+// still reflects every skipped file.
+func TestSkippedCensusFoldsDistinctTypesNotFiles(t *testing.T) {
+	c := skippedCensus{
+		seen:   make(map[string]struct{}, maxSkippedExtensionTypes),
+		folded: make(map[string]struct{}, maxSkippedExtensionTypes),
+	}
+	var result domain.ScanResult
+	for i := 0; i < maxSkippedExtensionTypes; i++ {
+		c.count(fmt.Sprintf("f.%02d", i), &result)
+	}
+	for i := 0; i < 100; i++ {
+		c.count(fmt.Sprintf("x%d.zzz", i), &result)
+	}
+	if c.otherTypes != 1 {
+		t.Fatalf("folded otherTypes = %d, want 1 (one distinct folded type, not 100 files)", c.otherTypes)
+	}
+	if result.SkippedFiles != maxSkippedExtensionTypes+100 {
+		t.Fatalf("SkippedFiles = %d, want %d", result.SkippedFiles, maxSkippedExtensionTypes+100)
+	}
+}

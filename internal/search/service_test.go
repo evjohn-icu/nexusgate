@@ -102,6 +102,9 @@ type fakeStore struct {
 func (f *fakeStore) ScoreCandidates(_ context.Context, _ string, _ domain.FacetFilter) ([]domain.ShotSearchResult, error) {
 	return f.candidates, nil
 }
+func (f *fakeStore) ScoreCandidatesV2(_ context.Context, _ string, _ domain.FacetFilter, _ domain.AssetContextFilter) ([]domain.ShotSearchResult, error) {
+	return f.ScoreCandidates(context.Background(), "", domain.FacetFilter{})
+}
 
 func (f *fakeStore) LexicalRankedShots(_ context.Context, _ string, _ [5]float64, _ int) ([]domain.ShotSearchResult, error) {
 	return f.lexical, nil
@@ -462,6 +465,222 @@ func TestSearchV2OffsetPagination(t *testing.T) {
 	noDiversity.Selection.Diversity = 0
 	svc = NewService(store, noDiversity)
 	assertIDs([]string{"s3", "s4"}, search(SearchRequest{Limit: 2, Offset: 2, Diversity: 0}))
+}
+
+// TestSearchPaginationMetadata pins the paging metadata helper: a page with
+// moreBeyond inside the window reports has_more and a next offset, a page
+// ending exactly at MaxSearchWindow reports window_exhausted without has_more,
+// and an empty or final page reports has_more=false.
+func TestSearchPaginationMetadata(t *testing.T) {
+	hasMore, nextOffset, windowExhausted := paginationMetadata(20, 20, true)
+	if !hasMore || nextOffset == nil || *nextOffset != 40 || windowExhausted {
+		t.Fatalf("inside-window page: hasMore=%v nextOffset=%v windowExhausted=%v, want has_more next_offset=40", hasMore, nextOffset, windowExhausted)
+	}
+	hasMore, nextOffset, windowExhausted = paginationMetadata(180, 20, true)
+	if hasMore || nextOffset != nil || !windowExhausted {
+		t.Fatalf("window-boundary page: hasMore=%v nextOffset=%v windowExhausted=%v, want window_exhausted without has_more", hasMore, nextOffset, windowExhausted)
+	}
+	hasMore, nextOffset, windowExhausted = paginationMetadata(200, 0, false)
+	if hasMore || nextOffset != nil || windowExhausted {
+		t.Fatalf("empty page: hasMore=%v nextOffset=%v windowExhausted=%v, want all false", hasMore, nextOffset, windowExhausted)
+	}
+	hasMore, nextOffset, windowExhausted = paginationMetadata(100, 0, true)
+	if hasMore || nextOffset != nil || windowExhausted {
+		t.Fatalf("empty page with moreBeyond: hasMore=%v nextOffset=%v windowExhausted=%v, want all false", hasMore, nextOffset, windowExhausted)
+	}
+	hasMore, nextOffset, windowExhausted = paginationMetadata(0, 20, false)
+	if hasMore || nextOffset != nil || windowExhausted {
+		t.Fatalf("final page: hasMore=%v nextOffset=%v windowExhausted=%v, want all false", hasMore, nextOffset, windowExhausted)
+	}
+}
+
+// TestSearchV2PaginationMetadata pins the v2 pipeline's paging contract on the
+// general path: selection is probed for one extra result to report has_more,
+// ranks are global (offset + index + 1), limits clamp to MaxSearchLimit, a
+// page ending at the hard MaxSearchWindow boundary reports window_exhausted,
+// and an offset beyond the selected list is an empty page with has_more=false.
+func TestSearchV2PaginationMetadata(t *testing.T) {
+	shots := make([]domain.ShotSearchResult, 0, 250)
+	for i := range 250 {
+		shots = append(shots, shot("s"+itoa(int64(i)), "a"+itoa(int64(i)), int64(i*1000), int64(i*1000+500), []string{"car"}, "red car crossing"))
+	}
+	store := &fakeStore{candidates: shots, lexical: shots}
+	svc := NewService(store, DefaultOptions())
+	search := func(req SearchRequest) *SearchResponse {
+		t.Helper()
+		req.Query = "car"
+		req.Mode = "semantic"
+		response, err := svc.Search(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+
+	response := search(SearchRequest{Limit: 20})
+	if len(response.Results) != 20 {
+		t.Fatalf("first page returned %d results, want 20", len(response.Results))
+	}
+	if response.Offset != 0 || response.Limit != 20 || !response.HasMore || response.NextOffset == nil || *response.NextOffset != 20 || response.WindowExhausted {
+		t.Fatalf("first page metadata: offset=%d limit=%d hasMore=%v nextOffset=%v windowExhausted=%v", response.Offset, response.Limit, response.HasMore, response.NextOffset, response.WindowExhausted)
+	}
+	for i, item := range response.Results {
+		if item.Rank != i+1 {
+			t.Fatalf("result %d rank=%d, want global rank %d", i, item.Rank, i+1)
+		}
+	}
+
+	response = search(SearchRequest{Limit: 20, Offset: 40})
+	if len(response.Results) != 20 {
+		t.Fatalf("offset page returned %d results, want 20", len(response.Results))
+	}
+	if response.Offset != 40 || response.Limit != 20 || !response.HasMore || response.NextOffset == nil || *response.NextOffset != 60 || response.WindowExhausted {
+		t.Fatalf("offset page metadata: offset=%d limit=%d hasMore=%v nextOffset=%v windowExhausted=%v", response.Offset, response.Limit, response.HasMore, response.NextOffset, response.WindowExhausted)
+	}
+	for i, item := range response.Results {
+		if item.Rank != 40+i+1 {
+			t.Fatalf("result %d rank=%d, want global rank %d", i, item.Rank, 40+i+1)
+		}
+	}
+
+	// Limits above MaxSearchLimit clamp to it; ranks stay global.
+	response = search(SearchRequest{Limit: 500})
+	if response.Limit != MaxSearchLimit || len(response.Results) != MaxSearchLimit {
+		t.Fatalf("clamped limit: response.Limit=%d len=%d, want %d", response.Limit, len(response.Results), MaxSearchLimit)
+	}
+	if response.Offset != 0 || !response.HasMore || response.NextOffset == nil || *response.NextOffset != MaxSearchLimit || response.WindowExhausted {
+		t.Fatalf("clamped page metadata: offset=%d hasMore=%v nextOffset=%v windowExhausted=%v", response.Offset, response.HasMore, response.NextOffset, response.WindowExhausted)
+	}
+	for i, item := range response.Results {
+		if item.Rank != i+1 {
+			t.Fatalf("result %d rank=%d, want global rank %d", i, item.Rank, i+1)
+		}
+	}
+
+	// A page ending exactly at MaxSearchWindow reports window_exhausted and no
+	// has_more: more may exist beyond the window, but traversal stops there.
+	response = search(SearchRequest{Limit: 20, Offset: 180})
+	if len(response.Results) != 20 {
+		t.Fatalf("window-boundary page returned %d results, want 20", len(response.Results))
+	}
+	if response.Offset != 180 || response.Limit != 20 || response.HasMore || response.NextOffset != nil || !response.WindowExhausted {
+		t.Fatalf("window-boundary metadata: offset=%d limit=%d hasMore=%v nextOffset=%v windowExhausted=%v", response.Offset, response.Limit, response.HasMore, response.NextOffset, response.WindowExhausted)
+	}
+	for i, item := range response.Results {
+		if item.Rank != 180+i+1 {
+			t.Fatalf("result %d rank=%d, want global rank %d", i, item.Rank, 180+i+1)
+		}
+	}
+
+	// An offset beyond the selected list is an empty page with has_more=false.
+	sparse := &fakeStore{candidates: shots[:10], lexical: shots[:10]}
+	svc = NewService(sparse, DefaultOptions())
+	response, err := svc.Search(context.Background(), SearchRequest{Query: "car", Mode: "semantic", Limit: 20, Offset: 15})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 0 || response.HasMore || response.NextOffset != nil || response.WindowExhausted {
+		t.Fatalf("beyond-end page: results=%d hasMore=%v nextOffset=%v windowExhausted=%v", len(response.Results), response.HasMore, response.NextOffset, response.WindowExhausted)
+	}
+	if response.Offset != 15 || response.Limit != 20 {
+		t.Fatalf("beyond-end metadata: offset=%d limit=%d", response.Offset, response.Limit)
+	}
+}
+
+// TestSearchV2SimilarPaginationMetadata pins the similar path's page cap and
+// paging metadata: each page returns at most effectiveLimit results with global
+// ranks, limits clamp, and a page ending at the 200-result window reports
+// window_exhausted while a beyond-window offset is an empty page.
+func TestSearchV2SimilarPaginationMetadata(t *testing.T) {
+	shots := make([]domain.ShotSearchResult, 0, 250)
+	for i := range 250 {
+		shots = append(shots, shot("s"+itoa(int64(i)), "a"+itoa(int64(i)), int64(i*1000), int64(i*1000+500), nil, "car scene"))
+	}
+	store := &fakeStore{candidates: shots}
+	svc := NewService(store, DefaultOptions())
+	search := func(req SearchRequest) *SearchResponse {
+		t.Helper()
+		req.Query = "car"
+		req.Mode = "similar"
+		response, err := svc.Search(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+
+	response := search(SearchRequest{Limit: 20})
+	if len(response.Results) != 20 {
+		t.Fatalf("first page returned %d results, want 20", len(response.Results))
+	}
+	if response.Offset != 0 || response.Limit != 20 || !response.HasMore || response.NextOffset == nil || *response.NextOffset != 20 || response.WindowExhausted {
+		t.Fatalf("first page metadata: offset=%d limit=%d hasMore=%v nextOffset=%v windowExhausted=%v", response.Offset, response.Limit, response.HasMore, response.NextOffset, response.WindowExhausted)
+	}
+	for i, item := range response.Results {
+		if item.Rank != i+1 {
+			t.Fatalf("result %d rank=%d, want global rank %d", i, item.Rank, i+1)
+		}
+	}
+
+	// Each similar page is capped to effectiveLimit and keeps global ranks.
+	response = search(SearchRequest{Limit: 20, Offset: 40})
+	if len(response.Results) != 20 {
+		t.Fatalf("offset page returned %d results, want 20", len(response.Results))
+	}
+	if response.Offset != 40 || response.Limit != 20 || !response.HasMore || response.NextOffset == nil || *response.NextOffset != 60 || response.WindowExhausted {
+		t.Fatalf("offset page metadata: offset=%d limit=%d hasMore=%v nextOffset=%v windowExhausted=%v", response.Offset, response.Limit, response.HasMore, response.NextOffset, response.WindowExhausted)
+	}
+	for i, item := range response.Results {
+		if item.Rank != 40+i+1 {
+			t.Fatalf("result %d rank=%d, want global rank %d", i, item.Rank, 40+i+1)
+		}
+	}
+
+	// A page ending exactly at the 200-result window reports window_exhausted.
+	response = search(SearchRequest{Limit: 20, Offset: 180})
+	if len(response.Results) != 20 {
+		t.Fatalf("window-boundary page returned %d results, want 20", len(response.Results))
+	}
+	if response.Offset != 180 || response.Limit != 20 || response.HasMore || response.NextOffset != nil || !response.WindowExhausted {
+		t.Fatalf("window-boundary metadata: offset=%d limit=%d hasMore=%v nextOffset=%v windowExhausted=%v", response.Offset, response.Limit, response.HasMore, response.NextOffset, response.WindowExhausted)
+	}
+	for i, item := range response.Results {
+		if item.Rank != 180+i+1 {
+			t.Fatalf("result %d rank=%d, want global rank %d", i, item.Rank, 180+i+1)
+		}
+	}
+
+	// An offset beyond the retrieved list is an empty page with has_more=false,
+	// and a page capped by a short list reports no more beyond it.
+	sparse := &fakeStore{candidates: shots[:10]}
+	svc = NewService(sparse, DefaultOptions())
+	response, err := svc.Search(context.Background(), SearchRequest{Query: "car", Mode: "similar", Limit: 20, Offset: 15})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 0 || response.HasMore || response.NextOffset != nil || response.WindowExhausted {
+		t.Fatalf("beyond-end page: results=%d hasMore=%v nextOffset=%v windowExhausted=%v", len(response.Results), response.HasMore, response.NextOffset, response.WindowExhausted)
+	}
+	if response.Offset != 15 || response.Limit != 20 {
+		t.Fatalf("beyond-end metadata: offset=%d limit=%d", response.Offset, response.Limit)
+	}
+	response, err = svc.Search(context.Background(), SearchRequest{Query: "car", Mode: "similar", Limit: 20, Offset: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 5 || response.HasMore || response.NextOffset != nil || response.WindowExhausted {
+		t.Fatalf("short-list page: results=%d hasMore=%v nextOffset=%v windowExhausted=%v", len(response.Results), response.HasMore, response.NextOffset, response.WindowExhausted)
+	}
+
+	// Limits above MaxSearchLimit clamp to it.
+	svc = NewService(store, DefaultOptions())
+	response, err = svc.Search(context.Background(), SearchRequest{Query: "car", Mode: "similar", Limit: 500})
+	if response.Limit != MaxSearchLimit || len(response.Results) != MaxSearchLimit {
+		t.Fatalf("clamped limit: response.Limit=%d len=%d, want %d", response.Limit, len(response.Results), MaxSearchLimit)
+	}
+	if response.Offset != 0 || !response.HasMore || response.NextOffset == nil || *response.NextOffset != MaxSearchLimit || response.WindowExhausted {
+		t.Fatalf("clamped page metadata: offset=%d hasMore=%v nextOffset=%v windowExhausted=%v", response.Offset, response.HasMore, response.NextOffset, response.WindowExhausted)
+	}
 }
 
 func TestLegacySearchMatchesContract(t *testing.T) {

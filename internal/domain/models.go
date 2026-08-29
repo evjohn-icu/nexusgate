@@ -73,11 +73,24 @@ type AssetLocation struct {
 	LastSeenAt      time.Time `json:"last_seen_at"`
 }
 
+// ScanResult is what one scan walk reports. Discovered/Linked/Missing count
+// video files; the Skipped* fields report the non-video files the walk
+// ignored so a scan that finds nothing still says why.
 type ScanResult struct {
 	Discovered int      `json:"discovered"`
 	Linked     int      `json:"linked"`
 	Missing    int      `json:"missing"`
 	Errors     []string `json:"errors"`
+	// SkippedFiles is how many regular non-video files the walk ignored.
+	// SkippedExtensions names the first 20 distinct normalized extension types
+	// among them; SkippedOther folds every further distinct type so a hostile
+	// directory cannot grow an unbounded map. SupportedExtensions is the
+	// declaration-ordered list of video extensions the scanner accepts, so a
+	// report tells the operator what the root actually held.
+	SkippedFiles        int      `json:"skipped_files"`
+	SkippedExtensions   []string `json:"skipped_extensions"`
+	SkippedOther        int      `json:"skipped_other"`
+	SupportedExtensions []string `json:"supported_extensions"`
 	// SeenRelativePaths is every video path the walk reached, in walk order.
 	// The scanner only reports it; the service decides whether the list may
 	// be used as the reconciliation input for MarkUnseenLocationsMissing (the

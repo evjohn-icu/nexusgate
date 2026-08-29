@@ -109,6 +109,9 @@ type fakeEmbeddingStore struct {
 func (f *fakeEmbeddingStore) ScoreCandidates(_ context.Context, _ string, _ domain.FacetFilter) ([]domain.ShotSearchResult, error) {
 	return nil, nil
 }
+func (f *fakeEmbeddingStore) ScoreCandidatesV2(_ context.Context, _ string, _ domain.FacetFilter, _ domain.AssetContextFilter) ([]domain.ShotSearchResult, error) {
+	return f.ScoreCandidates(context.Background(), "", domain.FacetFilter{})
+}
 
 func (f *fakeEmbeddingStore) LexicalRankedShots(_ context.Context, _ string, _ [5]float64, _ int) ([]domain.ShotSearchResult, error) {
 	return nil, nil

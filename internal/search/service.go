@@ -74,6 +74,10 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 	if err != nil {
 		return nil, err
 	}
+	pageOffset := req.Offset
+	if pageOffset < 0 {
+		pageOffset = 0
+	}
 
 	q := Compile(raw)
 	if intent != IntentAuto {
@@ -81,26 +85,61 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 	}
 	q.Limit = limit
 	q.Filters = SearchFilters{Facets: req.Facets}
+	if req.AssetFilter != nil {
+		q.Filters.AssetFilter = *req.AssetFilter
+	}
 
 	// Similar intent is a real nearest-neighbour search, not a generic text
 	// pass: embed the query text and cosine-scan the text embeddings, falling
 	// back to the heuristic semantic vectors when no embeddings exist. The
-	// response shape matches Search so every consumer is agnostic. Facets are
-	// not applied here — nearest-neighbour is a similarity browse, and the
-	// legacy similar endpoint never filtered by facet either.
+	// response shape matches Search so every consumer is agnostic. The ranked
+	// list is retrieved at most MaxSearchWindow wide, and when a facet or
+	// asset-context filter is set it is intersected with the same v2 universe
+	// the semantic channel defines — asset_filter is never silently ignored.
 	if q.Intent == IntentSimilar {
-		candidates, err := s.SimilarByText(ctx, q.Raw, target)
+		candidates, err := s.SimilarByText(ctx, q.Raw, MaxSearchWindow)
 		if errors.Is(err, ErrNoEmbeddingSearch) {
-			candidates, err = s.SimilarByHeuristic(ctx, q.Raw, target)
+			candidates, err = s.SimilarByHeuristic(ctx, q.Raw, MaxSearchWindow)
 		}
 		if err != nil {
 			return nil, err
 		}
-		candidates = pageResults(candidates, req.Offset)
+		if hasAnySearchFilter(q.Filters.Facets, q.Filters.AssetFilter) {
+			universe, err := s.similarUniverse(ctx, q.Raw, q.Filters.Facets, q.Filters.AssetFilter)
+			if err != nil {
+				return nil, err
+			}
+			kept := candidates[:0]
+			for _, c := range candidates {
+				if universe[c.ShotID] {
+					kept = append(kept, c)
+				}
+			}
+			candidates = kept
+		}
+		// Page the ranked nearest-neighbour list: at most effectiveLimit results
+		// starting at the offset; an offset beyond the list is an empty page.
+		total := len(candidates)
+		var page []Candidate
+		if pageOffset < total {
+			end := pageOffset + limit
+			if end > total {
+				end = total
+			}
+			page = candidates[pageOffset:end]
+		}
+		pageLen := len(page)
+		moreBeyond := pageLen > 0 && (pageOffset+pageLen < total || (total >= MaxSearchWindow && pageOffset+pageLen >= MaxSearchWindow))
+		hasMore, nextOffset, windowExhausted := paginationMetadata(pageOffset, pageLen, moreBeyond)
+		response.Offset = pageOffset
+		response.Limit = limit
+		response.HasMore = hasMore
+		response.NextOffset = nextOffset
+		response.WindowExhausted = windowExhausted
 		response.Query.Intent = q.Intent
 		response.SearchID = randomHex(8)
 		response.QueryHash = queryProfileFingerprint(q, req.Mode, s.opts.ProfileVersion)
-		for i, candidate := range candidates {
+		for i, candidate := range page {
 			item := ResultItem{
 				ShotID:      candidate.ShotID,
 				AssetID:     candidate.AssetID,
@@ -113,7 +152,7 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 				Actions:     candidate.Actions,
 				Mood:        candidate.Mood,
 				Score:       candidate.Score,
-				Rank:        i + 1,
+				Rank:        pageOffset + i + 1,
 				Scores:      map[string]float64{},
 			}
 			for signal, value := range candidate.Signals {
@@ -168,7 +207,7 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 		if err != nil {
 			return nil, err
 		}
-		if channel.Name() == SignalHeuristicSemantic && hasAnyFacet(q.Filters.Facets) {
+		if channel.Name() == SignalHeuristicSemantic && hasAnySearchFilter(q.Filters.Facets, q.Filters.AssetFilter) {
 			universe = make(map[string]bool, len(candidates))
 			for _, c := range candidates {
 				universe[c.ShotID] = true
@@ -246,12 +285,26 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 		NearTimePenalty:    s.opts.Selection.NearTimePenalty,
 		NearTimeWindowMS:   s.opts.Selection.NearTimeWindowMS,
 	})
-	selected := sel.Select(reranked, target)
+	// Selection asks for one extra result beyond the target so the caller can
+	// detect whether another page exists: moreBeyond means the pool held at
+	// least one candidate past this page. The extra probe is trimmed before
+	// paging so the returned page shape is unchanged.
+	selected := sel.Select(reranked, target+1)
+	moreBeyond := len(selected) > target
+	if moreBeyond {
+		selected = selected[:target]
+	}
 	// Offset pages the FINAL ranked list — after selection/diversity, so the
 	// recall pool and the diversity choices are never re-run or re-trimmed.
 	// An offset at or beyond the list length yields empty results, not a
 	// wrapped page.
-	selected = pageResults(selected, req.Offset)
+	selected = pageResults(selected, pageOffset)
+	hasMore, nextOffset, windowExhausted := paginationMetadata(pageOffset, len(selected), moreBeyond)
+	response.Offset = pageOffset
+	response.Limit = limit
+	response.HasMore = hasMore
+	response.NextOffset = nextOffset
+	response.WindowExhausted = windowExhausted
 	var neighborsByID map[string]Neighbors
 	if req.IncludeContext && len(selected) > 0 {
 		requests := make([]NeighborRequest, 0, len(selected))
@@ -284,7 +337,7 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 			Actions:     candidate.Actions,
 			Mood:        candidate.Mood,
 			Score:       candidate.Score,
-			Rank:        i + 1,
+			Rank:        pageOffset + i + 1,
 			Scores:      map[string]float64{},
 		}
 		for signal, value := range candidate.Signals {
@@ -355,6 +408,18 @@ func hasAnyFacet(f domain.FacetFilter) bool {
 		f.MinDurationMS != nil || f.MaxDurationMS != nil
 }
 
+// hasAnySearchFilter reports whether facets OR the asset-context filter carry
+// any constraint; when either is set, the heuristic-semantic universe gate
+// constrains every recall channel so no channel can bypass the filters.
+func hasAnySearchFilter(f domain.FacetFilter, a domain.AssetContextFilter) bool {
+	if hasAnyFacet(f) {
+		return true
+	}
+	return a.CapturedFrom != nil || a.CapturedTo != nil ||
+		strings.TrimSpace(a.RegionLabel) != "" || strings.TrimSpace(a.CameraModel) != "" ||
+		strings.TrimSpace(a.SessionID) != "" || a.Status != ""
+}
+
 // defaultFusion picks the fusion strategy for the default (unset) options
 // path. Auto/fact rank on plain RRF — byte-identical to the pre-weights
 // engine, which is what the golden/benchmark floor assumes. The differentiated
@@ -392,6 +457,22 @@ func pageResults(results []Candidate, offset int) []Candidate {
 		return nil
 	}
 	return results[offset:]
+}
+
+// paginationMetadata derives the paging flags for a page that already knows
+// whether recall holds more results beyond it. windowExhausted reports a page
+// ending exactly at the hard MaxSearchWindow boundary — more may exist past it,
+// but the window caps how far one request may traverse. hasMore means a next
+// page exists inside the window, and nextOffset names where it starts.
+func paginationMetadata(offset, pageLen int, moreBeyond bool) (hasMore bool, nextOffset *int, windowExhausted bool) {
+	windowEnd := offset + pageLen
+	windowExhausted = moreBeyond && windowEnd >= MaxSearchWindow
+	hasMore = moreBeyond && !windowExhausted && pageLen > 0
+	if hasMore {
+		next := windowEnd
+		nextOffset = &next
+	}
+	return
 }
 
 // assetIDs collects the distinct asset ids of a candidate list, in first-seen

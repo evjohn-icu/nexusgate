@@ -28,6 +28,28 @@ func (r *Repository) ScoreCandidates(ctx context.Context, q string, facets domai
 	return r.scoreShotCandidates(ctx, q, facets)
 }
 
+// ScoreCandidatesV2 is the asset-context-aware candidate scorer. A zero
+// assetFilter delegates to the legacy scorer unchanged; a non-zero one narrows
+// the candidate universe by the owning asset's capture/session/status
+// predicates (assetContextClauses), so a shot whose asset is outside the
+// selected date/status/region/camera/session is excluded before any ranking.
+func (r *Repository) ScoreCandidatesV2(ctx context.Context, q string, facets domain.FacetFilter, assetFilter domain.AssetContextFilter) ([]domain.ShotSearchResult, error) {
+	if !hasAssetContext(assetFilter) {
+		return r.scoreShotCandidates(ctx, q, facets)
+	}
+	return r.scoreShotCandidatesWithContext(ctx, q, facets, assetFilter)
+}
+
+// hasAssetContext reports whether the asset-context filter carries any
+// constraint. It mirrors the clause builder: trimmed free-text fields and a
+// non-empty status count, so a filter that is all-empty is indistinguishable
+// from the zero value.
+func hasAssetContext(f domain.AssetContextFilter) bool {
+	return f.CapturedFrom != nil || f.CapturedTo != nil ||
+		strings.TrimSpace(f.RegionLabel) != "" || strings.TrimSpace(f.CameraModel) != "" ||
+		strings.TrimSpace(f.SessionID) != "" || f.Status != ""
+}
+
 // LexicalRankedShots is the field-aware lexical channel. weights is indexed
 // [description, tags, objects, actions, mood] and maps onto FTS5's bm25
 // column weights. The FTS table declares shot_id and asset_id UNINDEXED, so

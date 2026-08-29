@@ -2,6 +2,21 @@ package domain
 
 import "time"
 
+// AssetContextFilter is the capture/session/status context of an asset's
+// footage: the six browse-time filters that apply to the OWNING asset of a
+// shot, independent of the shot's own vocabulary facets. The zero value
+// matches everything. CapturedTo is the exclusive upper bound (<); the HTTP
+// layer advances a user-supplied date_to by one day so callers perceive
+// "up to and including" semantics.
+type AssetContextFilter struct {
+	CapturedFrom *time.Time       `json:"captured_from,omitempty"`
+	CapturedTo   *time.Time       `json:"captured_to,omitempty"`
+	RegionLabel  string           `json:"region_label,omitempty"`
+	CameraModel  string           `json:"camera_model,omitempty"`
+	SessionID    string           `json:"session_id,omitempty"`
+	Status       ProcessingStatus `json:"status,omitempty"`
+}
+
 // AssetCardFilter is the library-facing capture filter. Precise coordinates
 // are intentionally absent: browsing operates on coarse region labels.
 type AssetCardFilter struct {

@@ -3,18 +3,28 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+
+	"github.com/evjohn-icu/timingdex/internal/apiclient"
 )
 
 // fakeHub is a minimal in-test Timingdex Hub API.
 type fakeHub struct {
 	searchHits []map[string]any
+
+	// searchBody is the decoded POST body of the last /api/v1/search/shots
+	// request, so tests can assert what the client actually sent (e.g. the
+	// offset field).
+	searchBody map[string]any
 
 	// evidenceState is the evidence state returned in every search hit's
 	// evidence array. Defaults to "confirmed" when empty.
@@ -59,11 +69,29 @@ func (f *fakeHub) handler() http.Handler {
 		}
 		w.Write([]byte(`{"hardware":"software"}`))
 	}))
+	mux.HandleFunc("GET /api/v1/setup/status", errWrapper(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
+			http.Error(w, "setup status requires trusted read", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ready":true,"root_count":1,"provider_ready":true,"search_index_ready":true}`))
+	}))
+	mux.HandleFunc("GET /api/v1/jobs/summary", errWrapper(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
+			http.Error(w, "jobs summary requires trusted read", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"running":1,"queued":0,"recent":[]}`))
+	}))
 	mux.HandleFunc("POST /api/v1/search/shots", errWrapper(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
 			http.Error(w, "search requires trusted read", http.StatusForbidden)
 			return
 		}
+		f.searchBody = map[string]any{}
+		_ = json.NewDecoder(r.Body).Decode(&f.searchBody)
 		results := make([]map[string]any, 0, len(f.searchHits))
 		state := f.evidenceState
 		if state == "" {
@@ -155,7 +183,7 @@ func TestSearchShots(t *testing.T) {
 		{"id": "shot-1", "asset_id": "asset-1", "score": 1.5},
 	}}
 	c := newTestClient(t, hub)
-	result, err := c.searchShots(context.Background(), "sunset", 10, nil)
+	result, err := c.searchShots(context.Background(), "sunset", 10, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +205,7 @@ func TestSearchShotsEmptyResults(t *testing.T) {
 	// Empty searchHits should return an empty results list, not an error.
 	hub := &fakeHub{searchHits: []map[string]any{}}
 	c := newTestClient(t, hub)
-	result, err := c.searchShots(context.Background(), "nonexistent", 10, nil)
+	result, err := c.searchShots(context.Background(), "nonexistent", 10, 0, nil)
 	if err != nil {
 		t.Fatalf("empty search should not error: %v", err)
 	}
@@ -270,7 +298,7 @@ func TestReadToolsWithoutAgentTokenSurfaceRemote403(t *testing.T) {
 	if _, err := client.inspectLibrary(context.Background()); err == nil {
 		t.Fatal("inspectLibrary without agent token must fail on a remote Hub")
 	}
-	if _, err := client.searchShots(context.Background(), "sunset", 10, nil); err == nil {
+	if _, err := client.searchShots(context.Background(), "sunset", 10, 0, nil); err == nil {
 		t.Fatal("searchShots without agent token must fail on a remote Hub")
 	}
 	if _, err := client.getTimeline(context.Background(), "asset-1"); err == nil {
@@ -282,7 +310,7 @@ func TestHub5xxPropagatesStatus(t *testing.T) {
 	// do() must include the HTTP status code in the error when Hub returns 5xx.
 	hub := &fakeHub{forceStatus: http.StatusInternalServerError, forceBody: "boom"}
 	c := newTestClient(t, hub)
-	_, err := c.searchShots(context.Background(), "sunset", 10, nil)
+	_, err := c.searchShots(context.Background(), "sunset", 10, 0, nil)
 	if err == nil {
 		t.Fatal("expected error for 5xx response")
 	}
@@ -330,6 +358,7 @@ func TestGetShotNotFound(t *testing.T) {
 }
 
 func TestNoWriteTools(t *testing.T) {
+	t.Setenv("TIMINGDEX_BASE_URL", "http://127.0.0.1:8787")
 	client, err := newHubClient()
 	if err != nil {
 		t.Fatal(err)
@@ -357,7 +386,7 @@ func TestEvidenceStatePreserved(t *testing.T) {
 		evidenceState: "unknown",
 	}
 	c := newTestClient(t, hub)
-	result, err := c.searchShots(context.Background(), "sunset", 10, nil)
+	result, err := c.searchShots(context.Background(), "sunset", 10, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,8 +447,12 @@ func TestNewHubClientRequiresFingerprintForHTTPS(t *testing.T) {
 
 	t.Setenv("TIMINGDEX_BASE_URL", "")
 	t.Setenv("TIMINGDEX_HUB_FINGERPRINT", "")
+	if _, err := newHubClient(); err == nil || !strings.Contains(err.Error(), "TIMINGDEX_HUB_FINGERPRINT") {
+		t.Fatalf("unset base URL defaults to https and must require a fingerprint, got %v", err)
+	}
+	t.Setenv("TIMINGDEX_HUB_FINGERPRINT", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	if _, err := newHubClient(); err != nil {
-		t.Fatalf("default http base URL must construct without a fingerprint: %v", err)
+		t.Fatalf("default https base URL with a valid fingerprint must construct: %v", err)
 	}
 }
 
@@ -476,6 +509,7 @@ func TestValidFingerprint(t *testing.T) {
 // TestToolNamesRegistered verifies the MCP server exposes exactly the tools we
 // intend, and that the stdio server can be constructed without panicking.
 func TestToolNamesRegistered(t *testing.T) {
+	t.Setenv("TIMINGDEX_BASE_URL", "http://127.0.0.1:8787")
 	client, err := newHubClient()
 	if err != nil {
 		t.Fatal(err)
@@ -521,5 +555,157 @@ func TestGetAssetDecodesLargeBody(t *testing.T) {
 	}
 	if asset["shot_count"] != float64(999) {
 		t.Fatalf("shot_count = %v, want 999", asset["shot_count"])
+	}
+}
+
+// TestGetTimelineDecodesLargeBody verifies that getTimeline decodes through
+// getLarge (64 MiB cap) rather than do()'s 1 MiB bound, so a valid 2,000-shot
+// timeline cannot be truncated by the probe-read cap.
+func TestGetTimelineDecodesLargeBody(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/assets/{id}/shots", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
+			http.Error(w, "shots requires trusted read", http.StatusForbidden)
+			return
+		}
+		// A timeline comfortably over 1 MiB (do()'s bound): ~2,500 shots with
+		// description text, kept well under maxTranscriptBytes (64 MiB).
+		const n = 2500
+		shots := make([]map[string]any, 0, n)
+		for i := range n {
+			shots = append(shots, map[string]any{
+				"id":          fmt.Sprintf("shot-%d", i),
+				"asset_id":    r.PathValue("id"),
+				"start_ms":    i * 1000,
+				"end_ms":      i*1000 + 500,
+				"description": strings.Repeat("画面描述", 30),
+				"tags":        []string{"rain", "urban_night"},
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(shots)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := &hubClient{baseURL: srv.URL, agentToken: "agent-tok", http: srv.Client()}
+	shots, err := client.getTimeline(context.Background(), "big-asset")
+	if err != nil {
+		t.Fatalf("getTimeline must decode a >1MiB body: %v", err)
+	}
+	if len(shots) != 2500 {
+		t.Fatalf("shots = %d, want all 2500 decoded", len(shots))
+	}
+	if shots[0]["id"] != "shot-0" || shots[2499]["id"] != "shot-2499" {
+		t.Fatalf("timeline ids = %v..%v, want shot-0..shot-2499", shots[0]["id"], shots[2499]["id"])
+	}
+}
+
+// TestSearchShotsOffsetPassThrough proves the optional non-negative offset is
+// forwarded unchanged into the POST /api/v1/search/shots body.
+func TestSearchShotsOffsetPassThrough(t *testing.T) {
+	hub := &fakeHub{searchHits: []map[string]any{}}
+	c := newTestClient(t, hub)
+	if _, err := c.searchShots(context.Background(), "sunset", 10, 25, nil); err != nil {
+		t.Fatal(err)
+	}
+	if hub.searchBody == nil {
+		t.Fatal("search request body was not captured")
+	}
+	if offset, ok := hub.searchBody["offset"].(float64); !ok || offset != 25 {
+		t.Fatalf("offset = %v, want 25 in the POST body", hub.searchBody["offset"])
+	}
+
+	// The default (no offset argument) still carries an explicit 0 so the
+	// Hub sees a well-formed pagination request.
+	hub.searchBody = nil
+	if _, err := c.searchShots(context.Background(), "sunset", 10, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if offset, ok := hub.searchBody["offset"].(float64); !ok || offset != 0 {
+		t.Fatalf("default offset = %v, want 0 in the POST body", hub.searchBody["offset"])
+	}
+}
+
+// TestInspectLibraryFetchesSetupAndJobsSummary verifies that inspectLibrary
+// also fetches the setup status and jobs summary with the agent token, so its
+// readiness description matches the setup/index/job state it reports.
+func TestInspectLibraryFetchesSetupAndJobsSummary(t *testing.T) {
+	hub := &fakeHub{}
+	c := newTestClient(t, hub)
+	info, err := c.inspectLibrary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info["health"] == nil || info["hardware"] == nil || info["setup_status"] == nil || info["jobs_summary"] == nil {
+		t.Fatalf("inspect result missing sections: %v", info)
+	}
+	setup, ok := info["setup_status"].(map[string]any)
+	if !ok || setup["ready"] != true || setup["provider_ready"] != true {
+		t.Fatalf("setup_status = %v, want ready+provider_ready", info["setup_status"])
+	}
+	jobs, ok := info["jobs_summary"].(map[string]any)
+	if !ok || jobs["running"] != float64(1) {
+		t.Fatalf("jobs_summary = %v, want running=1", info["jobs_summary"])
+	}
+}
+
+// TestMCPHubErrorEnvelope covers both sides of the client-side envelope
+// decoder: a non-envelope 5xx and a Hub envelope error both decode into
+// *apiclient.Error, and errResult emits the stable fields as JSON text with
+// IsError true.
+func TestMCPHubErrorEnvelope(t *testing.T) {
+	// Non-envelope 5xx: empty Code, bounded status/body message.
+	hub := &fakeHub{forceStatus: http.StatusInternalServerError, forceBody: "boom"}
+	c := newTestClient(t, hub)
+	_, err := c.searchShots(context.Background(), "sunset", 10, 0, nil)
+	if err == nil {
+		t.Fatal("expected an error for 5xx")
+	}
+	var apiErr *apiclient.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error = %T, want *apiclient.Error", err)
+	}
+	if apiErr.StatusCode != http.StatusInternalServerError || apiErr.Code != "" {
+		t.Fatalf("non-envelope error = %+v, want status 500 with empty code", apiErr)
+	}
+	if !strings.Contains(apiErr.Error(), "boom") {
+		t.Fatalf("error should include the bounded body, got: %v", apiErr)
+	}
+
+	// Envelope 5xx: every stable field is filled.
+	hub = &fakeHub{
+		forceStatus: http.StatusServiceUnavailable,
+		forceBody:   `{"error":{"code":"provider_route_exhausted","message":"every configured provider key on this route is failing","retryable":true,"action":"wait_or_change_provider","next_retry_at":"2026-08-09T12:00:00Z"}}`,
+	}
+	c = newTestClient(t, hub)
+	_, err = c.searchShots(context.Background(), "sunset", 10, 0, nil)
+	if err == nil {
+		t.Fatal("expected an error for envelope 503")
+	}
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error = %T, want *apiclient.Error", err)
+	}
+	if apiErr.Code != "provider_route_exhausted" || !apiErr.Retryable || apiErr.Action != "wait_or_change_provider" || apiErr.NextRetryAt != "2026-08-09T12:00:00Z" {
+		t.Fatalf("envelope fields = %+v", apiErr)
+	}
+
+	// errResult emits the stable fields as JSON text with IsError true.
+	result := errResult(err)
+	if !result.IsError {
+		t.Fatal("errResult must mark IsError true")
+	}
+	text, ok := result.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("errResult content = %T, want text content", result.Content[0])
+	}
+	if !strings.HasPrefix(text.Text, "error: ") {
+		t.Fatalf("errResult text = %q", text.Text)
+	}
+	var emitted map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(text.Text, "error: ")), &emitted); err != nil {
+		t.Fatalf("errResult text is not JSON: %q: %v", text.Text, err)
+	}
+	if emitted["code"] != "provider_route_exhausted" || emitted["message"] == "" || emitted["retryable"] != true || emitted["action"] != "wait_or_change_provider" {
+		t.Fatalf("emitted fields = %v", emitted)
 	}
 }

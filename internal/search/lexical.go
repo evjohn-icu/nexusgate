@@ -61,11 +61,11 @@ func NewHeuristicSemanticRetriever(store ShotStore) *HeuristicSemanticRetriever 
 func (r *HeuristicSemanticRetriever) Name() string { return SignalHeuristicSemantic }
 
 func (r *HeuristicSemanticRetriever) Retrieve(ctx context.Context, q SearchQuery, limit int) ([]Candidate, error) {
-	shots, err := r.store.ScoreCandidates(ctx, q.Raw, q.Filters.Facets)
+	shots, err := r.store.ScoreCandidatesV2(ctx, q.Raw, q.Filters.Facets, q.Filters.AssetFilter)
 	if err != nil {
 		return nil, err
 	}
-	faceted := hasAnyFacet(q.Filters.Facets)
+	faceted := hasAnySearchFilter(q.Filters.Facets, q.Filters.AssetFilter)
 	out := make([]Candidate, 0, len(shots))
 	for _, shot := range shots {
 		if shot.SemanticScore <= 0 && !faceted {

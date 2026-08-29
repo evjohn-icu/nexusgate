@@ -113,6 +113,18 @@ WHERE c.id=? GROUP BY c.id`, id)
 	return &collection, nil
 }
 
+// CollectionExists is a cheap existence probe for the asset_collections
+// table. The API uses it at the parent/child boundary so an unknown
+// collection id answers 404 while a known collection with zero assets answers
+// 200 with an empty list.
+func (r *Repository) CollectionExists(ctx context.Context, id string) (bool, error) {
+	var count int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM asset_collections WHERE id=?`, strings.TrimSpace(id)).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 func (r *Repository) DeleteAssetCollection(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {

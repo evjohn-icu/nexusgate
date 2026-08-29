@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/evjohn-icu/timingdex/internal/apiclient"
 	"github.com/evjohn-icu/timingdex/internal/credentials"
 	"github.com/evjohn-icu/timingdex/internal/remote"
 )
@@ -623,5 +625,74 @@ func TestUploadArtifactCancelsOnContextDone(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "cancel") && !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("error should reflect cancellation, got: %v", err)
+	}
+}
+
+// TestWorkerClientHubErrorEnvelope verifies that Lease and postJSON decode the
+// Hub's JSON error envelope into *apiclient.Error and surface the stable Code
+// (without echoing an unbounded raw body) so the Worker can classify failures
+// instead of parsing prose.
+func TestWorkerClientHubErrorEnvelope(t *testing.T) {
+	// Lease: a Hub envelope error must decode and surface the code.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":{"code":"job_lease_lost","message":"job lease no longer held","retryable":true,"action":"reacquire_lease"}}`))
+	}))
+	defer server.Close()
+	_, err := NewClient(server.URL, "").Lease(context.Background(), "worker-token")
+	if err == nil {
+		t.Fatal("expected a lease error")
+	}
+	var apiErr *apiclient.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("lease error = %T, want *apiclient.Error", err)
+	}
+	if apiErr.StatusCode != http.StatusConflict || apiErr.Code != "job_lease_lost" || !apiErr.Retryable || apiErr.Action != "reacquire_lease" {
+		t.Fatalf("lease envelope = %+v", apiErr)
+	}
+	if !strings.Contains(apiErr.Error(), "job_lease_lost") {
+		t.Fatalf("lease error must surface the code, got: %v", apiErr)
+	}
+	if strings.Contains(apiErr.Error(), `{"error":{"code"`) {
+		t.Fatalf("lease error must not echo the raw envelope body, got: %v", apiErr)
+	}
+
+	// postJSON (Heartbeat): the same envelope decoding applies.
+	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"code":"admin_auth_required","message":"a valid administrator token is required","retryable":false}}`))
+	}))
+	defer server2.Close()
+	err = NewClient(server2.URL, "").Heartbeat(context.Background(), "bad-token", "v1", remote.WorkerCapabilities{})
+	if err == nil {
+		t.Fatal("expected a heartbeat error")
+	}
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("heartbeat error = %T, want *apiclient.Error", err)
+	}
+	if apiErr.Code != "admin_auth_required" || apiErr.Retryable {
+		t.Fatalf("heartbeat envelope = %+v", apiErr)
+	}
+	if !strings.Contains(apiErr.Error(), "admin_auth_required") {
+		t.Fatalf("heartbeat error must surface the code, got: %v", apiErr)
+	}
+
+	// A non-envelope worker error still decodes to a bounded message.
+	server3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("boom"))
+	}))
+	defer server3.Close()
+	_, err = NewClient(server3.URL, "").Lease(context.Background(), "worker-token")
+	if err == nil {
+		t.Fatal("expected a lease error")
+	}
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("lease error = %T, want *apiclient.Error", err)
+	}
+	if apiErr.Code != "" || !strings.Contains(apiErr.Error(), "boom") {
+		t.Fatalf("non-envelope lease error = %+v (%q)", apiErr, apiErr.Error())
 	}
 }

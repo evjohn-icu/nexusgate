@@ -233,7 +233,7 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 		{http.MethodGet, "/api/v1/repurpose/plans/x/export.fcpxml", "admin", "none", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/hub/worker-setup/context", "trusted", "none", http.StatusForbidden},
 		{http.MethodGet, "/api/v1/admin/hub/worker-setup/library-roots", "admin", "none", http.StatusUnauthorized},
-		{http.MethodGet, "/api/v1/hub/worker-binaries/linux-amd64", "trusted", "none", http.StatusForbidden},
+		{http.MethodGet, "/api/v1/hub/worker-binaries/linux-amd64", "worker-bootstrap", "none", http.StatusForbidden},
 		{http.MethodPost, "/api/v1/hub/worker-setup/script", "admin", "JSON", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/unknown", "catch-all", "none", http.StatusNotFound},
 		{http.MethodPost, "/api/v1/unknown", "catch-all", "none", http.StatusNotFound},
@@ -267,15 +267,16 @@ func TestAPIRouteInventoryIsComplete(t *testing.T) {
 	}
 
 	allowedAuth := map[routeAuthClass]bool{
-		routeAuthPublic:         true,
-		routeAuthTrustedRead:    true,
-		routeAuthHubAdmin:       true,
-		routeAuthAgentOrAdmin:   true,
-		routeAuthWorker:         true,
-		routeAuthWorkerEnroll:   true,
-		routeAuthBrowserSession: true,
-		routeAuthBrowserPage:    true,
-		routeAuthCatchAll:       true,
+		routeAuthPublic:          true,
+		routeAuthTrustedRead:     true,
+		routeAuthHubAdmin:        true,
+		routeAuthAgentOrAdmin:    true,
+		routeAuthWorker:          true,
+		routeAuthWorkerEnroll:    true,
+		routeAuthWorkerBootstrap: true,
+		routeAuthBrowserSession:  true,
+		routeAuthBrowserPage:     true,
+		routeAuthCatchAll:        true,
 	}
 	seenNames := make(map[string]bool, len(specs))
 	seenPatterns := make(map[string]bool, len(specs))
@@ -329,6 +330,7 @@ func TestAPIRouteInventoryAuthBoundaries(t *testing.T) {
 		routeAuthAgentOrAdmin,
 		routeAuthWorker,
 		routeAuthWorkerEnroll,
+		routeAuthWorkerBootstrap,
 		routeAuthBrowserSession,
 		routeAuthBrowserPage,
 		routeAuthCatchAll,

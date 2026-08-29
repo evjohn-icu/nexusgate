@@ -363,6 +363,9 @@ func Load() (Config, error) {
 	if cfg.HubSecurity.AdminAuth == "" {
 		cfg.HubSecurity.AdminAuth = "trusted_network"
 	}
+	if v := strings.TrimSpace(os.Getenv("TIMINGDEX_HUB_ADMIN_AUTH_NETWORKS")); v != "" {
+		cfg.HubSecurity.AdminAuthNetworks = strings.Split(v, ",")
+	}
 	if v := strings.TrimSpace(os.Getenv("TIMINGDEX_ALLOW_WORKER_PROVIDER_CREDENTIALS")); v != "" {
 		if enabled, err := strconv.ParseBool(v); err == nil {
 			cfg.HubSecurity.AllowWorkerProviderCredentials = enabled

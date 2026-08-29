@@ -46,6 +46,67 @@ func TestWorkerPairingTokenCanEnrollOnlyOnce(t *testing.T) {
 	}
 }
 
+// TestWorkerPairingValidDoesNotRedeem proves WorkerPairingValid is a pure read:
+// it reports whether a raw token is unredeemed and unexpired, and repeated
+// checks never consume it, so the bootstrap binary download can authorize
+// itself repeatedly while the credential survives for the single enrollment
+// that redeems it.
+func TestWorkerPairingValidDoesNotRedeem(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "workers-pairing-valid.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+
+	if valid, err := repo.WorkerPairingValid(ctx, "", now); err != nil || valid {
+		t.Fatalf("empty token valid=%v err=%v, want false", valid, err)
+	}
+	if valid, err := repo.WorkerPairingValid(ctx, "not-a-real-token", now); err != nil || valid {
+		t.Fatalf("unknown token valid=%v err=%v, want false", valid, err)
+	}
+
+	pairing, err := repo.CreateWorkerPairing(ctx, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Repeated validity checks must not consume the token.
+	for i := range 3 {
+		valid, err := repo.WorkerPairingValid(ctx, pairing.Token, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !valid {
+			t.Fatalf("check %d: valid pairing token reported invalid", i)
+		}
+	}
+
+	// The token expires and the check flips to false.
+	expired, err := repo.CreateWorkerPairing(ctx, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `UPDATE worker_pairing_tokens SET expires_at=? WHERE token_hash=?`, formatTime(now.Add(-time.Minute)), tokenDigest(expired.Token)); err != nil {
+		t.Fatal(err)
+	}
+	if valid, err := repo.WorkerPairingValid(ctx, expired.Token, now); err != nil || valid {
+		t.Fatalf("expired token valid=%v err=%v, want false", valid, err)
+	}
+
+	// Enrollment redeems the token exactly once and the check turns false.
+	if _, _, err := repo.EnrollWorker(ctx, pairing.Token, remote.WorkerRegistration{Name: "validator", Platform: "linux-amd64"}); err != nil {
+		t.Fatal(err)
+	}
+	if valid, err := repo.WorkerPairingValid(ctx, pairing.Token, now); err != nil || valid {
+		t.Fatalf("redeemed token valid=%v err=%v, want false", valid, err)
+	}
+}
+
 // A Worker binary upgrade must be visible on the Hub without re-enrolling:
 // the heartbeat carries the running binary's version and the row follows it.
 // An old binary that never sends a version must not erase what was recorded.

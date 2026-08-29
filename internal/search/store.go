@@ -86,6 +86,7 @@ type Neighbors struct {
 //     map.
 type ShotStore interface {
 	ScoreCandidates(ctx context.Context, q string, facets domain.FacetFilter) ([]domain.ShotSearchResult, error)
+	ScoreCandidatesV2(ctx context.Context, q string, facets domain.FacetFilter, assetFilter domain.AssetContextFilter) ([]domain.ShotSearchResult, error)
 	LexicalRankedShots(ctx context.Context, q string, weights [5]float64, limit int) ([]domain.ShotSearchResult, error)
 	TranscriptRankedShots(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error)
 	MetadataRankedShots(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error)
