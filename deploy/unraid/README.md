@@ -56,11 +56,34 @@ chown -R 10001:10001 /mnt/user/appdata/timingdex-hub
 Point **素材库目录 Media library** at your footage and leave its access mode
 on **Read Only slave** — see
 [Mounting remote (SMB/NFS) shares](#mounting-remote-smbnfs-shares-with-live-remount)
-below for why that mode is not optional. Start the container. Read the
-generated `admin-token` from the data directory and open
-`https://<unraid-ip>:8787/workers` to generate a one-time pairing token and
-read the Hub's certificate fingerprint — both templates' `Overview` fields
-walk through this in more detail.
+below for why that mode is not optional.
+
+**Admin auth must be set before first start.** The Hub runs in a container and
+the template publishes port 8787 on the bridge network, so the container guard
+`ValidateContainerAdminAuth` refuses to start with the default
+`admin_auth=trusted_network` and no explicit `admin_auth_networks` — and the
+templates ship no admin-auth setting, so a clean `timingdex-hub` appdata
+directory will not boot (the container exits at startup). Add an environment
+variable to the Hub template (**Docker → timingdex-hub → edit → add a
+Variable**):
+
+- `TIMINGDEX_HUB_ADMIN_AUTH` = `required` — every admin/mutating route then
+  demands the `admin-token`; this is the recommended setting and the one the
+  rest of this walkthrough assumes.
+
+Alternatively keep `trusted_network` and supply explicit CIDRs via
+`hub_security.admin_auth_networks` in a `config.json` inside the Hub data
+directory — but understand Docker NAT first: behind a published port every
+peer appears as the bridge gateway (an RFC1918 address), so the listed ranges
+end up covering the whole bridge, trusting anything that can reach the port
+from it. Don't work around the guard by disabling auth or by exposing the
+port to the internet.
+
+Start the container; it should now boot (check `docker logs timingdex-hub`
+for the admin-auth refusal being gone). Read the generated `admin-token` from
+the data directory and open `https://<unraid-ip>:8787/workers` to generate a
+one-time pairing token and read the Hub's certificate fingerprint — both
+templates' `Overview` fields walk through this in more detail.
 
 If this Unraid box has no `/dev/dri` (no Intel/AMD iGPU — e.g. it's CPU-only,
 or the GPU is an NVIDIA card going through a different path), delete
@@ -131,8 +154,17 @@ docker run --rm -it \
 
 The bind mount above must be the exact host path you set as the Worker
 template's **Worker 数据目录 Data directory**, so the `worker.json` this
-command writes lands where the persistent container will actually look for
-it. Once it succeeds, start the `timingdex-worker` container normally.
+command writes lands where the persistent container will actually look for it.
+
+`--config /var/lib/timingdex-worker/worker.json` is mandatory: the Worker's
+default config path is `~/.timingdex/worker.json` (not its data directory),
+and the template's PostArgs run `worker run --config
+/var/lib/timingdex-worker/worker.json`. Enroll and run must agree on the same
+path, and that path must live on the persistent data directory
+(`/mnt/user/appdata/timingdex-worker`) so a container recreate does not lose
+the pairing.
+
+Once it succeeds, start the `timingdex-worker` container normally.
 
 Same GPU note as the Hub: if this box has no `/dev/dri`, remove
 `--device=/dev/dri:/dev/dri` from the Worker template's Extra Parameters too.
@@ -149,10 +181,22 @@ docker exec timingdex-worker timingdex worker doctor
 docker exec timingdex-hub vainfo      # only present in the gpu image variant
 ```
 
+`timingdex worker doctor` is a local hardware/enrollment report (Hub URL,
+platform, name, detected hardware) — it does not contact the Hub or verify
+leases, so use it to confirm acceleration, and the Worker's own `worker run`
+logs plus the Hub's `/workers` page for connectivity.
+
 ## Updating
 
-There is no PUID/PGID or root-owned migration step to worry about on
-upgrade: rebuild or repull the `timingdex:v0.31.0-alpha` tag, then recreate both
-containers from the CA UI (**Force Update** / **Apply**). The uid stays
-10001 across versions, so the one-time `chown` above does not need to be
+Back up the Hub data directory before upgrading: stop the `timingdex-hub`
+container and copy `/mnt/user/appdata/timingdex-hub` (the SQLite database
+together with its `-wal`/`-shm` sidecars), and note the current
+`schema_migrations` state so a rollback can restore the snapshot. Then rebuild
+or repull the `timingdex:v0.31.0-alpha` tag and recreate both containers from
+the CA UI (**Force Update** / **Apply**).
+
+Recreating keeps template values, so the `TIMINGDEX_HUB_ADMIN_AUTH` Variable
+you added in step 2 and the Worker's data-directory path survive — just confirm
+they are still present after importing a newer template revision. The uid
+stays 10001 across versions, so the one-time `chown` above does not need to be
 repeated.

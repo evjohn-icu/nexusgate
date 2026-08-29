@@ -11,9 +11,7 @@ available unless the API returned it.
 
 ## Preconditions
 
-1. Ask for the local Timingdex base URL when it is not supplied. Default to
-   `http://127.0.0.1:8787` only when that is appropriate for the user’s local
-   machine.
+1. Ask for the local Timingdex base URL when it is not supplied. The normal Hub serves HTTPS, so use `https://127.0.0.1:8787` for a local Hub; use `http://127.0.0.1:8787` only when the operator explicitly configured `hub_tls.mode=off` for local API/CLI development. If an HTTPS reverse proxy is used, give the Skill its external `https://` URL; the plaintext backend mode is not a substitute for an HTTPS client URL.
 2. Ask for the Timingdex **agent token** (a credential distinct from the Hub
    administrator token) if one is not already supplied. Send it as
    `Authorization: Bearer <agent-token>` on every write request below. Reading
@@ -21,7 +19,7 @@ available unless the API returned it.
    no credential when the request comes from the Hub's own machine or LAN; from
    any other network they answer `403 Forbidden` unless the agent token is sent,
    so send it on reads too whenever the base URL is not local.
-3. Request `GET /api/v1/agent/capabilities` first.
+3. Before the HTTP Skill workflow, request `GET /api/v1/agent/capabilities`.
 4. Stop if the response does not declare `approval_mode: human_required`, or
    if the requested action is absent from `allowed_actions`.
 5. Never request, read, retain or print API keys, environment values, raw media
@@ -49,13 +47,18 @@ field semantics are in [the API contract](references/api-contract.md).
 
 ## Workflow
 
-### Via MCP (recommended when the agent supports MCP)
+### Via MCP (recommended for read-only inspection)
 
 If this agent runs with MCP access to `timingdex-mcp` (see
 `mcp/.mcp.json.example` and `references/mcp-usage.md`), prefer the MCP tools over
-hand-built HTTP calls:
+hand-built HTTP calls for read-only inspection. The current MCP binary exposes
+six read-only tools; it does not call `/api/v1/agent/capabilities` itself and it
+does not create or revise draft plans. Use the HTTP workflow below when a draft
+plan action is requested:
 
-1. `inspect_library` first — confirm the library is healthy before planning.
+1. `inspect_library` first — inspect Hub health and hardware. This tool is not a
+   complete jobs/index readiness check, so do not treat a healthy response as
+   proof that the library contains searchable shots.
 2. `search_shots(query, limit)` — find shots via the structured Search v2
    endpoint: results carry per-constraint `evidence`
    (confirmed/possible/contradicted/unknown) alongside shot id, asset id, time
@@ -73,7 +76,7 @@ hand-built HTTP calls:
 The same boundaries apply: approval stays human, the pipeline is never run,
 and provider keys are never read.
 
-### Via HTTP (when MCP is unavailable)
+### Via HTTP (when MCP is unavailable or a draft action is requested)
 
 ### Inspect readiness
 

@@ -24,12 +24,21 @@ silently accept any certificate; `http://` remains for local development.
 
 | Tool | Hub endpoint | Token |
 |---|---|---|
-| `inspect_library` | GET /api/v1/health, /hardware | none (trusted network) |
-| `search_shots` | POST /api/v1/search/shots | none (trusted network) |
-| `get_timeline` | GET /api/v1/assets/{id}/shots | none (trusted network) |
-| `get_asset` | GET /api/v1/assets/{id} | none (trusted network) |
-| `get_shot` | GET /api/v1/shots/{id} | none (trusted network) |
-| `get_transcript` | GET /api/v1/assets/{id}/transcript | none (trusted network) |
+| `inspect_library` | GET /api/v1/health, /hardware | trusted read (token optional) |
+| `search_shots` | POST /api/v1/search/shots | trusted read (token optional) |
+| `get_timeline` | GET /api/v1/assets/{id}/shots | trusted read (token optional) |
+| `get_asset` | GET /api/v1/assets/{id} | trusted read (token optional) |
+| `get_shot` | GET /api/v1/shots/{id} | trusted read (token optional) |
+| `get_transcript` | GET /api/v1/assets/{id}/transcript | trusted read (token optional) |
+
+Every tool is a trusted read: on the Hub's own machine or a trusted LAN/Tailnet
+the request succeeds with no token at all; from any other (remote) network the
+Hub answers 403 unless `TIMINGDEX_AGENT_TOKEN` is configured, so set it unless
+the Hub is on a trusted network. An https base URL always requires
+`TIMINGDEX_HUB_FINGERPRINT` (see Cross-machine above) or the client refuses to
+start. `inspect_library` returns the health and hardware report only — a
+readiness hint, not a full jobs/index readiness probe; for pipeline and job
+state use the Skill's HTTP readiness flow (`/api/v1/jobs`, `/api/v1/issues`).
 
 `search_shots` uses the structured Search v2 endpoint, so each result carries
 per-constraint `evidence` (confirmed/possible/contradicted/unknown) alongside
@@ -37,11 +46,20 @@ its score — treat a high score as a retrieval signal, the evidence as the
 claim. `get_timeline` enumerates every shot of one asset (all shots and exact
 time ranges), which `search_shots` does not return.
 
-## Boundaries (same as the HTTP skill)
+## Boundaries
 
-- Approval stays human (`approve` is refused to the agent token).
-- The pipeline is never run from here.
-- Provider keys are never read.
+The MCP server is **read-only**: its six tools read library state only, and
+none creates or revises repurpose plans. Drafting and revising plans is a
+separate HTTP agent-token workflow (`POST /api/v1/repurpose/plans` and
+`POST /api/v1/repurpose/plans/{id}/revisions`) exposed through the Skill
+(`skills/timingdex/SKILL.md`), not through MCP.
+
+Approval, pipeline runs, provider keys and raw media paths stay with the
+human/admin boundary: the agent token is refused on approve and pipeline
+routes, and the Hub administrator token is never given to the MCP server.
+The capability handshake (`GET /api/v1/agent/capabilities`) belongs to that
+HTTP Skill workflow — the MCP server does not call it; each tool is wired
+directly to its read endpoint.
 
 ## Example agent prompts
 

@@ -38,16 +38,28 @@ indexed, searchable down to the individual shot.
 
 ![Processing — the pipeline queue and per-job progress](docs/images/processing.png)
 
-**怎么跑起来** — three steps, detailed in [Quick start](#quick-start):
+**怎么跑起来** — two routes, detailed in [Quick start](#quick-start). Both need an
+environment check and an analysis provider configured **before** the first scan:
+a scan enqueues jobs and starts draining them immediately with whatever is
+configured (`vision_primary` defaults to `none`, so jobs fail visibly rather than
+fabricating a result). For a native install, run `./timingdex doctor`; for Docker,
+run `docker compose run --rm hub doctor` after setting `TIMINGDEX_MEDIA_ROOT`.
 
-1. `./timingdex doctor` — check ffmpeg, the hardware profile and paths.
-2. `./timingdex root add /path/to/footage && ./timingdex root scan <root-id>` — point it at footage, enqueue jobs and synchronously drain the existing Pipeline.
-3. `./timingdex serve` — open the browser UI; API scans trigger the existing Pipeline in the background, while `/progress` shows execution status.
+- **Browser-wizard route** — start the Hub (`./timingdex serve` for a native
+  install, or the Docker command below), then open the HTTPS URL it prints. The
+  `/setup` first-use wizard checks the environment, walks you through adding a
+  footage root and configuring the model channels, and guides the first scan —
+  no CLI beyond starting the Hub.
+- **Native CLI route** — configure the provider, then
+  `./timingdex root add /path/to/footage && ./timingdex root scan <root-id>`
+  to import, enqueue and drain the currently-leasable queue, and run
+  `./timingdex pipeline run` (or `serve`, which also exposes `/progress`) for
+  any later passes.
 
 ### The loop in 30 seconds
 
-装好 → 加素材目录 → 配置模型 → 处理几个片段 → 搜索 → 播放/收藏镜头.
-Install, add a footage folder, configure a model, process a few clips, search,
+装好 → 配置模型 → 加素材目录 → 处理几个片段 → 搜索 → 播放/收藏镜头.
+Install, configure a model, add a footage folder, process a few clips, search,
 play or favourite the shot.
 
 ## Project status
@@ -155,6 +167,12 @@ per-constraint evidence; the legacy GET endpoints keep their exact behaviour.
 | `analyze` | the configured video-understanding provider → shots, tags, summary |
 | `index` | SQLite FTS5 rebuild |
 
+**Supported source formats (current behaviour):** the scanner recognises
+`.mov`, `.mp4`, `.m4v`, `.mxf`, `.braw`, `.r3d`, `.ari`, `.crm`, `.dng`,
+`.nev`, `.insv`. Any other extension is silently skipped during a scan — no
+error, no warning — a known limitation worth remembering when a folder seems
+to index nothing.
+
 ### Model output never writes directly to canonical tables
 
 This is the boundary the project is built around.
@@ -175,19 +193,30 @@ approve.**
 
 ## Interfaces
 
-Timingdex exposes its library through three co-equal interfaces:
+Timingdex exposes its library through four co-equal interfaces:
 
 | Interface | Transport | Use case |
 |---|---|---|
 | **HTTP API** | HTTPS (self-signed) | Web UI, custom integrations, scripts |
-| **CLI** | Local process | Maintenance, cache management, bulk operations |
-| **MCP** | stdio (JSON-RPC) | AI agents (Claude Code, Codex, Cursor) |
+| **CLI** | Local process | Import (`root add` / `root scan`), pipeline runs (`pipeline run` / `retry-failed`), maintenance (cache, search, secrets), Worker enrollment |
+| **MCP** | stdio (JSON-RPC) | Read-only library queries for AI agents (Claude Code, Codex, Cursor) |
+| **Agent Skill** | HTTPS (self-signed) + agent token | HTTP draft / revise workflow for Repurpose plans |
 
 The MCP server (`timingdex-mcp`) is a thin client of the HTTP API — it holds
 no database handle and never touches the NAS. Every tool calls the same
 `/api/v1/...` endpoints the browser uses, with the same agent-token and
-trusted-read contracts. MCP is read-only: search, inspect, retrieve. Agents
-draft plans; humans approve them in the browser UI.
+trusted-read contracts. MCP is read-only and exposes exactly six tools:
+`inspect_library`, `search_shots`, `get_timeline`, `get_transcript`,
+`get_asset`, `get_shot`. It cannot create or revise plans. Drafting and
+revising plans is the **Agent Skill**'s HTTP workflow (agent token,
+`POST /api/v1/repurpose/plans` and its revision routes); approval and export
+stay human-only actions in the browser UI.
+
+Cross-machine MCP needs an `https://` Hub URL plus `TIMINGDEX_HUB_FINGERPRINT`
+— the SHA-256 certificate fingerprint `timingdex serve` prints. A plain
+`http://` URL is refused for any non-loopback host, and an `https://` URL
+without the fingerprint refuses to start rather than trusting an unpinned
+certificate.
 
 ## Requirements
 
@@ -216,12 +245,34 @@ Go image, so Docker alone is enough — no Go toolchain, and FFmpeg and exiftool
 come with the runtime image. That is the shortest path on Windows.
 
 ```bash
+# First create the docker-compose.override.yml shown below.
 TIMINGDEX_MEDIA_ROOT=/path/to/footage docker compose up -d --build hub
 ```
 
-On PowerShell, or to keep provider keys out of your shell history, put the
-variables in an untracked `.env` beside the Compose file instead; Compose reads
-it automatically.
+**Current prerequisite:** the shipped `docker-compose.yml` passes no admin-auth
+configuration, and the Hub fails closed when it detects it runs inside a
+container with the default `hub_security.admin_auth: trusted_network` and no
+`admin_auth_networks` — so a clean `docker compose up -d --build hub`
+currently refuses to start until this is resolved. The minimal, safe override
+is to demand the administrator token everywhere; Compose merges it
+automatically from a sibling file:
+
+```yaml
+# docker-compose.override.yml — merged automatically; the shipped file stays untouched.
+services:
+  hub:
+    environment:
+      TIMINGDEX_HUB_ADMIN_AUTH: required
+```
+
+With `required`, every administrator call demands the pasted `admin-token`;
+there is no LAN passwordless waiver. This is **not** a recommendation to expose
+the Hub to the public Internet — it only removes the silent waiver a published
+Docker port would otherwise create. If you prefer passwordless admin on a
+trusted LAN, the equivalent is a `config.json` in the data volume setting
+`hub_security.admin_auth_networks` to your real LAN CIDR(s) (there is no
+environment variable for that list). On Unraid, add the same
+`TIMINGDEX_HUB_ADMIN_AUTH=required` item to the Hub template's environment.
 
 The Hub then answers on `https://127.0.0.1:8787`, and `root add` must be given
 the container path (`/media/library`), not the host path. A published port puts
@@ -244,22 +295,34 @@ gotcha that makes NVENC fail silently without it.
 
 ## Quick start
 
+If `config.json` was copied from `config.example.json`, configure its enabled
+Provider keys before running any non-Worker CLI command, including `doctor`:
+the current validator runs before command dispatch. With no config file, the
+built-in Provider blocks are disabled, so the environment check can run first.
+
 ```bash
 export TIMINGDEX_DATA_DIR="$PWD/.timingdex-dev"
 
 ./timingdex doctor                        # check ffmpeg, hardware profile, paths
 ./timingdex root add /path/to/footage     # read-only; nothing is written there
-./timingdex root scan <root-id>           # scans, enqueues, and drains the Pipeline
+./timingdex root scan <root-id>           # scans, enqueues, then drains the queue
+./timingdex pipeline run                  # drain again (backoff/deferred/off-peak passes)
 ./timingdex search rebuild                # rebuild asset-level FTS from canonical rows
 ./timingdex search rebuild-embeddings     # re-embed all shots (after a model switch)
 ./timingdex cache inspect                 # report cache categories and rebuildable space
 ./timingdex cache verify                  # compare derived-artifact rows with cache files
 ./timingdex cache gc --rebuildable --yes  # delete rebuildable artifacts and enqueue re-derive
-./timingdex serve                         # HTTPS by default; prints the Worker fingerprint
+./timingdex serve                         # HTTPS by default; prints the Hub HTTPS fingerprint
 ```
 
 Then open the browser UI. Analysis commits shot-level
 FTS immediately; the successor `JobIndex` rebuilds the asset-level FTS row.
+
+`root scan` and `pipeline run` drain the queue until no job is *currently*
+leasable: jobs parked on a retry backoff, provider-route deferral, the disk
+floor or the off-peak window stay queued and are picked up by a later pass.
+The `library_supervisor` (an optional `serve` config) rescans every root and
+drains on a timer, unattended — it is not a prerequisite for a manual run.
 
 Everything lives under `$TIMINGDEX_DATA_DIR`: `timingdex.db`, optional
 `config.json`, `cache/`, `admin-token`, `agent-token`, `provider-secrets/`.
@@ -315,15 +378,26 @@ separate Bearer credentials.
 | Page | Purpose |
 | --- | --- |
 | `/` | The library. Each row is **thumbnail → material context → shot-level timeline**, so you can see what exists at each point in a source before planning anything. Filter by capture date, region, camera or shoot session, or by asset type, shot size, camera motion, audio type, quality, usable-as and a duration range. |
+| `/collections` | 收藏 baskets: pin shots from search results and review or export their timecodes later. |
 | `/progress` | Jobs — run the queue; watch counts, per-job attempts and failures. Failure text is administrator-only. |
-| `/settings` | Disk-load limits (below). |
-| `/tags` | Tag governance: review and approve staged proposals. |
+| `/library-roots` | Add and scan footage roots; the `smb://`/`nfs://` mount wizard lives here. |
 | `/providers` | Capability-scoped model channels; add, test, enable, disable, remove. Keys never come back to the browser. |
 | `/workers` | Paired node status, stage/progress, retry history, optional derive routing. |
 | `/worker-setup` | Generates an install script for a new Worker. |
-| `/setup` | Startup configuration help. |
+| `/tags` | Tag governance: review and approve staged proposals. |
+| `/settings` | Disk-load limits (below). |
+| `/setup` | First-use wizard: environment check, add a root, configure providers, guide the first scan. The working configuration pages are `/library-roots` and `/providers`. |
+| `/repurpose` | Labs — turn an editorial brief into a reviewable plan; experimental workflow built on Timingdex retrieval. |
 
-| `/repurpose` | Labs — turn an editorial brief into a reviewable plan; experimental workflow built on Timingdex retrieval |
+The first-import path is `/setup` (or directly `/library-roots`) to add a
+footage root, then `/` to search it, then `/collections` to pin the shots
+worth keeping.
+
+`/setup` 的 Status 是首次引导启发式，不是完整的搜索 readiness 证明：它统计
+root、provider channel 和 asset 行，不代表资产已经 probe/analyze/index，也不
+会把 legacy `providers.*` env/config 路由计入 Provider 数。完成扫描后，以
+`/progress` 的作业状态和 `/` 是否出现镜头时间轴为准；ExifTool 是可选的，
+缺少它只会减少 capture metadata。
 
 The settings page also exposes optional daily and monthly cost guides. They are
 operator references for the append-only post-call estimate ledger, never billing
@@ -366,8 +440,10 @@ for a window never consumes a job's retry budget.
 ## Configuration
 
 Copy `config.example.json` to `$TIMINGDEX_DATA_DIR/config.json`. Most settings
-also have an environment variable; provider keys are read from the environment or
-from the encrypted store, never from the config file in plaintext.
+also have an environment variable. Prefer environment variables for legacy
+Provider keys or the encrypted `/providers` channel store; an explicit legacy
+`api_key` field in `config.json` is plaintext on disk and should be treated as a
+secret until migrated.
 
 ### Hardware-accelerated derived media
 
@@ -404,10 +480,15 @@ mounted folder as a normal library root, and enable copy staging:
 ```
 
 The source is opened read-only and copied once into
-`$TIMINGDEX_DATA_DIR/cache/sources/` before any FFmpeg, ASR or analysis work. The
-NAS receives no derived files, sidecars or metadata writes, and a completed cache
-entry keeps working if the share disconnects. Budget local disk for the files being
-processed; the cache is disposable while Timingdex is stopped.
+`$TIMINGDEX_DATA_DIR/cache/sources/` before jobs that decode or transform the
+source. The NAS receives no derived files, sidecars or metadata writes, and a
+completed cache entry keeps working if the share disconnects after staging.
+Budget local disk for the files being processed; the cache is disposable while
+Timingdex is stopped.
+
+**Probe exception (current behaviour):** the `probe` stage still reads the
+original path directly, even with `mode: copy`; the initial metadata read is not
+isolated from a NAS disconnect.
 
 The `/library-roots` wizard turns a pasted `smb://`/`nfs://`/UNC address into
 paste-ready mount commands rather than guessing a password or mounting
@@ -442,6 +523,17 @@ health-aware retry, cooldown, concurrency limits and ordered fallback. Keys
 are encrypted in the Hub-only `provider-secrets/` directory (`0700`, files
 `0600`) and are never returned by any API, written to SQLite, or sent to a
 Worker's configuration.
+
+**Current UI limitation:** the beginner `/providers` wizard is not a universal
+configuration form. It starts with Gemini video analysis plus embedding selected,
+but the runtime treats video and embedding as different provider capabilities;
+configure embedding with an embedding provider, not a video provider. Gemini and
+some native ASR endpoints do not provide a model list for the wizard, and the
+wizard currently requires a detected model; use the Advanced editor or
+`config.json` to enter a model manually. A local VLM may be keyless, but the
+wizard currently expects a key, so use the documented `providers.local_vlm`
+config block for an unauthenticated local endpoint. These are current UI limits,
+not additional provider requirements.
 
 One deliberate exception: **Local Multiframe v1 currently uses
 `providers.local_vlm` in `config.json`.** The `/providers` channel UI does not
@@ -598,7 +690,8 @@ provider interface: it embeds shot text — description/tags/speech — and only
 ever ranks, never proves; evidence comes from the gate, not the vectors.)
 
 ```bash
-curl -X POST 'http://127.0.0.1:8787/api/v1/tags/clusters?limit=500&threshold=0.86'
+curl -k -H "Authorization: Bearer $(cat \"$TIMINGDEX_DATA_DIR/admin-token\")" \
+  -X POST 'https://127.0.0.1:8787/api/v1/tags/clusters?limit=500&threshold=0.86'
 ```
 
 `threshold` is cosine similarity and is conservative by default. Nothing merges
@@ -625,11 +718,11 @@ Qwen3-ForcedAligner wrapper can satisfy the contract with no changes here.
 ## Search
 
 ```bash
-curl --get --data-urlencode 'q=demo' http://127.0.0.1:8787/api/v1/search
-curl --get --data-urlencode 'q=雨夜街道' http://127.0.0.1:8787/api/v1/search/shots
-curl --get --data-urlencode 'q=rainy city night' http://127.0.0.1:8787/api/v1/search/shots/hybrid
-curl http://127.0.0.1:8787/api/v1/shots/<shot-id>/similar
-curl http://127.0.0.1:8787/api/v1/discover/rare-shots
+curl -k --get --data-urlencode 'q=demo' https://127.0.0.1:8787/api/v1/search
+curl -k --get --data-urlencode 'q=雨夜街道' https://127.0.0.1:8787/api/v1/search/shots
+curl -k --get --data-urlencode 'q=rainy city night' https://127.0.0.1:8787/api/v1/search/shots/hybrid
+curl -k https://127.0.0.1:8787/api/v1/shots/<shot-id>/similar
+curl -k https://127.0.0.1:8787/api/v1/discover/rare-shots
 ```
 
 Results carry the source asset plus exact `start_ms` / `end_ms`, so a plan can
@@ -646,7 +739,8 @@ brief → optional planner (or deterministic fallback) → material needs
 ```
 
 ```bash
-curl -X POST http://127.0.0.1:8787/api/v1/repurpose/plans \
+curl -k -H "Authorization: Bearer $(cat \"$TIMINGDEX_DATA_DIR/admin-token\")" \
+  -X POST https://127.0.0.1:8787/api/v1/repurpose/plans \
   -H 'content-type: application/json' \
   -d '{"brief":"我要做一个深圳城市宣传视频","duration_ms":30000,"style":"城市生活","audience":"品牌客户"}'
 ```
@@ -667,8 +761,8 @@ trade-off rather than a silently missing ending.
 An approved plan exports as a CMX3600 EDL or an FCPXML 1.9 document:
 
 ```bash
-curl -H "Authorization: Bearer $(cat "$TIMINGDEX_DATA_DIR/admin-token")" \
-  http://127.0.0.1:8787/api/v1/repurpose/plans/<plan-id>/export.edl
+curl -k -H "Authorization: Bearer $(cat "$TIMINGDEX_DATA_DIR/admin-token")" \
+  https://127.0.0.1:8787/api/v1/repurpose/plans/<plan-id>/export.edl
 ```
 
 Both routes are administrator-only and reject the agent token. An FCPXML embeds
@@ -865,8 +959,9 @@ These are load-bearing, not aspirational.
 
 A versioned Skill lives at `skills/timingdex`. It can inspect readiness, retrieve
 shot evidence, create a draft plan and submit a user-directed revision. Point a
-Skill session at that folder and the local server URL, and give it the **agent**
-token — not the administrator token.
+Skill session at that folder and the local server URL (HTTPS by default — the
+URL `timingdex serve` prints), and give it the **agent** token — not the
+administrator token.
 
 Before acting it calls `GET /api/v1/agent/capabilities`, which declares that plan
 approval, pipeline execution, provider keys and original-media paths are out of
@@ -876,15 +971,24 @@ action in the Repurpose workspace.
 ## API examples
 
 ```bash
-curl http://127.0.0.1:8787/api/v1/health
-curl http://127.0.0.1:8787/api/v1/assets
-curl http://127.0.0.1:8787/api/v1/jobs
-curl http://127.0.0.1:8787/api/v1/hardware
-curl http://127.0.0.1:8787/api/v1/pipeline/throttle
-curl http://127.0.0.1:8787/api/v1/assets/<asset-id>/shots
-curl -H "Authorization: Bearer $(cat "$TIMINGDEX_DATA_DIR/admin-token")" \
-  -X POST http://127.0.0.1:8787/api/v1/pipeline/run
+curl -k https://127.0.0.1:8787/api/v1/health
+curl -k https://127.0.0.1:8787/api/v1/assets
+curl -k https://127.0.0.1:8787/api/v1/jobs
+curl -k https://127.0.0.1:8787/api/v1/hardware
+curl -k https://127.0.0.1:8787/api/v1/pipeline/throttle
+curl -k https://127.0.0.1:8787/api/v1/assets/<asset-id>/shots
+curl -k -H "Authorization: Bearer $(cat "$TIMINGDEX_DATA_DIR/admin-token")" \
+  -X POST https://127.0.0.1:8787/api/v1/pipeline/run
 ```
+
+All examples assume the default `hub_tls.mode: auto`: the Hub serves HTTPS
+with a locally self-signed certificate, so `curl -k` skips certificate
+verification (the browser asks for a one-time confirmation). With
+`hub_tls.mode: off`, the plain `http://127.0.0.1:8787` form works only for
+local API/CLI development. An HTTPS reverse proxy should expose an `https://`
+URL to browsers and clients; TLS termination with a plaintext backend is not a
+supported browser-session shortcut in this version. The administrator token
+goes in the `Authorization` header, never in the URL.
 
 Read routes need no token from a trusted network. Writes need the administrator
 token unless `hub_security.admin_auth` waives it (`trusted_network` for trusted

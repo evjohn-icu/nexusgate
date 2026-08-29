@@ -110,13 +110,37 @@ Migrations live in `internal/repository/sqlite/migrations/NNNN_*.sql`, are
 ## Retry classification
 
 `isRetryableJobError` in `internal/app/pipeline.go` decides retry versus
-permanent failure. HTTP failures are classified by type (`errors.As` on
-`*common.StatusError`; 4xx except 408/429 is permanent), but every other failure
-mode still falls back to substring matching on the error text.
+permanent failure. Classification is by status code or sentinel, never by the
+wording of the message:
 
-If you introduce a new permanent failure mode that is not an HTTP status, add its
-phrase there. Otherwise it burns provider quota through the 1s → 2s → 4s (max
-30s) backoff until the attempt budget is gone.
+- HTTP failures are classified by status alone (`errors.As` on
+  `*common.StatusError`): a 4xx except 408/429 is permanent, unless
+  `providerpool.ClassifyFailure` labels it `MemberSpent` (401/402/403 — the pool
+  has already retired that key, so the next attempt selects a different member
+  and retrying is right).
+- Every other failure mode is classified by sentinel. A failure that no retry
+  can fix is marked with `domain.Permanent(err)` at the line that creates it and
+  checked with `errors.Is(err, domain.ErrPermanentFailure)`; an unmarked error
+  stays retryable by default.
+- Hard non-retries: `context.Canceled` / `context.DeadlineExceeded`, and ENOSPC
+  (`isNoSpaceErr`), which the execute path defers/park before this decision.
+
+**Known discrepancy:** `openspec/specs/error-classification/spec.md` currently
+classifies a provider `context.DeadlineExceeded` as retryable, while the current
+pipeline guard treats the sentinel as a hard non-retry. Do not resolve that
+contract difference by adding message matching; change the specification and
+implementation together after a provider adapter error-chain repro.
+
+There is no error-text substring list. If you introduce a new permanent failure
+mode that is not an HTTP status, mark it `domain.Permanent(...)` where it is
+created; do not phrase-match the message. Otherwise it burns provider quota
+through the 1s → 2s → 4s (max 30s) backoff until the attempt budget is gone.
+
+The behaviour is pinned by tests in `internal/app` (`retry_test.go`,
+`retry_permanence_test.go`, `pipeline_spent_key_retry_test.go`,
+`redact_error_test.go`): they assert classification comes from the status or the
+sentinel, not the message text, and that the marker survives wrapping. Keep
+them green when you change a failure path.
 
 ## The browser UI: read this before editing a page
 

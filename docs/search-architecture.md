@@ -111,8 +111,9 @@ semantic；"给我找…" → creative；其余 fact。`mode: auto` 是默认；
 `RRF`（k=60，一等公民）。legacy `repository.HybridSearchShots` 保持为被
 golden 钉死的兼容基线；`search.Service.LegacySearch` 精确复现它，
 `TestSearchV2CompatMatchesLegacy` 对全部 golden 查询断言 ID 序列与分数
-一致（≤1e-12）——旧 GET 端点 / MCP / repurpose planner 在新引擎内部
-接管后行为不变。
+一致（≤1e-12）——旧 GET 端点 / repurpose planner 由新引擎 compat 路径接管后行为不变；
+MCP 的 `search_shots` 则直接调用结构化 v2 端点（`POST /api/v1/search/shots`，
+带 evidence）。
 
 ## Evidence Gate
 
@@ -199,9 +200,12 @@ Scene 粒度（"做饭过程"跨切菜/炒菜/装盘）。本轮只设计不实�
 
 ## 兼容性承诺
 
-- `GET /api/v1/search/shots`、`GET /api/v1/search/shots/hybrid` 响应形状
-  不变（后者由 v2 compat 路径接管，被相等性测试钉死）；
-- MCP `search_footage` 继续走 GET hybrid；
+- 结构化 v2 接口是 `POST /api/v1/search/shots`（trusted-read，返回 evidence /
+  intent / search_id/query_hash，可选 context）；MCP `search_shots` 工具直接
+  调用该结构化端点，不走 legacy GET。
+- legacy GET 端点保留、响应形状不变：`GET /api/v1/search/shots`（旧 repo 路径）
+  与 `GET /api/v1/search/shots/hybrid`（由 `search.Service.LegacySearch` v2
+  compat 路径接管，被相等性测试钉死）；`GET /api/v1/search` 仍返回资产 ID 列表。
 - `TestRetrievalGolden`（legacy 5-blend 硬门禁）不动，且新增
   `TestSearchV2Benchmark`（5 条 pipeline × per-intent 指标 ×
   RetrievalFP/AssertionFP）作为 v2 的回归地板。

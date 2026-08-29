@@ -2,6 +2,85 @@
 
 ## Unreleased
 
+- **Clean container startup by default**: the shipped Docker Compose and Unraid
+  Hub entry points now default `TIMINGDEX_HUB_ADMIN_AUTH=required`, so a fresh
+  container demands its generated administrator token on every write instead of
+  failing the container guard or waiving writes for the bridge gateway's
+  RFC1918 address. `TIMINGDEX_HUB_ADMIN_AUTH_NETWORKS` is split and validated
+  by `config.Load` into `hub_security.admin_auth_networks`, letting an operator
+  who deliberately selects `trusted_network` name the real client CIDRs.
+  Bare-metal defaults are unchanged.
+
+- **`doctor` diagnoses a broken legacy provider config**: an enabled selected
+  provider with an unset key environment no longer stops `doctor` before it
+  prints anything. The report now carries `✗ legacy provider config: <reason>`
+  (and `config_valid`/`config_error` in `--json`) while every operational
+  command keeps the fail-fast behavior.
+
+- **Capability-first provider wizard**: the beginner provider dialog asks for
+  one capability (video understanding or speech-to-text) and offers only
+  grounded key-backed presets with a prefilled editable model; model detection
+  is optional (unprobeable/no_models/schema_unknown keep the preset,
+  `key_invalid` blocks), one submit creates exactly one channel, and the key is
+  never stored in the browser. A no-auth local VLM stays on the legacy
+  `providers.local_vlm` config path with in-page guidance.
+
+- **`/setup` reports executable state**: `healthy_root_count`,
+  `provider_ready`, `searchable_shot_count` and `search_index_ready` join the
+  inventory counts; the next-step and `ready` verdicts now require a healthy
+  root, a runnable video route, at least one canonical shot and a ready search
+  index (ExifTool stays optional).
+
+- **NAS staging and scan reporting**: `source_staging.mode=copy` stages once
+  before the probe and reuses the same versioned cache file for the full-media
+  stages. Scans report skipped non-video files (bounded to 20 named extension
+  types, the rest folded), the supported extension list, and warn on a
+  zero-discovery scan that skipped files, in both `root scan` and
+  `/library-roots`.
+
+- **Visible browser feedback**: settings/collections mutation status is now a
+  visible shared callout (`role=status`, `aria-live=polite`); the `/progress`
+  issue repair link is a category→action map with localized labels instead of
+  a blanket providers link; the jobs, library-root health and Tags tables
+  scroll inside the shared `.table-scroll` without overflowing the document at
+  375px; every dialog/overlay shares Escape-to-close, contained Tab and opener
+  focus restore; shot-result cards are keyboard-activatable; the shell Labs
+  group and provider option labels are localized through the catalogs.
+
+- **Structured search keeps every library filter**: the shot-search POST now
+  carries an `asset_filter` (captured date with exclusive upper bound, region,
+  camera, session, status) beside `facets`, and the candidate universe
+  constrains every recall channel, including `similar` mode.
+
+- **Pagination and resource semantics**: Search responses report
+  `offset`/`limit`/`has_more`/`next_offset`/`window_exhausted` with global
+  ranks; the six legacy list endpoints (`/api/v1/assets`, `/jobs`,
+  `/repurpose/plans`, `/tags/unresolved`, `/tags/proposals`, `/shoot-sessions`)
+  accept optional `offset` and answer with `X-Timingdex-Limit`/
+  `X-Timingdex-Offset`/`X-Timingdex-Has-More`; parent/child endpoints distinguish
+  a known parent with zero children (`200 []`) from an unknown parent (404 with
+  `action: check_the_identifier`); successful empty lists serialize `[]`, never
+  `null`. MCP `getTimeline` moves onto the 64 MiB decode path, `search_shots`
+  takes an optional `offset`, `inspectLibrary` reports setup/status and
+  jobs/summary, and MCP/Worker errors decode a shared `internal/apiclient`
+  envelope exposing the stable `code`. An unset `TIMINGDEX_BASE_URL` now
+  defaults to `https://127.0.0.1:8787` (requiring `TIMINGDEX_HUB_FINGERPRINT`
+  unless the URL is an explicit loopback/link-local HTTP).
+
+- **Generated Worker installer works against the default self-signed Hub**: the
+  POSIX/PowerShell scripts embed the server-derived certificate fingerprint,
+  SPKI pin and binary SHA-256, create a private 0700 config directory, download
+  with the pairing token pinned to the Hub, verify the checksum before renaming,
+  and enroll with `--fingerprint` before `--pairing`. A non-consuming
+  `WorkerPairingValid` backs a strict bootstrap route that rejects a presented
+  redeemed token even from trusted networks, and the setup page retries context
+  after an `timingdex:admin-auth-changed` login.
+
+- **CLI usage synopsis**: `timingdex` help now enumerates
+  `search rebuild|rebuild-embeddings`, `cache inspect|gc|verify|repair-derived`,
+  and the Worker enrollment `--root`/`--cache`/`--config` flags.
+
+
 - **Browser multilingual UI**: the 11 inline HTML pages (library, setup,
   progress, workers, worker-setup, library-roots, repurpose, tags, providers,
   collections, settings) now render in Simplified Chinese (the default),
