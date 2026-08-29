@@ -87,6 +87,7 @@ func TestCollectionsPageLocalizedCopy(t *testing.T) {
 		`tdT('collections.duration'`,
 		`tdT('collections.createdAt'`,
 		`tdT('collections.loadingShots')`,
+		`tdT('collections.emptyWhy')`,
 		`tdT('collections.deleteCollection')`,
 		`tdT('collections.moveUp')`,
 		`tdT('collections.moveDown')`,
@@ -113,6 +114,31 @@ func TestCollectionsPageLocalizedCopy(t *testing.T) {
 	}
 }
 
+// The skeleton migration moved the page onto the shared design classes: the
+// header is a .pagehead, the collection card is a .panel (with the expand
+// toggle composed as a .panel-head button), and the empty state is a
+// three-part .empty block. The legacy page-local classes must be gone so the
+// shell's compat layer can be deleted for them.
+func TestCollectionsPageMigratedClasses(t *testing.T) {
+	for _, legacy := range []string{"coll-card", "coll-head", "coll-empty"} {
+		if strings.Contains(collectionsHTML, legacy) {
+			t.Fatalf("collections page still carries legacy class %q", legacy)
+		}
+	}
+	for _, want := range []string{
+		`<header class="pagehead">`,
+		`class="panel coll-panel" data-coll=`,
+		`class="panel-head coll-toggle" data-action="toggle-collection"`,
+		`'<div class="empty"><b>'`,
+		`tdT('collections.emptyWhy')`,
+		`class="btn btn--primary" href="/"`,
+	} {
+		if !strings.Contains(collectionsHTML, want) {
+			t.Fatalf("collections page missing migrated marker %q", want)
+		}
+	}
+}
+
 // The shell injection depends on the same structural guarantees every other
 // page constant carries: the marker first inside <body>, and exactly one
 // style close and one body close so the replace-first anchors stay exact.
@@ -130,5 +156,35 @@ func TestCollectionsPageConstantStructure(t *testing.T) {
 	}
 	if got := strings.Count(collectionsHTML, "</body>"); got != 1 {
 		t.Fatalf("expected exactly one </body>, got %d", got)
+	}
+}
+
+// The collections status line must be visible mutation feedback, not a
+// display:none trap: collSay() renders the shared callout on a role="status"
+// aria-live region, and a fresh successful load clears it while a delete's
+// confirmation is re-asserted after the reload so it stays visible.
+func TestCollectionsPageMutationFeedbackIsVisibleCallout(t *testing.T) {
+	if strings.Contains(collectionsHTML, `.status{display:none}`) {
+		t.Fatal("collections page must not hide its status line")
+	}
+	for _, marker := range []string{
+		`id="collections-status" class="status" role="status" aria-live="polite"`,
+		`function collSay(message,ok){const el=document.getElementById('collections-status');el.className='callout '+(ok?'callout--confirmed':'callout--contradicted');el.textContent=message}`,
+		`st.className='status';st.textContent=''`,
+		`collSay(tdT('collections.deleted'),true)`,
+		`collSay(tdT('collections.loadError',{message:e.message}),false)`,
+		`collSay(tdT('collections.reorderError',{message:e.message}),false)`,
+		`collSay(tdT('collections.removeShotError',{message:e.message}),false)`,
+		`collSay(tdT('collections.timecodeCopied',{tc:text}),true)`,
+		`collSay(tdT('collections.copyTimecodeError',{message:e2.message}),false)`,
+	} {
+		if !strings.Contains(collectionsHTML, marker) {
+			t.Fatalf("collections page missing callout marker %q", marker)
+		}
+	}
+	// The delete confirmation must survive the reload that re-renders the
+	// list, so the message is set after the load, not before it.
+	if !strings.Contains(collectionsHTML, `await collectionsLoad();collSay(tdT('collections.deleted'),true)`) {
+		t.Fatalf("delete confirmation must be shown after the reload")
 	}
 }

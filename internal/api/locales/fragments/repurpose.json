@@ -81,7 +81,9 @@
    "repurpose.role.ending": "结尾",
    "repurpose.role.transition": "转场",
    "repurpose.role.broll": "空镜",
-   "repurpose.role.cta": "收尾"
+   "repurpose.role.cta": "收尾",
+   "repurpose.inboxEmptyWhy": "方案列表会在这里显示：草稿待你审核选片，批准后即定稿。",
+   "repurpose.workspaceEmptyWhy": "选择左侧列表里的方案开始审核，或新建一个方案让 AI 起草。"
   },
   "ja-JP": {
    "repurpose.title": "再編集ワークベンチ",
@@ -163,7 +165,9 @@
    "repurpose.role.ending": "エンディング",
    "repurpose.role.transition": "トランジション",
    "repurpose.role.broll": "空撮",
-   "repurpose.role.cta": "締め"
+   "repurpose.role.cta": "締め",
+   "repurpose.inboxEmptyWhy": "プラン一覧はここに表示されます。下書きはレビュー待ちで、承認すると確定版になります。",
+   "repurpose.workspaceEmptyWhy": "左のリストからプランを選んでレビューを始めるか、新しいプランを作成して AI に下書きさせます。"
   },
   "en-US": {
    "repurpose.title": "Repurpose workspace",
@@ -245,7 +249,9 @@
    "repurpose.role.ending": "Ending",
    "repurpose.role.transition": "Transition",
    "repurpose.role.broll": "B-roll",
-   "repurpose.role.cta": "Wrap-up"
+   "repurpose.role.cta": "Wrap-up",
+   "repurpose.inboxEmptyWhy": "Plans appear here once drafted — review candidates, save a revision, then approve to lock the final cut.",
+   "repurpose.workspaceEmptyWhy": "Pick a plan from the inbox to start reviewing, or create a new one and let AI draft it."
   },
   "fr-FR": {
    "repurpose.title": "Atelier de réutilisation",
@@ -327,7 +333,9 @@
    "repurpose.role.ending": "Fin",
    "repurpose.role.transition": "Transition",
    "repurpose.role.broll": "Séquence de coupe",
-   "repurpose.role.cta": "Conclusion"
+   "repurpose.role.cta": "Conclusion",
+   "repurpose.inboxEmptyWhy": "Les plans apparaissent ici une fois rédigés — examinez les candidats, enregistrez une révision, puis approuvez pour verrouiller le montage final.",
+   "repurpose.workspaceEmptyWhy": "Choisissez un plan dans la boîte de réception pour commencer la révision, ou créez-en un nouveau et laissez l'IA le rédiger."
   },
   "es-ES": {
    "repurpose.title": "Área de reutilización",
@@ -409,7 +417,9 @@
    "repurpose.role.ending": "Cierre",
    "repurpose.role.transition": "Transición",
    "repurpose.role.broll": "B-roll",
-   "repurpose.role.cta": "Cierre"
+   "repurpose.role.cta": "Cierre",
+   "repurpose.inboxEmptyWhy": "Los planes aparecen aquí una vez redactados: revisa los candidatos, guarda una revisión y luego aprueba para fijar el montaje final.",
+   "repurpose.workspaceEmptyWhy": "Elige un plan de la bandeja para empezar a revisarlo, o crea uno nuevo y deja que la IA lo redacte."
   }
  }
 }

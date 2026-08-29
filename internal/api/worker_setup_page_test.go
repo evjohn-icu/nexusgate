@@ -3,7 +3,9 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,12 +18,45 @@ import (
 	"github.com/evjohn-icu/timingdex/internal/app"
 	"github.com/evjohn-icu/timingdex/internal/config"
 	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/timingdex/internal/hubtls"
 	"github.com/evjohn-icu/timingdex/internal/media"
 	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
 )
 
 func workerSetupHandler(s *Server) http.Handler {
 	return s.Handler()
+}
+
+// workerSetupTLSServer builds a Hub Server whose TLS identity is real (so
+// script generation can derive the certificate fingerprint and SPKI pin) with
+// the given platform binaries written into its worker-binaries directory.
+func workerSetupTLSServer(t *testing.T, service *app.Service, binaries map[string]string) http.Handler {
+	t.Helper()
+	dataDir := service.DataDir()
+	binDir := filepath.Join(dataDir, "worker-binaries")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for platform, content := range binaries {
+		info := workerPlatforms[platform]
+		if err := os.WriteFile(filepath.Join(binDir, info.Filename), []byte(content), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	certFile, keyFile, _, err := hubtls.EnsureSelfSigned(filepath.Join(dataDir, "tls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewTLSServer("", service, certFile, keyFile).Handler()
+}
+
+// tlsAdminRequest is hubAdminRequest plus a TLS connection state, because
+// script generation refuses to produce a certificate-pinned script over a
+// plaintext request.
+func tlsAdminRequest(service *app.Service, method, target string, body io.Reader) *http.Request {
+	request := hubAdminRequest(service, method, target, body)
+	request.TLS = &tls.ConnectionState{}
+	return request
 }
 
 func TestWorkerSetupPageRendersWithStepMarkers(t *testing.T) {
@@ -183,7 +218,7 @@ func TestWorkerSetupPageLocalizedCopy(t *testing.T) {
 		`2. [[i18n:workerSetup.configureNode]]`,
 		`3. [[i18n:workerSetup.generateScript]]`,
 		`4. [[i18n:workerSetup.startNode]]`,
-		`<a class="back-link" href="/workers">← [[i18n:common.back]]</a>`,
+		`<a class="btn btn--ghost" href="/workers">← [[i18n:common.back]]</a>`,
 		`[[i18n:workerSetup.hubConnectionInfo]]`,
 		`[[i18n:workerSetup.loadingEnvironment]]`,
 		`[[i18n:workerSetup.binaries]]`,
@@ -579,8 +614,8 @@ func TestWorkerSetupScriptPOSIXIncludesPairingAndMount(t *testing.T) {
 	}
 	body := `{"platform":"linux-amd64","name":"test-worker","pairing_token":"tok-abc","mounts":[{"root_id":"root1","path":"/mnt/footage"}]}`
 	response := httptest.NewRecorder()
-	request := hubAdminRequest(service, http.MethodPost, "/api/v1/hub/worker-setup/script", strings.NewReader(body))
-	workerSetupHandler(NewServer("", service)).ServeHTTP(response, request)
+	request := tlsAdminRequest(service, http.MethodPost, "/api/v1/hub/worker-setup/script", strings.NewReader(body))
+	workerSetupTLSServer(t, service, map[string]string{"linux-amd64": "binary-content"}).ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -627,8 +662,8 @@ func TestWorkerSetupScriptPowerShellIncludesErrorActionPreference(t *testing.T) 
 	}
 	body := `{"platform":"windows-amd64","name":"win-worker","pairing_token":"tok-xyz","mounts":[{"root_id":"root1","path":"C:\\footage"}]}`
 	response := httptest.NewRecorder()
-	request := hubAdminRequest(service, http.MethodPost, "/api/v1/hub/worker-setup/script", strings.NewReader(body))
-	workerSetupHandler(NewServer("", service)).ServeHTTP(response, request)
+	request := tlsAdminRequest(service, http.MethodPost, "/api/v1/hub/worker-setup/script", strings.NewReader(body))
+	workerSetupTLSServer(t, service, map[string]string{"windows-amd64": "binary-content"}).ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -636,8 +671,11 @@ func TestWorkerSetupScriptPowerShellIncludesErrorActionPreference(t *testing.T) 
 	if !strings.Contains(script, "$ErrorActionPreference") {
 		t.Fatalf("PowerShell script missing $ErrorActionPreference: %s", script)
 	}
-	if !strings.Contains(script, "Invoke-WebRequest") {
-		t.Fatalf("PowerShell script missing Invoke-WebRequest: %s", script)
+	if !strings.Contains(script, "ServerCertificateCustomValidationCallback") {
+		t.Fatalf("PowerShell script missing the certificate fingerprint callback: %s", script)
+	}
+	if !strings.Contains(script, "X-Timingdex-Pairing-Token") {
+		t.Fatalf("PowerShell script missing the pairing token header: %s", script)
 	}
 	if !strings.Contains(script, "--pairing") || !strings.Contains(script, "tok-xyz") {
 		t.Fatalf("PowerShell script missing pairing: %s", script)
@@ -664,14 +702,14 @@ func TestWorkerSetupScriptShellInjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := NewServer("", service)
+	server := workerSetupTLSServer(t, service, map[string]string{"linux-amd64": "binary-content", "windows-amd64": "binary-content"})
 
 	dangerousName := "foo'; rm -rf /; '"
 	dangerousMount := "'; rm -rf /tmp; '"
 	injectBody := `{"platform":"linux-amd64","name":"` + dangerousName + `","pairing_token":"tok-inject","mounts":[{"root_id":"root1","path":"` + dangerousMount + `"}]}`
 
 	posixRec := httptest.NewRecorder()
-	workerSetupHandler(server).ServeHTTP(posixRec, hubAdminRequest(service, http.MethodPost, "/api/v1/hub/worker-setup/script", strings.NewReader(injectBody)))
+	server.ServeHTTP(posixRec, tlsAdminRequest(service, http.MethodPost, "/api/v1/hub/worker-setup/script", strings.NewReader(injectBody)))
 	if posixRec.Code != http.StatusOK {
 		t.Fatalf("POSIX script status=%d body=%s", posixRec.Code, posixRec.Body.String())
 	}
@@ -688,7 +726,7 @@ func TestWorkerSetupScriptShellInjection(t *testing.T) {
 
 	psRec := httptest.NewRecorder()
 	psBody := `{"platform":"windows-amd64","name":"` + dangerousName + `","pairing_token":"tok-inject-ps","mounts":[{"root_id":"root1","path":"` + dangerousMount + `"}]}`
-	workerSetupHandler(server).ServeHTTP(psRec, hubAdminRequest(service, http.MethodPost, "/api/v1/hub/worker-setup/script", strings.NewReader(psBody)))
+	server.ServeHTTP(psRec, tlsAdminRequest(service, http.MethodPost, "/api/v1/hub/worker-setup/script", strings.NewReader(psBody)))
 	if psRec.Code != http.StatusOK {
 		t.Fatalf("PowerShell script status=%d body=%s", psRec.Code, psRec.Body.String())
 	}
@@ -996,8 +1034,8 @@ func TestWorkerSetupScriptGeneratesWithMultipleMounts(t *testing.T) {
 	}
 	body := `{"platform":"linux-arm64","name":"arm-worker","pairing_token":"tok-multi","mounts":[{"root_id":"r1","path":"/mnt/a"},{"root_id":"r2","path":"/mnt/b"}]}`
 	response := httptest.NewRecorder()
-	request := hubAdminRequest(service, http.MethodPost, "/api/v1/hub/worker-setup/script", strings.NewReader(body))
-	workerSetupHandler(NewServer("", service)).ServeHTTP(response, request)
+	request := tlsAdminRequest(service, http.MethodPost, "/api/v1/hub/worker-setup/script", strings.NewReader(body))
+	workerSetupTLSServer(t, service, map[string]string{"linux-arm64": "binary-content"}).ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}

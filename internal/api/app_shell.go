@@ -2,7 +2,10 @@ package api
 
 import "strings"
 
-// The shared application shell. Every page composes the same left sidebar:
+// brand, a three-group navigation (core links, a collapsible system group,
+// and the Labs group), one admin-token input inside a dialog (memory-only;
+// page scripts read it through their existing getElementById helpers), and
+// the four-cell system status strip. The shell is injected by
 // brand, one navigation (核心/高级 groups), one admin-token input
 // (memory-only; page scripts read it through their existing getElementById
 // helpers), and the four-cell system status strip. The shell is injected by
@@ -44,32 +47,37 @@ func shellHeaderHTML(loc locale) string {
 	b.WriteString(`<aside class="shell-sidebar" data-app-shell><div class="shell-brand-row"><span class="brand">Timingdex</span><span class="shell-tagline">LOCAL FOOTAGE INDEX</span><button type="button" class="shell-menu-toggle" id="shell-menu-toggle" aria-expanded="false" aria-controls="shell-nav">[[i18n:shell.nav.toggle]]</button></div><nav class="shell-nav" id="shell-nav" aria-label="[[i18n:shell.nav.label]]">`)
 	groups := []struct {
 		titleKey string
-		title    string
-		advanced bool
+		labs     bool
+		system   bool
 		links    [][2]string // key, href
 	}{
-		{"shell.nav.group.core", "", false, [][2]string{{"shell.nav.library", "/"}, {"shell.nav.collections", "/collections"}, {"shell.nav.jobs", "/progress"}}},
-		{"shell.nav.group.advanced", "", true, [][2]string{{"shell.nav.providers", "/providers"}, {"shell.nav.workers", "/workers"}, {"shell.nav.workerSetup", "/worker-setup"}, {"shell.nav.mediaFolders", "/library-roots"}, {"shell.nav.tags", "/tags"}, {"shell.nav.setup", "/setup"}, {"shell.nav.settings", "/settings"}}},
-		{"", "Labs", false, [][2]string{{"shell.nav.repurpose", "/repurpose"}}},
+		{"shell.nav.group.core", false, false, [][2]string{{"shell.nav.library", "/"}, {"shell.nav.collections", "/collections"}, {"shell.nav.processing", "/progress"}}},
+		{"shell.nav.group.system", false, true, [][2]string{{"shell.nav.mediaFolders", "/library-roots"}, {"shell.nav.providers", "/providers"}, {"shell.nav.workers", "/workers"}, {"shell.nav.tags", "/tags"}, {"shell.nav.settings", "/settings"}}},
+		{"shell.nav.group.labs", true, false, [][2]string{{"shell.nav.repurpose", "/repurpose"}}},
 	}
 	for _, g := range groups {
 		className := "nav-group"
-		if g.advanced {
-			className += " nav-group-advanced"
-		} else if g.title == "Labs" {
+		if g.system {
+			className += " nav-group-system"
+		} else if g.labs {
 			className += " nav-group-labs"
 		}
-		title := g.title
-		if g.titleKey != "" {
-			title = "[[i18n:" + g.titleKey + "]]"
+		title := "[[i18n:" + g.titleKey + "]]"
+		if g.system {
+			b.WriteString(`<details class="` + className + `"><summary class="nav-group-title">` + title + `</summary>`)
+		} else {
+			b.WriteString(`<div class="` + className + `"><span class="nav-group-title">` + title + `</span>`)
 		}
-		b.WriteString(`<div class="` + className + `"><span class="nav-group-title">` + title + `</span>`)
 		for _, link := range g.links {
 			b.WriteString(`<a href="` + link[1] + `" data-nav="` + link[1] + `" class="nav-link">[[i18n:` + link[0] + `]]</a>`)
 		}
-		b.WriteString(`</div>`)
+		if g.system {
+			b.WriteString(`</details>`)
+		} else {
+			b.WriteString(`</div>`)
+		}
 	}
-	b.WriteString(`</nav><div class="shell-actions"><div class="shell-locale"><label for="shell-locale" class="visually-hidden">[[i18n:shell.locale.label]]</label><select id="shell-locale" aria-label="[[i18n:shell.locale.label]]" onchange="changeLocale(this)">`)
+	b.WriteString(`</nav><div class="shell-actions"><span class="shell-footer-label">[[i18n:shell.locale.label]]</span><div class="shell-locale"><label for="shell-locale" class="visually-hidden">[[i18n:shell.locale.label]]</label><select id="shell-locale" aria-label="[[i18n:shell.locale.label]]" onchange="changeLocale(this)">`)
 	for _, opt := range shellLocaleOptions {
 		selected := ""
 		if opt.loc == loc {
@@ -77,7 +85,7 @@ func shellHeaderHTML(loc locale) string {
 		}
 		b.WriteString(`<option value="` + string(opt.loc) + `" data-locale="` + string(opt.loc) + `"` + selected + `>` + opt.label + `</option>`)
 	}
-	b.WriteString(`</select></div><div class="shell-auth"><input id="admin-token" type="password" autocomplete="off" placeholder="[[i18n:shell.auth.tokenPlaceholder]]" aria-label="[[i18n:shell.auth.tokenPlaceholder]]"><button type="button" class="btn btn--primary btn--sm" id="admin-login" onclick="loginAdmin()">[[i18n:shell.auth.login]]</button><button type="button" class="btn btn--sm" id="admin-logout" onclick="logoutAdmin()" hidden>[[i18n:shell.auth.logout]]</button><span id="admin-session-state" class="shell-auth-state">[[i18n:shell.auth.notLoggedIn]]</span></div><div class="status-strip" data-status-strip aria-label="[[i18n:shell.status.label]]">`)
+	b.WriteString(`</select></div><div class="shell-auth"><button type="button" class="shell-auth-trigger" id="admin-trigger" onclick="openAdminDialog(this)" aria-haspopup="dialog" aria-controls="admin-dialog"><span id="admin-trigger-icon">🔒</span> <span>[[i18n:shell.auth.admin]]</span></button><dialog class="shell-auth-dialog" id="admin-dialog" aria-label="[[i18n:shell.auth.dialogTitle]]"><div class="shell-auth-dialog-head"><b>[[i18n:shell.auth.dialogTitle]]</b><button type="button" class="shell-auth-close" onclick="closeAdminDialog()" aria-label="[[i18n:common.close]]">×</button></div><input id="admin-token" type="password" autocomplete="off" placeholder="[[i18n:shell.auth.tokenPlaceholder]]" aria-label="[[i18n:shell.auth.tokenPlaceholder]]"><button type="button" class="btn btn--primary btn--sm" id="admin-login" onclick="loginAdmin()">[[i18n:shell.auth.login]]</button><button type="button" class="btn btn--sm" id="admin-logout" onclick="logoutAdmin()" hidden>[[i18n:shell.auth.logout]]</button><span id="admin-session-state" class="shell-auth-state">[[i18n:shell.auth.session]]: [[i18n:shell.auth.notLoggedIn]]</span></dialog></div><span class="shell-footer-label">[[i18n:shell.status.label]]</span><div class="status-strip" data-status-strip aria-label="[[i18n:shell.status.label]]">`)
 	cells := []struct {
 		id, titleKey, labelKey string
 	}{
@@ -137,7 +145,7 @@ func cellHref(id string) string {
 // dependency. Below 860px the sidebar becomes a compact in-flow top bar:
 // position:relative makes it participate in layout, so body padding is zeroed
 // and the content flows underneath the bar. The status strip and the
-// admin-token input keep their exact classes, ids and oninput wiring.
+// admin-token input keep their exact ids inside the admin dialog.
 const shellCSS = `
 :root{
   color-scheme:light dark;
@@ -167,6 +175,7 @@ const shellCSS = `
 
   --brand:#CF1B57;
   --btn-solid-bg:#1B1E20; --btn-solid-fg:#FFFFFF;
+  --overlay-fg:#FFFFFF;
   --nav-active:#EFEFEA; --span-fill:#E7E7E2;
   --shadow-sm:0 1px 2px rgba(18,20,22,.07);
   --shadow-lg:0 2px 4px rgba(18,20,22,.05),0 14px 34px rgba(18,20,22,.09);
@@ -185,6 +194,7 @@ const shellCSS = `
 
     --brand:#FF4D7D;
     --btn-solid-bg:#EDEEF0; --btn-solid-fg:#101113;
+    --overlay-fg:#FFFFFF;
     --nav-active:#23272B; --span-fill:#2A2E33;
     --shadow-sm:0 1px 2px rgba(0,0,0,.4);
     --shadow-lg:0 2px 4px rgba(0,0,0,.3),0 14px 34px rgba(0,0,0,.45);
@@ -228,6 +238,9 @@ body{padding-left:var(--rail-w)}
 .nav-link{position:relative;display:block;padding:7px var(--s5);font-size:var(--fs-small);color:var(--text-muted);border-left:2px solid transparent}
 .nav-link:hover{color:var(--text);background:var(--raised)}
 .nav-link.active,.nav-link[aria-current="page"]{color:var(--text);font-weight:600;border-left-color:var(--brand);background:var(--nav-active)}
+.nav-group-system summary{list-style:none;cursor:pointer}
+.nav-group-system summary::-webkit-details-marker{display:none}
+.nav-group-system .nav-link{padding-left:calc(var(--s5) + 12px)}
 .shell-actions{margin-top:auto;display:flex;flex-direction:column;gap:var(--s4);padding:0 var(--s5)}
 /* 状态：仪表读数，四行定宽，永不换行 */
 .status-strip{display:flex;flex-direction:column;border-top:1px solid var(--rule);padding-top:var(--s3)}
@@ -248,6 +261,11 @@ body:lang(en),body:lang(fr),body:lang(es){line-height:var(--lh-latin)}
 .shell-auth{display:flex;flex-wrap:wrap;gap:var(--s2);align-items:center}
 .shell-auth input{flex:1 1 100%}
 .shell-auth-state{font-family:var(--font-data);font-size:var(--fs-label);letter-spacing:.1em;text-transform:uppercase;color:var(--text-faint)}
+.shell-auth-trigger{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 10px;border:1px solid var(--rule-strong);border-radius:var(--r-sm);background:var(--surface);color:var(--text);font-family:var(--font-ui);font-size:12px;cursor:pointer}
+.shell-auth-dialog{border:1px solid var(--rule);border-radius:var(--r-md);background:var(--surface);padding:var(--s4);width:min(320px,90vw)}
+.shell-auth-dialog-head{display:flex;align-items:center;justify-content:space-between;gap:var(--s2);margin-bottom:var(--s3)}
+.shell-auth-close{border:0;background:transparent;color:var(--text-muted);font-size:18px;line-height:1;cursor:pointer;padding:4px}
+.shell-footer-label{font-family:var(--font-data);font-size:var(--fs-label);letter-spacing:.12em;text-transform:uppercase;color:var(--text-faint)}
 
 /* ============================ 页面骨架 ============================ */
 .wrap{max-width:var(--content-max);margin:0 auto;padding:var(--s6) var(--s6) 96px}
@@ -317,7 +335,7 @@ body:lang(en),body:lang(fr),body:lang(es){line-height:var(--lh-latin)}
 .table tr:last-child td{border-bottom:0}
 .table tbody tr:hover td{background:var(--raised)}
 .table .num{font-family:var(--font-data);font-variant-numeric:tabular-nums;text-align:right}
-.table-scroll{overflow-x:auto}
+.table-scroll{overflow-x:auto;max-width:100%}
 
 /* ============================ 表单 ============================ */
 input,select,textarea{height:var(--control-h);width:100%;padding:0 10px;border:1px solid var(--rule-strong);border-radius:var(--r-sm);background:var(--surface);color:var(--text);font-family:var(--font-ui);font-size:var(--fs-small);line-height:normal}
@@ -419,15 +437,20 @@ input[type=checkbox]{width:16px;height:16px;accent-color:var(--brand)}
 }
 
 /* ===========================================================================
-   兼容层 —— 把现存 11 个页面的旧类名接到上面的新配方上。
-   它的存在只有一个理由：改 app_shell.go 一个文件，全站立刻换脸，
-   页面 HTML 一行不动，18 个锚点补丁一个不碰。
-   每迁完一个页面，就从这里删掉该页独有的旧类名；全部迁完时本节应当消失。
+   兼容层 —— 把现存页面的旧类名接到上面的新配方上。
+   迁移收口后（UI-005/009/010），28 个旧类名已在 11 个页面常量中归零并删除：
+   .head/.top/.coll-card/.binary-card/.node/.job/.plan-list-item/.candidate/
+   .revision-item/.auth/.root-warning/.health-warn/.tags-status/div.danger/
+   .history-banner/.statusline/.ui-empty/.coll-empty/.step-nav/.health-table/
+   .sum-pill/.fleet-pill/.health-pill/.nav-btn/.copy-btn/.back-link/.plan-head/
+   .repurpose-head，以及从未渲染的 a.button 与 .hint.ok/.hint.bad 修饰符。
+   本节保留的规则只服务于仍在使用这些类的页面（providers 的 .card/.auth-callout、
+   progress 的 .console-hero/.metric、library 的 .timeline-card/.timeline-empty、
+   workers 的 .notice、各页的 .status/.pill/.chip/.error/.empty 与 .eyebrow）。
    映射依据是逐个核对过的实际用法，不是按名字猜的：
      · .danger 在 library-roots 是 div 警告框，不是按钮 —— 只映射 button.danger
      · .state 在 settings 是 div 容器，不是徽标        —— 只映射 span.state
    =========================================================================== */
-
 /* —— 输入框：页面用了 input[type=…] 属性选择器（0,1,1），比裸 input（0,0,1）更强，
    不把类型列进来，规格里的输入框样式在设置页等页面根本不会生效。 —— */
 :where(input[type=text],input[type=number],input[type=time],input[type=date],input[type=password],
@@ -438,28 +461,27 @@ input[type=search],input[type=email],input[type=url]){
 :where(input[type=checkbox]){width:16px;height:16px;accent-color:var(--brand)}
 
 /* —— 面板 —— */
-:where(.panel,.card,.coll-card,.binary-card,.node,.job,.plan-list-item,.candidate,
-.revision-item,.auth,.console-hero,.timeline-card,.metric){
+:where(.panel,.card,.console-hero,.timeline-card,.metric){
   background:var(--surface);border:1px solid var(--rule);border-radius:var(--r-md)}
-:where(.panel h2,.plan-head h2){font-size:var(--fs-title);font-weight:700;letter-spacing:0}
+:where(.panel h2){font-size:var(--fs-title);font-weight:700;letter-spacing:0}
 
 /* —— 按钮：底色一律中性，颜色只留给状态 —— */
-:where(button,.btn,a.button,.nav-btn,.copy-btn,.back-link){
+:where(button,.btn){
   display:inline-flex;align-items:center;justify-content:center;gap:var(--s2);
   height:var(--control-h);padding:0 14px;border:1px solid var(--rule-strong);
   border-radius:var(--r-sm);background:var(--surface);color:var(--text);
   font-family:var(--font-ui);font-size:var(--fs-small);font-weight:600;line-height:1;
   cursor:pointer;white-space:nowrap;text-decoration:none}
-:where(button:hover,.btn:hover,a.button:hover,.nav-btn:hover,.copy-btn:hover){
+:where(button:hover,.btn:hover){
   border-color:var(--text-faint);background:var(--raised);color:var(--text)}
-:where(button.primary,.btn.primary,.nav-btn.primary,a.button,button.approve,.btn.approve,
+:where(button.primary,.btn.primary,button.approve,.btn.approve,
 .hero-actions button.primary,.plan-command-bar .btn.primary){
   background:var(--btn-solid-bg);border-color:var(--btn-solid-bg);color:var(--btn-solid-fg)}
-:where(button.primary:hover,.btn.primary:hover,.nav-btn.primary:hover,a.button:hover){
+:where(button.primary:hover,.btn.primary:hover){
   background:var(--btn-solid-bg);border-color:var(--btn-solid-bg);color:var(--btn-solid-fg);opacity:.86}
-:where(button.ghost,.btn.quiet,button.secondary,.nav-btn.secondary,button.arrow){
+:where(button.ghost,.btn.quiet,button.secondary,button.arrow){
   border-color:transparent;background:transparent;color:var(--text-muted)}
-:where(button.ghost:hover,.btn.quiet:hover,button.secondary:hover,.nav-btn.secondary:hover){
+:where(button.ghost:hover,.btn.quiet:hover,button.secondary:hover){
   background:var(--inset);color:var(--text)}
 :where(button.danger,.btn.danger,button.reject){
   border-color:var(--ev-contradicted);color:var(--ev-contradicted);background:transparent}
@@ -469,21 +491,20 @@ input[type=search],input[type=email],input[type=url]){
 :where(button:disabled,.btn:disabled){opacity:.45;cursor:not-allowed}
 
 /* —— 徽标：五档证据。unknown 是灰虚线，永远不是红的。 —— */
-:where(span.pill,span.state,.sum-pill,.fleet-pill,.health-pill){
+:where(span.pill,span.state){
   display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:3px 9px;
   border:1px solid transparent;border-radius:var(--r-pill);background:transparent;
   color:var(--ev-unknown);border-style:dotted;border-color:var(--ev-unknown);
   font-family:var(--font-data);font-size:12px;font-weight:600;line-height:1.4;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-:where(span.pill.ok,span.state.succeeded,.health-pill.ok,.pill.live,.pill.approved,.pill.compat-ok){
+:where(span.pill.ok,span.state.succeeded,.pill.live,.pill.approved,.pill.compat-ok){
   color:var(--ev-confirmed);background:var(--ev-confirmed-wash);border-style:solid;border-color:transparent}
-:where(span.pill.bad,span.state.failed,.health-pill.err,.pill.compat-bad){
+:where(span.pill.bad,span.state.failed,.pill.compat-bad){
   color:var(--ev-contradicted);background:var(--ev-contradicted-wash);border-style:solid;border-color:transparent}
 :where(span.pill.warn,span.state.deferred,.pill.hold,.pill.compat-warn){
   color:var(--ev-attention);background:var(--ev-attention-wash);border-style:solid;border-color:transparent}
 :where(span.state.running,.pill.draft){
   color:var(--ev-draft);background:var(--ev-draft-wash);border-style:dashed;border-color:currentColor}
-:where(.health-pill.muted){color:var(--ev-unknown);background:transparent;border-style:dotted}
 
 /* —— 图例圆点：是圆点，不是徽标 —— */
 :where(.legend i){display:inline-block;width:6px;height:6px;padding:0;border:0;border-radius:50%;background:var(--text-faint)}
@@ -497,47 +518,34 @@ input[type=search],input[type=email],input[type=url]){
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 /* —— 表格 —— */
-:where(table,.health-table){width:100%;border-collapse:collapse;font-size:var(--fs-small)}
-:where(th,.health-table th){padding:0 var(--s3) var(--s2);text-align:left;font-family:var(--font-data);
+:where(table){width:100%;border-collapse:collapse;font-size:var(--fs-small)}
+:where(th){padding:0 var(--s3) var(--s2);text-align:left;font-family:var(--font-data);
   font-size:var(--fs-label);font-weight:600;letter-spacing:.12em;text-transform:uppercase;
   color:var(--text-faint);border-bottom:1px solid var(--rule);background:transparent}
-:where(td,.health-table td){padding:11px var(--s3);border-bottom:1px solid var(--graticule);vertical-align:middle}
+:where(td){padding:11px var(--s3);border-bottom:1px solid var(--graticule);vertical-align:middle}
 :where(tr:last-child td){border-bottom:0}
 
 /* —— 提示条 —— */
-:where(.notice,.error,.auth-callout,.root-warning,.health-warn,.status.ok,.status.bad,
-.hint.ok,.hint.bad,.tags-status,div.danger,.history-banner,.statusline){
+:where(.notice,.error,.auth-callout,.status.ok,.status.bad){
   display:flex;align-items:center;gap:var(--s3);flex-wrap:wrap;padding:var(--s3) var(--s4);
   border:1px solid var(--rule);border-left-width:3px;border-radius:var(--r-sm);
   background:var(--raised);color:var(--text);font-size:var(--fs-small)}
-:where(.status.ok,.hint.ok,.tags-status.ok){border-left-color:var(--ev-confirmed);background:var(--ev-confirmed-wash)}
-:where(.status.bad,.hint.bad,.tags-status.bad,.error,div.danger){border-left-color:var(--ev-contradicted);background:var(--ev-contradicted-wash)}
-:where(.auth-callout,.root-warning,.health-warn){border-left-color:var(--ev-attention);background:var(--ev-attention-wash)}
+:where(.status.ok){border-left-color:var(--ev-confirmed);background:var(--ev-confirmed-wash)}
+:where(.status.bad,.error){border-left-color:var(--ev-contradicted);background:var(--ev-contradicted-wash)}
+:where(.auth-callout){border-left-color:var(--ev-attention);background:var(--ev-attention-wash)}
 
 /* —— 空态 —— */
-:where(.empty,.ui-empty,.coll-empty,.timeline-empty,.plan-list .empty){
+:where(.empty,.timeline-empty,.plan-list .empty){
   display:flex;flex-direction:column;align-items:flex-start;gap:var(--s3);
   padding:var(--s6) var(--s5);border:1px dashed var(--rule-strong);border-radius:var(--r-md);
   background:transparent;color:var(--text-muted);font-size:var(--fs-small)}
 
-/* —— 向导步骤条（library-roots 与 worker-setup 逐字重复的那份） —— */
-:where(.step-nav){display:flex;gap:var(--s1);flex-wrap:wrap;background:transparent;border:0;padding:0}
-:where(.step-nav div){flex:1 1 140px;padding:var(--s2) var(--s3);border:0;border-top:2px solid var(--rule);
-  border-radius:0;background:transparent;font-family:var(--font-data);font-size:12px;color:var(--text-faint)}
-:where(.step-nav .active){border-top-color:var(--brand);color:var(--text);font-weight:600;background:transparent}
-
-/* —— 旧版页头：统一成 .pagehead 的样子 —— */
-:where(.top,.head,.repurpose-head){display:flex;align-items:flex-end;gap:var(--s5);flex-wrap:wrap;
-  padding-bottom:var(--s4);margin-bottom:var(--s5);border-bottom:1px solid var(--rule)}
 :where(.eyebrow){display:block;margin-bottom:var(--s2);font-family:var(--font-data);font-size:var(--fs-label);
   font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--brand)}
-:where(h1,.top h1,.repurpose-head h1){font-size:var(--fs-display);font-weight:800;letter-spacing:.01em}
+:where(h1){font-size:var(--fs-display);font-weight:800;letter-spacing:.01em}
 
 /* —— 旧版页面容器 —— */
 :where(.wrap){max-width:var(--content-max);margin:0 auto;padding:var(--s6) var(--s6) 96px}
-/* 注：页面里已经没有 <header> 元素了（grep 确认为 0），但各页 CSS 里仍留着
-   header{} / header input{} 等规则——那是死代码，逐页清理时直接删。 */
-
 `
 
 // shellScriptBlock is the shared script every page carries. It defines only
@@ -549,14 +557,26 @@ const shellScriptBlock = `<script>
 function getAdminToken(){const el=document.getElementById('admin-token');return el?el.value.trim():''}
 function changeLocale(sel){const tag=sel&&sel.value;if(!tag)return;document.cookie='timingdex_locale='+encodeURIComponent(tag)+'; Path=/; Max-Age=31536000; SameSite=Lax';location.reload()}
 // Mobile nav: the toggle collapses .shell-nav/.shell-actions until opened, so
-// the ten nav links and status pills do not crowd every mobile page. Closing
+// the nav links and status pills do not crowd every mobile page. Closing
 // when a link is chosen restores the compact bar after navigation.
 document.addEventListener('DOMContentLoaded',function(){const toggle=document.getElementById('shell-menu-toggle'),sidebar=document.querySelector('.shell-sidebar');if(!toggle||!sidebar)return;toggle.addEventListener('click',function(){const open=sidebar.classList.toggle('open');toggle.setAttribute('aria-expanded',String(open))});sidebar.addEventListener('click',function(e){if(e.target.closest('.nav-link')){sidebar.classList.remove('open');toggle.setAttribute('aria-expanded','false')}})});
 function csrfToken(){const prefix='__Host-timingdex_csrf=';const item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
 function shellAuthHeaders(base){const headers=new Headers(base||{});const csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
 let adminAuthMode='required';
 function applyAdminAuthMode(){const auth=document.querySelector('.shell-auth');if(auth)auth.hidden=adminAuthMode!=='required';if(adminAuthMode==='required'){statusCell('status-access','ok',tdT('shell.auth.required'))}else if(adminAuthMode==='trusted_network'){statusCell('status-access','warn',tdT('shell.auth.trustedNetwork'))}else{statusCell('status-access','err',tdT('shell.auth.open'))}const callout=document.getElementById('admin-auth-callout');if(callout){if(adminAuthMode==='required'){callout.hidden=true}else if(adminAuthMode==='trusted_network'){callout.className='callout callout--attention';callout.hidden=false}else{callout.className='callout callout--contradicted';const s=callout.querySelector('span');if(s)s.textContent=tdT('shell.auth.openWarning');callout.hidden=false}}}
-function shellSetAuthState(authenticated){if(adminAuthMode!=='required'){applyAdminAuthMode();return}const state=document.getElementById('admin-session-state'),input=document.getElementById('admin-token'),login=document.getElementById('admin-login'),logout=document.getElementById('admin-logout');if(state)state.textContent=authenticated?tdT('shell.auth.loggedIn'):tdT('shell.auth.notLoggedIn');if(input)input.hidden=authenticated;if(login)login.hidden=authenticated;if(logout)logout.hidden=!authenticated}
+function shellSetAuthState(authenticated){if(adminAuthMode!=='required'){applyAdminAuthMode();return}const state=document.getElementById('admin-session-state'),input=document.getElementById('admin-token'),login=document.getElementById('admin-login'),logout=document.getElementById('admin-logout');if(state)state.textContent=authenticated?tdT('shell.auth.loggedIn'):tdT('shell.auth.notLoggedIn');if(input)input.hidden=authenticated;if(login)login.hidden=authenticated;if(logout)logout.hidden=!authenticated;const icon=document.getElementById('admin-trigger-icon');if(icon)icon.textContent=authenticated?'●':'🔒'}
+// tdOpenSurface/tdCloseSurface are the shared surface contract every page
+// uses. A native <dialog> opens with showModal and closes with close; a custom
+// overlay toggles .open and aria-hidden and gains role="dialog"/aria-modal so
+// the document handler below can give it an Escape-to-close and a contained
+// Tab loop. Every surface remembers the opener that opened it and restores
+// focus to it on close.
+const tdSurfaceOpeners=new Map();
+function tdOpenSurface(id,opener,initialFocusSelector){const d=document.getElementById(id);if(!d)return;if(opener)tdSurfaceOpeners.set(id,opener);if(typeof d.showModal==='function'){d.showModal()}else{d.classList.add('open');d.setAttribute('aria-hidden','false');d.setAttribute('role','dialog');d.setAttribute('aria-modal','true')}if(initialFocusSelector){const f=d.querySelector(initialFocusSelector);if(f)f.focus()}}
+function tdCloseSurface(id){const d=document.getElementById(id);if(!d)return;if(typeof d.close==='function'){d.close()}else{d.classList.remove('open');d.setAttribute('aria-hidden','true')}const opener=tdSurfaceOpeners.get(id);if(opener&&typeof opener.focus==='function')opener.focus();tdSurfaceOpeners.delete(id)}
+document.addEventListener('keydown',function(e){if(e.key==='Escape'){document.querySelectorAll('[aria-modal="true"][aria-hidden="false"]').forEach(function(d){tdCloseSurface(d.id)})}else if(e.key==='Tab'){const open=document.querySelector('[aria-modal="true"][aria-hidden="false"]');if(!open)return;const focusables=open.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');if(!focusables.length)return;const first=focusables[0],last=focusables[focusables.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}}});
+function openAdminDialog(opener){const el=opener&&opener.nodeType===1?opener:(opener&&opener.target)||document.getElementById('admin-trigger');tdOpenSurface('admin-dialog',el,'#admin-token')}
+function closeAdminDialog(){tdCloseSurface('admin-dialog')}
 async function loginAdmin(){const token=getAdminToken();if(!token){shellSetAuthState(false);return}const button=document.getElementById('admin-login');if(button)button.disabled=true;try{const r=await fetch('/api/v1/auth/admin/session',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:token})});if(!r.ok)throw Error(tdT('shell.auth.loginFailed'));const input=document.getElementById('admin-token');if(input)input.value='';shellSetAuthState(true);window.dispatchEvent(new CustomEvent('timingdex:admin-auth-changed',{detail:{authenticated:true}}));refreshStatus()}catch(e){const state=document.getElementById('admin-session-state');if(state)state.textContent=e.message}finally{if(button)button.disabled=false}}
  async function logoutAdmin(){try{await fetch('/api/v1/auth/admin/session',{method:'DELETE',credentials:'same-origin',headers:shellAuthHeaders()})}finally{shellSetAuthState(false);window.dispatchEvent(new CustomEvent('timingdex:admin-auth-changed',{detail:{authenticated:false}}));refreshStatus()}}
 function statusCell(id,state,text){const el=document.getElementById(id);if(!el)return;el.textContent=text;const cell=el.closest('.status-cell');if(cell){const dot=cell.querySelector('.dot');if(dot)dot.className='dot '+state}}

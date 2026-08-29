@@ -89,6 +89,10 @@
    "progress.issue.colAutoRetry": "会自动重试?",
    "progress.issue.colNextRetry": "下次重试",
    "progress.issue.loadError": "无法读取问题列表：{message}",
+ "progress.issue.openProviders": "打开模型服务",
+ "progress.issue.openSettings": "打开设置",
+ "progress.issue.openMediaFolders": "打开素材目录",
+ "progress.issue.openWorkers": "打开处理节点",
    "progress.issue.retryRequested": "已请求重试「{label}」问题组",
    "progress.issue.resumeExtra.one": "，并提前释放 {count} 个等待中的作业",
    "progress.issue.resumeExtra.other": "，并提前释放 {count} 个等待中的作业",
@@ -109,7 +113,12 @@
    "progress.run.started": "处理任务已在后台启动，可关闭本页",
    "progress.run.error": "执行失败：{message}",
    "progress.startHint": "；点击「{run}」开始处理",
-   "progress.log.opened": "进度面板已打开"
+   "progress.log.opened": "进度面板已打开",
+   "progress.issues.attention": "{count} 个任务需要处理",
+   "progress.issue.jobs.one": "1 个作业",
+   "progress.issue.jobs.other": "{count} 个作业",
+   "progress.issue.assets.one": "1 个素材",
+   "progress.issue.assets.other": "{count} 个素材"
   },
   "ja-JP": {
    "progress.title": "処理進捗",
@@ -199,6 +208,10 @@
    "progress.issue.colAutoRetry": "自動再試行?",
    "progress.issue.colNextRetry": "次回の再試行",
    "progress.issue.loadError": "問題のリストを読み込めません：{message}",
+ "progress.issue.openProviders": "モデルサービスを開く",
+ "progress.issue.openSettings": "設定を開く",
+ "progress.issue.openMediaFolders": "素材フォルダーを開く",
+ "progress.issue.openWorkers": "処理ノードを開く",
    "progress.issue.retryRequested": "「{label}」問題グループの再試行をリクエストしました",
    "progress.issue.resumeExtra.one": "、保留中のジョブ {count} 件を前倒しで解放",
    "progress.issue.resumeExtra.other": "、保留中のジョブ {count} 件を前倒しで解放",
@@ -219,7 +232,12 @@
    "progress.run.started": "処理タスクはバックグラウンドで開始されました。このページを閉じてかまいません",
    "progress.run.error": "実行に失敗しました：{message}",
    "progress.startHint": "「{run}」をクリックして処理を開始",
-   "progress.log.opened": "進捗パネルを開きました"
+   "progress.log.opened": "進捗パネルを開きました",
+   "progress.issues.attention": "{count} 件のタスクの対処が必要",
+   "progress.issue.jobs.one": "1 ジョブ",
+   "progress.issue.jobs.other": "{count} ジョブ",
+   "progress.issue.assets.one": "1 素材",
+   "progress.issue.assets.other": "{count} 素材"
   },
   "en-US": {
    "progress.title": "Processing progress",
@@ -309,6 +327,10 @@
    "progress.issue.colAutoRetry": "Auto-retry?",
    "progress.issue.colNextRetry": "Next retry",
    "progress.issue.loadError": "Could not load the issue list: {message}",
+ "progress.issue.openProviders": "Open model services",
+ "progress.issue.openSettings": "Open settings",
+ "progress.issue.openMediaFolders": "Open media folders",
+ "progress.issue.openWorkers": "Open workers",
    "progress.issue.retryRequested": "Retry requested for the \"{label}\" issue group",
    "progress.issue.resumeExtra.one": ", releasing {count} waiting job early",
    "progress.issue.resumeExtra.other": ", releasing {count} waiting jobs early",
@@ -329,7 +351,12 @@
    "progress.run.started": "The processing job has started in the background; you can close this page",
    "progress.run.error": "Execution failed: {message}",
    "progress.startHint": "; click \"{run}\" to start processing",
-   "progress.log.opened": "Progress panel opened"
+   "progress.log.opened": "Progress panel opened",
+   "progress.issues.attention": "{count} jobs need attention",
+   "progress.issue.jobs.one": "1 job",
+   "progress.issue.jobs.other": "{count} jobs",
+   "progress.issue.assets.one": "1 asset",
+   "progress.issue.assets.other": "{count} assets"
   },
   "fr-FR": {
    "progress.title": "Progression du traitement",
@@ -419,6 +446,10 @@
    "progress.issue.colAutoRetry": "Réessai auto ?",
    "progress.issue.colNextRetry": "Prochain réessai",
    "progress.issue.loadError": "Impossible de charger la liste des problèmes : {message}",
+ "progress.issue.openProviders": "Ouvrir les services de modèles",
+ "progress.issue.openSettings": "Ouvrir les paramètres",
+ "progress.issue.openMediaFolders": "Ouvrir les dossiers de médias",
+ "progress.issue.openWorkers": "Ouvrir les nœuds de traitement",
    "progress.issue.retryRequested": "Réessai demandé pour le groupe « {label} »",
    "progress.issue.resumeExtra.one": ", libérant {count} tâche en attente par avance",
    "progress.issue.resumeExtra.other": ", libérant {count} tâches en attente par avance",
@@ -439,7 +470,12 @@
    "progress.run.started": "La tâche de traitement a démarré en arrière-plan ; vous pouvez fermer cette page",
    "progress.run.error": "Échec de l’exécution : {message}",
    "progress.startHint": " ; cliquez sur « {run} » pour démarrer le traitement",
-   "progress.log.opened": "Panneau de progression ouvert"
+   "progress.log.opened": "Panneau de progression ouvert",
+   "progress.issues.attention": "{count} tâches à traiter",
+   "progress.issue.jobs.one": "1 tâche",
+   "progress.issue.jobs.other": "{count} tâches",
+   "progress.issue.assets.one": "1 élément",
+   "progress.issue.assets.other": "{count} éléments"
   },
   "es-ES": {
    "progress.title": "Progreso del procesamiento",
@@ -529,6 +565,10 @@
    "progress.issue.colAutoRetry": "¿Reintento automático?",
    "progress.issue.colNextRetry": "Próximo reintento",
    "progress.issue.loadError": "No se pudo cargar la lista de problemas: {message}",
+ "progress.issue.openProviders": "Abrir servicios de modelos",
+ "progress.issue.openSettings": "Abrir configuración",
+ "progress.issue.openMediaFolders": "Abrir carpetas de medios",
+ "progress.issue.openWorkers": "Abrir nodos de procesamiento",
    "progress.issue.retryRequested": "Se solicitó el reintento del grupo de problemas «{label}»",
    "progress.issue.resumeExtra.one": ", liberando {count} tarea en espera por adelantado",
    "progress.issue.resumeExtra.other": ", liberando {count} tareas en espera por adelantado",
@@ -549,7 +589,12 @@
    "progress.run.started": "La tarea de procesamiento se inició en segundo plano; puedes cerrar esta página",
    "progress.run.error": "Falló la ejecución: {message}",
    "progress.startHint": "; haz clic en «{run}» para iniciar el procesamiento",
-   "progress.log.opened": "Panel de progreso abierto"
+   "progress.log.opened": "Panel de progreso abierto",
+   "progress.issues.attention": "{count} tareas requieren atención",
+   "progress.issue.jobs.one": "1 tarea",
+   "progress.issue.jobs.other": "{count} tareas",
+   "progress.issue.assets.one": "1 recurso",
+   "progress.issue.assets.other": "{count} recursos"
   }
  }
 }

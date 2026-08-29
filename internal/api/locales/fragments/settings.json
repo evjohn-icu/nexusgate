@@ -82,7 +82,13 @@
       "settings.state.cooldownNow.other": "当前实际等待 {count} 秒",
       "settings.state.diskFloor": "剩余空间保护 >{n} GB",
       "settings.state.dailyCost": "每日成本参考 {n}",
-      "settings.state.monthlyCost": "每月成本参考 {n}"
+      "settings.state.monthlyCost": "每月成本参考 {n}",
+   "settings.storage": "存储",
+   "settings.performance": "性能",
+   "settings.schedule": "计划",
+   "settings.cost": "成本",
+   "settings.unsavedChanges": "未保存的更改",
+   "settings.saveChanges": "保存更改"
     },
     "ja-JP": {
       "settings.title": "設定",
@@ -165,7 +171,13 @@
       "settings.state.cooldownNow.other": "現在の実際の待機 {count} 秒",
       "settings.state.diskFloor": "空き容量保護 >{n} GB",
       "settings.state.dailyCost": "日次コスト参考 {n}",
-      "settings.state.monthlyCost": "月次コスト参考 {n}"
+      "settings.state.monthlyCost": "月次コスト参考 {n}",
+   "settings.storage": "ストレージ",
+   "settings.performance": "パフォーマンス",
+   "settings.schedule": "スケジュール",
+   "settings.cost": "コスト",
+   "settings.unsavedChanges": "未保存の変更",
+   "settings.saveChanges": "変更を保存"
     },
     "en-US": {
       "settings.title": "Settings",
@@ -248,7 +260,13 @@
       "settings.state.cooldownNow.other": "Actual wait: {count} seconds",
       "settings.state.diskFloor": "Free space floor >{n} GB",
       "settings.state.dailyCost": "Daily cost reference {n}",
-      "settings.state.monthlyCost": "Monthly cost reference {n}"
+      "settings.state.monthlyCost": "Monthly cost reference {n}",
+   "settings.storage": "Storage",
+   "settings.performance": "Performance",
+   "settings.schedule": "Schedule",
+   "settings.cost": "Cost",
+   "settings.unsavedChanges": "Unsaved changes",
+   "settings.saveChanges": "Save changes"
     },
     "fr-FR": {
       "settings.title": "Paramètres",
@@ -331,7 +349,13 @@
       "settings.state.cooldownNow.other": "Attente actuelle : {count} secondes",
       "settings.state.diskFloor": "Seuil d’espace libre >{n} GB",
       "settings.state.dailyCost": "Référence de coût quotidienne {n}",
-      "settings.state.monthlyCost": "Référence de coût mensuelle {n}"
+      "settings.state.monthlyCost": "Référence de coût mensuelle {n}",
+   "settings.storage": "Stockage",
+   "settings.performance": "Performances",
+   "settings.schedule": "Planification",
+   "settings.cost": "Coût",
+   "settings.unsavedChanges": "Modifications non enregistrées",
+   "settings.saveChanges": "Enregistrer les modifications"
     },
     "es-ES": {
       "settings.title": "Ajustes",
@@ -414,7 +438,13 @@
       "settings.state.cooldownNow.other": "Espera actual: {count} segundos",
       "settings.state.diskFloor": "Piso de espacio libre >{n} GB",
       "settings.state.dailyCost": "Referencia de costo diaria {n}",
-      "settings.state.monthlyCost": "Referencia de costo mensual {n}"
+      "settings.state.monthlyCost": "Referencia de costo mensual {n}",
+   "settings.storage": "Almacenamiento",
+   "settings.performance": "Rendimiento",
+   "settings.schedule": "Horario",
+   "settings.cost": "Costo",
+   "settings.unsavedChanges": "Cambios sin guardar",
+   "settings.saveChanges": "Guardar cambios"
     }
   }
 }

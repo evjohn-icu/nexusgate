@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/evjohn-icu/timingdex/internal/app"
 	"github.com/evjohn-icu/timingdex/internal/config"
@@ -170,7 +171,7 @@ func TestLibraryRootsPageShowsRootHealthSection(t *testing.T) {
 		"[[i18n:roots.loadingHealth]]",
 		"/api/v1/roots/health",
 		"loadRootHealth()",
-		"health-table",
+		`<table class="table">`,
 		"tdT('roots.unavailablePause')",
 		"tdT('roots.colLastHealthy')",
 	} {
@@ -204,7 +205,7 @@ func TestLibraryRootsPageRootHealthRendersWarnings(t *testing.T) {
 		`rootWarningKeyPrefix`,
 		`d.message`,
 		`h.warnings`,
-		`root-warning`,
+		`callout--attention`,
 		`health-tips`,
 		`esc(w)`,
 	} {
@@ -664,5 +665,88 @@ func TestDiscoverRootsAuthorizedReturnsHostsArray(t *testing.T) {
 	}
 	if len(payload.Hosts) != 1 || payload.Hosts[0].Name != "nas.local" || len(payload.Hosts[0].Shares) != 2 {
 		t.Fatalf("hosts = %+v, want the injected nas.local with 2 shares", payload.Hosts)
+	}
+}
+
+// The scan result panel must tell an operator why a root produced no footage:
+// the skipped-file census (bounded extension names plus a folded count) and
+// the supported extension list render through catalog keys, and a zero-
+// discovery scan with skipped files renders as a warning callout rather than a
+// green success.
+func TestLibraryRootsPageScanResultShowsSkippedAndSupported(t *testing.T) {
+	body := libraryRootsHTML
+	for _, marker := range []string{
+		`result.skipped_files`,
+		`result.skipped_extensions`,
+		`result.skipped_other`,
+		`result.supported_extensions`,
+		`var noFootage=result.discovered===0&&skipped>0`,
+		`tdPlural('roots.scanSkipped'`,
+		`tdT('roots.scanSkippedMore'`,
+		`tdT('roots.scanSupported'`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("library-roots page missing scan marker %q", marker)
+		}
+	}
+	if !strings.Contains(body, `noFootage?'callout callout--attention':'callout callout--confirmed'`) {
+		t.Fatalf("zero-discovery scan with skipped files must render a warning callout")
+	}
+}
+
+// POST /roots/{id}/scan reports the skipped-file census and the supported
+// extension list alongside discovered/linked/missing, so the page and the CLI
+// can explain a root that produced no footage.
+func TestScanRootReportsSkippedFilesAndSupportedExtensions(t *testing.T) {
+	service := newLibraryRootsTestService(t, "scan-skipped.db", "required")
+	ctx := context.Background()
+	rootPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(rootPath, "clip.mp4"), []byte("video"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "clip.mkv"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "subs.srt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := service.AddLibraryRoot(ctx, rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewServer("", service).Handler()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, hubAdminRequest(service, http.MethodPost, "/api/v1/roots/"+root.ID+"/scan", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("scan status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Discovered          int      `json:"discovered"`
+		SkippedFiles        int      `json:"skipped_files"`
+		SkippedExtensions   []string `json:"skipped_extensions"`
+		SkippedOther        int      `json:"skipped_other"`
+		SupportedExtensions []string `json:"supported_extensions"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Discovered != 1 {
+		t.Fatalf("Discovered = %d, want 1", body.Discovered)
+	}
+	if body.SkippedFiles != 2 {
+		t.Fatalf("SkippedFiles = %d, want 2", body.SkippedFiles)
+	}
+	named := strings.Join(body.SkippedExtensions, ",")
+	if !strings.Contains(named, ".mkv") || !strings.Contains(named, ".srt") {
+		t.Fatalf("SkippedExtensions = %v, want .mkv and .srt named", body.SkippedExtensions)
+	}
+	if !strings.Contains(strings.Join(body.SupportedExtensions, ","), ".mp4") {
+		t.Fatalf("SupportedExtensions = %v, want .mp4 listed", body.SupportedExtensions)
+	}
+	// Drain the background pipeline the scan triggered so it cannot outlive
+	// the test.
+	deadline := time.Now().Add(5 * time.Second)
+	for service.PipelineRunning() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
 	}
 }

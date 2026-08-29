@@ -189,7 +189,7 @@ func TestSettingsDiskSpaceProtectionRoundTripsInGB(t *testing.T) {
 	page := httptest.NewRecorder()
 	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/settings", nil))
 	for _, marker := range []string{
-		"settings.diskProtection", // the panel itself (marker resolves to the key pre-merge)
+		"settings.performance", // the panel that holds the field (marker resolves to the key pre-merge)
 		"min-free-space",
 		"minimum_free_space_bytes", // the field both directions carry
 		"GB=1073741824",            // and the bytes conversion the page promises
@@ -239,7 +239,7 @@ func TestSettingsCostGuidePanelRoundTrips(t *testing.T) {
 	page := httptest.NewRecorder()
 	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/settings", nil))
 	for _, marker := range []string{
-		"settings.costGuide", // the panel itself (marker resolves to the key pre-merge)
+		"settings.cost", // the panel that holds the fields (marker resolves to the key pre-merge)
 		"daily-cost-guide",
 		"monthly-cost-guide",
 		"daily_cost_guide", // the field both directions carry
@@ -453,6 +453,7 @@ func TestSettingsPageI18nServedWithoutUnresolvedMarkers(t *testing.T) {
 		`id="daily-cost-guide"`, `id="monthly-cost-guide"`,
 		`id="state"`, `id="storage-rows"`, `id="server-time"`, `id="server-zone"`,
 		`id="save"`, `id="status"`,
+		`id="sticky-save"`, `id="storage-bar"`, `id="storage-bar-fill"`,
 		`/api/v1/pipeline/throttle`, `/api/v1/storage/overview`,
 		`read_rate`, `cooldown_seconds`, `off_peak_start`, `off_peak_end`,
 		`defer_above_bytes`, `immediate_max_bytes`, `minimum_free_space_bytes`,
@@ -461,6 +462,75 @@ func TestSettingsPageI18nServedWithoutUnresolvedMarkers(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("served /settings missing %q", want)
+		}
+	}
+}
+
+// The settings page regroups into four labelled panels (Storage, Performance,
+// Schedule, Cost) with a sticky unsaved-changes bar, a storage-usage bar, and
+// off-peak threshold rows that collapse until the schedule checkbox is on.
+// The served page must carry the sticky bar hidden by default; the new group
+// titles and bar copy are marker-driven in the source (the served page
+// resolves them to the bare key before the fragment is merged), and the
+// off-peak rows must ship hidden in the markup, not wait for JS.
+func TestSettingsPageGroupsAndStickySave(t *testing.T) {
+	service := throttleTestService(t, "settings-groups.db")
+	response := httptest.NewRecorder()
+	NewServer("", service).Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/settings", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d", response.Code)
+	}
+	body := response.Body.String()
+	for _, want := range []string{
+		`<div id="sticky-save" class="sticky-save" hidden>`, // hidden until a change drifts from the snapshot
+		`id="discard-btn"`, `id="save-changes-btn"`,
+		`class="storage-bar"`, `id="storage-bar-fill"`, `id="storage-bar-pct"`,
+		`<header class="pagehead">`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("served /settings missing %q", want)
+		}
+	}
+	// Off-peak defaults unchecked, so its threshold rows start hidden: the
+	// page ships the collapsed state in the markup rather than relying on JS.
+	if !strings.Contains(body, `id="off-peak" type="checkbox">`) {
+		t.Fatalf("off-peak checkbox must default unchecked")
+	}
+	if got := strings.Count(body, `class="form-row" hidden>`); got != 3 {
+		t.Fatalf("off-peak threshold rows must start hidden, got %d hidden form-rows", got)
+	}
+	for _, marker := range []string{
+		"[[i18n:settings.storage]]",
+		"[[i18n:settings.performance]]",
+		"[[i18n:settings.schedule]]",
+		"[[i18n:settings.cost]]",
+		"[[i18n:settings.unsavedChanges]]",
+		"[[i18n:settings.saveChanges]]",
+	} {
+		if !strings.Contains(settingsHTML, marker) {
+			t.Fatalf("settings source missing group marker %q", marker)
+		}
+	}
+}
+
+// The settings status line must be visible mutation feedback, not a
+// display:none trap: say() renders the shared callout (confirmed/contradicted)
+// on a role="status" aria-live region, and a fresh successful load clears it.
+// The page-local .status{display:none} rule that hid every message is deleted.
+func TestSettingsPageMutationFeedbackIsVisibleCallout(t *testing.T) {
+	if strings.Contains(settingsHTML, `.status{display:none}`) {
+		t.Fatal("settings page must not hide its status line")
+	}
+	for _, marker := range []string{
+		`id="status" class="status" role="status" aria-live="polite"`,
+		`function say(message,ok){const el=document.getElementById('status');el.className='callout '+(ok?'callout--confirmed':'callout--contradicted');el.textContent=message}`,
+		`st.className='status';st.textContent=''`,
+		`say(tdT('settings.saved'),true)`,
+		`say(tdT('settings.saveError',{message:e.message}),false)`,
+		`say(tdT('settings.loadError',{message:e.message}),false)`,
+	} {
+		if !strings.Contains(settingsHTML, marker) {
+			t.Fatalf("settings page missing callout marker %q", marker)
 		}
 	}
 }

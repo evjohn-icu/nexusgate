@@ -66,6 +66,12 @@ func TestSetupWizardPageRendersEnvRowsAndNextStepMapping(t *testing.T) {
 		"'setup.steps.addFootage.lead'", "'setup.steps.configureProviders.lead'",
 		"'setup.steps.scanOrProcess.lead'", "'setup.steps.search.lead'", "'setup.steps.ready.lead'",
 		"tdT('setup.status.fetchFailed')", // fetch failure must degrade to a retry hint, never a broken page
+		// The pills track executable state, not row existence: healthy roots,
+		// a runnable video route, canonical shots and index readiness drive
+		// the pending/complete verdicts.
+		"s.healthy_root_count", "s.provider_ready", "s.searchable_shot_count", "s.search_index_ready",
+		"tdT('setup.roots.pending')", "tdT('setup.providers.pending')",
+		"tdPlural('setup.processing.searchableShots'", "tdT('setup.processing.indexPending')", "tdT('setup.processing.indexReady')",
 	} {
 		if !strings.Contains(page, marker) {
 			t.Fatalf("setup wizard page missing %q", marker)
@@ -85,7 +91,64 @@ func TestSetupWizardStatusFetchIsUnauthenticatedAndRecheckable(t *testing.T) {
 	if strings.Contains(page, `fetch('/api/v1/setup/status',{`) {
 		t.Fatalf("setup wizard must not send credentials with the status read")
 	}
-	if !strings.Contains(page, `onclick="setupLoadStatus()">[[i18n:common.refresh]]`) {
-		t.Fatalf("重新检查 must reuse the shared refresh label on the same loader button")
+	if !strings.Contains(page, `class="btn" onclick="setupLoadStatus()">[[i18n:common.refresh]]`) {
+		t.Fatalf("重新检查 must reuse the shared refresh label on the same .btn loader button")
+	}
+}
+
+// The wizard's CTAs moved off the legacy .button class onto the shared .btn
+// surface (primary for the first-run actions), and the roots/providers empty
+// states were upgraded to three-part .empty blocks with a why line.
+func TestSetupWizardMigratedButtonAndEmptyClasses(t *testing.T) {
+	if strings.Contains(setupHTML, `class="button"`) {
+		t.Fatal("setup wizard still uses the legacy .button class; migrate to .btn")
+	}
+	for _, want := range []string{
+		`class="btn" onclick="setupLoadStatus()">[[i18n:common.refresh]]`,
+		`class="btn btn--primary" href="/library-roots"`,
+		`class="btn btn--primary" href="/providers"`,
+		`'<div class="empty"><b>'`,
+		`tdT('setup.roots.emptyWhy')`,
+		`tdT('setup.providers.emptyWhy')`,
+	} {
+		if !strings.Contains(setupHTML, want) {
+			t.Fatalf("setup wizard missing migrated marker %q", want)
+		}
+	}
+}
+
+// The roots/providers pills report executable state, not row existence: an
+// added-but-unhealthy root and a saved-but-disabled/keyless channel stay
+// pending with the same /library-roots and /providers actions, while the
+// processing panel names canonical shots and index readiness. This pins the
+// wiring between the new status fields and the guide's pending verdicts.
+func TestSetupWizardPillsTrackExecutableState(t *testing.T) {
+	page := setupHTML
+	if !strings.Contains(page, `setupPill('pill-roots',healthyRootsN>0)`) {
+		t.Fatalf("roots pill must track healthy_root_count, not root_count")
+	}
+	if !strings.Contains(page, `setupPill('pill-providers',!!s.provider_ready)`) {
+		t.Fatalf("providers pill must track provider_ready, not provider_count")
+	}
+	// Added-but-unhealthy roots stay pending with the manage action.
+	if !strings.Contains(page, `healthyRootsN===0){roots.innerHTML='<span class="bad">⚠</span>`) {
+		t.Fatalf("unhealthy roots must render a pending state, not a done state")
+	}
+	if !strings.Contains(page, `href="/library-roots">'+esc(tdT('setup.roots.manage'))`) {
+		t.Fatalf("unhealthy roots must keep the /library-roots action")
+	}
+	// Saved-but-not-ready channels stay pending with the manage action.
+	if !strings.Contains(page, `!s.provider_ready){prov.innerHTML='<span class="bad">⚠</span>`) {
+		t.Fatalf("saved-but-unready channels must render a pending state")
+	}
+	if !strings.Contains(page, `href="/providers">'+esc(tdT('setup.providers.manage'))`) {
+		t.Fatalf("saved-but-unready channels must keep the /providers action")
+	}
+	// The processing panel names canonical shots and index readiness.
+	if !strings.Contains(page, `s.next_step==='scan_or_process'||s.next_step==='search'`) {
+		t.Fatalf("processing panel must appear for scan_or_process and search steps")
+	}
+	if !strings.Contains(page, `s.search_index_ready?esc(tdT('setup.processing.indexReady')):esc(tdT('setup.processing.indexPending'))`) {
+		t.Fatalf("processing panel must render index readiness through the catalog keys")
 	}
 }

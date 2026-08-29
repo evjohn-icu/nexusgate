@@ -61,9 +61,13 @@
    "workers.fleetIncompatible.other": "不兼容 {count}",
    "workers.fleetRunning.one": "运行任务 {count}",
    "workers.fleetRunning.other": "运行任务 {count}",
-   "workers.emptyWorkers": "还没有处理节点。点击右上角「添加处理节点」打开安装向导。",
-   "workers.openInstallWizard": "打开安装向导",
-   "workers.emptyJobs": "没有等待或运行中的任务。"
+   "workers.loading": "正在读取节点与作业…",
+   "workers.emptyTitle": "还没有处理节点",
+   "workers.emptyWhy": "添加处理节点后，Hub 就能把导入的素材交给它在本地机器上处理。",
+   "workers.emptyAction": "添加处理节点",
+   "jobs.emptyTitle": "还没有任务",
+   "jobs.emptyWhy": "任务会随素材导入由处理流水线自动创建。可以先运行一次流水线。",
+   "jobs.emptyAction": "查看处理进度"
   },
   "ja-JP": {
    "workers.title": "処理ノード",
@@ -125,9 +129,13 @@
    "workers.fleetIncompatible.other": "非互換 {count}",
    "workers.fleetRunning.one": "実行中 {count}",
    "workers.fleetRunning.other": "実行中 {count}",
-   "workers.emptyWorkers": "処理ノードはまだありません。右上の「処理ノードを追加」をクリックしてインストールウィザードを開いてください。",
-   "workers.openInstallWizard": "インストールウィザードを開く",
-   "workers.emptyJobs": "待機中または実行中のタスクはありません。"
+   "workers.loading": "ノードとジョブを読み込み中…",
+   "workers.emptyTitle": "処理ノードがまだありません",
+   "workers.emptyWhy": "処理ノードを追加すると、Hub が取り込んだ素材をそのマシンで処理できるようになります。",
+   "workers.emptyAction": "処理ノードを追加",
+   "jobs.emptyTitle": "タスクはまだありません",
+   "jobs.emptyWhy": "タスクは素材のインポート後に処理パイプラインが自動的に作成します。パイプラインを実行してみてください。",
+   "jobs.emptyAction": "処理の進捗を見る"
   },
   "en-US": {
    "workers.title": "Workers",
@@ -189,9 +197,13 @@
    "workers.fleetIncompatible.other": "{count} incompatible",
    "workers.fleetRunning.one": "{count} running",
    "workers.fleetRunning.other": "{count} running",
-   "workers.emptyWorkers": "No workers yet. Click “Add worker” at the top right to open the install wizard.",
-   "workers.openInstallWizard": "Open the install wizard",
-   "workers.emptyJobs": "No waiting or running jobs."
+   "workers.loading": "Loading workers and jobs…",
+   "workers.emptyTitle": "No workers yet",
+   "workers.emptyWhy": "Add a worker and the Hub can hand imported footage to it for processing on its own machine.",
+   "workers.emptyAction": "Add a worker",
+   "jobs.emptyTitle": "No jobs yet",
+   "jobs.emptyWhy": "Jobs are created automatically as imported footage runs through the pipeline. Try running the pipeline.",
+   "jobs.emptyAction": "View progress"
   },
   "fr-FR": {
    "workers.title": "Nœuds de traitement",
@@ -253,9 +265,13 @@
    "workers.fleetIncompatible.other": "{count} incompatible",
    "workers.fleetRunning.one": "{count} en cours",
    "workers.fleetRunning.other": "{count} en cours",
-   "workers.emptyWorkers": "Aucun nœud pour le moment. Cliquez sur « Ajouter un nœud » en haut à droite pour ouvrir l’assistant d’installation.",
-   "workers.openInstallWizard": "Ouvrir l’assistant d’installation",
-   "workers.emptyJobs": "Aucune tâche en attente ou en cours."
+   "workers.loading": "Chargement des nœuds et des tâches…",
+   "workers.emptyTitle": "Aucun nœud pour le moment",
+   "workers.emptyWhy": "Ajoutez un nœud et le Hub pourra confier les médias importés à sa propre machine pour traitement.",
+   "workers.emptyAction": "Ajouter un nœud",
+   "jobs.emptyTitle": "Aucune tâche pour le moment",
+   "jobs.emptyWhy": "Les tâches sont créées automatiquement lorsque les médias importés passent dans le pipeline. Essayez d’exécuter le pipeline.",
+   "jobs.emptyAction": "Voir la progression"
   },
   "es-ES": {
    "workers.title": "Nodos de procesamiento",
@@ -317,9 +333,13 @@
    "workers.fleetIncompatible.other": "{count} incompatible",
    "workers.fleetRunning.one": "{count} en ejecución",
    "workers.fleetRunning.other": "{count} en ejecución",
-   "workers.emptyWorkers": "Aún no hay nodos. Haz clic en «Añadir nodo» en la parte superior derecha para abrir el asistente de instalación.",
-   "workers.openInstallWizard": "Abrir el asistente de instalación",
-   "workers.emptyJobs": "No hay tareas en espera ni en ejecución."
+   "workers.loading": "Cargando nodos y tareas…",
+   "workers.emptyTitle": "Aún no hay nodos",
+   "workers.emptyWhy": "Añade un nodo y el Hub podrá entregarle los materiales importados para procesarlos en su propia máquina.",
+   "workers.emptyAction": "Añadir nodo",
+   "jobs.emptyTitle": "Aún no hay tareas",
+   "jobs.emptyWhy": "Las tareas se crean automáticamente cuando los materiales importados pasan por la canalización. Prueba a ejecutar la canalización.",
+   "jobs.emptyAction": "Ver el progreso"
   }
  }
 }

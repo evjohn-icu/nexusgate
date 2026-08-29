@@ -122,6 +122,36 @@ func TestRepurposePageI18nKeysResolveFromFragment(t *testing.T) {
 	}
 }
 
+// The skeleton migration moved the workspace onto the shared design classes:
+// pagehead header, .panel candidate cards, page-local list-row buttons, and
+// .callout/.status/.empty for the banner/status/empty surfaces. The legacy
+// page-local classes must be gone so the shell's compat layer can be deleted
+// for them, and the inbox/workspace empty states must carry a New-plan action.
+func TestRepurposePageMigratedClasses(t *testing.T) {
+	for _, legacy := range []string{".repurpose-head", "plan-list-item", "revision-item", ".plan-head", ".history-banner", ".statusline", ".ui-empty", "class=\"candidate ", ".candidate{"} {
+		if strings.Contains(repurposeWorkspaceHTML, legacy) {
+			t.Fatalf("repurpose page still carries legacy class %q", legacy)
+		}
+	}
+	for _, want := range []string{
+		`<header class="pagehead">`,
+		`class="plan-row"`,
+		`class="revision-row"`,
+		`class="panel candidate-card`,
+		`class="plan-titlebar"`,
+		`class="callout" id="history-banner"`,
+		`class="status" id="statusline"`,
+		`class="empty" id="workspace-empty"`,
+		`data-open-new-plan`,
+		`tdT('repurpose.inboxEmptyWhy')`,
+		`[[i18n:repurpose.workspaceEmptyWhy]]`,
+	} {
+		if !strings.Contains(repurposeWorkspaceHTML, want) {
+			t.Fatalf("repurpose page missing migrated marker %q", want)
+		}
+	}
+}
+
 // The value→key tables must cover every wire value the page renders and keep
 // the raw wire role as the fallback for unknown roles. Adding a new plan
 // status, revision state, or section role must fail this test until the map

@@ -69,11 +69,12 @@ func TestIndexServesLibraryPageWhenRootExists(t *testing.T) {
 	}
 }
 
-// The setup wizard is reachable from every page once it lives in the shell
-// nav, so a fresh install that lands on /setup has a permanent path back to
-// it. The anchors are exact-match strings in app_shell.go — the same
-// silent-no-op hazard as the library page patches — hence the pin here.
-func TestShellNavContainsSetupLink(t *testing.T) {
+// The setup wizards leave the shared sidebar (UI-001): the shell nav carries
+// no setup anchor, so the wizard is reached from the workers page's Add
+// Worker button instead. The anchors are exact-match strings in app_shell.go
+// — the same silent-no-op hazard as the library page patches — hence the pin
+// on their absence here.
+func TestShellNavOmitsSetupLinks(t *testing.T) {
 	repo, err := sqlite.Open(filepath.Join(t.TempDir(), "shell-nav-setup.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -97,9 +98,10 @@ func TestShellNavContainsSetupLink(t *testing.T) {
 	}
 	for _, marker := range []string{
 		`href="/setup" data-nav="/setup" class="nav-link">启动配置`,
+		`href="/worker-setup" data-nav="/worker-setup" class="nav-link">节点安装`,
 	} {
-		if !strings.Contains(response.Body.String(), marker) {
-			t.Fatalf("shell nav missing setup anchor %q", marker)
+		if strings.Contains(response.Body.String(), marker) {
+			t.Fatalf("shell nav must not link to setup wizard anchor %q", marker)
 		}
 	}
 }

@@ -26,7 +26,8 @@
       "collections.removeShotError": "移除镜头失败：{message}",
       "collections.deleteError": "删除收藏失败：{message}",
       "collections.copyTimecodeError": "复制失败：{message}",
-      "collections.timecodeCopied": "已复制时间标记 {tc}"
+      "collections.timecodeCopied": "已复制时间标记 {tc}",
+   "collections.emptyWhy": "还没有任何收藏，搜索素材后把镜头加入收藏即可"
     },
     "ja-JP": {
       "collections.title": "コレクション",
@@ -53,7 +54,8 @@
       "collections.removeShotError": "ショットの削除に失敗しました：{message}",
       "collections.deleteError": "コレクションの削除に失敗しました：{message}",
       "collections.copyTimecodeError": "コピーに失敗しました：{message}",
-      "collections.timecodeCopied": "タイムコード {tc} をコピーしました"
+      "collections.timecodeCopied": "タイムコード {tc} をコピーしました",
+   "collections.emptyWhy": "まだコレクションはありません。素材を検索してショットをコレクションに追加できます"
     },
     "en-US": {
       "collections.title": "Collections",
@@ -80,7 +82,8 @@
       "collections.removeShotError": "Failed to remove shot: {message}",
       "collections.deleteError": "Failed to delete collection: {message}",
       "collections.copyTimecodeError": "Failed to copy: {message}",
-      "collections.timecodeCopied": "Copied timecode {tc}"
+      "collections.timecodeCopied": "Copied timecode {tc}",
+   "collections.emptyWhy": "You have no collections yet — search the library and pin shots to one"
     },
     "fr-FR": {
       "collections.title": "Collections",
@@ -107,7 +110,8 @@
       "collections.removeShotError": "Échec de la suppression du plan : {message}",
       "collections.deleteError": "Échec de la suppression de la collection : {message}",
       "collections.copyTimecodeError": "Échec de la copie : {message}",
-      "collections.timecodeCopied": "Timecode {tc} copié"
+      "collections.timecodeCopied": "Timecode {tc} copié",
+   "collections.emptyWhy": "Vous n'avez encore aucune collection — recherchez des médias et épinglez des plans"
     },
     "es-ES": {
       "collections.title": "Colecciones",
@@ -134,7 +138,8 @@
       "collections.removeShotError": "No se pudo eliminar el plano: {message}",
       "collections.deleteError": "No se pudo eliminar la colección: {message}",
       "collections.copyTimecodeError": "No se pudo copiar: {message}",
-      "collections.timecodeCopied": "Código de tiempo {tc} copiado"
+      "collections.timecodeCopied": "Código de tiempo {tc} copiado",
+   "collections.emptyWhy": "Aún no tienes colecciones: busca en la biblioteca y fija planos"
     }
   }
 }

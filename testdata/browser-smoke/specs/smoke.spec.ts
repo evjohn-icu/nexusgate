@@ -12,15 +12,18 @@ const fixtureBaseUrl = process.env.TIMINGDEX_PLAYWRIGHT_BASE_URL ?? 'https://127
 
 async function login(page: Page) {
   await page.goto('/');
-  const token = page.locator('#admin-token');
-  // On narrow viewports the auth controls live in the collapsed sidebar menu;
-  // open it so the token field is reachable.
-  if (!(await token.isVisible())) {
+  // The admin token input lives inside the compact auth dialog (UI-002): open
+  // the dialog via its trigger, opening the collapsed mobile menu first when
+  // the trigger is hidden behind it on narrow viewports.
+  const trigger = page.locator('#admin-trigger');
+  if (!(await trigger.isVisible())) {
     const toggle = page.locator('#shell-menu-toggle');
     if (await toggle.isVisible()) {
       await toggle.click();
     }
   }
+  await trigger.click();
+  const token = page.locator('#admin-token');
   await expect(token).toBeVisible();
   await token.fill(adminToken);
   await Promise.all([
@@ -140,6 +143,100 @@ test.describe('core browser surface', () => {
   });
 });
 
+test.describe('consolidated UI (UI-001..UI-010)', () => {
+  test('sidebar IA: nine links, processing under core, wizards out of nav, auth behind the dialog', async ({ page }) => {
+    await page.goto('/');
+    // 3 core + 5 system + 1 labs = 9 nav links.
+    await expect(page.locator('.nav-link')).toHaveCount(9);
+    // /progress carries the core "处理" label; the wizard links left the nav.
+    await expect(page.locator('.nav-link[href="/progress"]')).toHaveText('处理');
+    await expect(page.locator('.nav-link[href="/worker-setup"]')).toHaveCount(0);
+    await expect(page.locator('.nav-link[href="/setup"]')).toHaveCount(0);
+    // The system group is a collapsed <details> whose links exist in the DOM.
+    await expect(page.locator('.nav-group-system summary')).toHaveText('系统');
+    await expect(page.locator('.nav-link[href="/library-roots"]')).toHaveText('素材目录');
+    await expect(page.locator('.nav-link[href="/providers"]')).toHaveText('模型服务');
+    await expect(page.locator('.nav-link[href="/workers"]')).toHaveText('处理节点');
+    // Admin auth is a compact trigger + dialog; the token field is not
+    // part of the default-visible page.
+    await expect(page.locator('#admin-trigger')).toBeAttached();
+    await expect(page.locator('#admin-token')).not.toBeVisible();
+  });
+
+  test('library search-first surface and URL filter persistence', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('#q')).toBeVisible();
+    await expect(page.locator('#filters-toggle')).toBeAttached();
+    await expect(page.locator('#date-from')).toBeAttached();
+    await expect(page.locator('#status-filter')).toBeAttached();
+    await expect(page.locator('#collection-filter')).toBeAttached();
+    // The filters drawer opens with both the SHOT and ASSET groups.
+    await page.locator('#filters-toggle').click();
+    await expect(page.locator('.filter-drawer')).toHaveClass(/open/);
+    await expect(page.locator('.filter-drawer .filter-group-title')).toHaveText(['镜头', '素材']);
+    // URL persistence: ?status=ready restores the status filter.
+    await page.goto('/?status=ready');
+    await expect(page.locator('#status-filter')).toHaveValue('ready');
+  });
+
+  test('shot drawer ships the 720px/48vw panel and detailed evidence slot', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('#shot-drawer-evidence')).toHaveCount(1);
+    const html = await page.content();
+    expect(html).toContain('width:min(720px,48vw)');
+    expect(html).toContain('.shot-result-tc');
+    expect(html).toContain('evidenceBox.innerHTML=shotEvidence(shot)');
+  });
+  test('search renders shot cards with a timecode overlay and folded evidence', async ({ page }) => {
+    await page.goto('/');
+    await page.locator('#q').fill('camera');
+    await page.locator('#q').press('Enter');
+    await expect(page.locator('.shot-result').first()).toBeVisible();
+    await expect(page.locator('.shot-result .shot-result-tc').first()).toBeVisible();
+    await expect(page.locator('.shot-result .shot-result-tc').first()).toContainText('00:00');
+    // Evidence is folded: the first card shows at most 3 non-negated marks.
+    expect(await page.locator('.shot-result .shot-evidence .ev-confirmed, .shot-result .shot-evidence .ev-possible, .shot-result .shot-evidence .ev-contradicted').count()).toBeLessThanOrEqual(3);
+  });
+
+  test('processing page shows one action, a metrics trio, and collapsed panels', async ({ page }) => {
+    await page.goto('/progress');
+    // The fixture seeds pending (not failed-state) jobs, so the run action is
+    // the single visible one — exactly one of run/resume/retry is shown.
+    await expect(page.locator('#run')).toBeVisible();
+    await expect(page.locator('#retry')).toBeHidden();
+    await expect(page.locator('#resume')).toBeHidden();
+    // Metrics render exactly three cells (pending/running/failed).
+    await expect(page.locator('#metrics .metric')).toHaveCount(3);
+    // Activity + Supervisor are collapsed <details class="panel"> folds.
+    await expect(page.locator('#log-panel')).toHaveCount(1);
+    await expect(page.locator('#supervisor-panel')).toHaveCount(1);
+    await expect(page.locator('#log-panel summary')).toContainText('本次操作');
+  });
+
+  test('providers page leads with the beginner wizard and drops quick-config', async ({ page }) => {
+    await login(page);
+    await page.goto('/providers');
+    await expect(page.locator('#add-provider-dialog')).toHaveCount(1);
+    await expect(page.locator('#advanced-btn')).toHaveCount(1);
+    await expect(page.locator('#quick-dialog')).toHaveCount(0);
+    await expect(page.locator('body')).toContainText('添加服务');
+    await expect(page.locator('body')).toContainText('高级路由');
+    await expect(page.locator('.wizard-cap')).toHaveCount(0);
+  });
+
+  test('settings page groups with a sticky save bar and hidden off-peak rows', async ({ page }) => {
+    await page.goto('/settings');
+    await expect(page.locator('#read-rate')).toHaveValue('0'); // wait for the server snapshot
+    await expect(page.locator('#sticky-save')).toBeHidden();
+    await expect(page.locator('#off-peak')).not.toBeChecked();
+    await expect(page.locator('#off-start')).toBeHidden();
+    // Editing a control reveals the sticky save bar.
+    await page.locator('#read-rate').fill('2');
+    await expect(page.locator('#sticky-save')).toBeVisible();
+    await expect(page.locator('#sticky-save')).toContainText('未保存的更改');
+  });
+});
+
 test.describe('localization', () => {
   test('renders every route in every locale cookie with matching lang and selector', async ({ browser }) => {
     for (const locale of supportedLocales) {
@@ -221,5 +318,144 @@ test.describe('localization', () => {
 
     await de.close();
     await ja.close();
+  });
+});
+test.describe('usability repair (2026-08-28 audit)', () => {
+  test('providers wizard is capability-first with localized presets and a prefilled editable model', async ({ page }) => {
+    await login(page);
+    await page.goto('/providers');
+    await page.locator('#new-channel-btn').click();
+    await expect(page.locator('#add-provider-dialog')).toBeVisible();
+    // Capability is chosen first; video_analysis is the default.
+    await expect(page.locator('#wizard-capability')).toHaveValue('video_analysis');
+    await expect(page.locator('#wizard-provider option')).toHaveCount(3);
+    await expect(page.locator('#wizard-provider')).toContainText('Gemini');
+    // The model is an editable input prefilled from the preset; the endpoint
+    // preset is applied too.
+    await expect(page.locator('#wizard-model')).toHaveValue('gemini-2.5-flash');
+    await expect(page.locator('#wizard-endpoint')).toHaveValue('https://generativelanguage.googleapis.com/v1beta');
+    // Switching to ASR swaps the grounded presets and prefills the ASR model.
+    await page.locator('#wizard-capability').selectOption('asr');
+    await expect(page.locator('#wizard-provider option')).toHaveCount(3);
+    await page.locator('#wizard-provider').selectOption('volcengine_asr');
+    await expect(page.locator('#wizard-model')).toHaveValue('doubao-seed-asr-2.0');
+    await expect(page.locator('#wizard-endpoint')).toHaveValue('wss://openspeech.bytedance.com/api/v3/plan/sauc/bigmodel_nostream');
+  });
+
+  test('search POST carries semantic facets plus the asset context filter', async ({ page }) => {
+    await page.goto('/');
+    await page.locator('#status-filter').selectOption('ready');
+    await page.locator('#date-from').fill('2026-01-01');
+    await page.locator('#date-to').fill('2026-01-02');
+    const requestPromise = page.waitForRequest((r) => r.url().includes('/api/v1/search/shots') && r.method() === 'POST');
+    await page.locator('#q').fill('camera');
+    await page.locator('#q').press('Enter');
+    const request = await requestPromise;
+    const body = JSON.parse(request.postData() ?? '{}');
+    expect(body.asset_filter).toEqual({
+      captured_from: '2026-01-01T00:00:00.000Z',
+      captured_to: '2026-01-03T00:00:00.000Z', // date_to advanced one day (exclusive bound)
+      region_label: '',
+      camera_model: '',
+      session_id: '',
+      status: 'ready',
+    });
+    expect(body.facets).toBeDefined();
+  });
+
+  test('settings save shows a visible mutation callout', async ({ page }) => {
+    await login(page);
+    await page.goto('/settings');
+    await expect(page.locator('#read-rate')).toHaveValue('0');
+    await page.locator('#read-rate').fill('2');
+    await page.locator('#save').click();
+    await expect(page.locator('#status')).toHaveClass(/callout callout--confirmed/);
+    await expect(page.locator('#status')).toContainText('已保存');
+    // Restore the default so the shared fixture stays deterministic for the
+    // tests that assert the untouched settings state.
+    await page.locator('#read-rate').fill('0');
+    await page.locator('#save').click();
+    await expect(page.locator('#read-rate')).toHaveValue('0');
+  });
+
+  test('collections mutation shows a visible callout', async ({ page }) => {
+    await login(page);
+    // Create a scratch collection through the admin API so the seeded fixture
+    // collection survives this destructive test.
+    const created = await page.evaluate(async () => {
+      const csrf = document.cookie.split('; ').find((c) => c.startsWith('__Host-timingdex_csrf='));
+      const token = csrf ? decodeURIComponent(csrf.slice('__Host-timingdex_csrf='.length)) : '';
+      const r = await fetch('/api/v1/collections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+        body: JSON.stringify({ name: 'scratch-callout' }),
+      });
+      return r.status === 201 ? await r.json() : null;
+    });
+    expect(created?.id).toBeTruthy();
+    await page.goto('/collections');
+    await expect(page.locator(`[data-coll="${created.id}"]`)).toBeVisible();
+    page.on('dialog', (d) => d.accept());
+    await page.locator(`[data-coll="${created.id}"] [data-action="delete-collection"]`).click();
+    await expect(page.locator('#collections-status')).toHaveClass(/callout callout--confirmed/);
+    await expect(page.locator('#collections-status')).toContainText('收藏已删除');
+  });
+
+  test('progress issue repair routes are category-specific', async ({ page }) => {
+    await login(page);
+    await page.goto('/progress');
+    // The fixture seeds a failed job with last_error_code=configuration, whose
+    // repair route is the providers page — never a blanket link.
+    await expect(page.locator('#issues')).toBeVisible();
+    const link = page.locator('#issues a.btn');
+    await expect(link).toHaveAttribute('href', '/providers');
+    await expect(link).toContainText('打开模型服务');
+  });
+
+  test('dialog surfaces close on Escape with focus restored to the opener', async ({ page }) => {
+    await page.goto('/providers');
+    // Admin dialog is a native <dialog>; Escape closes it. On narrow
+    // viewports the trigger hides behind the collapsed mobile menu.
+    const trigger = page.locator('#admin-trigger');
+    if (!(await trigger.isVisible())) {
+      const toggle = page.locator('#shell-menu-toggle');
+      if (await toggle.isVisible()) await toggle.click();
+    }
+    await trigger.click();
+    await expect(page.locator('#admin-dialog')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#admin-dialog')).not.toBeVisible();
+    // Provider wizard opens from the new-channel button; Escape returns focus.
+    await login(page);
+    await page.goto('/providers');
+    await page.locator('#new-channel-btn').click();
+    await expect(page.locator('#add-provider-dialog')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#add-provider-dialog')).not.toBeVisible();
+    await expect(page.locator('#new-channel-btn')).toBeFocused();
+  });
+
+  test('shot result cards open the drawer on Enter/Space and Escape closes it', async ({ page }) => {
+    await page.goto('/');
+    await page.locator('#q').fill('camera');
+    await page.locator('#q').press('Enter');
+    const card = page.locator('.shot-result').first();
+    await expect(card).toBeVisible();
+    await card.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#shot-drawer')).toHaveClass(/open/);
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#shot-drawer')).not.toHaveClass(/open/);
+  });
+
+  test('wide tables scroll inside .table-scroll without document overflow at 375x812', async ({ page }) => {
+    await login(page);
+    await page.setViewportSize({ width: 375, height: 812 });
+    for (const route of ['/progress', '/library-roots', '/tags']) {
+      await page.goto(route);
+      await expect(page.locator('.table-scroll').first()).toBeAttached();
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+      expect(overflow, `${route} overflows horizontally`).toBe(false);
+    }
   });
 });

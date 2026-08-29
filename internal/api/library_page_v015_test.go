@@ -66,11 +66,20 @@ func TestFacetLabelsCoverEveryVocabularyValue(t *testing.T) {
 // The facet controls must render from the normalize vocabularies with Chinese
 // labels, filterQuery() must send them under the API's parameter names, and
 // clearFilters() must reset every one of them — the single easiest thing to
-// forget when a control is added.
+// forget when a control is added. The controls moved from the old
+// <details class="advanced-filters"> block into the filter drawer's SHOT and
+// ASSET groups; the ids themselves are unchanged.
 func TestLibraryPageRendersSemanticFacetControls(t *testing.T) {
 	page := libraryIndexHTML
-	if !strings.Contains(page, `aria-label="[[i18n:library.filter.advanced]]"`) || !strings.Contains(page, `<summary>[[i18n:library.filter.advanced]]</summary>`) {
-		t.Fatalf("library page missing the advanced-filter section")
+	if !strings.Contains(page, `id="filters-toggle"`) {
+		t.Fatalf("library page missing the filters-toggle button that opens the filter drawer")
+	}
+	// The drawer is structured around two named groups (markers are asserted
+	// raw, the same convention the rest of this file uses).
+	for _, marker := range []string{`[[i18n:library.filter.group.shot]]`, `[[i18n:library.filter.group.asset]]`} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("library page filter drawer missing group marker %q", marker)
+		}
 	}
 	selects := []string{
 		"asset-type-select", "shot-size-select", "camera-motion-select",
@@ -284,9 +293,8 @@ func TestLibraryPageShotDrawerPinsProxySeek(t *testing.T) {
 		`data-shot="'+encodeURIComponent(JSON.stringify(s))+'"`,
 		`data-asset="'+esc(x.id)+'"`,
 		`data-drawer-close`,
-		`/proxy#t='+Math.floor(s/1000)+','+Math.ceil(clampEnd/1000)`, // absolute end, not duration
-		`document.addEventListener('click',function(e){const block=e.target.closest('.tickrule-span')`,
-		`document.addEventListener('keydown',function(e){if(e.key==='Escape')closeShotDrawer()`,
+		`id="shot-drawer-evidence"`,                       // drawer carries the detailed-evidence container
+		`document.getElementById('shot-drawer-evidence')`, // openShotDrawer() fills it with the shot's marks
 	} {
 		if !strings.Contains(page, marker) {
 			t.Fatalf("shot drawer missing marker %q", marker)
@@ -355,5 +363,34 @@ func TestLibraryPageDrawerClampsFragment(t *testing.T) {
 		if !strings.Contains(page, marker) {
 			t.Fatalf("drawer fragment clamp missing marker %q", marker)
 		}
+	}
+}
+
+// The structured shot search carries every selected library filter: beside
+// `facets:filterFacets()` the POST body builds an asset_filter with UTC day
+// bounds (date_to advanced one day), region, camera, session and status, and
+// omits the whole object when all six fields are empty.
+func TestLibraryStructuredSearchCarriesAllFilters(t *testing.T) {
+	page := libraryIndexHTML
+	for _, marker := range []string{
+		`facets:filterFacets()`,
+		`asset_filter`,
+		`captured_from:isoDate('date-from')`,
+		`captured_to:isoDatePlus1('date-to')`,
+		`region_label:document.getElementById('region-filter').value.trim()`,
+		`camera_model:document.getElementById('camera-filter').value`,
+		`session_id:document.getElementById('session-filter').value`,
+		`status:document.getElementById('status-filter').value`,
+		`const hasAssetFilter=assetFilter.captured_from||assetFilter.captured_to||assetFilter.region_label||assetFilter.camera_model||assetFilter.session_id||assetFilter.status`,
+		`...(hasAssetFilter?{asset_filter:assetFilter}:{})`,
+	} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("library search missing asset-filter marker %q", marker)
+		}
+	}
+	// date_to is advanced one day so the server's exclusive upper bound reads
+	// as "up to and including".
+	if !strings.Contains(page, `function isoDatePlus1(id){const v=document.getElementById(id).value;if(!v)return undefined;const d=new Date(v+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+1);return d.toISOString()}`) {
+		t.Fatalf("library must advance date_to by one day for the exclusive bound")
 	}
 }

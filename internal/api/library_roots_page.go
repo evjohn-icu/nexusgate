@@ -18,8 +18,8 @@ func (s *Server) libraryRootsPage(w http.ResponseWriter, r *http.Request) {
 
 const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · [[i18n:roots.title]]</title><style>
 
-.step{display:none}
-.step.active{display:block}
++#step1-status:empty,#discover-status:empty{display:none}
+.panel{padding:20px;margin-bottom:16px}
 .panel{padding:20px;margin-bottom:16px}
 .panel h2{margin:0 0 14px}
 .field{margin:12px 0}
@@ -49,14 +49,14 @@ const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset=
 <div id="root-health-wrap"><div class="muted">[[i18n:roots.loadingHealth]]</div></div>
 </div>
 
-<div class="step-nav" id="step-nav"><div class="active" data-step="1">1. [[i18n:roots.step1]]</div><div data-step="2">2. [[i18n:roots.step2]]</div><div data-step="3">3. [[i18n:roots.step3]]</div><div data-step="4">4. [[i18n:roots.step4]]</div></div>
+<div class="steps" id="step-nav"><span class="is-active" data-step="1">1. [[i18n:roots.step1]]</span><span data-step="2">2. [[i18n:roots.step2]]</span><span data-step="3">3. [[i18n:roots.step3]]</span><span data-step="4">4. [[i18n:roots.step4]]</span></div>
 
 <div class="panel" id="discover-section">
 <h2>[[i18n:roots.discoverTitle]]</h2>
 <p class="muted">[[i18n:roots.discoverIntro]]</p>
 <div class="step-actions">
   <button class="primary" id="discover-btn" onclick="runDiscover()">[[i18n:roots.discoverButton]]</button>
-  <span class="hint" id="discover-status"></span>
+  <span class="callout" id="discover-status"></span>
 </div>
 <div id="discover-results"></div>
 </div>
@@ -65,7 +65,7 @@ const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset=
 <div class="panel"><h2>[[i18n:roots.step1Title]]</h2>
 <p class="muted">[[i18n:roots.step1IntroBefore]]<code>//nas/Video</code>[[i18n:roots.step1Sep]]<code>smb://user@host/share</code>[[i18n:roots.step1Sep]]<code>host:/export</code>[[i18n:roots.step1IntroAfter]]</p>
 <div class="field"><label for="root-input">[[i18n:roots.pathOrShareLabel]]</label><input id="root-input" type="text" placeholder="[[i18n:roots.pathPlaceholder]]"></div>
-<div id="step1-status" class="hint"></div>
+<div id="step1-status" class="callout"></div>
 <div class="step-actions"><button class="primary" onclick="startInspect()">[[i18n:common.next]] →</button></div>
 </div>
 </div>
@@ -78,14 +78,14 @@ const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset=
 <div id="guide-body"></div>
 </div>
 <div class="panel" id="compose-section" style="display:none"></div>
-<div class="step-actions"><button class="nav-btn secondary" onclick="goStep(1)">← [[i18n:roots.prevStep]]</button><button class="nav-btn primary" onclick="goVerify()">[[i18n:roots.verifyDone]]</button></div>
+<div class="step-actions"><button class="btn btn--ghost" onclick="goStep(1)">← [[i18n:roots.prevStep]]</button><button class="btn btn--primary" onclick="goVerify()">[[i18n:roots.verifyDone]]</button></div>
 </div>
 
 <div class="step" id="step-3">
 <div class="panel"><h2>[[i18n:roots.verifyTitle]]</h2>
 <p class="muted">[[i18n:roots.verifyIntro]]</p>
 <div id="verify-result"></div>
-<div class="step-actions"><button class="nav-btn secondary" onclick="goStep(2)">← [[i18n:roots.backToGuidance]]</button><button class="nav-btn secondary" onclick="verifyMount()">[[i18n:roots.recheck]]</button><button class="nav-btn primary" id="verify-add-btn" style="display:none" onclick="addFromVerify()">[[i18n:roots.addAsRoot]]</button></div>
+<div class="step-actions"><button class="btn btn--ghost" onclick="goStep(2)">← [[i18n:roots.backToGuidance]]</button><button class="btn btn--ghost" onclick="verifyMount()">[[i18n:roots.recheck]]</button><button class="btn btn--primary" id="verify-add-btn" style="display:none" onclick="addFromVerify()">[[i18n:roots.addAsRoot]]</button></div>
 </div>
 </div>
 
@@ -124,7 +124,7 @@ function guideText(key,fallback){var msg=tdT(guideKeyPrefix+key);return msg===gu
  function csrfToken(){var prefix='__Host-timingdex_csrf=';var item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
  function authHeaders(base){var headers=new Headers(base||{});var csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
 async function json(url,opt){opt=opt||{};var r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok)throw new Error(await tdApiErrorMessage(r));return r.json()}
-function goStep(n){for(var i=1;i<=4;i++){document.getElementById('step-'+i).className='step'+(i===n?' active':'');document.querySelectorAll('.step-nav div')[i-1].className=(i===n?'active':'')}}
+function goStep(n){for(var i=1;i<=4;i++){document.getElementById('step-'+i).className='step'+(i===n?' active':'');document.querySelectorAll('.steps span')[i-1].className=(i===n?'is-active':'')}}
 
 // healthTime renders a timestamp in the selected UI locale. It returns plain
 // text only -- every caller passes the result through esc() before putting it
@@ -135,17 +135,17 @@ async function loadRootHealth(){
   if(!wrap)return;
   var list;
   try{list=await json('/api/v1/roots/health')}catch(e){wrap.innerHTML='<div class="muted">'+esc(tdT('roots.healthAuthRequired'))+'</div>';return}
-  if(!list||!list.length){wrap.innerHTML='<div class="muted">'+esc(tdT('roots.noRootsYet'))+'</div>';return}
+  if(!list||!list.length){wrap.innerHTML='<div class="empty"><span class="label">'+esc(tdT('roots.noRootsYetTitle'))+'</span><div class="muted">'+esc(tdT('roots.noRootsYet'))+'</div><div class="muted">'+esc(tdT('roots.noRootsYetAction'))+'</div></div>';return}
   var warns=[];
   var rows=list.map(function(h){
-    var pill='muted',stateKey='roots.state.unknown';
-    if(h.state==='healthy'){pill='ok';stateKey='status.healthy'}
-    else if(h.state==='unavailable'){pill='err';stateKey='status.unavailable'}
+    var state='state--unknown',stateKey='roots.state.unknown';
+    if(h.state==='healthy'){state='state--confirmed';stateKey='status.healthy'}
+    else if(h.state==='unavailable'){state='state--contradicted';stateKey='status.unavailable'}
     if(h.state==='unavailable'){
       // The reconciliation gate pauses on an unavailable root (the scan
       // service's verdict, not this page's) so assets are never marked
       // missing while the root itself is the thing that is gone.
-      warns.push('<div class="health-warn">⚠ '+esc(tdT('roots.unavailablePause'))+'<br>'+esc(tdT('roots.lastHealthy',{time:healthTime(h.last_healthy_at)}))+'</div>');
+      warns.push('<div class="callout callout--attention"><span>⚠ '+esc(tdT('roots.unavailablePause'))+'<br>'+esc(tdT('roots.lastHealthy',{time:healthTime(h.last_healthy_at)}))+'</span></div>');
     }
     // warning_details is the structured form of the same advice Doctor
     // prints (network mount, staging-copy recommendation, writable mount) --
@@ -154,9 +154,9 @@ async function loadRootHealth(){
     // rather than rendering the raw key. warnings stays as the fallback for
     // payloads that predate warning_details.
     var tips=rootWarningsHTML(h);
-    return '<tr><td class="health-path">'+esc(h.path)+'</td><td><span class="health-pill '+pill+'">'+esc(tdT(stateKey))+'</span></td><td>'+esc(healthTime(h.last_healthy_at))+'</td><td>'+esc(healthTime(h.last_scan_at))+'</td><td class="health-tips">'+tips+'</td></tr>';
+    return '<tr><td class="health-path">'+esc(h.path)+'</td><td><span class="state '+state+'">'+esc(tdT(stateKey))+'</span></td><td>'+esc(healthTime(h.last_healthy_at))+'</td><td>'+esc(healthTime(h.last_scan_at))+'</td><td class="health-tips">'+tips+'</td></tr>';
   }).join('');
-  wrap.innerHTML='<table class="health-table"><tr><th>'+esc(tdT('roots.colPath'))+'</th><th>'+esc(tdT('roots.colState'))+'</th><th>'+esc(tdT('roots.colLastHealthy'))+'</th><th>'+esc(tdT('roots.colLastScan'))+'</th><th>'+esc(tdT('roots.colTips'))+'</th></tr>'+rows+'</table>'+warns.join('');
+  wrap.innerHTML='<div class="table-scroll"><table class="table"><tr><th>'+esc(tdT('roots.colPath'))+'</th><th>'+esc(tdT('roots.colState'))+'</th><th>'+esc(tdT('roots.colLastHealthy'))+'</th><th>'+esc(tdT('roots.colLastScan'))+'</th><th>'+esc(tdT('roots.colTips'))+'</th></tr>'+rows+'</table></div>'+warns.join('');
 }
 var rootWarningKeyPrefix='roots.warning.';
 function rootWarningsHTML(h){
@@ -165,10 +165,10 @@ function rootWarningsHTML(h){
     return details.map(function(d){
       var msg=tdT(rootWarningKeyPrefix+d.code,d.params||{});
       if(msg===rootWarningKeyPrefix+d.code)msg=d.message;
-      return '<div class="root-warning">⚠ '+esc(msg)+'</div>';
+      return '<div class="callout callout--attention"><span>⚠ '+esc(msg)+'</span></div>';
     }).join('');
   }
-  return (h.warnings||[]).map(function(w){return '<div class="root-warning">⚠ '+esc(w)+'</div>'}).join('');
+  return (h.warnings||[]).map(function(w){return '<div class="callout callout--attention"><span>⚠ '+esc(w)+'</span></div>'}).join('');
 }
 loadRootHealth();
 
@@ -191,7 +191,7 @@ async function runDiscover(){
     var data=await json('/api/v1/roots/discover',{method:'POST',headers:authHeaders({'Content-Type':'application/json'})});
     var hosts=(data&&data.hosts)||[];
     if(!hosts.length){
-      wrap.innerHTML='<div class="hint">'+esc(tdT('roots.noHostsFound'))+'</div>';
+      wrap.innerHTML='<div class="callout">'+esc(tdT('roots.noHostsFound'))+'</div>';
       status.textContent='';return;
     }
     var rows=hosts.map(function(h){
@@ -203,16 +203,16 @@ async function runDiscover(){
           return '<button type="button" class="discover-share" onclick="useShare(\''+escAttr(h.ip)+'\',\''+escAttr(s)+'\')">'+esc(s)+'</button>';
         }).join('')+'</div>';
       }else if(h.needs_auth){
-        detail='<div class="hint">'+esc(tdT('roots.shareNeedsAuth'))+'</div>';
+        detail='<div class="callout">'+esc(tdT('roots.shareNeedsAuth'))+'</div>';
       }else{
-        detail='<div class="hint">'+esc(tdT('roots.noReadableShares'))+'</div>';
+        detail='<div class="callout">'+esc(tdT('roots.noReadableShares'))+'</div>';
       }
       return '<div class="panel discover-host"><div class="discover-host-name">'+name+' <span class="muted">'+esc(h.ip)+'</span></div>'+detail+'</div>';
     }).join('');
     wrap.innerHTML=rows;
     status.textContent=tdPlural('roots.hostsFound',hosts.length);
   }catch(e){
-    status.className='hint bad';status.textContent=tdT('roots.scanFailed',{message:e.message});
+    status.className='callout callout--contradicted';status.textContent=tdT('roots.scanFailed',{message:e.message});
   }finally{
     btn.disabled=false;
   }
@@ -244,8 +244,8 @@ async function addRoot(path){
 async function startInspect(){
   var input=document.getElementById('root-input').value.trim();
   var status=document.getElementById('step1-status');
-  if(!input){status.className='hint bad';status.textContent=tdT('roots.pathRequired');return}
-  status.className='hint';status.textContent=tdT('roots.checking');
+  if(!input){status.className='callout callout--contradicted';status.textContent=tdT('roots.pathRequired');return}
+  status.className='callout';status.textContent=tdT('roots.checking');
   lastInput=input;
   try{
     var inspection=await json('/api/v1/roots/inspect',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({path:input})});
@@ -267,7 +267,7 @@ async function startInspect(){
       goStep(2);
       return;
     }
-    status.className='hint bad';status.textContent=tdT('roots.checkFailed',{message:e.message});
+    status.className='callout callout--contradicted';status.textContent=tdT('roots.checkFailed',{message:e.message});
   }
 }
 
@@ -306,12 +306,12 @@ function renderComposeVolume(inspection){
   if(volume.warning){
     html+='<div class="callout callout--contradicted"><b>'+esc(tdT('roots.warningLabel'))+'</b>'+esc(guideText(volume.warning_key,volume.warning))+'</div>';
   }
-  html+='<div class="guide-step"><div class="guide-step-title">'+esc(tdT('roots.composeStep1'))+'</div><div class="cmd"><code id="compose-yaml-code">'+esc(volume.yaml)+'</code><button type="button" class="copy-btn" onclick="copyCmd(\'compose-yaml-code\')">'+esc(tdT('common.copy'))+'</button></div></div>';
+  html+='<div class="guide-step"><div class="guide-step-title">'+esc(tdT('roots.composeStep1'))+'</div><div class="cmd"><code id="compose-yaml-code">'+esc(volume.yaml)+'</code><button type="button" class="btn" onclick="copyCmd(\'compose-yaml-code\')">'+esc(tdT('common.copy'))+'</button></div></div>';
   if(volume.service_yaml){
-    html+='<div class="guide-step"><div class="guide-step-title">'+esc(tdT('roots.composeStep2'))+'</div><div class="cmd"><code id="compose-service-code">'+esc(volume.service_yaml)+'</code><button type="button" class="copy-btn" onclick="copyCmd(\'compose-service-code\')">'+esc(tdT('common.copy'))+'</button></div></div>';
+    html+='<div class="guide-step"><div class="guide-step-title">'+esc(tdT('roots.composeStep2'))+'</div><div class="cmd"><code id="compose-service-code">'+esc(volume.service_yaml)+'</code><button type="button" class="btn" onclick="copyCmd(\'compose-service-code\')">'+esc(tdT('common.copy'))+'</button></div></div>';
   }
   if(volume.mount_path){
-    html+='<div class="guide-step"><div class="guide-step-title">'+esc(tdT('roots.composeStep3'))+'</div><div class="cmd"><code id="compose-root-code">timingdex root add '+esc(volume.mount_path)+'</code><button type="button" class="copy-btn" onclick="copyCmd(\'compose-root-code\')">'+esc(tdT('common.copy'))+'</button></div>';
+    html+='<div class="guide-step"><div class="guide-step-title">'+esc(tdT('roots.composeStep3'))+'</div><div class="cmd"><code id="compose-root-code">timingdex root add '+esc(volume.mount_path)+'</code><button type="button" class="btn" onclick="copyCmd(\'compose-root-code\')">'+esc(tdT('common.copy'))+'</button></div>';
     html+='<p class="muted">'+esc(tdT('roots.composeVerifyNote',{path:volume.mount_path}))+'</p></div>';
   }
   container.innerHTML=html;
@@ -325,7 +325,7 @@ function renderGuideBody(guidance){
     html+='<div class="guide-step"><div class="guide-step-title">'+(i+1)+'. '+esc(guideText(step.key,step.title))+'</div>';
     (step.commands||[]).forEach(function(cmd,j){
       var id='cmd-'+i+'-'+j;
-      html+='<div class="cmd"><code id="'+id+'">'+esc(cmd)+'</code><button type="button" class="copy-btn" onclick="copyCmd(\''+id+'\')">'+esc(tdT('common.copy'))+'</button></div>';
+      html+='<div class="cmd"><code id="'+id+'">'+esc(cmd)+'</code><button type="button" class="btn" onclick="copyCmd(\''+id+'\')">'+esc(tdT('common.copy'))+'</button></div>';
     });
     html+='</div>';
   });
@@ -344,7 +344,7 @@ async function regenerateGuidance(){
     renderGuideBody(inspection.guidance);
     renderComposeVolume(inspection);
   }catch(e){
-    container.innerHTML='<div class="hint bad">'+esc(tdT('roots.regenerateFailed',{message:e.message}))+'</div>';
+    container.innerHTML='<div class="callout callout--contradicted">'+esc(tdT('roots.regenerateFailed',{message:e.message}))+'</div>';
   }
 }
 
@@ -354,7 +354,7 @@ async function verifyMount(){
   var mp=document.getElementById('mountpoint').value.trim();
   var el=document.getElementById('verify-result');
   document.getElementById('verify-add-btn').style.display='none';
-  if(!mp){el.innerHTML='<div class="hint bad">'+esc(tdT('roots.mountpointEmpty'))+'</div>';return}
+  if(!mp){el.innerHTML='<div class="callout callout--contradicted">'+esc(tdT('roots.mountpointEmpty'))+'</div>';return}
   el.innerHTML='<div class="muted">'+esc(tdT('roots.checking'))+'</div>';
   try{
     var inspection=await json('/api/v1/roots/inspect',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({path:mp})});
@@ -366,19 +366,19 @@ async function verifyMount(){
     var checked=inspection.container_path||mp;
     if(inspection.container_path){lines.push('<div class="muted">'+esc(tdT('roots.containerPathNote',{hostPath:mp,containerPath:inspection.container_path}))+'</div>')}
     if(inspection.exists&&inspection.is_dir){
-      lines.push('<div class="hint ok">'+esc(tdT('roots.existsIsDir',{path:checked}))+'</div>');
+      lines.push('<div class="callout callout--confirmed">'+esc(tdT('roots.existsIsDir',{path:checked}))+'</div>');
       if(inspection.network){lines.push('<div class="muted">'+esc(tdT('roots.filesystem',{label:inspection.network_label||inspection.filesystem_type,type:inspection.filesystem_type}))+'</div>')}
       document.getElementById('verify-add-btn').style.display='';
     }else if(!inspection.exists){
-      lines.push('<div class="hint bad">'+esc(tdT('roots.notExists',{path:checked}))+'</div>');
+      lines.push('<div class="callout callout--contradicted">'+esc(tdT('roots.notExists',{path:checked}))+'</div>');
     }else{
-      lines.push('<div class="hint bad">'+esc(tdT('roots.existsNotDir',{path:checked}))+'</div>');
+      lines.push('<div class="callout callout--contradicted">'+esc(tdT('roots.existsNotDir',{path:checked}))+'</div>');
     }
-    if(inspection.looks_unmounted){lines.push('<div class="hint bad">'+esc(tdT('roots.looksUnmounted'))+'</div>')}
-    (inspection.warnings||[]).forEach(function(w){lines.push('<div class="hint">'+esc(w)+'</div>')});
+    if(inspection.looks_unmounted){lines.push('<div class="callout callout--contradicted">'+esc(tdT('roots.looksUnmounted'))+'</div>')}
+    (inspection.warnings||[]).forEach(function(w){lines.push('<div class="callout">'+esc(w)+'</div>')});
     el.innerHTML=lines.join('');
   }catch(e){
-    el.innerHTML='<div class="hint bad">'+esc(tdT('roots.checkFailed',{message:e.message}))+'</div>';
+    el.innerHTML='<div class="callout callout--contradicted">'+esc(tdT('roots.checkFailed',{message:e.message}))+'</div>';
   }
 }
 
@@ -392,17 +392,17 @@ async function addFromVerify(){
     goStep(4);
   }catch(e){
     if(e.shareNotMounted){
-      el.innerHTML+='<div class="hint bad">'+esc(tdT('roots.addFailedShareNotMounted',{message:e.message}))+'</div>';
+      el.innerHTML+='<div class="callout callout--contradicted">'+esc(tdT('roots.addFailedShareNotMounted',{message:e.message}))+'</div>';
       renderGuidance(e.inspection);
       goStep(2);
       return;
     }
-    el.innerHTML+='<div class="hint bad">'+esc(tdT('roots.addFailed',{message:e.message}))+'</div>';
+    el.innerHTML+='<div class="callout callout--contradicted">'+esc(tdT('roots.addFailed',{message:e.message}))+'</div>';
   }
 }
 
 function renderAdded(root){
-  document.getElementById('added-summary').innerHTML='<div class="hint ok">'+esc(tdT('roots.added',{path:root.path}))+'</div><div class="muted">'+esc(tdT('roots.id',{id:root.id}))+'</div>';
+  document.getElementById('added-summary').innerHTML='<div class="callout callout--confirmed">'+esc(tdT('roots.added',{path:root.path}))+'</div><div class="muted">'+esc(tdT('roots.id',{id:root.id}))+'</div>';
   document.getElementById('scan-result').innerHTML='';
   document.getElementById('scan-btn').style.display='';
 }
@@ -416,9 +416,16 @@ async function startScan(){
     var result=await json('/api/v1/roots/'+encodeURIComponent(addedRoot.id)+'/scan',{method:'POST'});
     var errors=(result.errors||[]);
     var pipeline=result.pipeline_status==='started'?tdT('roots.scanStarted'):(result.pipeline_status==='already_running'?tdT('roots.scanAlreadyRunning'):tdT('roots.scanCompleted'));
-    el.innerHTML='<div class="hint ok">'+esc(tdT('roots.scanSummary',{discovered:result.discovered,linked:result.linked,missing:result.missing,pipeline:pipeline}))+'</div>'+(errors.length?'<div class="hint">'+esc(tdPlural('roots.scanWarnings',errors.length))+errors.map(esc).join('<br>')+'</div>':'')+'<div class="muted" style="margin-top:8px"><a href="/progress">'+esc(tdT('roots.viewProgress'))+' →</a></div>';
+    var skipped=result.skipped_files||0;
+    var noFootage=result.discovered===0&&skipped>0;
+    var html='<div class="'+(noFootage?'callout callout--attention':'callout callout--confirmed')+'">'+esc(tdT('roots.scanSummary',{discovered:result.discovered,linked:result.linked,missing:result.missing,pipeline:pipeline}))+'</div>';
+    if(skipped>0){var exts=(result.skipped_extensions||[]).join(', ');if(result.skipped_other>0){exts+=' +'+esc(tdT('roots.scanSkippedMore',{count:result.skipped_other}))}html+='<div class="callout">'+esc(tdPlural('roots.scanSkipped',skipped,{ext:exts}))+'</div>'}
+    html+='<div class="muted" style="margin-top:8px">'+esc(tdT('roots.scanSupported',{supported:(result.supported_extensions||[]).join(', ')}))+'</div>';
+    if(errors.length){html+='<div class="callout">'+esc(tdPlural('roots.scanWarnings',errors.length))+errors.map(esc).join('<br>')+'</div>'}
+    html+='<div class="muted" style="margin-top:8px"><a href="/progress">'+esc(tdT('roots.viewProgress'))+' →</a></div>';
+    el.innerHTML=html;
   }catch(e){
-    el.innerHTML='<div class="hint bad">'+esc(tdT('roots.scanFailed',{message:e.message}))+'</div>';
+    el.innerHTML='<div class="callout callout--contradicted">'+esc(tdT('roots.scanFailed',{message:e.message}))+'</div>';
   }finally{
     btn.disabled=false;btn.textContent=tdT('roots.startScan');
   }

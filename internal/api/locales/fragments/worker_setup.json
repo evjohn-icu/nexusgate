@@ -50,7 +50,9 @@
    "workerSetup.copyScript": "复制脚本",
    "workerSetup.scriptOneTimeNote": "脚本里有一次性配对口令，用过就失效。请在目标 Worker 机器上执行。",
    "workerSetup.viewStartupGuide": "查看启动说明 →",
-   "workerSetup.generateFailed": "生成失败：{message}"
+   "workerSetup.generateFailed": "生成失败：{message}",
+   "workerSetup.binaryRequired": "所选平台的二进制文件尚未上传，请先将其放入 worker-binaries 目录。",
+   "workerSetup.tlsRequired": "需要启用 Hub TLS 才能生成带证书校验的安装脚本，请启用后刷新页面。"
   },
   "ja-JP": {
    "workerSetup.title": "ノード設定ウィザード",
@@ -101,7 +103,9 @@
    "workerSetup.copyScript": "スクリプトをコピー",
    "workerSetup.scriptOneTimeNote": "スクリプトには一度きりのペアリングトークンが含まれており、使用後に無効になります。対象の Worker マシンで実行してください。",
    "workerSetup.viewStartupGuide": "起動手順を見る →",
-   "workerSetup.generateFailed": "生成に失敗しました：{message}"
+   "workerSetup.generateFailed": "生成に失敗しました：{message}",
+   "workerSetup.binaryRequired": "選択したプラットフォームのバイナリがまだアップロードされていません。worker-binaries ディレクトリに配置してください。",
+   "workerSetup.tlsRequired": "証明書を固定したインストールスクリプトを生成するには Hub TLS を有効にしてください。有効化後にページを更新してください。"
   },
   "en-US": {
    "workerSetup.title": "Worker Setup Wizard",
@@ -152,7 +156,9 @@
    "workerSetup.copyScript": "Copy script",
    "workerSetup.scriptOneTimeNote": "The script contains a one-time pairing token that expires after use. Run it on the target Worker machine.",
    "workerSetup.viewStartupGuide": "View startup instructions →",
-   "workerSetup.generateFailed": "Generation failed: {message}"
+   "workerSetup.generateFailed": "Generation failed: {message}",
+   "workerSetup.binaryRequired": "The selected platform's binary is not uploaded yet. Place it in the worker-binaries directory first.",
+   "workerSetup.tlsRequired": "Hub TLS must be enabled to generate a certificate-pinned install script. Enable it and refresh the page."
   },
   "fr-FR": {
    "workerSetup.title": "Assistant d'installation d'un nœud",
@@ -203,7 +209,9 @@
    "workerSetup.copyScript": "Copier le script",
    "workerSetup.scriptOneTimeNote": "Le script contient un jeton d'appairage à usage unique qui expire après utilisation. Exécutez-le sur la machine du nœud cible.",
    "workerSetup.viewStartupGuide": "Voir les instructions de démarrage →",
-   "workerSetup.generateFailed": "Échec de la génération : {message}"
+   "workerSetup.generateFailed": "Échec de la génération : {message}",
+   "workerSetup.binaryRequired": "Le binaire de la plateforme sélectionnée n'est pas encore téléversé. Placez-le d'abord dans le répertoire worker-binaries.",
+   "workerSetup.tlsRequired": "Le TLS du Hub doit être activé pour générer un script d'installation épinglé au certificat. Activez-le puis actualisez la page."
   },
   "es-ES": {
    "workerSetup.title": "Asistente de configuración de nodos",
@@ -254,7 +262,9 @@
    "workerSetup.copyScript": "Copiar script",
    "workerSetup.scriptOneTimeNote": "El script contiene un token de emparejamiento de un solo uso que expira al usarse. Ejecútalo en la máquina del nodo de destino.",
    "workerSetup.viewStartupGuide": "Ver instrucciones de inicio →",
-   "workerSetup.generateFailed": "Error de generación: {message}"
+   "workerSetup.generateFailed": "Error de generación: {message}",
+   "workerSetup.binaryRequired": "El binario de la plataforma seleccionada aún no está subido. Colócalo primero en el directorio worker-binaries.",
+   "workerSetup.tlsRequired": "Es necesario habilitar TLS en el Hub para generar un script de instalación con certificado anclado. Habilítalo y actualiza la página."
   }
  }
 }

@@ -126,7 +126,14 @@
    "library.testDrive.progressLink": "处理任务",
    "library.testDrive.failed": "测试分析启动失败：",
    "library.testDrive.start": "开始测试分析",
-   "library.testDrive.trySearch": "试试搜索"
+   "library.testDrive.trySearch": "试试搜索",
+   "library.filter.filters": "筛选",
+   "library.filter.filtersCount": "筛选 {count}",
+   "library.filter.apply": "应用",
+   "library.filter.group.shot": "镜头",
+   "library.filter.group.asset": "素材",
+   "library.showEvidence": "显示证据",
+   "library.filter.removeChip": "移除{label}"
   },
   "ja-JP": {
    "library.title": "素材ライブラリ",
@@ -253,7 +260,14 @@
    "library.testDrive.progressLink": "処理タスク",
    "library.testDrive.failed": "テスト解析の起動に失敗しました：",
    "library.testDrive.start": "テスト解析を開始",
-   "library.testDrive.trySearch": "検索を試す"
+   "library.testDrive.trySearch": "検索を試す",
+   "library.filter.filters": "フィルター",
+   "library.filter.filtersCount": "フィルター {count}",
+   "library.filter.apply": "適用",
+   "library.filter.group.shot": "ショット",
+   "library.filter.group.asset": "素材",
+   "library.showEvidence": "証拠を表示",
+   "library.filter.removeChip": "{label}を削除"
   },
   "en-US": {
    "library.title": "Library",
@@ -380,7 +394,14 @@
    "library.testDrive.progressLink": "Jobs",
    "library.testDrive.failed": "Could not start test analysis: ",
    "library.testDrive.start": "Start test analysis",
-   "library.testDrive.trySearch": "Try a search"
+   "library.testDrive.trySearch": "Try a search",
+   "library.filter.filters": "Filters",
+   "library.filter.filtersCount": "Filters {count}",
+   "library.filter.apply": "Apply",
+   "library.filter.group.shot": "SHOT",
+   "library.filter.group.asset": "ASSET",
+   "library.showEvidence": "Show evidence",
+   "library.filter.removeChip": "Remove {label}"
   },
   "fr-FR": {
    "library.title": "Médiathèque",
@@ -507,7 +528,14 @@
    "library.testDrive.progressLink": "Tâches",
    "library.testDrive.failed": "Impossible de lancer l’analyse test : ",
    "library.testDrive.start": "Lancer l’analyse test",
-   "library.testDrive.trySearch": "Essayez une recherche"
+   "library.testDrive.trySearch": "Essayez une recherche",
+   "library.filter.filters": "Filtres",
+   "library.filter.filtersCount": "Filtres {count}",
+   "library.filter.apply": "Appliquer",
+   "library.filter.group.shot": "SHOT",
+   "library.filter.group.asset": "ASSET",
+   "library.showEvidence": "Afficher les preuves",
+   "library.filter.removeChip": "Retirer {label}"
   },
   "es-ES": {
    "library.title": "Biblioteca",
@@ -634,7 +662,14 @@
    "library.testDrive.progressLink": "Tareas",
    "library.testDrive.failed": "No se pudo iniciar el análisis de prueba: ",
    "library.testDrive.start": "Iniciar análisis de prueba",
-   "library.testDrive.trySearch": "Prueba una búsqueda"
+   "library.testDrive.trySearch": "Prueba una búsqueda",
+   "library.filter.filters": "Filtros",
+   "library.filter.filtersCount": "Filtros {count}",
+   "library.filter.apply": "Aplicar",
+   "library.filter.group.shot": "SHOT",
+   "library.filter.group.asset": "ASSET",
+   "library.showEvidence": "Mostrar evidencias",
+   "library.filter.removeChip": "Quitar {label}"
   }
  }
 }

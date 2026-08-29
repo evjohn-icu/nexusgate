@@ -269,58 +269,201 @@ func TestProvidersPageHasOneClickModelProbe(t *testing.T) {
 	}
 }
 
-// The one-click config wizard must let an operator provision every missing
-// capability from one dialog and one submit with only the plan key pasted —
-// endpoint and model come pre-filled from presets, but the model field stays
-// editable so a user can specify their own model. Beside the plan presets there
-// is a custom endpoint mode: endpoint + key, the program probes the model list,
-// and the operator ticks which roles that endpoint should serve (each role's
-// model pre-filled, editable). Plan names go through catalog keys
-// (providers.plan.*) so the label a wizard row displays matches the channel
-// label it writes.
-func TestProvidersPageHasOneClickQuickConfigWizard(t *testing.T) {
+// The beginner wizard is the default entry point: #new-channel-btn opens
+// #add-provider-dialog with a capability-first, one-channel-per-save shape,
+// while the full channel editor stays reachable through #advanced-btn and the
+// per-card edit action. The capability is chosen first (video_analysis or asr)
+// and the five multi-capability checkboxes are gone. The key lives only in a
+// password input, is cleared on success, and a 401/403 surfaces the shared
+// admin prompt.
+func TestProvidersPageBeginnerWizardIsDefaultEntry(t *testing.T) {
 	body := providersHTML
 	for _, marker := range []string{
-		`id="quick-config-btn"`,
-		`[[i18n:providers.quickConfig]]`,
-		`id="quick-dialog"`,
-		`id="quick-rows"`,
-		`id="quick-go"`,
-		`quickSubmit()`,
-		`const planPresets=[`,
-		`function quickPlanRowHTML(plan)`,
-		`function quickChannelRowHTML(ch)`,
-		`providers.plan.volc_agent_plan`,
-		`providers.plan.volc_coding_plan`,
-		`providers.plan.qwen_token_plan`,
-		`providers.plan.asr`,
-		`doubao-seed-2.0-lite`,
-		`qwen3.7-plus`,
-		`capKeys`,
-		`capName(`,
-		`data-plan="'+plan.id+'"`,
-		`class="q-model" data-cap="'+ch.cap+'"`,
-		`providers.modelIdCustom`,
-		`row.dataset.configured`,
-		`tdT('providers.quickConfigured')`,
-		`customProbe()`,
-		`custom-roles`,
-		`q-role-model`,
-		`probe-models`,
-		`q-key').forEach(function(k){k.value=''`,
+		`id="add-provider-dialog"`,
+		`[[i18n:providers.addProvider]]`,
+		`[[i18n:providers.advancedRouting]]`,
+		`id="wizard-capability"`,
+		`id="wizard-provider"`,
+		`id="wizard-endpoint"`,
+		`id="wizard-key"`,
+		`id="wizard-model"`,
+		`id="wizard-model-options"`,
+		`list="wizard-model-options"`,
+		`id="wizard-detect"`,
+		`id="wizard-save"`,
+		`onclick="wizardDetect()"`,
+		`onclick="wizardSave()"`,
+		`syncWizardProviders`,
+		`wizardSelectProvider`,
+		`wizardDetect`,
+		`wizardSave`,
 	} {
 		if !strings.Contains(body, marker) {
-			t.Fatalf("providers page missing quick-config marker %q", marker)
+			t.Fatalf("providers page missing wizard marker %q", marker)
 		}
 	}
-	// The plan name a quick-submit writes as the channel label must go through
-	// the same catalog lookup the row header uses, so display and stored label
-	// agree in every locale.
-	if !strings.Contains(body, `label:planName(plan)`) {
-		t.Fatalf("quickSubmit must write the localized plan name as the channel label")
+	// The capability is a single select chosen first; the multi-capability
+	// checkboxes are gone, so one submit means one channel.
+	if !strings.Contains(body, `<select id="wizard-capability"><option value="video_analysis">`) {
+		t.Fatalf("wizard must choose a capability first with video_analysis and asr options")
 	}
-	if !strings.Contains(body, `label:tdT('providers.customEndpointLabel')`) {
-		t.Fatalf("quickSubmit must write the localized custom-endpoint label")
+	if strings.Contains(body, `class="wizard-cap"`) {
+		t.Fatalf("wizard capability checkboxes must be gone (capability is a single select)")
+	}
+	// #new-channel-btn must open the wizard; #advanced-btn must open the full
+	// channel editor (openCreate), which is also what edit-channel keeps using.
+	if !strings.Contains(body, `document.getElementById('new-channel-btn').addEventListener('click',openAddProviderDialog)`) {
+		t.Fatalf("new-channel-btn must open the beginner wizard")
+	}
+	if !strings.Contains(body, `document.getElementById('advanced-btn').addEventListener('click',openCreate)`) {
+		t.Fatalf("advanced-btn must open the full channel editor")
+	}
+	// The wizard key must stay in a live password input and be cleared on
+	// success, never stored; a 401/403 must surface the shared admin prompt.
+	if !strings.Contains(body, `id="wizard-key" type="password" autocomplete="new-password"`) {
+		t.Fatalf("wizard key input must be a password field with autocomplete=new-password")
+	}
+	if !strings.Contains(body, `document.getElementById('wizard-key').value=''`) {
+		t.Fatalf("wizard must clear the key input on success")
+	}
+	if !strings.Contains(body, `r.status===401||r.status===403){openAdminDialog()`) {
+		t.Fatalf("wizard must surface the shared admin prompt on 401/403")
+	}
+}
+
+// The wizard presets are the grounded beginner matrix: each capability lists
+// exactly its key-backed providers, and each entry carries the protocol and
+// default model the config defaults use. Selecting a provider must prefill
+// both the endpoint preset and the editable model, so the operator only types
+// the key. local_vlm is not a beginner choice (channel execution needs a
+// stored secret reference); it stays in the advanced list with guidance.
+func TestProvidersPageWizardGroundedPresets(t *testing.T) {
+	body := providersHTML
+	for _, preset := range []string{
+		`['gemini','gemini_generate_content','gemini-2.5-flash']`,
+		`['qwen_video','openai_video','qwen3.6-flash']`,
+		`['volcengine_video','openai_video','doubao-1.5-vision-pro-250428']`,
+		`['stepfun','','stepaudio-2.5-asr']`,
+		`['qwen','','qwen3-asr-flash']`,
+		`['volcengine_asr','','doubao-seed-asr-2.0']`,
+	} {
+		if !strings.Contains(body, preset) {
+			t.Fatalf("wizard missing grounded preset %q", preset)
+		}
+	}
+	// local_vlm and openai_chat must not appear as beginner presets.
+	var presetLine string
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, "const wizardPresets=") {
+			presetLine = line
+			break
+		}
+	}
+	if presetLine == "" {
+		t.Fatal("wizardPresets const not found")
+	}
+	if strings.Contains(presetLine, "'local_vlm'") || strings.Contains(presetLine, "'openai_chat'") {
+		t.Fatalf("wizard must not offer local_vlm or openai_chat as beginner presets")
+	}
+	// Selecting a provider prefills the endpoint and the editable model input.
+	if !strings.Contains(body, `if(el)el.value=endpointPresets[provider]||''`) {
+		t.Fatalf("wizardSelectProvider must prefill the endpoint preset")
+	}
+	if !strings.Contains(body, `model.value=wizardModelPreset()||''`) {
+		t.Fatalf("wizardSelectProvider must prefill the preset model on every provider change")
+	}
+	// The model control is an editable input fed by a datalist, not a select.
+	if !strings.Contains(body, `<input id="wizard-model" list="wizard-model-options"`) {
+		t.Fatalf("wizard model must be an editable input with a datalist")
+	}
+	// Volcengine ASR's config-default endpoint is part of the preset set.
+	if !strings.Contains(body, `volcengine_asr:'wss://openspeech.bytedance.com/api/v3/plan/sauc/bigmodel_nostream'`) {
+		t.Fatalf("endpoint presets must include the Volcengine ASR default endpoint")
+	}
+	// local_vlm stays in the advanced provider list (wire value only; labels
+	// render through providerNameKeys), with the config-path note.
+	if !strings.Contains(body, `providerOptions={video_analysis:['gemini','qwen_video','volcengine_video','local_vlm']`) {
+		t.Fatalf("advanced provider list must keep local_vlm")
+	}
+	if !strings.Contains(body, `id="provider-local-note" hidden>[[i18n:providers.localVlmNote]]`) {
+		t.Fatalf("advanced dialog must carry the local VLM config-path note")
+	}
+	if !strings.Contains(body, `applyProviderNote`) {
+		t.Fatalf("provider note must be toggled as the advanced provider changes")
+	}
+}
+
+// Model detection in the wizard is optional: a successful probe fills the
+// datalist without overwriting typed input; unprobeable/no_models/schema_unknown
+// keep the editable preset and explain that detection is unavailable instead of
+// blocking save; only a key_invalid probe blocks saving until the key changes.
+func TestProvidersPageWizardOptionalProbeFallback(t *testing.T) {
+	body := providersHTML
+	for _, marker := range []string{
+		`wizardProbeStatus=(d&&d.status)||''`,
+		`wizardProbeStatus==='key_invalid'`,
+		`tdT('providers.wizard.probeUnavailable')`,
+		`tdT('providers.wizard.probeNoModels')`,
+		`tdT('providers.wizard.probeSchemaUnknown')`,
+		`tdT('providers.wizard.keyInvalid'`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("wizard probe fallback missing %q", marker)
+		}
+	}
+	// A successful probe fills the datalist only — never the typed model input.
+	if !strings.Contains(body, `dl.innerHTML=models.map(function(m){return '<option value="'+esc(m)+'"></option>'}).join('')`) {
+		t.Fatalf("wizard probe must fill the datalist without overwriting typed input")
+	}
+	// key_invalid blocks the save; the detection-unavailable states do not.
+	if !strings.Contains(body, `if(wizardProbeStatus==='key_invalid'){status.className='callout callout--contradicted';status.textContent=tdT('providers.wizard.keyInvalid',{message:''});return}`) {
+		t.Fatalf("wizardSave must block on a key_invalid probe")
+	}
+	// Typing a new key clears the probe verdict so the operator can retry.
+	if !strings.Contains(body, `document.getElementById('wizard-key').addEventListener('input',function(){wizardProbeStatus='';`) {
+		t.Fatalf("typing a new key must clear the probe verdict")
+	}
+	// Saving requires endpoint, key and model.
+	for _, guard := range []string{
+		`tdT('providers.probeNeedEndpoint')`,
+		`tdT('providers.probeNeedKey')`,
+		`tdT('providers.probeNeedModel')`,
+	} {
+		if !strings.Contains(body, guard) {
+			t.Fatalf("wizardSave missing save guard %q", guard)
+		}
+	}
+}
+
+// One submit creates exactly one channel: wizardSave builds a single body from
+// the chosen capability and performs exactly one POST, then clears the key and
+// closes only after that POST succeeds — no per-capability fan-out.
+func TestProvidersPageWizardOnePostPerSave(t *testing.T) {
+	body := providersHTML
+	var saveFn string
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, "async function wizardSave(") {
+			saveFn = line
+			break
+		}
+	}
+	if saveFn == "" {
+		t.Fatal("wizardSave not found")
+	}
+	if got := strings.Count(saveFn, `fetch('/api/v1/admin/provider-channels',{method:'POST'`); got != 1 {
+		t.Fatalf("wizardSave must perform exactly one channel POST, found %d", got)
+	}
+	if strings.Contains(saveFn, "for(const cap of caps)") || strings.Contains(saveFn, "created.push") {
+		t.Fatalf("wizardSave must not fan out over multiple capabilities")
+	}
+	if !strings.Contains(saveFn, "capability:cap") || !strings.Contains(saveFn, "members:[{label:'primary'") {
+		t.Fatalf("wizardSave must send exactly one channel body with the chosen capability")
+	}
+	if !strings.Contains(saveFn, `closeDialog('add-provider-dialog')`) {
+		t.Fatalf("wizardSave must close the dialog only after the one POST succeeds")
+	}
+	if !strings.Contains(saveFn, `document.getElementById('wizard-key').value=''`) {
+		t.Fatalf("wizardSave must clear the key after the one POST succeeds")
 	}
 }
 
@@ -477,7 +620,7 @@ func TestProvidersPageI18nKeysResolveFromFragment(t *testing.T) {
 }
 
 // The value→key capability table must cover every wire value the page renders
-// (the channel card, the routing panel, the quick-config roles and the dialog
+// (the channel card, the routing panel, the wizard checkboxes and the dialog
 // select). Adding a new capability must fail this test until the map, the
 // static markers and the fragment all cover it.
 func TestProvidersPageI18nEnumMapsCoverWireValues(t *testing.T) {
@@ -489,11 +632,6 @@ func TestProvidersPageI18nEnumMapsCoverWireValues(t *testing.T) {
 		}
 		if !strings.Contains(body, `<option value="`+cap+`">[[i18n:providers.cap.`+cap+`]]</option>`) {
 			t.Fatalf("capability %q select option missing its marker", cap)
-		}
-	}
-	for _, cap := range []string{"repurpose", "tag_curator", "embedding", "video_analysis"} {
-		if !strings.Contains(body, "['"+cap+"','providers.cap."+cap+"']") {
-			t.Fatalf("customRoles missing capability %q", cap)
 		}
 	}
 	if !strings.Contains(body, "function capName(cap){return tdT(capKeys[cap]||cap)}") {
@@ -580,11 +718,12 @@ func TestProvidersPageI18nServedWithoutUnresolvedMarkers(t *testing.T) {
 	for _, want := range []string{
 		`<html lang="zh-CN"`,
 		`data-app-shell`,
-		`id="new-channel-btn"`, `id="quick-config-btn"`, `id="refresh-channels"`,
-		`id="channels"`, `id="routing"`, `id="provider-dialog"`, `id="quick-dialog"`,
+		`id="new-channel-btn"`, `id="advanced-btn"`, `id="refresh-channels"`,
+		`id="channels"`, `id="routing"`, `id="provider-dialog"`, `id="add-provider-dialog"`,
 		`id="channel-form"`, `id="capability"`, `id="provider-name"`, `id="label"`,
 		`id="model"`, `id="endpoint"`, `id="route-order"`, `id="member-rows"`,
-		`id="api-key"`, `id="form-status"`, `id="quick-rows"`, `id="custom-roles"`,
+		`id="api-key"`, `id="form-status"`, `id="wizard-provider"`, `id="wizard-key"`,
+		`id="wizard-model"`, `id="wizard-detect"`, `id="wizard-save"`, `<header class="pagehead">`,
 		`id="channels-status"`, `id="provider-health"`, `id="auth-callout"`,
 		`data-act="test-channel"`, `data-act="edit-channel"`, `data-act="toggle-channel"`,
 		`data-act="delete-channel"`, `data-act="toggle-add"`, `data-act="save-key"`,
@@ -598,5 +737,31 @@ func TestProvidersPageI18nServedWithoutUnresolvedMarkers(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("served /providers missing %q", want)
 		}
+	}
+}
+
+// The advanced provider options carry wire values only; every label renders
+// through providerNameKeys with the selected catalog, so no mixed-language raw
+// string lives in the page (local_vlm, qwen_video, 火山 etc. all resolve via
+// the catalog). The key map must cover every provider the page can offer.
+func TestProvidersPageProviderLabelsLocalized(t *testing.T) {
+	body := providersHTML
+	if !strings.Contains(body, `function syncProviderOptions(){const capability=document.getElementById('capability').value;const select=document.getElementById('provider-name');const prior=select.value;select.innerHTML=(providerOptions[capability]||[]).map((value)=>'<option value="'+esc(value)+'">'+esc(tdT(providerNameKeys[value]||value))+'</option>')`) {
+		t.Fatalf("advanced provider options must render through providerNameKeys")
+	}
+	for _, wire := range []string{
+		"gemini", "qwen_video", "volcengine_video", "local_vlm", "stepfun",
+		"qwen", "volcengine_asr", "openai_embeddings", "gemini_embed_content",
+		"volc_agent_plan_embedding", "volc_coding_plan_embedding", "openai_chat",
+		"volc_agent_plan", "volc_coding_plan",
+	} {
+		if !strings.Contains(body, wire+":'providers.provider."+wire+"'") {
+			t.Fatalf("providerNameKeys missing %q", wire)
+		}
+	}
+	// No raw mixed-language label survives in the options map: the map is
+	// wire-only arrays, so no '千问' / '火山' / '本地' literal should appear in it.
+	if strings.Contains(body, "千问视频'") || strings.Contains(body, "本地 VLM'") {
+		t.Fatalf("advanced provider options must not carry raw mixed-language labels")
 	}
 }

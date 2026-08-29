@@ -6,12 +6,13 @@ import (
 )
 
 // TestShellSidebarMarkup pins the sidebar shape the shell now injects: the
-// <aside> shell, the brand row the branding layer rewrites, the two
-// navigation groups of the IA (核心/高级), the browser-session login
-// controls, the four status cells, and the locale selector. The header is
-// locale-aware, so the Chinese assertions run against the marker-resolved
-// zh-CN rendering (the plan's rule: page markers are asserted as localized
-// rendering, not as raw literals).
+// <aside> shell, the brand row the branding layer rewrites, the three
+// navigation groups of the IA (core links, a collapsible system group, and
+// the Labs group), the admin login collapsed into a dialog behind a trigger,
+// the four status cells, and the locale selector. The header is locale-aware,
+// so the Chinese assertions run against the marker-resolved zh-CN rendering
+// (the plan's rule: page markers are asserted as localized rendering, not as
+// raw literals).
 func TestShellSidebarMarkup(t *testing.T) {
 	html := catalogs[localeZhCN].resolveMarkers(shellHeaderHTML(localeZhCN))
 
@@ -20,8 +21,10 @@ func TestShellSidebarMarkup(t *testing.T) {
 		`<span class="brand">Timingdex</span>`,
 		`<span class="shell-tagline">LOCAL FOOTAGE INDEX</span>`,
 		`<span class="nav-group-title">核心</span>`,
-		`<div class="nav-group nav-group-advanced"><span class="nav-group-title">高级 / 管理</span>`,
+		`<details class="nav-group nav-group-system"><summary class="nav-group-title">系统</summary>`,
 		`id="admin-token"`,
+		`id="admin-trigger"`,
+		`id="admin-dialog"`,
 		`id="admin-login"`,
 		`onclick="loginAdmin()"`,
 		`id="admin-logout"`,
@@ -35,6 +38,12 @@ func TestShellSidebarMarkup(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("shell sidebar missing %q", want)
 		}
+	}
+
+	// The collapsed admin login lives behind the trigger inside a <dialog>:
+	// the token input is a dialog field, not a bare sidebar input.
+	if !strings.Contains(html, `管理员访问`) {
+		t.Fatal("admin dialog title not resolved in zh-CN rendering")
 	}
 
 	// The locale selector must expose every canonical tag with its native
@@ -55,8 +64,8 @@ func TestShellSidebarMarkup(t *testing.T) {
 	}
 
 	// The core group carries the normal user loop; Search lives on /.
-	if got := strings.Count(html, `class="nav-link"`); got != 11 {
-		t.Fatalf("expected 11 nav links, got %d", got)
+	if got := strings.Count(html, `class="nav-link"`); got != 9 {
+		t.Fatalf("expected 9 nav links, got %d", got)
 	}
 	if !strings.Contains(html, `href="/" data-nav="/" class="nav-link">素材库</a>`) {
 		t.Fatal("素材库 link to / missing")
@@ -64,8 +73,28 @@ func TestShellSidebarMarkup(t *testing.T) {
 	if !strings.Contains(html, `href="/collections" data-nav="/collections" class="nav-link">收藏</a>`) {
 		t.Fatal("收藏 link to /collections missing")
 	}
-	if !strings.Contains(html, `href="/worker-setup" data-nav="/worker-setup" class="nav-link">节点安装</a>`) {
-		t.Fatal("Worker Setup link missing from advanced navigation")
+	if !strings.Contains(html, `href="/progress" data-nav="/progress" class="nav-link">处理</a>`) {
+		t.Fatal("处理 link to /progress missing")
+	}
+	// The system group folds the admin destinations under its collapsible
+	// summary; the setup wizards leave the sidebar entirely.
+	if !strings.Contains(html, `href="/library-roots" data-nav="/library-roots" class="nav-link">素材目录</a>`) {
+		t.Fatal("素材目录 link to /library-roots missing")
+	}
+	if !strings.Contains(html, `href="/providers" data-nav="/providers" class="nav-link">模型服务</a>`) {
+		t.Fatal("模型服务 link to /providers missing")
+	}
+	if !strings.Contains(html, `href="/workers" data-nav="/workers" class="nav-link">处理节点</a>`) {
+		t.Fatal("处理节点 link to /workers missing")
+	}
+	if !strings.Contains(html, `href="/tags" data-nav="/tags" class="nav-link">Tags</a>`) {
+		t.Fatal("Tags link to /tags missing")
+	}
+	if !strings.Contains(html, `href="/settings" data-nav="/settings" class="nav-link">设置</a>`) {
+		t.Fatal("设置 link to /settings missing")
+	}
+	if strings.Contains(html, `href="/worker-setup"`) || strings.Contains(html, `href="/setup"`) {
+		t.Fatal("setup wizard links must not appear in the sidebar")
 	}
 
 	// The shell opens with the aside and the status strip lives inside it,

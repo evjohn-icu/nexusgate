@@ -141,15 +141,52 @@ func TestProgressPageI18nEnumMapsCoverWireValues(t *testing.T) {
 			t.Fatalf("issueLabels missing issue category %q", cat)
 		}
 	}
-	// The auto-recover map stays a boolean data map; only its rendering is
-	// localized through the yes/no keys.
+	// The auto-recover map stays a boolean data map consulted at retry time:
+	// those deferral codes also release their parked half via resume-deferred.
 	for _, code := range []string{"provider_route_exhausted", "disk_space_low", "budget_exhausted"} {
 		if !strings.Contains(progressHTML, "'"+code+"':true") {
 			t.Fatalf("issueAutoRecover missing deferral code %q", code)
 		}
 	}
-	if !strings.Contains(progressHTML, "tdT(issueAutoRecover[i.category]?'progress.yes':'progress.no')") {
-		t.Fatal("issue auto-recover must render through progress.yes/progress.no keys, not raw booleans")
+	if !strings.Contains(progressHTML, "if(issueAutoRecover[category])") {
+		t.Fatal("issue auto-recover must still gate the resume-deferred follow-up in retryIssueGroup")
+	}
+}
+
+// The issues repair anchor is a literal category→action map: provider and
+// configuration categories open /providers, disk_space_low opens /settings,
+// source_missing opens /library-roots, worker_offline opens /workers, and the
+// categories no page truthfully fixes (media_decode, unsupported_media,
+// budget_exhausted, unknown) render no repair link at all. The labels are the
+// localized open* actions, never the generic "fix provider".
+func TestProgressPageIssueRepairRoutesAreCategorySpecific(t *testing.T) {
+	body := progressHTML
+	for _, cat := range []string{"provider_quota", "provider_auth", "provider_unavailable", "provider_route_exhausted", "configuration"} {
+		if !strings.Contains(body, `'`+cat+`':'/providers'`) {
+			t.Fatalf("issueRepairRoutes missing %q → /providers", cat)
+		}
+	}
+	if !strings.Contains(body, `'disk_space_low':'/settings'`) {
+		t.Fatalf("issueRepairRoutes must map disk_space_low to /settings")
+	}
+	if !strings.Contains(body, `'source_missing':'/library-roots'`) {
+		t.Fatalf("issueRepairRoutes must map source_missing to /library-roots")
+	}
+	if !strings.Contains(body, `'worker_offline':'/workers'`) {
+		t.Fatalf("issueRepairRoutes must map worker_offline to /workers")
+	}
+	// Categories without a truthful page get no link: the row's repair slot is
+	// empty unless a route exists.
+	if !strings.Contains(body, `const repair=route?'<a class="btn" href="'+route+'">'+esc(tdT(issueRepairLabels[i.category]))+'</a>':''`) {
+		t.Fatalf("issuesRow must render no repair link when the category has no route")
+	}
+	for _, key := range []string{"progress.issue.openProviders", "progress.issue.openSettings", "progress.issue.openMediaFolders", "progress.issue.openWorkers"} {
+		if !strings.Contains(body, key) {
+			t.Fatalf("issues page missing repair label %q", key)
+		}
+	}
+	if strings.Contains(body, "progress.issue.fix") || strings.Contains(body, `href="/providers">'+esc(tdT('progress.issue.fix'))`) {
+		t.Fatalf("the generic fix-provider anchor must be gone")
 	}
 }
 
@@ -244,12 +281,17 @@ func TestProgressPageI18nServedWithoutUnresolvedMarkers(t *testing.T) {
 	for _, want := range []string{
 		`<html lang="zh-CN"`,
 		`data-app-shell`,
+		`<header class="pagehead">`,
 		`id="hero-job"`, `id="hero-meta"`, `id="supervisor"`, `id="pipeline-chain"`,
-		`id="metrics"`, `id="issues"`, `id="issues-body"`, `id="jobs"`, `id="log"`,
-		`id="run"`, `id="resume"`, `id="retry"`,
+		`id="metrics"`, `id="issues"`, `id="jobs"`, `id="log"`,
+		`id="run"`, `id="resume"`, `id="retry"`, `renderActions`,
+		`id="log-panel"`, `id="supervisor-panel"`,
 		`data-stage="probe"`, `data-stage="derive"`, `data-stage="speech_gate"`,
 		`data-stage="transcribe"`, `data-stage="analyze"`, `data-stage="index"`,
 		`data-action="retry-issue"`,
+		`progress.issues.attention`,
+		`progress.issue.openProviders`, `progress.issue.openSettings`,
+		`progress.issue.openMediaFolders`, `progress.issue.openWorkers`,
 		`deferred_reason`,
 		`/api/v1/jobs?limit=100`, `/api/v1/jobs/summary`, `/api/v1/issues`,
 		`/api/v1/pipeline/run`, `/api/v1/pipeline/retry-failed`, `/api/v1/pipeline/resume-deferred`,
@@ -259,6 +301,23 @@ func TestProgressPageI18nServedWithoutUnresolvedMarkers(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("served /progress missing %q", want)
+		}
+	}
+	if n := strings.Count(body, `<details class="panel"`); n != 2 {
+		t.Fatalf("served /progress has %d <details class=panel> folds, want 2 (log + supervisor)", n)
+	}
+}
+
+// The metrics row shows exactly three cells -- pending, running and failed.
+// The succeeded / terminal / deferred totals are still tracked by the catalog
+// but are no longer rendered, so renderMetrics must stay at these three pairs.
+func TestProgressPageMetricsShowsOnlyThreeCells(t *testing.T) {
+	if !strings.Contains(progressHTML, "['progress.metric.pending',s.pending],['status.processing',s.running],['progress.metric.failed',s.failed]") {
+		t.Fatal("renderMetrics must render exactly the pending/running/failed cells")
+	}
+	for _, gone := range []string{"'progress.metric.succeeded'", "'status.terminal'", "'progress.metric.deferred'"} {
+		if strings.Contains(progressHTML, gone) {
+			t.Fatalf("renderMetrics must not reference %s anymore", gone)
 		}
 	}
 }

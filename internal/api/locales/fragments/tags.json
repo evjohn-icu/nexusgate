@@ -37,7 +37,10 @@
       "tags.clusterError": "自动归类失败：{msg}",
       "tags.reviewError": "处理提案失败：{msg}",
       "tags.approvedDone": "已批准建议。",
-      "tags.rejectedDone": "已拒绝建议。"
+      "tags.rejectedDone": "已拒绝建议。",
+   "tags.emptyUnresolvedWhy": "所有标签都已经统一成了标准标签。",
+   "tags.emptyProposalsWhy": "AI 还没有提出建议。点击下方按钮开始整理标签。",
+   "tags.emptyCanonicalWhy": "还没有标准标签。点击下方按钮，AI 会把相似的标签聚成建议，批准后即成为标准标签。"
     },
     "ja-JP": {
       "tags.title": "タグ整理",
@@ -75,7 +78,10 @@
       "tags.clusterError": "自動分類に失敗しました：{msg}",
       "tags.reviewError": "提案の処理に失敗しました：{msg}",
       "tags.approvedDone": "提案を承認しました。",
-      "tags.rejectedDone": "提案を却下しました。"
+      "tags.rejectedDone": "提案を却下しました。",
+   "tags.emptyUnresolvedWhy": "すべてのタグは既に標準タグに統一されています。",
+   "tags.emptyProposalsWhy": "AI からの提案はまだありません。下のボタンで整理を開始してください。",
+   "tags.emptyCanonicalWhy": "標準タグはまだありません。下のボタンを押すと、AI が似たタグを提案にまとめ、承認すると標準タグになります。"
     },
     "en-US": {
       "tags.title": "Tag curation",
@@ -113,7 +119,10 @@
       "tags.clusterError": "Auto-categorization failed: {msg}",
       "tags.reviewError": "Failed to process proposal: {msg}",
       "tags.approvedDone": "Proposal approved.",
-      "tags.rejectedDone": "Proposal rejected."
+      "tags.rejectedDone": "Proposal rejected.",
+   "tags.emptyUnresolvedWhy": "Every tag has already been unified into a standard tag.",
+   "tags.emptyProposalsWhy": "The AI has not proposed anything yet. Run curation below to get started.",
+   "tags.emptyCanonicalWhy": "No standard tags exist yet. Run curation below and the AI will group similar tags into proposals you can approve."
     },
     "fr-FR": {
       "tags.title": "Tri des étiquettes",
@@ -151,7 +160,10 @@
       "tags.clusterError": "Échec de la catégorisation automatique : {msg}",
       "tags.reviewError": "Échec du traitement de la suggestion : {msg}",
       "tags.approvedDone": "Suggestion approuvée.",
-      "tags.rejectedDone": "Suggestion rejetée."
+      "tags.rejectedDone": "Suggestion rejetée.",
+   "tags.emptyUnresolvedWhy": "Toutes les étiquettes ont déjà été unifiées en étiquette standard.",
+   "tags.emptyProposalsWhy": "L’IA n’a encore rien proposé. Lancez la curation ci-dessous pour commencer.",
+   "tags.emptyCanonicalWhy": "Aucune étiquette standard n’existe encore. Lancez la curation ci-dessous : l’IA regroupera les étiquettes similaires en suggestions à approuver."
     },
     "es-ES": {
       "tags.title": "Gestión de etiquetas",
@@ -189,7 +201,10 @@
       "tags.clusterError": "Error en la categorización automática: {msg}",
       "tags.reviewError": "Error al procesar la sugerencia: {msg}",
       "tags.approvedDone": "Sugerencia aprobada.",
-      "tags.rejectedDone": "Sugerencia rechazada."
+      "tags.rejectedDone": "Sugerencia rechazada.",
+   "tags.emptyUnresolvedWhy": "Todas las etiquetas ya se han unificado en una etiqueta estándar.",
+   "tags.emptyProposalsWhy": "La IA aún no ha propuesto nada. Inicia la curación a continuación para empezar.",
+   "tags.emptyCanonicalWhy": "Aún no hay etiquetas estándar. Inicia la curación a continuación y la IA agrupará las etiquetas similares en sugerencias que podrás aprobar."
     }
   }
 }

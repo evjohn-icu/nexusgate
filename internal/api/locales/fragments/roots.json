@@ -83,6 +83,10 @@
    "roots.scanStarted": "已自动开始处理",
    "roots.scanAlreadyRunning": "已有处理任务正在运行",
    "roots.scanCompleted": "已完成扫描",
+ "roots.scanSkipped.one": "跳过了 1 个非视频文件（{ext}）",
+ "roots.scanSkipped.other": "跳过了 {count} 个非视频文件（{ext}）",
+ "roots.scanSkippedMore": "以及 {count} 种其他类型",
+ "roots.scanSupported": "支持格式：{supported}",
    "roots.scanSummary": "发现 {discovered} · 关联 {linked} · 缺失 {missing} · {pipeline}",
    "roots.scanWarnings.one": "扫描有 1 个警告：",
    "roots.scanWarnings.other": "扫描有 {count} 个警告：",
@@ -105,7 +109,9 @@
    "roots.guide.wsl-namespace": "在 WSL2 下，交互式终端里挂载的共享，对 systemd 服务和其他 SSH 会话是不可见的，因为它们处于不同的挂载命名空间。上面命令中的 nsenter 前缀会把挂载操作放进 PID 1 的命名空间执行，这样所有进程都能看到它。",
    "roots.guide.wsl-not-persistent": "WSL2 在发行版重启后不会保留挂载。需要重新执行挂载命令，或者把它加入 /etc/wsl.conf 的启动命令。",
    "roots.guide.windows-service-drive-letter": "在自己的会话中映射的盘符，对以其他账户运行的服务并不存在。如果 Hub 是以服务方式运行的，请改用 UNC 路径 \\\\host\\share\\folder，而不是盘符。",
-   "roots.guide.compose-smb-cleartext": "Docker 内置的 local 卷驱动会把 driver_opts 直接传给 mount(2) 系统调用，从不经过 mount.cifs 这个辅助程序，所以本指南其他地方使用的 credentials=/path/to/file 凭据文件写法在这里会被拒绝，报错 invalid argument（docker/cli#2802，自 2020-10-20 起一直未修复）。密码只能写在 o: 参数里，这意味着它会以明文形式保留在 docker volume inspect 的输出中，以及 /var/lib/docker/volumes/卷名/opts.json 文件里。这个项目里的其他密钥都保存在加密存储中，永远不会进入 SQLite、API 响应或日志——这种写法只是 NAS 无法导出 NFS 时的记录在案的备选方案，不是默认推荐。另外要注意：最容易泄漏的地方其实是你自己的 docker-compose.yml —— 那是会被提交进 git 的文件。把密码换成 ${NAS_PASSWORD} 并放进未跟踪的 .env 可以让它不进版本库，但救不了 opts.json，因为 Docker 存的是解析后的值。"
+   "roots.guide.compose-smb-cleartext": "Docker 内置的 local 卷驱动会把 driver_opts 直接传给 mount(2) 系统调用，从不经过 mount.cifs 这个辅助程序，所以本指南其他地方使用的 credentials=/path/to/file 凭据文件写法在这里会被拒绝，报错 invalid argument（docker/cli#2802，自 2020-10-20 起一直未修复）。密码只能写在 o: 参数里，这意味着它会以明文形式保留在 docker volume inspect 的输出中，以及 /var/lib/docker/volumes/卷名/opts.json 文件里。这个项目里的其他密钥都保存在加密存储中，永远不会进入 SQLite、API 响应或日志——这种写法只是 NAS 无法导出 NFS 时的记录在案的备选方案，不是默认推荐。另外要注意：最容易泄漏的地方其实是你自己的 docker-compose.yml —— 那是会被提交进 git 的文件。把密码换成 ${NAS_PASSWORD} 并放进未跟踪的 .env 可以让它不进版本库，但救不了 opts.json，因为 Docker 存的是解析后的值。",
+   "roots.noRootsYetTitle": "还没有素材目录",
+   "roots.noRootsYetAction": "在下方第 1 步输入本机目录或 NAS 共享地址，即可添加第一个素材目录。"
   },
   "ja-JP": {
    "roots.title": "素材フォルダーの追加",
@@ -189,6 +195,10 @@
    "roots.scanStarted": "処理が自動的に開始されました",
    "roots.scanAlreadyRunning": "処理タスクが既に実行中です",
    "roots.scanCompleted": "スキャンが完了しました",
+ "roots.scanSkipped.one": "非動画ファイル 1 件をスキップしました（{ext}）",
+ "roots.scanSkipped.other": "非動画ファイル {count} 件をスキップしました（{ext}）",
+ "roots.scanSkippedMore": "ほか {count} 種類",
+ "roots.scanSupported": "対応形式：{supported}",
    "roots.scanSummary": "発見 {discovered} · 関連 {linked} · 欠落 {missing} · {pipeline}",
    "roots.scanWarnings.one": "スキャンに 1 件の警告があります：",
    "roots.scanWarnings.other": "スキャンに {count} 件の警告があります：",
@@ -211,7 +221,9 @@
    "roots.guide.wsl-namespace": "WSL2 では、対話型ターミナルでマウントした共有は、systemd サービスや他の SSH セッションからは見えません。それらは異なるマウント名前空間にあるためです。上記コマンドの nsenter プレフィックスは、マウント操作を PID 1 の名前空間で実行するため、すべてのプロセスから見えるようになります。",
    "roots.guide.wsl-not-persistent": "WSL2 はディストリビューションの再起動後もマウントを保持しません。マウントコマンドを再実行するか、/etc/wsl.conf の起動コマンドに追加してください。",
    "roots.guide.windows-service-drive-letter": "自分のセッションでマップしたドライブ文字は、別のアカウントで実行されるサービスには存在しません。Hub をサービスとして実行している場合は、ドライブ文字ではなく UNC パス \\\\host\\share\\folder を使ってください。",
-   "roots.guide.compose-smb-cleartext": "Docker 組み込みの local ボリュームドライバーは driver_opts を mount(2) システムコールに直接渡し、mount.cifs ヘルパーを経由しません。そのため、本ガイドの他の場所で使う credentials=/path/to/file 形式はここでは拒否され、invalid argument（docker/cli#2802、2020-10-20 以降修正されていません）になります。パスワードは o: パラメーターにインラインで書くしかなく、docker volume inspect の出力と /var/lib/docker/volumes/ボリューム名/opts.json に平文で残ります。このプロジェクトの他の秘密はすべて暗号化ストレージに保存され、SQLite・API 応答・ログに決して入りません。この形式は NAS が NFS をエクスポートできない場合の文書化された代替手段であり、デフォルトの推奨ではありません。さらに、最も漏えいしやすいのは自分の docker-compose.yml — git にコミットされるファイルです。パスワードを ${NAS_PASSWORD} に置き換え、追跡されていない .env に入れるとリポジトリからは除外されますが、Docker は解決済みの値を保存するため opts.json は救えません。"
+   "roots.guide.compose-smb-cleartext": "Docker 組み込みの local ボリュームドライバーは driver_opts を mount(2) システムコールに直接渡し、mount.cifs ヘルパーを経由しません。そのため、本ガイドの他の場所で使う credentials=/path/to/file 形式はここでは拒否され、invalid argument（docker/cli#2802、2020-10-20 以降修正されていません）になります。パスワードは o: パラメーターにインラインで書くしかなく、docker volume inspect の出力と /var/lib/docker/volumes/ボリューム名/opts.json に平文で残ります。このプロジェクトの他の秘密はすべて暗号化ストレージに保存され、SQLite・API 応答・ログに決して入りません。この形式は NAS が NFS をエクスポートできない場合の文書化された代替手段であり、デフォルトの推奨ではありません。さらに、最も漏えいしやすいのは自分の docker-compose.yml — git にコミットされるファイルです。パスワードを ${NAS_PASSWORD} に置き換え、追跡されていない .env に入れるとリポジトリからは除外されますが、Docker は解決済みの値を保存するため opts.json は救えません。",
+   "roots.noRootsYetTitle": "素材フォルダーはまだありません",
+   "roots.noRootsYetAction": "下の手順 1 でローカルディレクトリまたは NAS 共有アドレスを入力すると、最初の素材フォルダーを追加できます。"
   },
   "en-US": {
    "roots.title": "Add library root",
@@ -295,6 +307,10 @@
    "roots.scanStarted": "Processing started automatically",
    "roots.scanAlreadyRunning": "A processing task is already running",
    "roots.scanCompleted": "Scan completed",
+ "roots.scanSkipped.one": "Skipped 1 non-video file ({ext})",
+ "roots.scanSkipped.other": "Skipped {count} non-video files ({ext})",
+ "roots.scanSkippedMore": "and {count} more types",
+ "roots.scanSupported": "Supported formats: {supported}",
    "roots.scanSummary": "Found {discovered} · Linked {linked} · Missing {missing} · {pipeline}",
    "roots.scanWarnings.one": "The scan had 1 warning:",
    "roots.scanWarnings.other": "The scan had {count} warnings:",
@@ -317,7 +333,9 @@
    "roots.guide.wsl-namespace": "Under WSL2 a mount made in an interactive shell is invisible to systemd services and to other SSH sessions, because they are in different mount namespaces. The nsenter prefix above mounts into PID 1’s namespace, where everything can see it.",
    "roots.guide.wsl-not-persistent": "WSL2 does not persist mounts across a restart of the distribution. Either re-run the mount command, or add it to the boot command in /etc/wsl.conf.",
    "roots.guide.windows-service-drive-letter": "A drive letter mapped in your own session does not exist for a service running as another account. If the Hub runs as a service, give it the UNC path (\\\\host\\share\\folder) instead of the letter.",
-   "roots.guide.compose-smb-cleartext": "Docker’s local volume driver sends driver_opts straight to the mount(2) syscall and never runs the mount.cifs helper, so the credentials=/path/to/file form used elsewhere in this guide is rejected with \"invalid argument\" (docker/cli#2802, open since 2020-10-20). The password above has to be inline instead, which means it sits in cleartext in `docker volume inspect` output and in the volume’s opts.json under /var/lib/docker/volumes/. Every other secret in this project stays in an encrypted store that never reaches SQLite, an API response, or a log — this form is a documented fallback for when NFS is not available from the NAS, not the default. Note also the surface an operator is most likely to leak through: their own docker-compose.yml, which is a file that gets committed to git. Putting the password in ${NAS_PASSWORD} inside an untracked .env keeps it out of the repo, but does not save opts.json, because Docker stores the resolved value."
+   "roots.guide.compose-smb-cleartext": "Docker’s local volume driver sends driver_opts straight to the mount(2) syscall and never runs the mount.cifs helper, so the credentials=/path/to/file form used elsewhere in this guide is rejected with \"invalid argument\" (docker/cli#2802, open since 2020-10-20). The password above has to be inline instead, which means it sits in cleartext in `docker volume inspect` output and in the volume’s opts.json under /var/lib/docker/volumes/. Every other secret in this project stays in an encrypted store that never reaches SQLite, an API response, or a log — this form is a documented fallback for when NFS is not available from the NAS, not the default. Note also the surface an operator is most likely to leak through: their own docker-compose.yml, which is a file that gets committed to git. Putting the password in ${NAS_PASSWORD} inside an untracked .env keeps it out of the repo, but does not save opts.json, because Docker stores the resolved value.",
+   "roots.noRootsYetTitle": "No library roots yet",
+   "roots.noRootsYetAction": "Enter a local directory or NAS share address in step 1 below to add your first root."
   },
   "fr-FR": {
    "roots.title": "Ajouter une médiathèque",
@@ -401,6 +419,10 @@
    "roots.scanStarted": "Traitement démarré automatiquement",
    "roots.scanAlreadyRunning": "Une tâche de traitement est déjà en cours",
    "roots.scanCompleted": "Scan terminé",
+ "roots.scanSkipped.one": "1 fichier non vidéo ignoré ({ext})",
+ "roots.scanSkipped.other": "{count} fichiers non vidéo ignorés ({ext})",
+ "roots.scanSkippedMore": "et {count} autres types",
+ "roots.scanSupported": "Formats pris en charge : {supported}",
    "roots.scanSummary": "Trouvés {discovered} · Liés {linked} · Manquants {missing} · {pipeline}",
    "roots.scanWarnings.one": "Le scan a produit 1 avertissement :",
    "roots.scanWarnings.other": "Le scan a produit {count} avertissements :",
@@ -423,7 +445,9 @@
    "roots.guide.wsl-namespace": "Sous WSL2, un montage effectué dans un shell interactif est invisible pour les services systemd et les autres sessions SSH, car ils sont dans des espaces de noms de montage différents. Le préfixe nsenter ci-dessus monte dans l’espace de noms du PID 1, où tout le monde peut le voir.",
    "roots.guide.wsl-not-persistent": "WSL2 ne conserve pas les montages après un redémarrage de la distribution. Réexécutez la commande de montage ou ajoutez-la à la commande de démarrage dans /etc/wsl.conf.",
    "roots.guide.windows-service-drive-letter": "Une lettre de lecteur mappée dans votre propre session n’existe pas pour un service exécuté sous un autre compte. Si le Hub tourne comme service, donnez-lui le chemin UNC (\\\\host\\share\\folder) plutôt que la lettre.",
-   "roots.guide.compose-smb-cleartext": "Le pilote de volume local de Docker envoie driver_opts directement à l’appel système mount(2) et ne passe jamais par l’assistant mount.cifs, donc la forme credentials=/path/to/file utilisée ailleurs dans ce guide est rejetée ici avec \"invalid argument\" (docker/cli#2802, ouvert depuis le 2020-10-20). Le mot de passe doit donc être en ligne dans le paramètre o:, ce qui le laisse en clair dans la sortie de `docker volume inspect` et dans opts.json du volume sous /var/lib/docker/volumes/. Tous les autres secrets de ce projet restent dans un stockage chiffré qui n’atteint jamais SQLite, une réponse d’API ou un journal — cette forme est un repli documenté pour quand le NAS ne peut pas exporter NFS, pas la valeur par défaut. Notez aussi la surface par laquelle un opérateur fuira le plus probablement : son propre docker-compose.yml, un fichier qui est committé dans git. Mettre le mot de passe dans ${NAS_PASSWORD} au sein d’un .env non suivi le garde hors du dépôt, mais ne sauve pas opts.json, car Docker stocke la valeur résolue."
+   "roots.guide.compose-smb-cleartext": "Le pilote de volume local de Docker envoie driver_opts directement à l’appel système mount(2) et ne passe jamais par l’assistant mount.cifs, donc la forme credentials=/path/to/file utilisée ailleurs dans ce guide est rejetée ici avec \"invalid argument\" (docker/cli#2802, ouvert depuis le 2020-10-20). Le mot de passe doit donc être en ligne dans le paramètre o:, ce qui le laisse en clair dans la sortie de `docker volume inspect` et dans opts.json du volume sous /var/lib/docker/volumes/. Tous les autres secrets de ce projet restent dans un stockage chiffré qui n’atteint jamais SQLite, une réponse d’API ou un journal — cette forme est un repli documenté pour quand le NAS ne peut pas exporter NFS, pas la valeur par défaut. Notez aussi la surface par laquelle un opérateur fuira le plus probablement : son propre docker-compose.yml, un fichier qui est committé dans git. Mettre le mot de passe dans ${NAS_PASSWORD} au sein d’un .env non suivi le garde hors du dépôt, mais ne sauve pas opts.json, car Docker stocke la valeur résolue.",
+   "roots.noRootsYetTitle": "Aucun dossier de médias pour l’instant",
+   "roots.noRootsYetAction": "Saisissez un dossier local ou une adresse de partage NAS à l’étape 1 ci-dessous pour ajouter votre premier dossier."
   },
   "es-ES": {
    "roots.title": "Añadir biblioteca",
@@ -507,6 +531,10 @@
    "roots.scanStarted": "El procesamiento comenzó automáticamente",
    "roots.scanAlreadyRunning": "Ya hay una tarea de procesamiento en ejecución",
    "roots.scanCompleted": "Escaneo completado",
+ "roots.scanSkipped.one": "1 archivo no de vídeo omitido ({ext})",
+ "roots.scanSkipped.other": "{count} archivos no de vídeo omitidos ({ext})",
+ "roots.scanSkippedMore": "y {count} tipos más",
+ "roots.scanSupported": "Formatos compatibles: {supported}",
    "roots.scanSummary": "Encontrados {discovered} · Vinculados {linked} · Faltantes {missing} · {pipeline}",
    "roots.scanWarnings.one": "El escaneo tuvo 1 aviso:",
    "roots.scanWarnings.other": "El escaneo tuvo {count} avisos:",
@@ -529,7 +557,9 @@
    "roots.guide.wsl-namespace": "En WSL2, un montaje hecho en una shell interactiva es invisible para los servicios systemd y para otras sesiones SSH, porque están en espacios de nombres de montaje distintos. El prefijo nsenter de arriba monta en el espacio de nombres del PID 1, donde todos pueden verlo.",
    "roots.guide.wsl-not-persistent": "WSL2 no conserva los montajes tras reiniciar la distribución. Vuelve a ejecutar el comando de montaje o añádelo al comando de arranque en /etc/wsl.conf.",
    "roots.guide.windows-service-drive-letter": "Una letra de unidad asignada en tu propia sesión no existe para un servicio que se ejecuta con otra cuenta. Si el Hub se ejecuta como servicio, dale la ruta UNC (\\\\host\\share\\folder) en lugar de la letra.",
-   "roots.guide.compose-smb-cleartext": "El controlador de volúmenes local de Docker envía driver_opts directamente a la llamada al sistema mount(2) y nunca pasa por el asistente mount.cifs, así que la forma credentials=/path/to/file usada en el resto de esta guía se rechaza aquí con \"invalid argument\" (docker/cli#2802, abierto desde el 2020-10-20). La contraseña debe ir en línea en el parámetro o:, lo que la deja en texto plano en la salida de `docker volume inspect` y en opts.json del volumen bajo /var/lib/docker/volumes/. Todos los demás secretos de este proyecto permanecen en un almacén cifrado que nunca llega a SQLite, a una respuesta de API o a un registro: esta forma es una alternativa documentada para cuando el NAS no puede exportar NFS, no la opción predeterminada. Ten en cuenta también la superficie por la que un operador tiene más probabilidades de filtrarla: su propio docker-compose.yml, un archivo que se confirma en git. Poner la contraseña en ${NAS_PASSWORD} dentro de un .env sin rastrear la mantiene fuera del repositorio, pero no salva opts.json, porque Docker almacena el valor resuelto."
+   "roots.guide.compose-smb-cleartext": "El controlador de volúmenes local de Docker envía driver_opts directamente a la llamada al sistema mount(2) y nunca pasa por el asistente mount.cifs, así que la forma credentials=/path/to/file usada en el resto de esta guía se rechaza aquí con \"invalid argument\" (docker/cli#2802, abierto desde el 2020-10-20). La contraseña debe ir en línea en el parámetro o:, lo que la deja en texto plano en la salida de `docker volume inspect` y en opts.json del volumen bajo /var/lib/docker/volumes/. Todos los demás secretos de este proyecto permanecen en un almacén cifrado que nunca llega a SQLite, a una respuesta de API o a un registro: esta forma es una alternativa documentada para cuando el NAS no puede exportar NFS, no la opción predeterminada. Ten en cuenta también la superficie por la que un operador tiene más probabilidades de filtrarla: su propio docker-compose.yml, un archivo que se confirma en git. Poner la contraseña en ${NAS_PASSWORD} dentro de un .env sin rastrear la mantiene fuera del repositorio, pero no salva opts.json, porque Docker almacena el valor resuelto.",
+   "roots.noRootsYetTitle": "Aún no hay carpetas de medios",
+   "roots.noRootsYetAction": "Introduce un directorio local o una dirección de recurso NAS en el paso 1 de abajo para añadir tu primera carpeta."
   }
  }
 }

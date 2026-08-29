@@ -38,7 +38,7 @@ const legacyLibraryIndexHTML = `<!doctype html><html lang="zh-CN"><head><meta ch
 .loading{color:var(--text-muted);font-size:13px;padding:24px}
 @media(max-width:980px){.asset-row{grid-template-columns:170px minmax(190px,.8fr) minmax(280px,1.4fr)}}
 @media(max-width:720px){.wrap{padding:28px 20px 44px}
-.top{display:block}
+.pagehead{display:block}
 .legend{margin-top:16px}
 .asset-row{grid-template-columns:1fr;gap:13px}
 .thumb,.thumb-empty{min-height:auto;height:auto}
@@ -46,7 +46,7 @@ const legacyLibraryIndexHTML = `<!doctype html><html lang="zh-CN"><head><meta ch
 .asset-info{padding:0}
 }
 
-</style></head><body><!--SHELL_HEADER--><main class="wrap" data-library-browser><section class="top"><div><div class="eyebrow">[[i18n:library.eyebrow]]</div><h1>[[i18n:library.heading]]</h1><p class="muted">[[i18n:library.subtitle]]</p></div><div class="legend"><span><i></i> [[i18n:library.legend.shots]]</span><span><i></i> [[i18n:library.legend.range]]</span><span><i></i> [[i18n:library.legend.semantics]]</span></div></section><section id="library" class="library" aria-live="polite"><div class="loading">[[i18n:library.loading]]</div></section></main><script>
+</style></head><body><!--SHELL_HEADER--><main class="wrap" data-library-browser><header class="pagehead"><div><div class="eyebrow">[[i18n:library.eyebrow]]</div><h1>[[i18n:library.heading]]</h1><p class="muted">[[i18n:library.subtitle]]</p></div><div class="legend"><span><i></i> [[i18n:library.legend.shots]]</span><span><i></i> [[i18n:library.legend.range]]</span><span><i></i> [[i18n:library.legend.semantics]]</span></div></header><section id="library" class="library" aria-live="polite"><div class="loading">[[i18n:library.loading]]</div></section></main><script>
 const library=document.getElementById('library');const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=ms=>{ms=Math.max(0,Math.floor((ms||0)/1000));return String(Math.floor(ms/60)).padStart(2,'0')+':'+String(ms%60).padStart(2,'0')};
 function loadShots(id){return fetch('/api/v1/assets/'+encodeURIComponent(id)+'/shots').then(r=>r.ok?r.json():[]).then(x=>Array.isArray(x)?x:[]).catch(()=>[])}
 function chips(x){const values=[x.asset_type,x.camera_motion,x.lighting,...(x.mood_tags||[])].filter(Boolean).slice(0,5);return values.map(v=>'<span class="chip">'+esc(v)+'</span>').join('')+(x.has_speech?'<span class="chip voice">'+tdT('library.hasSpeech')+'</span>':'')}
