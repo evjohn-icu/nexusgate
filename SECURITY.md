@@ -213,10 +213,16 @@ design, and changing them is a design discussion, not a security fix.
   published Docker port every peer looks RFC1918 — a containerised Hub running
   `trusted_network` without an explicit `admin_auth_networks` refuses to start
   rather than silently waiving the password for the whole internet.
-- **Capture coordinates are exposed as a region label.** Source precision is
-  administrator-only, per asset, via
-  `GET /api/v1/admin/assets/{id}/capture-location`. The coarse label is
-  intentional, not an incomplete redaction.
+- **Capture coordinates are administrator-only.** Source precision is exposed
+  per asset only through `GET /api/v1/admin/assets/{id}/capture-location`;
+  latitude and longitude do not appear in the browse, search or agent
+  surfaces, and their absence there is intentional, not an incomplete
+  redaction.
+  The `region_label` those surfaces do carry is **free text set by whoever
+  wrote the row** — nothing in the tree reverse-geocodes coordinates into it.
+  It is therefore not a coarsened view of the coordinates and gives no
+  guarantee about precision: a label someone typed as a street address is as
+  precise as they made it. Treat it as a caption, not as a privacy transform.
 - **Original media is opened read-only** and nothing is ever written next to a
   source file; NAS mode copies into `cache/sources/` first. Derived artifacts
   live only under the data directory.

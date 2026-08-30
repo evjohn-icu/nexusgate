@@ -57,7 +57,7 @@ func testPipelineDerive(t *testing.T, failHardware, reuseSoftware bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SaveMediaMetadata(ctx, asset.AssetID, domain.MediaMetadata{DurationMS: 1000, SourceColor: string(media.SourceColorSDR)}, "test"); err != nil {
+	if err := repo.SaveMediaMetadata(ctx, asset.AssetID, domain.MediaMetadata{DurationMS: 1000, SourceColor: string(media.SourceColorSDR)}, "test", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	cacheDir := filepath.Join(dir, "cache")

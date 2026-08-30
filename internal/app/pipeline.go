@@ -32,11 +32,11 @@ import (
 
 type PipelineRepository interface {
 	GetPrimaryLocation(context.Context, string) (domain.AssetLocation, error)
-	SaveMediaMetadata(context.Context, string, domain.MediaMetadata, string) error
+	SaveMediaMetadata(context.Context, string, domain.MediaMetadata, string, string, string) error
 	GetMediaMetadata(context.Context, string) (*domain.MediaMetadata, error)
 	SaveArtifact(context.Context, domain.DerivedArtifact, string, string) error
 	GetArtifact(context.Context, string, string) (*domain.DerivedArtifact, error)
-	SaveSpeechClassification(context.Context, string, domain.SpeechClassification) error
+	SaveSpeechClassification(context.Context, string, domain.SpeechClassification, string, string) error
 	EnqueueJob(context.Context, string, domain.JobType, string, int) error
 	LeaseNextJob(context.Context, string, func(domain.JobType) time.Duration, domain.LeaseFilter) (*domain.Job, error)
 	// The string after id on each of these four is owner: the identity
@@ -84,7 +84,7 @@ type PipelineRepository interface {
 	GetAlignmentWords(context.Context, string) ([]domain.AlignmentWord, error)
 	GetProviderFile(context.Context, string, string, string, string) (*domain.ProviderFile, error)
 	SaveProviderFile(context.Context, domain.ProviderFile) error
-	SaveAlignment(context.Context, string, string, string, string, string, domain.AlignmentResult) error
+	SaveAlignment(context.Context, string, string, string, string, string, domain.AlignmentResult, string, string) error
 	EnqueueReanalysis(context.Context, string, string) error
 	// HasCommittedAnalysis reports whether the asset's canonical analysis is
 	// already committed. JobDerive uses it to stop a re-derive job (enqueued
@@ -607,6 +607,20 @@ func classifyJobFailure(err error) domain.JobFailureCategory {
 	if errors.Is(err, providerchannels.ErrRouteExhausted) {
 		return domain.JobFailureCategoryProviderRouteExhausted
 	}
+	// The three provider-channel sentinels that say "the deployment is
+	// incomplete", as distinct from "this key is dead" (401/402/403, below,
+	// which is ProviderAuth) and "the route is momentarily out of members"
+	// (ErrNoRoute/ErrNoAvailable, which are deliberately unmarked because a
+	// cooldown clears them). A cold-start Hub with nothing configured landed
+	// every terminal failure in Unknown, so /api/v1/issues showed an unlabeled
+	// bucket with no repair link — while the progress page has carried the
+	// configuration→/providers mapping and its five translations all along,
+	// waiting for a producer that was never written.
+	if errors.Is(err, ErrProviderChannelNotConfigured) ||
+		errors.Is(err, errProviderChannelSecretMissing) ||
+		errors.Is(err, errProviderChannelMultiframeUnsupported) {
+		return domain.JobFailureCategoryConfiguration
+	}
 	// Mirrors isRetryableJobError's status probe: the same *common.StatusError
 	// the retry decision reads, classified by status code alone — 401/402/403
 	// describe the key, 408/429 the account's momentary cap, 5xx the provider
@@ -735,7 +749,7 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 			exif = map[string]any{"warning": err.Error()}
 		}
 		m := media.NormalizeMetadata(probe, exif)
-		if err := p.repo.SaveMediaMetadata(ctx, j.AssetID, m, "ffprobe-exif-v1"); err != nil {
+		if err := p.repo.SaveMediaMetadata(ctx, j.AssetID, m, "ffprobe-exif-v1", j.ID, worker); err != nil {
 			return err
 		}
 		return p.repo.EnqueueJob(ctx, j.AssetID, domain.JobDerive, hashStrings(j.InputHash, "derive-v1"), 90)
@@ -879,7 +893,7 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		if err != nil {
 			return err
 		}
-		if err := p.repo.SaveSpeechClassification(ctx, j.AssetID, c); err != nil {
+		if err := p.repo.SaveSpeechClassification(ctx, j.AssetID, c, j.ID, worker); err != nil {
 			return err
 		}
 		if c.SpeechProbability >= 0.5 && p.asr != nil {
@@ -967,7 +981,7 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 			return err
 		}
 		req, _ := json.Marshal(map[string]any{"audio_path": a.LocalPath, "text": t.Text, "language": t.Language})
-		if err := p.repo.SaveAlignment(ctx, j.AssetID, p.alignment.Name(), p.alignment.Model(), j.InputHash, string(req), result); err != nil {
+		if err := p.repo.SaveAlignment(ctx, j.AssetID, p.alignment.Name(), p.alignment.Model(), j.InputHash, string(req), result, j.ID, worker); err != nil {
 			return err
 		}
 		return p.repo.EnqueueJob(ctx, j.AssetID, domain.JobAnalyze, hashStrings(j.InputHash, "analyze-v1"), 30)

@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/evjohn-icu/timingdex/internal/app"
 	"github.com/evjohn-icu/timingdex/internal/config"
@@ -74,7 +76,7 @@ func TestAssetTranscriptEndpointThreePaths(t *testing.T) {
 		if err := repo.SaveTranscript(ctx, assetID, "fixture", "fixture-model", "api-speech", domain.Transcript{Language: "zh", Text: "明天见"}, "", ""); err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.SaveAlignment(ctx, assetID, "fixture", "fixture-model", "api-align", "{}", domain.AlignmentResult{Words: []domain.AlignmentWord{{StartMS: 100, EndMS: 200, Text: "明天"}, {StartMS: 200, EndMS: 300, Text: "见"}}}); err != nil {
+		if err := repo.SaveAlignment(ctx, assetID, "fixture", "fixture-model", "api-align", "{}", domain.AlignmentResult{Words: []domain.AlignmentWord{{StartMS: 100, EndMS: 200, Text: "明天"}, {StartMS: 200, EndMS: 300, Text: "见"}}}, "", ""); err != nil {
 			t.Fatal(err)
 		}
 		response := getTranscriptResponse(t, server, assetID)
@@ -140,4 +142,67 @@ func TestAssetTranscriptEndpointThreePaths(t *testing.T) {
 			t.Fatalf("envelope=%+v, want code not_found", envelope.Error)
 		}
 	})
+}
+
+// TestAssetDetailRedactsDerivedArtifactPaths pins that the public asset detail
+// response carries no absolute on-disk path. thumbnail_path/proxy_path were
+// filled with the artifact's LocalPath in the repository and never cleared by
+// the handler's redaction block — which two lines above promises absolute
+// paths stay behind the administrator boundary — so every trusted-read caller
+// (any LAN peer, any agent token from any network) received the Hub's data
+// directory layout, operator username included. Found while investigating
+// M1-05; the browser fixture could not demonstrate it because its seeded asset
+// has no derived artifacts, so this test makes some.
+func TestAssetDetailRedactsDerivedArtifactPaths(t *testing.T) {
+	server, repo, assetID := transcriptEndpointFixture(t)
+	ctx := context.Background()
+
+	// SaveArtifact is lease-bound, so the artifacts have to arrive the way the
+	// pipeline delivers them: through a held lease on a running job.
+	if err := repo.EnqueueJob(ctx, assetID, domain.JobDerive, "detail-redaction-hash", 0); err != nil {
+		t.Fatal(err)
+	}
+	job, err := repo.LeaseNextJob(ctx, "owner-a", func(domain.JobType) time.Duration { return time.Hour }, domain.LeaseFilter{})
+	if err != nil || job == nil {
+		t.Fatalf("job=%v err=%v", job, err)
+	}
+	secret := "/home/someone/.timingdex-dev/cache/derived/" + assetID
+	for _, a := range []domain.DerivedArtifact{
+		{ID: "art-thumb", AssetID: assetID, Type: "thumbnail", LocalPath: secret + "/thumbnail-software.jpg", SizeBytes: 1},
+		{ID: "art-proxy", AssetID: assetID, Type: "proxy", LocalPath: secret + "/proxy-software.mp4", SizeBytes: 2},
+	} {
+		if err := repo.SaveArtifact(ctx, a, job.ID, "owner-a"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The repository still reports them — the boundary is the handler's, and
+	// nothing else in the tree reads these fields.
+	detail, err := repo.GetAssetDetail(ctx, assetID)
+	if err != nil || detail == nil {
+		t.Fatalf("detail=%v err=%v", detail, err)
+	}
+	if detail.ThumbnailPath == "" || detail.ProxyPath == "" {
+		t.Fatal("fixture did not actually attach artifacts; the test would pass vacuously")
+	}
+
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, lanRequest(http.MethodGet, "/api/v1/assets/"+assetID, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if strings.Contains(body, secret) {
+		t.Fatalf("asset detail leaks an absolute derived-artifact path: %s", body)
+	}
+	var decoded struct {
+		ThumbnailPath string `json:"thumbnail_path"`
+		ProxyPath     string `json:"proxy_path"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.ThumbnailPath != "" || decoded.ProxyPath != "" {
+		t.Fatalf("thumbnail_path=%q proxy_path=%q, want both absent", decoded.ThumbnailPath, decoded.ProxyPath)
+	}
 }

@@ -53,7 +53,7 @@ func TestListAssetCardsFilteredTieBreakAcrossPages(t *testing.T) {
 		// captures it from images but media_metadata.captured_at is what
 		// the COALESCE falls through to in this fixture.
 		c := captured
-		if err := repo.SaveMediaMetadata(ctx, id, domain.MediaMetadata{CapturedAt: &c}, "tiebreak"); err != nil {
+		if err := repo.SaveMediaMetadata(ctx, id, domain.MediaMetadata{CapturedAt: &c}, "tiebreak", "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}

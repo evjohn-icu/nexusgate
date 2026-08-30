@@ -251,6 +251,18 @@ func seedGoldenCorpus(t *testing.T) (*Repository, map[string]string) {
 		shots := make([]domain.AssetShot, 0, len(asset.shots))
 		for i, spec := range asset.shots {
 			shots = append(shots, domain.AssetShot{
+				// Mint the shot id here rather than letting
+				// replaceAssetShotsTx call idgen.New(). Ranking ties are
+				// broken by shot id (`worse` in internal/search/retriever.go),
+				// so random ids reorder every exactly-tied pair on every run —
+				// which is why this corpus reported v2-weighted AssertionFP as
+				// 54 or 55 depending on the run, and why two agents auditing
+				// the same commit got different numbers and each thought the
+				// other had misread. Production ids are stable per shot, so
+				// this instability was the fixture's, not the engine's. A
+				// deterministic id keeps the benchmark a measurement rather
+				// than a coin flip; it does not make the tie order meaningful.
+				ID:      fmt.Sprintf("%s-shot-%02d", asset.id, i),
 				AssetID: asset.id, SourceRunID: runID, Ordinal: i,
 				StartMS: spec.startMS, EndMS: spec.endMS, Description: spec.description,
 				Tags: spec.tags, Objects: spec.objects, Actions: spec.actions, Mood: spec.mood,
@@ -270,7 +282,7 @@ func seedGoldenCorpus(t *testing.T) (*Repository, map[string]string) {
 			if err := repo.SaveTranscript(ctx, asset.id, "fixture", "fixture-model", "golden-transcript-"+asset.id, domain.Transcript{Language: "zh", Text: strings.TrimSpace(joined)}, "", ""); err != nil {
 				t.Fatal(err)
 			}
-			if err := repo.SaveAlignment(ctx, asset.id, "fixture", "fixture-model", "golden-align-"+asset.id, "{}", domain.AlignmentResult{Words: words}); err != nil {
+			if err := repo.SaveAlignment(ctx, asset.id, "fixture", "fixture-model", "golden-align-"+asset.id, "{}", domain.AlignmentResult{Words: words}, "", ""); err != nil {
 				t.Fatal(err)
 			}
 		}

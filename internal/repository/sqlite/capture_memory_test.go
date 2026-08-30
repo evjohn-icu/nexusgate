@@ -33,7 +33,7 @@ func TestShootSessionPersistenceIsIdempotentAndFiltersWithoutCoordinates(t *test
 	}
 
 	latitude, longitude := 48.8566, 2.3522
-	if err := repo.SaveMediaMetadata(ctx, "asset-memory-1", domain.MediaMetadata{Latitude: &latitude, Longitude: &longitude}, "capture-memory-test"); err != nil {
+	if err := repo.SaveMediaMetadata(ctx, "asset-memory-1", domain.MediaMetadata{Latitude: &latitude, Longitude: &longitude}, "capture-memory-test", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	var storedLatitude, storedLongitude float64

@@ -476,7 +476,7 @@ func (r *Repository) GetWorkerJobStatus(ctx context.Context, jobID string) (remo
 	var leaseOwner, lastCode, lastMessage, lastWorker, lastStage, preferred, assigned string
 	err := r.db.QueryRowContext(ctx, `SELECT id,COALESCE(asset_id,''),job_type,state,priority,attempt_count,max_attempts,run_after,COALESCE(lease_owner,''),COALESCE(lease_expires_at,''),current_stage,progress,COALESCE(last_error_code,''),COALESCE(last_error_message,''),COALESCE(last_failure_at,''),COALESCE(last_failure_worker_id,''),last_failure_stage,COALESCE(preferred_worker_id,''),COALESCE(assigned_worker_id,'') FROM jobs WHERE id=?`, jobID).Scan(&status.JobID, &status.AssetID, &status.JobType, &status.State, &status.Priority, &status.AttemptCount, &status.MaxAttempts, &runAfter, &leaseOwner, &leaseExpires, &status.CurrentStage, &status.Progress, &lastCode, &lastMessage, &lastFailure, &lastWorker, &lastStage, &preferred, &assigned)
 	if errors.Is(err, sql.ErrNoRows) {
-		return remote.WorkerJobStatus{}, errors.New("worker job not found")
+		return remote.WorkerJobStatus{}, domain.ErrWorkerJobNotFound
 	}
 	if err != nil {
 		return remote.WorkerJobStatus{}, err

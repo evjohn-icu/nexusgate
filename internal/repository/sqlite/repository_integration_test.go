@@ -267,7 +267,7 @@ func TestSaveMediaMetadataProjectsCaptureFields(t *testing.T) {
 	if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES('asset-capture','fp',1,'discovered',?,?)`, formatTime(now), formatTime(now)); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SaveMediaMetadata(ctx, "asset-capture", domain.MediaMetadata{CapturedAt: &now, CaptureVendor: "DJI", CameraMake: "DJI", CameraModel: "Mavic 3", CameraSerial: "DJI-1", SourceColor: "LOG_UNKNOWN", ColorProfile: "D-Log", PreviewStatus: "lut_required"}, "capture-fixture"); err != nil {
+	if err := repo.SaveMediaMetadata(ctx, "asset-capture", domain.MediaMetadata{CapturedAt: &now, CaptureVendor: "DJI", CameraMake: "DJI", CameraModel: "Mavic 3", CameraSerial: "DJI-1", SourceColor: "LOG_UNKNOWN", ColorProfile: "D-Log", PreviewStatus: "lut_required"}, "capture-fixture", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	var vendor, model, profile, preview string
@@ -301,13 +301,13 @@ func TestSaveMediaMetadataMergesCaptureProvenance(t *testing.T) {
 		CapturedAt: &strongTime, CaptureTimeSource: "embedded_exif", CaptureTimeConfidence: .95,
 		Latitude: &strongLat, Longitude: &strongLon, LocationSource: "embedded_exif", LocationPrecision: "exact",
 		CameraModel: "preserved-camera", DurationMS: 42, FFProbeRaw: "strong-probe", ExifToolRaw: "strong-exif",
-	}, "strong"); err != nil {
+	}, "strong", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.SaveMediaMetadata(ctx, "asset-merge", domain.MediaMetadata{
 		CapturedAt: &weakTime, CaptureTimeSource: "filesystem", CaptureTimeConfidence: .25,
 		Latitude: &weakLat, Longitude: &weakLon, LocationSource: "filesystem", LocationPrecision: "approximate",
-	}, "weak"); err != nil {
+	}, "weak", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	got, err := repo.GetMediaMetadata(ctx, "asset-merge")
@@ -321,7 +321,7 @@ func TestSaveMediaMetadataMergesCaptureProvenance(t *testing.T) {
 		t.Fatalf("weak coordinates replaced stronger coordinates: %+v", got)
 	}
 	partial := domain.MediaMetadata{Latitude: &weakLat, LocationSource: "manual", LocationPrecision: "exact"}
-	if err := repo.SaveMediaMetadata(ctx, "asset-merge", partial, "partial"); err != nil {
+	if err := repo.SaveMediaMetadata(ctx, "asset-merge", partial, "partial", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	got, err = repo.GetMediaMetadata(ctx, "asset-merge")
@@ -331,7 +331,7 @@ func TestSaveMediaMetadataMergesCaptureProvenance(t *testing.T) {
 	equalLat, equalLon := 40.0, 141.0
 	if err := repo.SaveMediaMetadata(ctx, "asset-merge", domain.MediaMetadata{
 		Latitude: &equalLat, Longitude: &equalLon, LocationSource: "embedded_exif", LocationPrecision: "exact",
-	}, "location-equal"); err != nil {
+	}, "location-equal", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	got, err = repo.GetMediaMetadata(ctx, "asset-merge")
@@ -339,7 +339,7 @@ func TestSaveMediaMetadataMergesCaptureProvenance(t *testing.T) {
 		t.Fatalf("equal-rank location observation was not accepted: %+v err=%v", got, err)
 	}
 	equalTime := now.Add(2 * time.Hour)
-	if err := repo.SaveMediaMetadata(ctx, "asset-merge", domain.MediaMetadata{CapturedAt: &equalTime, CaptureTimeSource: "embedded_exif", CaptureTimeConfidence: .95}, "equal"); err != nil {
+	if err := repo.SaveMediaMetadata(ctx, "asset-merge", domain.MediaMetadata{CapturedAt: &equalTime, CaptureTimeSource: "embedded_exif", CaptureTimeConfidence: .95}, "equal", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	got, err = repo.GetMediaMetadata(ctx, "asset-merge")
@@ -370,7 +370,7 @@ func TestSaveMediaMetadataMergesCaptureProvenance(t *testing.T) {
 		t.Fatalf("merged projection mismatch: time=%q confidence=%v location=%q precision=%q media=%s capture=%s", captureSource, captureConfidence, locationSource, capturePrecision, mediaNorm, captureNorm)
 	}
 	unknownTime := now.Add(-3 * time.Hour)
-	if err := repo.SaveMediaMetadata(ctx, "asset-merge", domain.MediaMetadata{CapturedAt: &unknownTime, CaptureTimeSource: "unknown"}, "unknown"); err != nil {
+	if err := repo.SaveMediaMetadata(ctx, "asset-merge", domain.MediaMetadata{CapturedAt: &unknownTime, CaptureTimeSource: "unknown"}, "unknown", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	got, err = repo.GetMediaMetadata(ctx, "asset-merge")
@@ -403,7 +403,7 @@ func TestRebuildAutomaticShootSessionsGroupsSameCameraWithinThirtyMinutes(t *tes
 		}
 	}
 	for id, capturedAt := range map[string]time.Time{"session-a": now, "session-b": now.Add(20 * time.Minute), "session-c": now.Add(55 * time.Minute)} {
-		if err := repo.SaveMediaMetadata(ctx, id, domain.MediaMetadata{CapturedAt: &capturedAt, CaptureTimeSource: "embedded_exif", CaptureTimeConfidence: .95, CameraMake: "Sony", CameraModel: "FX3", CameraSerial: "serial-1", DurationMS: 5000}, "session-fixture"); err != nil {
+		if err := repo.SaveMediaMetadata(ctx, id, domain.MediaMetadata{CapturedAt: &capturedAt, CaptureTimeSource: "embedded_exif", CaptureTimeConfidence: .95, CameraMake: "Sony", CameraModel: "FX3", CameraSerial: "serial-1", DurationMS: 5000}, "session-fixture", "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -447,7 +447,7 @@ func TestRebuildAutomaticShootSessionsGroupsSameCameraWithinThirtyMinutes(t *tes
 	}
 	before := snapshotMembership()
 	weak := now.Add(24 * time.Hour)
-	if err := repo.SaveMediaMetadata(ctx, "session-a", domain.MediaMetadata{CapturedAt: &weak, CaptureTimeSource: "filesystem", CaptureTimeConfidence: .25, CameraMake: "Sony", CameraModel: "FX3", CameraSerial: "serial-1", DurationMS: 5000}, "weak-reprobe"); err != nil {
+	if err := repo.SaveMediaMetadata(ctx, "session-a", domain.MediaMetadata{CapturedAt: &weak, CaptureTimeSource: "filesystem", CaptureTimeConfidence: .25, CameraMake: "Sony", CameraModel: "FX3", CameraSerial: "serial-1", DurationMS: 5000}, "weak-reprobe", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.RebuildAutomaticShootSessions(ctx, "root-session"); err != nil {
@@ -496,7 +496,7 @@ func TestRebuildAutomaticShootSessionsDeduplicatesMultiLocationAssets(t *testing
 		t.Fatal(err)
 	}
 	for id, capturedAt := range map[string]time.Time{"multi-a": now, "multi-b": now.Add(10 * time.Minute)} {
-		if err := repo.SaveMediaMetadata(ctx, id, domain.MediaMetadata{CapturedAt: &capturedAt, CameraMake: "Sony", CameraModel: "FX3", CameraSerial: "serial-m", DurationMS: 5000}, "session-fixture"); err != nil {
+		if err := repo.SaveMediaMetadata(ctx, id, domain.MediaMetadata{CapturedAt: &capturedAt, CameraMake: "Sony", CameraModel: "FX3", CameraSerial: "serial-m", DurationMS: 5000}, "session-fixture", "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}

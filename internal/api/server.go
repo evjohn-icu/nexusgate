@@ -1997,12 +1997,28 @@ func (s *Server) hybridSearchShots(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) similarShots(w http.ResponseWriter, r *http.Request) {
-	facets, err := parseFacetFilter(r.URL.Query())
+	query := r.URL.Query()
+	facets, err := parseFacetFilter(query)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 		return
 	}
-	hits, err := s.service.SimilarShotsFiltered(r.Context(), r.PathValue("id"), parseBoundedInt(r.URL.Query().Get("limit"), 20, legacyLimitMax), facets)
+	// The library page's main search carries the caller's active asset
+	// context alongside facets (POST /search/shots' asset_filter); this GET
+	// sibling had carried neither until now, so "similar shots" could surface
+	// footage the operator had just filtered out of view. Same 400-on-bad-input
+	// discipline as that path: an unparseable date or an unknown status must
+	// not silently compile into a WHERE clause that matches nothing.
+	assetFilter, err := assetContextFilterFromQuery(query)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
+		return
+	}
+	if err := validateAssetContextFilter(&assetFilter); err != nil {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
+		return
+	}
+	hits, err := s.service.SimilarShotsFiltered(r.Context(), r.PathValue("id"), parseBoundedInt(query.Get("limit"), 20, legacyLimitMax), facets, assetFilter)
 	if err != nil {
 		// Matched as a sentinel rather than by message prefix: this used to be
 		// strings.HasPrefix(err.Error(), "shot not found:"), which made the
@@ -2141,6 +2157,42 @@ func collectionFilterFromQuery(query map[string][]string) (domain.AssetCollectio
 		parsed, err := time.Parse("2006-01-02", value)
 		if err != nil {
 			return domain.AssetCollectionFilter{}, fmt.Errorf("invalid date_to value: %q", value)
+		}
+		parsed = parsed.AddDate(0, 0, 1)
+		filter.CapturedTo = &parsed
+	}
+	return filter, nil
+}
+
+// assetContextFilterFromQuery parses the GET query-string encoding of
+// domain.AssetContextFilter for /api/v1/shots/{id}/similar. It intentionally
+// reuses collectionFilterFromQuery's param names (date_from, date_to, region,
+// camera, session, status) rather than the JSON field names AssetContextFilter
+// itself carries (captured_from, region_label, ...): those JSON names are
+// POST /search/shots' request-body wire format, but nothing here is
+// JSON-decoded, and the query-string convention is what the library page's
+// filterQuery() and every other GET browse endpoint already emit. An
+// unparseable date must 400 rather than silently compile into a WHERE clause
+// that matches nothing — the same rule collectionFilterFromQuery applies, for
+// the same reason.
+func assetContextFilterFromQuery(query url.Values) (domain.AssetContextFilter, error) {
+	filter := domain.AssetContextFilter{
+		RegionLabel: query.Get("region"),
+		CameraModel: query.Get("camera"),
+		SessionID:   query.Get("session"),
+		Status:      domain.ProcessingStatus(query.Get("status")),
+	}
+	if value := query.Get("date_from"); value != "" {
+		parsed, err := time.Parse("2006-01-02", value)
+		if err != nil {
+			return domain.AssetContextFilter{}, fmt.Errorf("invalid date_from value: %q", value)
+		}
+		filter.CapturedFrom = &parsed
+	}
+	if value := query.Get("date_to"); value != "" {
+		parsed, err := time.Parse("2006-01-02", value)
+		if err != nil {
+			return domain.AssetContextFilter{}, fmt.Errorf("invalid date_to value: %q", value)
 		}
 		parsed = parsed.AddDate(0, 0, 1)
 		filter.CapturedTo = &parsed
@@ -2395,6 +2447,16 @@ func (s *Server) assetDetail(w http.ResponseWriter, r *http.Request) {
 		detail.Metadata.FFProbeRaw = ""
 		detail.Metadata.ExifToolRaw = ""
 	}
+	// The derived-artifact paths are absolute on-disk locations under the
+	// Hub's own data directory, which carry the operator's username and cache
+	// layout. They sat in this response for every trusted-read caller — LAN
+	// peers and any agent token, from any network — while the comment two
+	// blocks up promised absolute paths stayed behind the administrator
+	// boundary. Nothing reads them: the browser and the Skill both fetch
+	// artifacts through /assets/{id}/thumbnail and /proxy, which serve the
+	// bytes without naming the file.
+	detail.ThumbnailPath = ""
+	detail.ProxyPath = ""
 	writeJSON(w, http.StatusOK, detail)
 }
 

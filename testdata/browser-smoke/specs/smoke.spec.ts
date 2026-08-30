@@ -159,7 +159,7 @@ test.describe('consolidated UI (UI-001..UI-010)', () => {
     await expect(page.locator('.nav-link[href="/workers"]')).toHaveText('处理节点');
     // Admin auth is a compact trigger + dialog; the token field is not
     // part of the default-visible page.
-    await expect(page.locator('#admin-trigger')).toBeAttached();
+    await expect(page.locator('.shell-auth')).not.toHaveAttribute('hidden', '');
     await expect(page.locator('#admin-token')).not.toBeVisible();
   });
 
@@ -457,5 +457,347 @@ test.describe('usability repair (2026-08-28 audit)', () => {
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
       expect(overflow, `${route} overflows horizontally`).toBe(false);
     }
+  });
+});
+
+// The fixture serves one Hub configured with admin_auth "required" (see
+// browserfixture.New). Production's default is "trusted_network", so the two
+// waived branches of the v0.33 access UI — the Access status cell, the
+// /providers and /workers callouts, and the hiding of the login control —
+// had no browser coverage at all: every assertion above exercises the third
+// branch only.
+//
+// These stub GET /api/v1/setup/status, which is the single place the shell
+// reads adminAuthMode from, and patch only that field so the rest of the page
+// behaves exactly as it does live. This covers the UI branch in a real
+// browser; whether the server actually waives the credential is a different
+// claim, pinned server-side by TestAdminAuthModeRootWriteGuard.
+test.describe('admin-auth UI branches (audit U4-01)', () => {
+  async function withAdminAuth(page: Page, mode: string) {
+    await page.route('**/api/v1/setup/status', async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.admin_auth = mode;
+      await route.fulfill({ response, json: body });
+    });
+  }
+
+  test('trusted_network hides the login control and warns on both admin pages', async ({ page }) => {
+    await withAdminAuth(page, 'trusted_network');
+    await page.goto('/');
+    await expect(page.locator('#status-access')).toHaveText('内网免口令');
+    await expect(page.locator('.status-cell', { has: page.locator('#status-access') }).locator('.dot')).toHaveClass(/warn/);
+    // The password field is gone because no password is being asked for.
+    // Assert the attribute rather than visibility: on the mobile project the
+    // control also sits inside the collapsed menu, so toBeHidden() would pass
+    // in every mode and prove nothing.
+    await expect(page.locator('.shell-auth')).toHaveAttribute('hidden', '');
+
+    for (const route of ['/providers', '/workers']) {
+      await page.goto(route);
+      const callout = page.locator('#admin-auth-callout');
+      await expect(callout, route).toBeVisible();
+      await expect(callout, route).toHaveClass(/callout--attention/);
+      await expect(callout, route).toContainText('内网免口令');
+    }
+  });
+
+  test('off states plainly that anyone reaching the port is an administrator', async ({ page }) => {
+    await withAdminAuth(page, 'off');
+    await page.goto('/');
+    await expect(page.locator('#status-access')).toHaveText('完全开放');
+    await expect(page.locator('.status-cell', { has: page.locator('#status-access') }).locator('.dot')).toHaveClass(/err/);
+    await expect(page.locator('.shell-auth')).toHaveAttribute('hidden', '');
+
+    for (const route of ['/providers', '/workers']) {
+      await page.goto(route);
+      const callout = page.locator('#admin-auth-callout');
+      await expect(callout, route).toBeVisible();
+      // "off" escalates the same callout from attention to contradicted and
+      // replaces its text: the trusted_network copy would understate this.
+      await expect(callout, route).toHaveClass(/callout--contradicted/);
+      await expect(callout, route).toContainText('口令已关闭');
+    }
+  });
+
+  test('required keeps the login control and the ok state (regression floor)', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('#status-access')).toHaveText('需口令');
+    await expect(page.locator('.status-cell', { has: page.locator('#status-access') }).locator('.dot')).toHaveClass(/ok/);
+    await expect(page.locator('.shell-auth')).not.toHaveAttribute('hidden', '');
+    for (const route of ['/providers', '/workers']) {
+      await page.goto(route);
+      await expect(page.locator('#admin-auth-callout'), route).toBeHidden();
+    }
+  });
+});
+
+// The four P1s the 2026-08-29 audit filed against the first-use and daily
+// flows. Each one is a claim about what a person sees, so each is asserted in
+// a real browser rather than by grepping the page constant.
+test.describe('usability repair (2026-08-29 audit, tranche 2)', () => {
+  test('a shared search URL comes back as a search, not a browse listing (U3-01)', async ({ page }) => {
+    const searchPost = page.waitForRequest((r) => r.url().includes('/api/v1/search/shots') && r.method() === 'POST');
+    await page.goto('/?q=camera&status=ready');
+    const body = JSON.parse((await searchPost).postData() ?? '{}');
+    expect(body.query).toBe('camera');
+    // The filters that produced the link must be in the request, not merely
+    // restored into the controls after the fact.
+    expect(body.asset_filter?.status).toBe('ready');
+    await expect(page.locator('#q')).toHaveValue('camera');
+    await expect(page.locator('#status-filter')).toHaveValue('ready');
+    // ...and syncURL must not strip them back out of the address bar.
+    expect(new URL(page.url()).searchParams.get('status')).toBe('ready');
+  });
+
+  test('more results than one page are reachable and honestly labelled (U3-02)', async ({ page }) => {
+    const shot = (id: string) => ({
+      shot_id: id, asset_id: 'pw-asset', filename: 'fixture.mp4',
+      start_ms: 0, end_ms: 1000, description: id, score: 1, rank: 1,
+    });
+    const offsets: number[] = [];
+    await page.route('**/api/v1/search/shots', async (route) => {
+      const body = JSON.parse(route.request().postData() ?? '{}');
+      const offset = body.offset ?? 0;
+      offsets.push(offset);
+      await route.fulfill({
+        json: {
+          query: { raw: body.query, intent: 'auto' }, search_id: 's', query_hash: 'h',
+          results: [shot(`shot-${offset}-a`), shot(`shot-${offset}-b`)],
+          offset, limit: body.limit, has_more: offset === 0,
+          ...(offset === 0 ? { next_offset: 40 } : {}),
+          window_exhausted: offset !== 0,
+        },
+      });
+    });
+    await page.goto('/');
+    await page.locator('#q').fill('camera');
+    await page.locator('#q').press('Enter');
+    await expect(page.locator('.shot-result')).toHaveCount(2);
+    const more = page.locator('#shot-more-btn');
+    await expect(more).toBeVisible();
+
+    await more.click();
+    // The second page is appended, not swapped in.
+    await expect(page.locator('.shot-result')).toHaveCount(4);
+    expect(offsets).toEqual([0, 40]);
+    await expect(more).toHaveCount(0);
+    // window_exhausted is a different sentence from "that is everything".
+    await expect(page.locator('.shot-results-foot')).toContainText('检索窗口上限');
+    await expect(page.locator('.shot-results-foot')).not.toContainText('已经是全部结果');
+  });
+
+  test('/library-roots offers a way in when the Hub answers 401 (U2-01)', async ({ page }) => {
+    await page.goto('/library-roots');
+    const notice = page.locator('#root-health-wrap .callout');
+    await expect(notice).toBeVisible();
+    await expect(notice).toContainText('需要 Hub 管理口令');
+    // The login control is reachable from the failure itself, and it opens the
+    // shared dialog rather than sending the reader off to find it.
+    await notice.getByRole('button', { name: '登录' }).click();
+    await expect(page.locator('#admin-dialog')).toBeVisible();
+    await expect(page.locator('#admin-token')).toBeVisible();
+  });
+
+  test('/setup names each failed check and what to do about it (U2-02)', async ({ page }) => {
+    // Stub the whole snapshot rather than patching a live one: the count in
+    // the status line must be exactly the number of failing checks, and the
+    // host running the fixture has its own environment.
+    await page.route('**/api/v1/setup/status', async (route) => {
+      await route.fulfill({
+        json: {
+          ffmpeg: false, ffprobe: true, exiftool: true,
+          data_dir_writable: true, cache_writable: true,
+          free_disk_bytes: 8 * 1024 * 1024 * 1024, free_disk_ok: true,
+          db_healthy: false,
+          root_count: 1, healthy_root_count: 1, provider_count: 1, provider_ready: true,
+          asset_count: 1, searchable_shot_count: 1, search_index_ready: true,
+          next_step: 'search', ready: false, admin_auth: 'required',
+        },
+      });
+    });
+    await page.goto('/setup');
+    const fixes = page.locator('#env-fixes');
+    await expect(fixes).toBeVisible();
+    await expect(fixes).toContainText('FFmpeg');
+    await expect(fixes).toContainText('PATH');
+    await expect(fixes).toContainText('数据库健康');
+    await expect(fixes).toContainText('timingdex doctor');
+    // A check that passed must not be listed as needing work.
+    await expect(fixes).not.toContainText('FFprobe');
+    // ...and the status line must stop claiming success.
+    await expect(page.locator('#setup-status')).toHaveClass(/status bad/);
+    await expect(page.locator('#setup-status')).toContainText('2 项检查需要处理');
+  });
+});
+
+// Found while doing the accessibility pass on /library-roots, not by the
+// original audit: goStep() toggled .active on .step and nothing anywhere ever
+// declared .step{display:none}, so the four-step wizard rendered all four
+// panels at once. A first-time visitor met an empty mount-point field, an
+// empty verify result and a scan panel before typing anything, under a
+// numbered nav describing a sequence that was not happening.
+test.describe('library-roots wizard (audit U2-05 + the step-visibility defect it surfaced)', () => {
+  test('shows exactly one step at a time and moves aria-current with it', async ({ page }) => {
+    await page.goto('/library-roots');
+    await expect(page.locator('#step-1')).toBeVisible();
+    for (const id of ['#step-2', '#step-3', '#step-4']) {
+      await expect(page.locator(id), id).toBeHidden();
+    }
+    await expect(page.locator('.steps span[aria-current="step"]')).toHaveCount(1);
+    await expect(page.locator('.steps span[data-step="1"]')).toHaveAttribute('aria-current', 'step');
+
+    // Drive the wizard forward through its own entry point rather than by
+    // calling goStep directly, so the assertion covers the real transition.
+    await page.evaluate(() => (window as unknown as { goStep(n: number): void }).goStep(3));
+    await expect(page.locator('#step-3')).toBeVisible();
+    for (const id of ['#step-1', '#step-2', '#step-4']) {
+      await expect(page.locator(id), id).toBeHidden();
+    }
+    await expect(page.locator('.steps span[aria-current="step"]')).toHaveCount(1);
+    await expect(page.locator('.steps span[data-step="3"]')).toHaveAttribute('aria-current', 'step');
+    // Steps already passed read as done, not as pending.
+    await expect(page.locator('.steps span[data-step="1"]')).toHaveClass('is-done');
+  });
+
+  test('announces every asynchronous outcome (U2-05)', async ({ page }) => {
+    await page.goto('/library-roots');
+    // Each container the wizard writes an outcome into must be a live region;
+    // without this the whole feedback loop is silent to a screen reader.
+    for (const id of ['#root-health-wrap', '#discover-status', '#discover-results', '#step1-status', '#verify-result', '#added-summary', '#scan-result']) {
+      await expect(page.locator(id), id).toHaveAttribute('aria-live', 'polite');
+      await expect(page.locator(id), id).toHaveAttribute('role', 'status');
+    }
+    // The wizard nav is a landmark and each panel is a labelled group.
+    await expect(page.locator('nav#step-nav')).toHaveAttribute('aria-label', /.+/);
+    for (const id of ['#step-1', '#step-2', '#step-3', '#step-4']) {
+      await expect(page.locator(id), id).toHaveAttribute('role', 'group');
+      await expect(page.locator(id), id).toHaveAttribute('aria-label', /.+/);
+    }
+  });
+});
+
+// U4-03: the same aria-current defect the roots wizard had, on the wizard that
+// hands out a one-time pairing token. .step-panel already had display:none, so
+// only the announcement was wrong here — the visual sequence was fine.
+test.describe('worker-setup wizard accessibility (audit U4-03)', () => {
+  test('moves aria-current with the step and marks passed steps done', async ({ page }) => {
+    await page.goto('/worker-setup');
+    await expect(page.locator('#step-1')).toBeVisible();
+    await expect(page.locator('.steps span[aria-current="step"]')).toHaveCount(1);
+    await expect(page.locator('.steps span[data-step="1"]')).toHaveAttribute('aria-current', 'step');
+
+    await page.evaluate(() => (window as unknown as { goStep(n: number): void }).goStep(3));
+    await expect(page.locator('#step-3')).toBeVisible();
+    for (const id of ['#step-1', '#step-2', '#step-4']) {
+      await expect(page.locator(id), id).toBeHidden();
+    }
+    await expect(page.locator('.steps span[aria-current="step"]')).toHaveCount(1);
+    await expect(page.locator('.steps span[data-step="3"]')).toHaveAttribute('aria-current', 'step');
+    await expect(page.locator('.steps span[data-step="1"]')).toHaveClass('is-done');
+  });
+
+  test('announces every asynchronous outcome', async ({ page }) => {
+    await page.goto('/worker-setup');
+    for (const id of ['#hub-info', '#binary-grid', '#mounts-panel', '#script-area']) {
+      await expect(page.locator(id), id).toHaveAttribute('aria-live', 'polite');
+      await expect(page.locator(id), id).toHaveAttribute('role', 'status');
+    }
+    await expect(page.locator('nav#step-nav')).toHaveAttribute('aria-label', /.+/);
+    for (const id of ['#step-1', '#step-2', '#step-3', '#step-4']) {
+      await expect(page.locator(id), id).toHaveAttribute('role', 'group');
+      await expect(page.locator(id), id).toHaveAttribute('aria-label', /.+/);
+    }
+  });
+});
+
+// U3-04: "相似镜头" is a different code path from the search POST, and it
+// carried none of the caller's filters — so a shot the operator had just
+// filtered out of the result list could come straight back through the
+// drawer. The request itself is the assertion here: what the endpoint does
+// with the params is pinned in Go, but only a browser proves the page sends
+// them, and that filterQuery()'s leading "&" became a "?".
+test.describe('similar shots carry the active filters (audit U3-04)', () => {
+  test('the /similar request carries the drawer-visible filters as a query string', async ({ page }) => {
+    let similarURL = '';
+    await page.route('**/api/v1/shots/*/similar*', async (route) => {
+      similarURL = route.request().url();
+      await route.fulfill({ json: [] });
+    });
+    // The search itself is stubbed so the card stays on screen whatever the
+    // filter is; what this test is about is the request the drawer sends.
+    await page.route('**/api/v1/search/shots', async (route) => {
+      const body = JSON.parse(route.request().postData() ?? '{}');
+      await route.fulfill({
+        json: {
+          query: { raw: body.query, intent: 'auto' }, search_id: 's', query_hash: 'h',
+          results: [{
+            shot_id: 'pw-shot', asset_id: 'pw-asset', filename: 'fixture.mp4',
+            start_ms: 0, end_ms: 1000, description: 'stub', score: 1, rank: 1,
+          }],
+          offset: 0, limit: body.limit, has_more: false, window_exhausted: false,
+        },
+      });
+    });
+    await page.goto('/');
+    await page.locator('#q').fill('camera');
+    await page.locator('#q').press('Enter');
+    await expect(page.locator('.shot-result')).toHaveCount(1);
+
+    // Set filters the way an operator would, then close the drawer with
+    // Escape rather than Apply — either re-runs the search now (U3-05).
+    await page.locator('#filters-toggle').click();
+    await page.locator('#date-from').fill('2024-01-02');
+    await page.locator('#status-filter').selectOption('ready');
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.shot-result')).toHaveCount(1);
+
+    const card = page.locator('.shot-result').first();
+    await card.click();
+    await expect(page.locator('#shot-drawer')).toHaveClass(/open/);
+    await page.locator('#shot-drawer').getByRole('button', { name: '相似镜头' }).click();
+
+    await expect.poll(() => similarURL).not.toBe('');
+    const url = new URL(similarURL);
+    // The join is a "?" — filterQuery() hands back a leading "&" and this
+    // endpoint has no query string of its own to append to.
+    expect(url.search.startsWith('?')).toBe(true);
+    expect(url.searchParams.get('date_from')).toBe('2024-01-02');
+    expect(url.searchParams.get('status')).toBe('ready');
+  });
+});
+
+test.describe('narrowing a filter refines the search instead of discarding it (audit U3-05)', () => {
+  test('shot results survive a filter change and the new filter reaches the request', async ({ page }) => {
+    const bodies: Array<Record<string, unknown>> = [];
+    await page.route('**/api/v1/search/shots', async (route) => {
+      const body = JSON.parse(route.request().postData() ?? '{}');
+      bodies.push(body);
+      await route.fulfill({
+        json: {
+          query: { raw: body.query, intent: 'auto' }, search_id: 's', query_hash: 'h',
+          results: [{
+            shot_id: 'kept', asset_id: 'pw-asset', filename: 'fixture.mp4',
+            start_ms: 0, end_ms: 1000, description: 'kept', score: 1, rank: 1,
+          }],
+          offset: 0, limit: body.limit, has_more: false, window_exhausted: false,
+        },
+      });
+    });
+    await page.goto('/');
+    await page.locator('#q').fill('camera');
+    await page.locator('#q').press('Enter');
+    await expect(page.locator('.shot-result')).toHaveCount(1);
+
+    await page.locator('#filters-toggle').click();
+    await page.locator('#status-filter').selectOption('ready');
+    await page.keyboard.press('Escape');
+
+    // The search re-ran rather than being replaced by the browse listing…
+    await expect.poll(() => bodies.length).toBeGreaterThan(1);
+    await expect(page.locator('.shot-result')).toHaveCount(1);
+    // …and it re-ran with the filter that was just set.
+    const last = bodies[bodies.length - 1] as { asset_filter?: { status?: string } };
+    expect(last.asset_filter?.status).toBe('ready');
   });
 });

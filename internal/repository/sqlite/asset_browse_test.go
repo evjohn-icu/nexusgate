@@ -38,7 +38,7 @@ func TestListAssetCardsFilteredByCaptureFacets(t *testing.T) {
 			t.Fatal(err)
 		}
 		captured := fixture.captured
-		if err := repo.SaveMediaMetadata(ctx, fixture.id, domain.MediaMetadata{CapturedAt: &captured, CameraModel: fixture.camera}, "browse-fixture"); err != nil {
+		if err := repo.SaveMediaMetadata(ctx, fixture.id, domain.MediaMetadata{CapturedAt: &captured, CameraModel: fixture.camera}, "browse-fixture", "", ""); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := repo.db.ExecContext(ctx, `UPDATE capture_metadata SET region_label=? WHERE asset_id=?`, fixture.region, fixture.id); err != nil {

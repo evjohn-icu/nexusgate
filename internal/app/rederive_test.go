@@ -51,7 +51,7 @@ func TestRederiveSkipsPaidChainForCommittedAsset(t *testing.T) {
 		t.Fatal(err)
 	}
 	assetID := scanned.AssetID
-	if err := repo.SaveMediaMetadata(ctx, assetID, domain.MediaMetadata{DurationMS: 4000, HasAudio: false}, "test"); err != nil {
+	if err := repo.SaveMediaMetadata(ctx, assetID, domain.MediaMetadata{DurationMS: 4000, HasAudio: false}, "test", "", ""); err != nil {
 		t.Fatal(err)
 	}
 

@@ -36,6 +36,8 @@ jobs:
         run: bash scripts/check-doc-refs.sh
       - name: check deployment versions
         run: bash scripts/check-deployment-versions.sh
+      - name: check MCP tool count
+        run: bash scripts/check-tool-count.sh
 
   unit:
     runs-on: ubuntu-latest

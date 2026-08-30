@@ -84,7 +84,7 @@ func TestAnalyzeConsumesAlignedTimelineWhenAlignmentSucceeded(t *testing.T) {
 		t.Fatal(err)
 	}
 	assetID := scanned.AssetID
-	if err := repo.SaveMediaMetadata(ctx, assetID, domain.MediaMetadata{DurationMS: 120_000}, "test"); err != nil {
+	if err := repo.SaveMediaMetadata(ctx, assetID, domain.MediaMetadata{DurationMS: 120_000}, "test", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	// Seed the proxy artifact through a real derive lease, the only write path

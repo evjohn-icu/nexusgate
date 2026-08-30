@@ -253,6 +253,28 @@ var ErrCollectionNotFound = errors.New("collection not found")
 // may reword.
 var ErrWorkerNotFound = errors.New("worker not found")
 
+// ErrWorkerJobNotFound reports that a job id names nothing in the jobs table
+// on the Worker status read. GetWorkerJobStatus
+// (internal/repository/sqlite/remote_jobs.go) returns it when its lookup finds
+// no row, so /api/v1/jobs/{id}/worker-status answers 404 for a stale or
+// mistyped id instead of the classifier's default 500 — the caller's mistake
+// reported as a server fault told an operator to check the Hub's logs for
+// something the Hub did correctly.
+var ErrWorkerJobNotFound = errors.New("worker job not found")
+
+// ErrInvalidWorkerRegistration reports an enrollment whose registration is
+// missing a name or a platform. Mapped to 400: a Worker that posts an
+// incomplete registration is describing itself wrongly, and answering 500
+// sent the operator looking for a Hub failure that never happened.
+var ErrInvalidWorkerRegistration = errors.New("worker name and platform are required")
+
+// ErrPairingTokenInvalid reports an unrecognised, already-redeemed or expired
+// pairing token on worker enrollment. Mapped to 401 by the API layer. It lives
+// here rather than in internal/app because the repository is the only layer
+// that can decide it without a race, and internal/app cannot be imported from
+// there; app re-exports it as an alias so one condition keeps one identity.
+var ErrPairingTokenInvalid = errors.New("pairing token is invalid or already redeemed")
+
 // ErrReorderInvalid reports that a collection shot reorder cannot be applied
 // because the submitted list does not match the collection's current pins:
 // a length mismatch, a duplicate id, or a shot that is not in the collection.

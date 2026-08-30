@@ -277,7 +277,14 @@ body:lang(en),body:lang(fr),body:lang(es){line-height:var(--lh-latin)}
 .pagehead-actions{display:flex;gap:var(--s2);flex-wrap:wrap}
 
 /* ============================ 面板 ============================ */
-.panel{background:var(--surface);border:1px solid var(--rule);border-radius:var(--r-md);margin-bottom:var(--s4)}
+/* :where() keeps this at specificity zero on purpose. shellCSS is injected
+   after the page's own <style>, so a bare .panel here would beat every page
+   rule of the same name — which is what the v0.32 punchlist's P0 was about.
+   That fix landed on the compatibility layer further down but not on this
+   copy, leaving it inert: /setup asks for --raised panels and /collections for
+   margin-bottom:0, and both silently lost. Shell chrome (.shell-sidebar,
+   .nav-link, [hidden]) must keep winning and stays unwrapped. */
+:where(.panel){background:var(--surface);border:1px solid var(--rule);border-radius:var(--r-md);margin-bottom:var(--s4)}
 .panel-head{display:flex;align-items:center;gap:var(--s3);flex-wrap:wrap;padding:var(--s4) var(--s5);border-bottom:1px solid var(--rule)}
 .panel-head h2{flex:1 1 auto;font-size:var(--fs-title);font-weight:700}
 .panel-head .label{margin-left:auto}
@@ -577,6 +584,19 @@ function tdCloseSurface(id){const d=document.getElementById(id);if(!d)return;if(
 document.addEventListener('keydown',function(e){if(e.key==='Escape'){document.querySelectorAll('[aria-modal="true"][aria-hidden="false"]').forEach(function(d){tdCloseSurface(d.id)})}else if(e.key==='Tab'){const open=document.querySelector('[aria-modal="true"][aria-hidden="false"]');if(!open)return;const focusables=open.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');if(!focusables.length)return;const first=focusables[0],last=focusables[focusables.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}}});
 function openAdminDialog(opener){const el=opener&&opener.nodeType===1?opener:(opener&&opener.target)||document.getElementById('admin-trigger');tdOpenSurface('admin-dialog',el,'#admin-token')}
 function closeAdminDialog(){tdCloseSurface('admin-dialog')}
+// tdAuthDenied/tdAdminLoginRequired are the shared "this failed because you
+// are not logged in" contract. A page that swallows a 401 into a generic
+// error string leaves the reader with no next step, which is what /library-roots
+// did for every one of its admin calls.
+//
+// Revealing .shell-auth is deliberate and not redundant with
+// applyAdminAuthMode: that function hides the login control whenever the mode
+// is not "required", but the waiver is decided per peer from RemoteAddr, so an
+// internet peer under trusted_network still gets a 401 with the only way to
+// authenticate hidden. A 401 in hand is proof this peer needs a credential
+// whatever the mode says, so the control comes back.
+function tdAuthDenied(e){const status=e&&e.status;return status===401||status===403}
+function tdAdminLoginRequired(opener){const auth=document.querySelector('.shell-auth');if(auth)auth.hidden=false;const sidebar=document.querySelector('.shell-sidebar');const toggle=document.getElementById('shell-menu-toggle');if(sidebar&&!sidebar.classList.contains('open')){sidebar.classList.add('open');if(toggle)toggle.setAttribute('aria-expanded','true')}openAdminDialog(opener)}
 async function loginAdmin(){const token=getAdminToken();if(!token){shellSetAuthState(false);return}const button=document.getElementById('admin-login');if(button)button.disabled=true;try{const r=await fetch('/api/v1/auth/admin/session',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:token})});if(!r.ok)throw Error(tdT('shell.auth.loginFailed'));const input=document.getElementById('admin-token');if(input)input.value='';shellSetAuthState(true);window.dispatchEvent(new CustomEvent('timingdex:admin-auth-changed',{detail:{authenticated:true}}));refreshStatus()}catch(e){const state=document.getElementById('admin-session-state');if(state)state.textContent=e.message}finally{if(button)button.disabled=false}}
  async function logoutAdmin(){try{await fetch('/api/v1/auth/admin/session',{method:'DELETE',credentials:'same-origin',headers:shellAuthHeaders()})}finally{shellSetAuthState(false);window.dispatchEvent(new CustomEvent('timingdex:admin-auth-changed',{detail:{authenticated:false}}));refreshStatus()}}
 function statusCell(id,state,text){const el=document.getElementById(id);if(!el)return;el.textContent=text;const cell=el.closest('.status-cell');if(cell){const dot=cell.querySelector('.dot');if(dot)dot.className='dot '+state}}

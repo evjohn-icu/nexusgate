@@ -111,7 +111,7 @@ func newRepairDerivedFixture(t *testing.T) repairDerivedFixture {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	if err := repo.SaveMediaMetadata(ctx, asset.AssetID, domain.MediaMetadata{DurationMS: 1000}, "test"); err != nil {
+	if err := repo.SaveMediaMetadata(ctx, asset.AssetID, domain.MediaMetadata{DurationMS: 1000}, "test", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	runID, _, err := repo.CreateModelRun(ctx, asset.AssetID, "analysis", "hash", "provider", "model", "", "", "", "", "")

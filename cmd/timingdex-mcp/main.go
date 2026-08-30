@@ -23,6 +23,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -327,9 +328,17 @@ func (c *hubClient) getAsset(ctx context.Context, assetID string) (map[string]an
 }
 
 // getShot returns a single shot's full detail via the shot detail endpoint.
+// Decodes through getLarge like the other transcript-bearing reads: the
+// response embeds every aligned word inside the shot's time range, and
+// nothing in the tree caps how long a shot may be — a locked-off interview
+// single take is one shot. That word list is not unbounded the way an
+// asset-level transcript is (it cannot grow past the shot), but a long dense
+// take approaches do()'s 1 MiB bound closely enough that the cliff is real,
+// and crossing it fails the tool with "unexpected end of JSON input" rather
+// than anything an agent could act on.
 func (c *hubClient) getShot(ctx context.Context, shotID string) (map[string]any, error) {
 	var out map[string]any
-	if err := c.do(ctx, http.MethodGet, "/api/v1/shots/"+url.PathEscape(shotID), c.agentToken, nil, &out); err != nil {
+	if err := c.getLarge(ctx, "/api/v1/shots/"+url.PathEscape(shotID), &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -362,6 +371,74 @@ func errResult(err error) *mcp.CallToolResult {
 
 // requireString extracts a required string argument, returning an error result
 // for the MCP client when missing.
+// facetKeys is the exact set the Hub's domain.FacetFilter accepts. It is
+// duplicated here on purpose: the Hub decodes the request body with
+// encoding/json's default behaviour, which drops unknown fields silently, so a
+// key this list does not contain would widen the search instead of failing it.
+// An agent cannot tell a correctly-filtered result set from an accidentally
+// unfiltered one by looking at it, so the only safe place to catch a typo is
+// before the request leaves.
+var facetKeys = map[string]bool{
+	"asset_types": true, "shot_sizes": true, "camera_motions": true,
+	"audio_types": true, "qualities": true, "usable_as": true,
+	"min_duration_ms": true, "max_duration_ms": true,
+}
+
+func facetKeyList() string {
+	keys := make([]string, 0, len(facetKeys))
+	for k := range facetKeys {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
+}
+
+// parseFilters accepts the filters argument in either shape an MCP client
+// plausibly sends: the documented JSON string, or a real JSON object, which is
+// what a model following its instincts produces. Both are honoured; anything
+// else is an error.
+//
+// The previous version type-asserted to string and ignored every other type,
+// so an object argument disappeared and the search ran unfiltered while still
+// returning plausible results — a wrong answer with no error attached, which
+// is the worst failure this tool can have.
+func parseFilters(arg any) (map[string]any, error) {
+	switch v := arg.(type) {
+	case nil:
+		return nil, nil
+	case map[string]any:
+		return validateFacets(v)
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return nil, nil
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(v), &parsed); err != nil {
+			return nil, fmt.Errorf("filters is not valid JSON: %w; expected a JSON object of facet filters, e.g. {\"asset_types\":[\"broll\"]}", err)
+		}
+		return validateFacets(parsed)
+	default:
+		return nil, fmt.Errorf("filters must be a JSON object or a JSON object encoded as a string, got %T", arg)
+	}
+}
+
+func validateFacets(filters map[string]any) (map[string]any, error) {
+	if len(filters) == 0 {
+		return nil, nil
+	}
+	var unknown []string
+	for k := range filters {
+		if !facetKeys[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return nil, fmt.Errorf("unknown facet filter %s; supported keys are %s. The Hub ignores unknown keys, so sending one would silently widen the search rather than narrow it", strings.Join(unknown, ", "), facetKeyList())
+	}
+	return filters, nil
+}
+
 func requireString(args map[string]any, key string) (string, *mcp.CallToolResult) {
 	v, ok := args[key].(string)
 	if !ok || strings.TrimSpace(v) == "" {
@@ -415,7 +492,7 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 			mcp.WithString("query", mcp.Required(), mcp.Description("Search query, e.g. 'sunset over water', '城市夜景', or a tag")),
 			mcp.WithNumber("limit", mcp.Description("Maximum number of shots (default 20)")),
 			mcp.WithNumber("offset", mcp.Description("Optional zero-based offset into the full result list for pagination (default 0)")),
-			mcp.WithString("filters", mcp.Description("Optional JSON object of facet filters passed as the 'facets' body field. Supported keys: asset_types, shot_sizes, camera_motions, audio_types, qualities, usable_as (each a JSON array of strings), min_duration_ms, max_duration_ms (integers). Example: '{\"asset_types\":[\"broll\"]}'")),
+			mcp.WithString("filters", mcp.Description("Optional facet filters, as a JSON object or as a JSON object encoded in a string (both are accepted). Supported keys: asset_types, shot_sizes, camera_motions, audio_types, qualities, usable_as (each a JSON array of strings), min_duration_ms, max_duration_ms (integers). Example: '{\"asset_types\":[\"broll\"]}'. An unknown key is rejected with an error rather than ignored, because an ignored filter returns a wider result set that looks correct.")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			query, rerr := requireString(req.GetArguments(), "query")
@@ -430,11 +507,9 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 			if v, ok := req.GetArguments()["offset"].(float64); ok && v >= 0 {
 				offset = int(v)
 			}
-			var filters map[string]any
-			if raw, ok := req.GetArguments()["filters"].(string); ok && strings.TrimSpace(raw) != "" {
-				if err := json.Unmarshal([]byte(raw), &filters); err != nil {
-					return errResult(fmt.Errorf("filters is not valid JSON: %w", err)), nil
-				}
+			filters, ferr := parseFilters(req.GetArguments()["filters"])
+			if ferr != nil {
+				return errResult(ferr), nil
 			}
 			result, err := client.searchShots(ctx, query, limit, offset, filters)
 			if err != nil {

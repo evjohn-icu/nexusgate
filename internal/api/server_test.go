@@ -215,7 +215,7 @@ func TestSearchShotsV2StructuredEndpoint(t *testing.T) {
 	if err := repo.SaveTranscript(ctx, assets[0].ID, "fixture", "fixture-model", "api-speech", domain.Transcript{Language: "zh", Text: "明天见"}, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.SaveAlignment(ctx, assets[0].ID, "fixture", "fixture-model", "api-speech-align", "{}", domain.AlignmentResult{Words: []domain.AlignmentWord{{StartMS: 100, EndMS: 200, Text: "明天"}, {StartMS: 200, EndMS: 300, Text: "见"}}}); err != nil {
+	if err := repo.SaveAlignment(ctx, assets[0].ID, "fixture", "fixture-model", "api-speech-align", "{}", domain.AlignmentResult{Words: []domain.AlignmentWord{{StartMS: 100, EndMS: 200, Text: "明天"}, {StartMS: 200, EndMS: 300, Text: "见"}}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	response, err = send(`{"query":"他说过明天见","mode":"speech","limit":10,"include_evidence":true}`)
@@ -1502,7 +1502,7 @@ func TestPublicAssetDetailHidesPreciseLocationAndAbsolutePath(t *testing.T) {
 	}
 	latitude, longitude := 22.543096, 114.057865
 	capturedAt := time.Now().UTC()
-	if err := repo.SaveMediaMetadata(ctx, assets[0].ID, domain.MediaMetadata{CapturedAt: &capturedAt, CaptureTimeSource: "embedded_exif", Latitude: &latitude, Longitude: &longitude, LocationSource: "embedded_exif", LocationPrecision: "exact", CaptureTimeConfidence: .95, CameraModel: "DJI Mavic 3"}, "privacy-fixture"); err != nil {
+	if err := repo.SaveMediaMetadata(ctx, assets[0].ID, domain.MediaMetadata{CapturedAt: &capturedAt, CaptureTimeSource: "embedded_exif", Latitude: &latitude, Longitude: &longitude, LocationSource: "embedded_exif", LocationPrecision: "exact", CaptureTimeConfidence: .95, CameraModel: "DJI Mavic 3"}, "privacy-fixture", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	handler := NewServer("", service).Handler()
@@ -2550,7 +2550,7 @@ func TestSearchShotsV2AssetContextFilterExcludesOutsideShot(t *testing.T) {
 	now := time.Now().UTC()
 	// inAsset: captured yesterday, and "ready" (a proxy artifact exists).
 	inCaptured := now.AddDate(0, 0, -1)
-	if err := repo.SaveMediaMetadata(ctx, inAsset.ID, domain.MediaMetadata{CapturedAt: &inCaptured, CameraModel: "Sony FX3"}, "test"); err != nil {
+	if err := repo.SaveMediaMetadata(ctx, inAsset.ID, domain.MediaMetadata{CapturedAt: &inCaptured, CameraModel: "Sony FX3"}, "test", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repo.DB().ExecContext(ctx, `INSERT INTO derived_artifacts(id,asset_id,artifact_type,profile_hash,local_path,size_bytes,created_at) VALUES(?,?,?,?,?,?,?)`, "proxy-in", inAsset.ID, "proxy", "sw", "/cache/proxy-in.mp4", 20, now); err != nil {
@@ -2558,7 +2558,7 @@ func TestSearchShotsV2AssetContextFilterExcludesOutsideShot(t *testing.T) {
 	}
 	// outAsset: captured ten days ago (outside the window).
 	outCaptured := now.AddDate(0, 0, -10)
-	if err := repo.SaveMediaMetadata(ctx, outAsset.ID, domain.MediaMetadata{CapturedAt: &outCaptured}, "test"); err != nil {
+	if err := repo.SaveMediaMetadata(ctx, outAsset.ID, domain.MediaMetadata{CapturedAt: &outCaptured}, "test", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})

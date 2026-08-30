@@ -249,30 +249,36 @@ come with the runtime image. That is the shortest path on Windows.
 TIMINGDEX_MEDIA_ROOT=/path/to/footage docker compose up -d --build hub
 ```
 
-**Current prerequisite:** the shipped `docker-compose.yml` passes no admin-auth
-configuration, and the Hub fails closed when it detects it runs inside a
-container with the default `hub_security.admin_auth: trusted_network` and no
-`admin_auth_networks` — so a clean `docker compose up -d --build hub`
-currently refuses to start until this is resolved. The minimal, safe override
-is to demand the administrator token everywhere; Compose merges it
-automatically from a sibling file:
+**Admin auth in a container defaults to `required`.** The shipped
+`docker-compose.yml` sets `TIMINGDEX_HUB_ADMIN_AUTH: ${TIMINGDEX_HUB_ADMIN_AUTH:-required}`,
+so a clean `docker compose up -d --build hub` starts with the administrator
+token demanded on every administrator call and no LAN passwordless waiver. No
+override file is needed.
+
+That default exists because the waiver is decided from the peer address alone.
+Behind Docker's NAT every client looks like an RFC1918 peer, so
+`trusted_network` inside a container would silently waive the password for
+anything that reaches the published port — which is why the Hub **fails closed**
+(refuses to start) if it detects it is containerised with
+`hub_security.admin_auth: trusted_network` and no explicit
+`admin_auth_networks`.
+
+If you do want passwordless admin on a trusted LAN, name the CIDRs rather than
+relaxing the mode blindly:
 
 ```yaml
 # docker-compose.override.yml — merged automatically; the shipped file stays untouched.
 services:
   hub:
     environment:
-      TIMINGDEX_HUB_ADMIN_AUTH: required
+      TIMINGDEX_HUB_ADMIN_AUTH: trusted_network
+      TIMINGDEX_HUB_ADMIN_AUTH_NETWORKS: 192.168.1.0/24
 ```
 
-With `required`, every administrator call demands the pasted `admin-token`;
-there is no LAN passwordless waiver. This is **not** a recommendation to expose
-the Hub to the public Internet — it only removes the silent waiver a published
-Docker port would otherwise create. If you prefer passwordless admin on a
-trusted LAN, the equivalent is a `config.json` in the data volume setting
-`hub_security.admin_auth_networks` to your real LAN CIDR(s) (there is no
-environment variable for that list). On Unraid, add the same
-`TIMINGDEX_HUB_ADMIN_AUTH=required` item to the Hub template's environment.
+Both variables are read from the environment, so no `config.json` edit is
+required for this. On Unraid, set the same two items in the Hub template's
+environment. None of this is a recommendation to expose the Hub to the public
+Internet.
 
 The Hub then answers on `https://127.0.0.1:8787`, and `root add` must be given
 the container path (`/media/library`), not the host path. A published port puts
@@ -295,10 +301,13 @@ gotcha that makes NVENC fail silently without it.
 
 ## Quick start
 
-If `config.json` was copied from `config.example.json`, configure its enabled
-Provider keys before running any non-Worker CLI command, including `doctor`:
-the current validator runs before command dispatch. With no config file, the
-built-in Provider blocks are disabled, so the environment check can run first.
+`doctor` always runs first, whatever the config looks like. The provider-config
+validator that runs before command dispatch deliberately exempts `doctor` (and
+`worker`), so a `config.json` with an enabled provider whose key never resolved
+is something the environment check *reports* rather than something that blocks
+it — a diagnostic you must fix the problem to run would be useless. Every other
+non-Worker command does fail fast on that config, so fix what `doctor` names
+before `scan` or `serve`.
 
 ```bash
 export TIMINGDEX_DATA_DIR="$PWD/.timingdex-dev"

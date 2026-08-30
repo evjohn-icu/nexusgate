@@ -54,6 +54,14 @@ var (
 
 var ErrInvalidWorkerArtifact = errors.New("invalid worker artifact")
 
+// ErrRootPathInvalid marks a library-root path the caller got wrong: it does
+// not exist, or it is a file rather than a directory. Both are the operator's
+// input, not a server fault, and both used to surface as a bare 500 with the
+// real reason visible only in the Hub's log — so the person who mistyped a
+// path was told the server broke. The API maps this to 400 and carries the
+// message, which names the path.
+var ErrRootPathInvalid = errors.New("invalid library root path")
+
 // ErrWorkerArtifactLease is UploadWorkerArtifact's API-facing rename of
 // domain.ErrJobLeaseLost: writeWorkerArtifactResult (internal/api/server.go)
 // matches this with errors.Is to answer 409 specifically for an artifact
@@ -190,7 +198,7 @@ type Repository interface {
 	HybridSearchShots(context.Context, string, int) ([]domain.ShotSearchResult, error)
 	HybridSearchShotsFiltered(context.Context, string, int, domain.FacetFilter) ([]domain.ShotSearchResult, error)
 	SimilarShots(context.Context, string, int) ([]domain.ShotSearchResult, error)
-	SimilarShotsFiltered(context.Context, string, int, domain.FacetFilter) ([]domain.ShotSearchResult, error)
+	SimilarShotsFiltered(context.Context, string, int, domain.FacetFilter, domain.AssetContextFilter) ([]domain.ShotSearchResult, error)
 	DiscoverRareShots(context.Context, int) ([]domain.RareShot, error)
 	SaveRepurposePlan(context.Context, domain.RepurposePlan) (domain.RepurposePlan, error)
 	GetRepurposePlan(context.Context, string) (*domain.RepurposePlan, error)
@@ -604,10 +612,13 @@ func (s *Service) AddLibraryRoot(ctx context.Context, path string) (domain.Libra
 	}
 	info, err := os.Stat(absolute)
 	if err != nil {
-		return domain.LibraryRoot{}, fmt.Errorf("stat root path: %w", err)
+		// Two %w verbs: the sentinel drives the API's status mapping while the
+		// os error stays reachable for callers that want to tell "no such
+		// file" from "permission denied".
+		return domain.LibraryRoot{}, fmt.Errorf("%w: cannot read %s: %w", ErrRootPathInvalid, absolute, err)
 	}
 	if !info.IsDir() {
-		return domain.LibraryRoot{}, fmt.Errorf("path is not a directory: %s", absolute)
+		return domain.LibraryRoot{}, fmt.Errorf("%w: %s is a file, not a directory", ErrRootPathInvalid, absolute)
 	}
 	return s.repo.CreateLibraryRoot(ctx, absolute)
 }
@@ -924,12 +935,13 @@ func (s *Service) CreateWorkerPairing(ctx context.Context, ttl time.Duration) (r
 }
 
 func (s *Service) EnrollWorker(ctx context.Context, pairingToken string, registration remote.WorkerRegistration) (remote.Worker, string, error) {
+	// The repository marks its own refusals with sentinels
+	// (domain.ErrPairingTokenInvalid, domain.ErrInvalidWorkerRegistration),
+	// so this used to read err.Error() for the substring "pairing token" —
+	// exactly the message-text classification the repository forbids
+	// everywhere else. Rewording either refusal silently reclassified it.
 	worker, token, err := s.repo.EnrollWorker(ctx, pairingToken, registration)
 	if err != nil {
-		msg := err.Error()
-		if strings.Contains(msg, "pairing token") {
-			return remote.Worker{}, "", fmt.Errorf("%w: %v", ErrPairingTokenInvalid, err)
-		}
 		return remote.Worker{}, "", fmt.Errorf("worker enrollment: %w", err)
 	}
 	return worker, token, nil
@@ -1933,9 +1945,13 @@ func (s *Service) SimilarShots(ctx context.Context, shotID string, limit int) ([
 	return s.repo.SimilarShots(ctx, shotID, limit)
 }
 
-// SimilarShotsFiltered narrows SimilarShots by domain.FacetFilter.
-func (s *Service) SimilarShotsFiltered(ctx context.Context, shotID string, limit int, facets domain.FacetFilter) ([]domain.ShotSearchResult, error) {
-	return s.repo.SimilarShotsFiltered(ctx, shotID, limit, facets)
+// SimilarShotsFiltered narrows SimilarShots by domain.FacetFilter and the
+// owning asset's domain.AssetContextFilter — the same two constraints the
+// library page's main search already carries, so switching from search to
+// "find shots like this one" does not silently widen the candidate pool back
+// out to the whole library.
+func (s *Service) SimilarShotsFiltered(ctx context.Context, shotID string, limit int, facets domain.FacetFilter, assetFilter domain.AssetContextFilter) ([]domain.ShotSearchResult, error) {
+	return s.repo.SimilarShotsFiltered(ctx, shotID, limit, facets, assetFilter)
 }
 
 func (s *Service) DiscoverRareShots(ctx context.Context, limit int) ([]domain.RareShot, error) {
@@ -2292,9 +2308,10 @@ var ErrWebDAVSpaceNotFound = errors.New("unknown WebDAV space")
 // Mapped to 400 by the API layer.
 var ErrWebDAVLinkKindInvalid = errors.New("unknown link kind (want original or proxy)")
 
-// ErrPairingTokenInvalid reports an unrecognised or already-redeemed pairing
-// token on worker enrollment. Mapped to 401 by the API layer.
-var ErrPairingTokenInvalid = errors.New("pairing token is invalid or already redeemed")
+// ErrPairingTokenInvalid is domain's sentinel, re-exported so the API layer's
+// existing errors.Is sites keep working and the two layers cannot disagree
+// about what the condition is called.
+var ErrPairingTokenInvalid = domain.ErrPairingTokenInvalid
 
 func (s *Service) CreateWebDAVAccount(ctx context.Context, username, password string) error {
 	if s.webdavAccounts == nil {

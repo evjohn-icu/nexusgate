@@ -249,8 +249,14 @@ func TestLibraryPageSearchIsShotFirst(t *testing.T) {
 	if strings.Contains(page, `'/api/v1/search?q='+encodeURIComponent(q)`) {
 		t.Fatalf("search() must not query the facet-blind asset search endpoint")
 	}
-	if !strings.Contains(page, `renderShotResults(data&&data.results?data.results:[])`) {
-		t.Fatalf("search() must render shot-level results from the v2 response")
+	// Paging (U3-02) moved the response handling into runShotSearch, so this
+	// pins the two halves that used to be one expression: the v2 results are
+	// what gets accumulated, and the accumulated page is what gets rendered.
+	if !strings.Contains(page, `const page=data&&Array.isArray(data.results)?data.results:[]`) {
+		t.Fatalf("search() must take shot-level results from the v2 response")
+	}
+	if !strings.Contains(page, `renderShotResults(shotPage.items)`) {
+		t.Fatalf("search() must render the accumulated shot page")
 	}
 	for _, marker := range []string{
 		`data-shot-result`,           // result cards are shot rows
@@ -327,6 +333,11 @@ func TestLibraryPageSelectionFeatures(t *testing.T) {
 		`tdT('library.similarShots')`,
 		`loadSimilarShots()`,
 		`/api/v1/shots/'+encodeURIComponent(shotId)+'/similar'`,
+		// Audit U3-04: "similar shots" must carry the caller's active filters
+		// the same way the main search POST does, so switching from search to
+		// this panel doesn't silently widen back out to the whole library.
+		`const fq=filterQuery();`,
+		`'/similar'+(fq?'?'+fq.slice(1):'')`,
 		`tdT('library.timelineEmptyTry')`,
 		`testDriveStart`,
 		`'/api/v1/test-drive'`,

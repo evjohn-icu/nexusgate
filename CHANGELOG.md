@@ -2,6 +2,320 @@
 
 ## Unreleased
 
+- **The public asset detail no longer hands out absolute disk paths** (audit
+  F3-03). `GET /api/v1/assets/{id}` returned `thumbnail_path` and
+  `proxy_path` verbatim — absolute locations under the Hub's data directory,
+  carrying the operator's username and cache layout — to every trusted-read
+  caller: any LAN peer, and any agent token from any network. The handler's
+  own redaction block, two lines above, cleared the location's absolute path,
+  the file id and the coordinates, and promised that absolute paths stay
+  behind the administrator boundary; these two fields were simply never added
+  to it. Nothing in the tree reads them — the browser and the Skill both fetch
+  artifacts through `/assets/{id}/thumbnail` and `/proxy`, which serve the
+  bytes without naming the file — so they are now cleared outright.
+
+- **Three gates now hold the docs to the code** (audit's root-cause batch).
+  Fourteen documentation drifts were repaired by hand on 2026-08-30, but
+  nothing stopped the fifteenth: `scripts/check-doc-refs.sh` only validates
+  that `file:line` references in `docs/` are in range, and checks no semantic
+  claim at all. Added: `TestAgentCapabilitiesMatchesSkillMD` /
+  `...MatchesAPIContractDoc` (the live `/api/v1/agent/capabilities` response
+  must equal the action lists `SKILL.md` and `api-contract.md` print);
+  `TestSkillsDocumentedEndpointsExistInRouteInventory` /
+  `TestAgentReachableRoutesAreDocumentedOrAllowlisted` (both directions —
+  a renamed route leaves a dangling doc reference, and a new agent-reachable
+  route must be documented or carry a written reason in an allow-list that is
+  itself checked for staleness); `TestMCPToolsMatchUsageDoc` (registered tool
+  names equal the doc's table, and each tool's documented HTTP method and path
+  fragments are found in the handler's own source via `go/ast`); and
+  `scripts/check-tool-count.sh`, wired into CI, which fails closed when any of
+  the four manifests claiming a tool count disagrees with `AddTool(`.
+
+- **Narrowing a filter refines the search instead of discarding it** (audit
+  U3-05, found while writing the U3-04 browser test). Every filter control on
+  the library page carried `onchange="load()"`, and `load()` is the asset
+  browse listing. Once the search became shot-first, that meant the single
+  gesture a user makes to refine a result set was the one that threw it away:
+  the shot cards vanished and the unfiltered asset list came back. The
+  handlers simply predated the refactor. All nine controls, plus Apply, Clear,
+  chip removal and collection selection, now go through `refreshResults()`,
+  which re-runs the search when there is a query and is exactly the old browse
+  listing when there is not.
+
+- **New files under `cmd/timingdex-mcp/` are visible to git again** (audit
+  G1-07).
+  `.gitignore` carried a bare `timingdex-mcp` for the built binary, which also
+  matched the `cmd/timingdex-mcp` *directory*, so every new file added there
+  was silently invisible to `git status` and `git add` — already-tracked files
+  kept working, so it only ever bit new ones, which is the worst way for this
+  to fail. Anchored to `/timingdex-mcp` (and `/timingdex-corpusgen`, which had
+  the same problem), matching the `/timingdex` two lines above it that was
+  always right.
+
+- **Worker enrollment and job status say whose mistake it was** (audit F7-02,
+  F7-03). Two reachable Worker-surface refusals answered 500: an unknown job
+  id on `GET /api/v1/admin/worker-jobs/{id}`, and an enrollment carrying a
+  valid pairing token with no `name` or `platform`. Both are the caller's
+  mistake, and "internal error" sent the operator to read Hub logs for
+  something the Hub had answered correctly; they are now 404 and 400, with
+  the 400 naming the missing fields. The enrollment classifier that decided
+  between them was `strings.Contains(err.Error(), "pairing token")` — the one
+  thing this repository forbids everywhere else, and whose failure mode is
+  that rewording a message silently reclassifies it. The three refusals now
+  carry sentinels. `ErrPairingTokenInvalid` moved from `internal/app` to
+  `internal/domain` (with an alias left behind, so one condition keeps one
+  identity) because only the repository can decide it without a race and the
+  repository cannot import `internal/app`. An incomplete registration is
+  deliberately not the 401 "enrollment rejected": that answer would send an
+  operator off to regenerate a pairing token that was fine.
+
+- **"Similar shots" respects the filters on screen** (audit U3-04). It is a
+  separate code path from the search POST and carried neither facets nor the
+  asset context, so a shot the operator had just filtered out of the result
+  list could come straight back through the drawer. `GET
+  /api/v1/shots/{id}/similar` now takes the same asset-context filter the
+  browse listing does, under the same query-string param names
+  (`date_from`/`region`/`camera`/`session`/`status`), and 400s on an
+  unparseable date or an unknown status rather than compiling it into a WHERE
+  clause that matches nothing.
+
+- **`get_shot` no longer has a size cliff** (audit M1-04). It was the last
+  transcript-bearing MCP tool still decoding through `do()`'s 1 MiB bound;
+  it now uses `getLarge` like `get_asset`, `get_transcript` and
+  `get_timeline`. The audit called the embedded word list "unbounded",
+  which overstates it — `GetShot` reads only the words inside the shot's own
+  time range, so it cannot grow with asset length. The cliff is real anyway:
+  nothing anywhere caps how long a shot may be, one locked-off take is one
+  shot, and roughly twenty thousand aligned words crosses the bound. Past it
+  the tool returned "unexpected end of JSON input", which gives an agent no
+  next step.
+
+- **The Worker setup wizard announces which step you are on** (audit U4-03).
+  `aria-current="step"` was written into the markup on step 1 and `goStep()`
+  only ever rewrote `className`, so a screen reader was told "step 1 of 4"
+  for the whole flow — including on the page that mints a one-time pairing
+  token, where knowing you have reached the generate step matters. Passed
+  steps now read as done through `.steps span.is-done`, a rule the shell has
+  styled since v0.32 that this page never set. The step nav is a labelled
+  landmark, the four panels are labelled groups, and the four containers the
+  wizard writes into are live regions. Unlike `/library-roots`, the visual
+  sequence was never broken here: `.step-panel{display:none}` was already
+  declared.
+
+- **A Hub with no providers says so instead of shrugging** (audit X1-01).
+  `classifyJobFailure` had no branch that could ever return
+  `JobFailureCategoryConfiguration`; the constant's own comment said "No
+  sentinel produces it yet". A cold-start Hub with nothing configured therefore
+  landed all five of its terminal failures in `unknown`, and `/api/v1/issues`
+  showed an unlabeled bucket with no repair link — while the progress page has
+  carried the `configuration` → `/providers` mapping and its five translations
+  all along, waiting for a producer nobody wrote. The three provider-channel
+  sentinels that mean "the deployment is incomplete"
+  (`ErrProviderChannelNotConfigured`, `errProviderChannelSecretMissing`,
+  `errProviderChannelMultiframeUnsupported`) now map to it. Deliberately not
+  included: a spent key (401/402/403), which stays `provider_auth` because the
+  deployment is fine and the credential is dead, and `ErrNoRoute` /
+  `ErrNoAvailable`, which clear on their own once a cooldown expires.
+
+- **The `/library-roots` wizard shows one step at a time** — a defect the audit
+  did not find and the accessibility pass surfaced. `goStep()` toggles `.active`
+  on `.step`, and nothing in the shell or the page ever declared
+  `.step{display:none}`, so all four panels rendered at once: a first-time
+  visitor met an empty mount-point field, an empty verify result and a scan
+  panel before typing anything, under a numbered nav describing a sequence that
+  was not happening. `worker_setup_page.go` had this right with `.step-panel`.
+
+- **The `/library-roots` wizard is usable without sight** (audit U2-05). The
+  largest and most complex page in the product — and the one a new user meets
+  first — had zero `aria-*` and zero `role=` across 445 lines. Every container
+  the wizard writes an outcome into is now a live region, so the feedback loop
+  is no longer silent: without it a button is pressed, text appears somewhere,
+  and nothing is announced. The step nav is a labelled landmark whose
+  `aria-current` moves with the wizard, each panel is a labelled group, and
+  passed steps read as done rather than pending.
+
+- **A shared search link comes back as a search** (audit U3-01). `loadLibrary`
+  put the restored query back into the box and then ran the browse listing, so
+  refreshing or sending someone a result URL showed a different thing than the
+  sender saw. The collection was never restored from the URL at all. It now
+  restores the collection too and, when a query is present, waits for
+  `loadSessions`/`loadCollections` before running the search — without that
+  wait, `search()` would call `syncURL()` while the session and collection
+  selects were still empty and rewrite the address bar without the very params
+  it was restoring.
+
+- **Search results past the first page are reachable** (audit U3-02). The v2
+  endpoint has returned `offset`/`has_more`/`next_offset`/`window_exhausted`
+  since v0.31; the page asked for 40 rows and said nothing about the rest.
+  There is now a load-more control that appends the next page, and a footer
+  that reports how many shots are shown. `window_exhausted` gets its own
+  sentence rather than being folded into "that is everything": the page ended
+  exactly on `MaxSearchWindow` and more may exist past a boundary one request
+  cannot cross.
+
+- **`/library-roots` offers a way in when the Hub answers 401** (audit U2-01).
+  Every admin call on the wizard collapsed the status code into prose, so a
+  401 was indistinguishable from a broken share and there was no way to act on
+  it; the health panel labelled *every* failure — including an unreachable Hub
+  — as an auth problem. The thrown error now carries the status, each catch
+  branches on it, and an auth failure renders a callout whose button opens the
+  shared login dialog and retries the step that failed. Revealing that control
+  is deliberate even when `admin_auth` is not `required`: the waiver is decided
+  per peer from `RemoteAddr`, so an internet peer under `trusted_network` still
+  gets a 401 with the only way to authenticate hidden.
+
+- **`/setup` names each failed check and what to do about it** (audit U2-02).
+  Six environment checks reported the same bare failure marker and nothing else
+  — not which remedy applies, and not that `timingdex doctor` prints the same
+  probes with the paths this page deliberately withholds (root paths are
+  admin-only everywhere else in the UI). Each failing check now carries its own
+  next step, and the status line stops reporting success while checks fail.
+
+- **The worker wizard's failure text is readable** (audit U1-01/U1-02). The
+  generate-failure message was the only self-rescue text on the page and it was
+  painted a leftover dark-theme salmon on a light panel: 1.66:1, the least
+  readable string on the page at the moment it mattered most. It now uses the
+  shared contradicted callout (4.8:1 light, 5.5:1 dark). The mount-path label's
+  leftover `#bfcae0` (1.65:1) became `--text-muted` (6.1:1). The library page's
+  first-run guidance had the same defect in the same shape — three inline hexes
+  that `TestPageCSSUsesDesignTokens` cannot see because it only scans `<style>`
+  blocks — and now uses `--brand` and the shared primary button.
+
+- **Browser coverage for the two waived admin-auth branches** (audit U4-01).
+  The Playwright fixture serves one Hub configured `admin_auth: required`,
+  while production's default is `trusted_network`, so the whole v0.33 access UI
+  — the Access status cell, the `/providers` and `/workers` callouts, the
+  hiding of the login control — had never been through a browser. Three specs
+  now stub `GET /api/v1/setup/status`, the single place the shell reads the
+  mode from, and assert all three branches. This covers the UI branch only;
+  whether the server actually waives the credential is a separate claim, pinned
+  by `TestAdminAuthModeRootWriteGuard`.
+
+- **Two silent CSS defects on shared surfaces** (audit U2-03/U1-04).
+  `/library-roots` hid its two status spans with a selector list that began
+  with a stray `+` combinator; a CSS selector list is not forgiving, so one
+  invalid selector voided the whole list and neither span was ever hidden. And
+  the shell declared a bare `.panel` rule alongside the `:where()`-wrapped copy
+  the v0.32 punchlist added — shellCSS is injected after each page's own
+  `<style>`, so the bare rule beat every page rule of the same name and left
+  that fix inert. `/setup` asked for `--raised` panels and `/collections` for
+  `margin-bottom:0`; both silently lost, and now do not.
+
+- **Probe-stage writes are lease-bound** (audit F5-01). `SaveMediaMetadata`,
+  `SaveSpeechClassification` and `SaveAlignment` took no `jobID`/`owner` and
+  performed no compare-and-swap, so a holder whose lease had been reclaimed
+  mid-job still landed its rows in `media_metadata`, `capture_metadata`,
+  `speech_classifications`, `alignment_runs` and `transcript_words`.
+  `CompleteJob`'s CAS did not cover them because they commit before it. All
+  three now take the lease pair and test it inside their own transaction (or,
+  for the single-statement one, inside the INSERT itself, so there is no
+  check-then-write window), returning `domain.ErrJobLeaseLost` and writing
+  nothing when the lease is gone. Both empty still means "no lease to check",
+  which is what the CLI and fixtures rely on. `SaveAlignment` mattered most:
+  its words are a provider result two attempts need not agree on, and
+  `transcript_words` feeds the evidence gate's speech channel directly.
+  `TestStaleLeaseProbeWritesRejected` covers all three against real SQLite.
+
+- **`search_shots` no longer discards filters silently** (audit M1-01). The MCP
+  tool type-asserted `filters` to a string and ignored every other type, so an
+  agent passing a JSON object — the shape a model produces naturally — had its
+  filter dropped and got a wider result set with no error to notice. Objects
+  and JSON strings are both accepted now, and an unknown facet key is rejected
+  by name instead of being forwarded to a Hub that drops unknown fields — which
+  also closes audit M1-03, the same silent-discard failure one level down. That
+  rejection is the MCP side only: nothing in the tree sets
+  `DisallowUnknownFields`, so a caller reaching the search endpoint over plain
+  HTTP still has a mistyped facet ignored. The parameter previously had no test
+  coverage at all.
+
+- **`get_shot` reports ASR speech instead of implying silence** (audit M1-02).
+  Shot detail returned only forced-alignment words, and `align` is an optional
+  stage most assets never run, so an ASR-only shot looked like silent footage.
+  It now falls back to the overlapping ASR segments and labels which source it
+  used (`transcript_source`: `aligned` / `asr` / absent), the same vocabulary
+  `GET /api/v1/assets/{id}/transcript` uses. Segment timing is reported in a
+  separate field so it can never be read as word timing.
+
+- **A mistyped library-root path is a 400, not a 500** (audit X1-02). `POST
+  /api/v1/roots` answered `internal_error` for a path that does not exist or is
+  a file rather than a directory, sending the real reason only to the Hub log —
+  the operator who mistyped a path was told the server broke. Both now carry
+  the new `app.ErrRootPathInvalid` sentinel and answer 400 with a message that
+  names the path and the problem.
+
+- **The retrieval benchmark is reproducible again** (audit F4-02). Five
+  consecutive runs now produce identical numbers, matching the frozen baseline
+  exactly. The cause was the fixture, not the engine: `seedGoldenCorpus` left
+  shot ids to `idgen.New()`, and shot id is the ranking tie-breaker, so every
+  exactly-tied pair reordered on every run and `v2-weighted`'s AssertionFP
+  oscillated between 54 and 55. Production ids are stable, so ranking was never
+  affected. Separately — a real defect, though not this one's cause —
+  `WeightedBlend.Fuse` summed weighted scores in Go map iteration order, which
+  makes equal scores differ by an ULP and defeats a tie-breaker that requires
+  exact equality; it now accumulates in sorted signal order.
+
+- **`THIRD-PARTY-LICENSES` covers every linked module** (audit G1-02). Five
+  modules compiled into the binary had no entry: `github.com/cenkalti/backoff`
+  (MIT), `github.com/geoffgarside/ber` (BSD-3-Clause),
+  `github.com/grandcat/zeroconf` (MIT), `github.com/hirochachacha/go-smb2`
+  (BSD-2-Clause) and `github.com/miekg/dns` (BSD-3-Clause) — all of which
+  require reproducing their copyright notice. The file now lists 24 modules,
+  verified against `go list -deps` under linux, windows and darwin, because two
+  existing entries are only reachable under a non-linux build.
+
+- **Documentation corrected against the code it describes** (2026-08-29 audit,
+  `docs/v0.31-audit-2026-08-29.md` §5). Fifteen claims that had drifted away
+  from the implementation were re-verified and rewritten. The ones that changed
+  meaning rather than a number:
+  - `SECURITY.md` no longer describes `region_label` as a coarsened view of the
+    capture coordinates. It is free text set by whoever wrote the row, nothing
+    reverse-geocodes into it, and calling it a privacy transform promised a
+    guarantee the code does not make.
+  - `skills/timingdex/` and the MCP reference no longer promise that the agent
+    token is refused with `401` on administrator routes. That holds under
+    `hub_security.admin_auth: required` and from a remote network; under the
+    default `trusted_network` the guard waives the credential for a trusted
+    peer *before* reading the header, so an agent on the Hub's own LAN would
+    succeed. The Skill states the boundary as a rule of its own conduct and
+    names the setting that enforces it.
+  - `openspec/specs/search-retrieval` described asset-level search as unscored
+    after change 0024 had already added `ORDER BY bm25(asset_search)` to the
+    FTS branch. A stale "single source of truth" is worse than a stale README;
+    the requirement now describes both branches and what is still missing
+    (a relevance scale comparable *across* them).
+  - The README and `deploy/unraid/README.md` claimed a container deployment
+    needs a manual admin-auth override, and the README claimed `doctor` cannot
+    run before provider keys are configured. Both were fixed in this same
+    Unreleased block; only the docs lagged. Compose and the Unraid template
+    both ship `TIMINGDEX_HUB_ADMIN_AUTH=required`, both admin-auth settings are
+    environment variables (the README said the CIDR list had none), and
+    `doctor` is deliberately exempt from the provider validator — a diagnostic
+    you must fix the problem to run would be useless.
+  - `search_shots` pagination (`offset`/`has_more`/`next_offset`/
+    `window_exhausted`) and `asset_filter` are documented for agents for the
+    first time, along with two silent-failure modes: `filters` must be a JSON
+    *string*, and a misspelled facet key is dropped rather than rejected —
+    both return a wider result set that looks correct.
+  - `docs/retrieval-benchmark-v030-merged.md` records `v2-weighted`'s
+    AssertionFP as `54–55` rather than a fixed number: four consecutive runs on
+    one machine gave 54/55/55/54. `WeightedBlend.Fuse` sums in Go map iteration
+    order (`fusion.go:46`), so equal scores differ by an ULP and the exact-
+    equality tie-breaker (`retriever.go:46`) never fires. No test pins the
+    value, but the legacy-compat ranking path wobbles at ties for the same
+    reason.
+  - `state.md`'s browser-smoke figure is corrected to 50/52; CI's `retries: 1`
+    masks two 30-second timeouts, so a green CI run is not evidence against it.
+  - `.claude-plugin/marketplace.json` no longer advertises plan drafting; the
+    plugin has shipped six read-only tools since the write tools were removed.
+  - `CLAUDE.md`'s migration ceiling (`0035`, 35 files, `0034` deliberately
+    duplicated), library-page anchor count (19) and dependency list (nine
+    direct) match the tree, each with a note on how to re-derive it.
+
+  No behavior changed. The common cause is that `scripts/check-doc-refs.sh`
+  validates `file:line` bounds under `docs/` only — nothing reads `CLAUDE.md`,
+  `README.md`, `SECURITY.md`, `skills/`, `plugins/` or `openspec/specs/`, and
+  nothing anywhere checks a semantic claim.
+
 - **Clean container startup by default**: the shipped Docker Compose and Unraid
   Hub entry points now default `TIMINGDEX_HUB_ADMIN_AUTH=required`, so a fresh
   container demands its generated administrator token on every write instead of

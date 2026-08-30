@@ -2,6 +2,7 @@ package search
 
 import (
 	"maps"
+	"slices"
 )
 
 // WeightedBlend is the classic weighted-sum fusion: Score = sum(weight *
@@ -41,11 +42,22 @@ func (f *WeightedBlend) Fuse(results []ChannelResult) []Candidate {
 			}
 		}
 	}
+	// Accumulate in a fixed signal order. Ranging over f.Weights directly
+	// would sum in Go's randomized map order, and floating-point addition is
+	// not associative: two shots that should score exactly the same came out
+	// differing in the last ULP from one run to the next. sortCandidates'
+	// tie-breaker requires exact equality (retriever.go, `worse`), so it never
+	// fired for those pairs and their order flipped between runs — visible as
+	// v2-weighted's AssertionFP oscillating 54/55 across identical benchmark
+	// runs, and as unstable ordering of near-tied shots on the legacy
+	// compatibility path this strategy still serves. Fix the summation order;
+	// do not loosen the tie-breaker, which is what makes equal scores stable.
+	signals := slices.Sorted(maps.Keys(f.Weights))
 	scored := out[:0]
 	for _, candidate := range out {
 		var score float64
-		for signal, weight := range f.Weights {
-			score += weight * candidate.Signals[signal]
+		for _, signal := range signals {
+			score += f.Weights[signal] * candidate.Signals[signal]
 		}
 		if score <= 0 {
 			continue

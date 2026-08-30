@@ -43,10 +43,35 @@ headers are not used to manufacture browser trust.
 
 Every other write route — most importantly
   `POST /api/v1/repurpose/plans/{id}/revisions/{revision}/approve` and
-  `POST /api/v1/pipeline/run` — accepts only the administrator token and
-  returns `401 Unauthorized` for the agent token, or for no credential at all.
-  This is enforced by the Hub's route wiring (`requireAgentOrAdmin` vs.
-  `requireHubAdmin` in `internal/api/server.go`), not by this document.
+  `POST /api/v1/pipeline/run` — is wrapped in `requireHubAdmin` rather than
+  `requireAgentOrAdmin` (`internal/api/server.go`). This is enforced by the
+  Hub's route wiring, not by this document.
+
+  **The agent token is refused everywhere. What varies is whether a credential
+  is demanded at all.** `requireHubAdmin` waives only a request that carries
+  **no `Authorization` header** (`internal/api/network_guard.go:101-103`); any
+  presented credential is checked against the administrator token and rejected
+  if it does not match, from any network:
+
+  | `admin_auth` | Trusted peer, **no** header | Trusted peer, agent token | Remote peer |
+  |---|---|---|---|
+  | `required` | `401` | `401` | `401` |
+  | `trusted_network` (**default**) | **succeeds** | `401` | `401` |
+  | `off` | succeeds | `401` | succeeds |
+
+  So `401 Unauthorized` for the agent token holds under every mode — this Skill
+  cannot reach an administrator route with the token it has. What does **not**
+  hold is "an administrator route always demands a credential": under the
+  default `trusted_network`, an unauthenticated request from the Hub's own
+  machine or LAN succeeds. `TestAdminAuthModeRootWriteGuard` pins both halves —
+  `trusted_network waives a trusted peer` expects `201`, and
+  `trusted_network never waives on a presented credential` expects `401` for
+  `Bearer wrong-token` from the same trusted address.
+
+  The practical consequence for an operator: "agents draft, humans approve" is
+  enforced against *this Skill* by the token in every mode, but a different
+  process on the same LAN that sends no header at all is not stopped under the
+  default. `hub_security.admin_auth: required` closes that.
 
 The read-only routes below (`/api/v1/hardware`, `/api/v1/jobs`, search, plan
 inspection) need no credential when the request comes from a trusted network —
@@ -104,12 +129,22 @@ GET /api/v1/hardware
 GET /api/v1/jobs?limit=100
 GET /api/v1/search/shots/hybrid?q=<query>&limit=20
 POST /api/v1/search/shots
-GET /api/v1/shots/{shot-id}/similar?limit=10
+GET /api/v1/shots/{shot-id}/similar?limit=10&date_from=&status=
 GET /api/v1/discover/rare-shots?limit=20
 GET /api/v1/assets/{asset-id}/transcript
 GET /api/v1/cost/summary
 GET /api/v1/pipeline/throttle
 ```
+
+`GET /api/v1/shots/{shot-id}/similar` accepts the same filters the browse
+listing does, so "more like this" can be scoped to the material you are
+already working within: the facet params (`asset_type`, `asset_shot_size`,
+`asset_camera_motion`, `asset_audio_type`, `asset_quality`, `asset_usable_as`,
+`min_duration_ms`, `max_duration_ms`) and the asset-context params
+(`date_from`, `date_to` — both `YYYY-MM-DD` — plus `region`, `camera`,
+`session`, `status`). An unparseable date or an unknown status is a 400
+`invalid_request`, never a silently empty result. Omitting them all is the
+unfiltered behaviour this endpoint has always had.
 
 `GET /api/v1/assets/{asset-id}/transcript` returns the asset's transcript with
 the strongest timing evidence available. It is a trusted read like the rest of
@@ -150,22 +185,39 @@ POST /api/v1/search/shots
   "query": "夜晚下雨，有人撑伞走过街道",
   "mode": "auto",
   "limit": 20,
+  "offset": 0,
   "diversity": 0.2,
   "include_evidence": true,
   "include_context": false,
-  "facets": { "shot_sizes": ["wide"] }
+  "facets": { "shot_sizes": ["wide"] },
+  "asset_filter": { "captured_from": "2026-01-01T00:00:00Z", "session_id": "sess_12" }
 }
 ```
 
 `mode` is `auto` (the default; the Hub routes the intent itself) or one of
-`fact`/`speech`/`semantic`/`similar`/`creative`. The response echoes the
-resolved intent, adds `search_id`/`query_hash` (for correlating feedback with
-a query), and each result carries per-constraint `evidence`:
+`fact`/`speech`/`semantic`/`similar`/`creative`.
+
+`facets` narrows by the **shot's** own controlled vocabulary (`asset_types`,
+`shot_sizes`, `camera_motions`, `audio_types`, `qualities`, `usable_as`,
+`min_duration_ms`, `max_duration_ms`). `asset_filter` narrows by the **owning
+asset's** capture context and is a separate object: `captured_from`,
+`captured_to` (RFC3339), `region_label`, `camera_model`, `session_id`,
+`status`. A nil or all-empty `asset_filter` matches everything. Use it to scope
+a search to one shoot ("only the material from session X") without spelling the
+shoot out in the query text.
+
+`offset` pages the final ranked list **after** selection and diversity — it
+never trims the recall pool, so paging does not change what ranked. The
+response echoes the resolved intent, adds `search_id`/`query_hash` (for
+correlating feedback with a query), reports its own paging, and each result
+carries per-constraint `evidence`:
 
 ```json
 {
   "query": { "raw": "夜晚下雨，有人撑伞走过街道", "intent": "fact" },
   "search_id": "9f2c…", "query_hash": "a1b2c3d4e5f60718",
+  "offset": 0, "limit": 20, "has_more": true, "next_offset": 20,
+  "window_exhausted": false,
   "results": [{
     "shot_id": "shot_123", "asset_id": "asset_8", "filename": "A0038.MOV",
     "start_ms": 50120, "end_ms": 56480, "score": 0.91,
@@ -179,6 +231,18 @@ a query), and each result carries per-constraint `evidence`:
   }]
 }
 ```
+
+Paging — read these fields rather than inferring the end of the list from a
+short page:
+
+- `has_more` — another page exists inside the search window. `next_offset` is
+  present exactly when `has_more` is true and names the offset to request next.
+- `window_exhausted` — this page ends at the hard `MaxSearchWindow` boundary.
+  More matches may exist beyond it, but no `offset` will reach them: the window
+  caps how far one query may traverse. The answer is a narrower query or a
+  tighter `facets`/`asset_filter`, not more paging. `has_more` is false when
+  `window_exhausted` is true, so a client that only reads `has_more` will
+  believe it saw everything.
 
 Evidence semantics — the boundary this Skill must respect:
 
@@ -281,5 +345,5 @@ POST /api/v1/repurpose/plans/{plan-id}/revisions
 
 When changing a previously locked selected shot, add `"unlock": true` to
 that section in this one request. Do not send the approve endpoint: approval is
-reserved for a human in the Timingdex workspace, and the agent token would be
-refused with `401` if you tried.
+reserved for a human in the Timingdex workspace, and the agent token is refused
+with `401` there under every `admin_auth` mode (see the table above).

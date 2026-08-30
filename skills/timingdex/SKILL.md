@@ -56,9 +56,12 @@ six read-only tools; it does not call `/api/v1/agent/capabilities` itself and it
 does not create or revise draft plans. Use the HTTP workflow below when a draft
 plan action is requested:
 
-1. `inspect_library` first — inspect Hub health and hardware. This tool is not a
-   complete jobs/index readiness check, so do not treat a healthy response as
-   proof that the library contains searchable shots.
+1. `inspect_library` first — it returns Hub health, hardware, the setup status
+   (healthy roots, runnable providers, searchable shots, index state) and the
+   job summary (queued/running/failed) in one call, so a healthy response does
+   tell you whether the library holds searchable shots. It still does not
+   enumerate individual jobs or issues; use the HTTP readiness flow below when
+   you need per-job detail.
 2. `search_shots(query, limit)` — find shots via the structured Search v2
    endpoint: results carry per-constraint `evidence`
    (confirmed/possible/contradicted/unknown) alongside shot id, asset id, time
@@ -71,7 +74,12 @@ plan action is requested:
    `source` field says whether timestamps are word-aligned (`aligned`) or
    sentence-level only (`asr`).
 5. `get_asset(asset_id)` — inspect asset metadata, analysis state, and derived status.
-6. `get_shot(shot_id)` — inspect a single shot's full detail.
+6. `get_shot(shot_id)` — inspect a single shot's full detail, including the
+   speech spoken during it. Read `transcript_source` before quoting timing:
+   `aligned` means word-level boundaries (`transcript`), `asr` means
+   sentence-level segments only (`transcript_segments`), and an absent field
+   means the asset has no transcript at all. Never report an empty
+   `transcript` as silent footage — check `transcript_source` first.
 
 The same boundaries apply: approval stays human, the pipeline is never run,
 and provider keys are never read.
@@ -130,12 +138,19 @@ and provider keys are never read.
 
 ## Human Approval Boundary
 
-Never call `POST /api/v1/repurpose/plans/{id}/revisions/{n}/approve`. This is
-not only a convention this Skill follows: the agent token is refused on that
-route by the Hub's own access control (it returns `401`), and on
-`POST /api/v1/pipeline/run` for the same reason. There is no token this Skill
-can hold that would make either call succeed — the Hub administrator token
-that does is deliberately never given to this Skill.
+Never call `POST /api/v1/repurpose/plans/{id}/revisions/{n}/approve`, and never
+call `POST /api/v1/pipeline/run`. Both sit behind `requireHubAdmin`, and the
+Hub administrator token that satisfies it is deliberately never given to this
+Skill.
+
+The agent token is refused on both routes with `401` under every
+`hub_security.admin_auth` mode — the guard waives only a request that presents
+**no** credential at all, and this Skill always presents one. So the Hub does
+stop you here. Treat it as an absolute rule of your own conduct regardless:
+the guarantee is about the token, not about your intent, and an operator
+running under the default `trusted_network` has other unauthenticated
+processes on that LAN which the Hub would not stop. See
+`references/api-contract.md` for the full admin-auth table.
 
 When a draft is ready, show the user the selected shots, remaining gaps,
 exclusions and locked sections, then ask them to approve it in the Timingdex

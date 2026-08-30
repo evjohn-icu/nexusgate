@@ -133,7 +133,13 @@
    "library.filter.group.shot": "镜头",
    "library.filter.group.asset": "素材",
    "library.showEvidence": "显示证据",
-   "library.filter.removeChip": "移除{label}"
+   "library.filter.removeChip": "移除{label}",
+   "library.shotResultsShown.one": "已显示 {count} 个镜头",
+   "library.shotResultsShown.other": "已显示 {count} 个镜头",
+   "library.loadMore": "加载更多",
+   "library.loadingMore": "加载中…",
+   "library.allShown": "已经是全部结果",
+   "library.windowExhausted": "已到检索窗口上限。更靠后的结果需要收窄查询或加筛选，一次请求走不了更远。"
   },
   "ja-JP": {
    "library.title": "素材ライブラリ",
@@ -267,7 +273,13 @@
    "library.filter.group.shot": "ショット",
    "library.filter.group.asset": "素材",
    "library.showEvidence": "証拠を表示",
-   "library.filter.removeChip": "{label}を削除"
+   "library.filter.removeChip": "{label}を削除",
+   "library.shotResultsShown.one": "{count} 件のショットを表示中",
+   "library.shotResultsShown.other": "{count} 件のショットを表示中",
+   "library.loadMore": "さらに読み込む",
+   "library.loadingMore": "読み込み中…",
+   "library.allShown": "これがすべての結果です",
+   "library.windowExhausted": "検索ウィンドウの上限に達しました。これ以降の結果を見るにはクエリを絞るか絞り込みを追加してください。1 回のリクエストではこれ以上進めません。"
   },
   "en-US": {
    "library.title": "Library",
@@ -401,7 +413,13 @@
    "library.filter.group.shot": "SHOT",
    "library.filter.group.asset": "ASSET",
    "library.showEvidence": "Show evidence",
-   "library.filter.removeChip": "Remove {label}"
+   "library.filter.removeChip": "Remove {label}",
+   "library.shotResultsShown.one": "Showing {count} shot",
+   "library.shotResultsShown.other": "Showing {count} shots",
+   "library.loadMore": "Load more",
+   "library.loadingMore": "Loading…",
+   "library.allShown": "That is every result",
+   "library.windowExhausted": "Reached the search window limit. Narrow the query or add a filter to see further — one request cannot traverse past this boundary."
   },
   "fr-FR": {
    "library.title": "Médiathèque",
@@ -535,7 +553,13 @@
    "library.filter.group.shot": "SHOT",
    "library.filter.group.asset": "ASSET",
    "library.showEvidence": "Afficher les preuves",
-   "library.filter.removeChip": "Retirer {label}"
+   "library.filter.removeChip": "Retirer {label}",
+   "library.shotResultsShown.one": "{count} plan affiché",
+   "library.shotResultsShown.other": "{count} plans affichés",
+   "library.loadMore": "Charger plus",
+   "library.loadingMore": "Chargement…",
+   "library.allShown": "Ce sont tous les résultats",
+   "library.windowExhausted": "Limite de la fenêtre de recherche atteinte. Affinez la requête ou ajoutez un filtre : une seule requête ne peut pas aller plus loin."
   },
   "es-ES": {
    "library.title": "Biblioteca",
@@ -669,7 +693,13 @@
    "library.filter.group.shot": "SHOT",
    "library.filter.group.asset": "ASSET",
    "library.showEvidence": "Mostrar evidencias",
-   "library.filter.removeChip": "Quitar {label}"
+   "library.filter.removeChip": "Quitar {label}",
+   "library.shotResultsShown.one": "Mostrando {count} plano",
+   "library.shotResultsShown.other": "Mostrando {count} planos",
+   "library.loadMore": "Cargar más",
+   "library.loadingMore": "Cargando…",
+   "library.allShown": "Estos son todos los resultados",
+   "library.windowExhausted": "Se alcanzó el límite de la ventana de búsqueda. Acota la consulta o añade un filtro: una sola petición no puede ir más lejos."
   }
  }
 }

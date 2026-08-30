@@ -73,7 +73,7 @@ func (r *Repository) WorkerPairingValid(ctx context.Context, rawToken string, no
 
 func (r *Repository) EnrollWorker(ctx context.Context, pairingToken string, registration remote.WorkerRegistration) (remote.Worker, string, error) {
 	if strings.TrimSpace(registration.Name) == "" || strings.TrimSpace(registration.Platform) == "" {
-		return remote.Worker{}, "", errors.New("worker name and platform are required")
+		return remote.Worker{}, "", domain.ErrInvalidWorkerRegistration
 	}
 	now := time.Now().UTC()
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -84,14 +84,14 @@ func (r *Repository) EnrollWorker(ctx context.Context, pairingToken string, regi
 	var pairingID, expires string
 	err = tx.QueryRowContext(ctx, `SELECT id,expires_at FROM worker_pairing_tokens WHERE token_hash=? AND redeemed_at IS NULL`, tokenDigest(pairingToken)).Scan(&pairingID, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
-		return remote.Worker{}, "", errors.New("pairing token is invalid or already redeemed")
+		return remote.Worker{}, "", domain.ErrPairingTokenInvalid
 	}
 	if err != nil {
 		return remote.Worker{}, "", err
 	}
 	expiresAt, _ := time.Parse(time.RFC3339Nano, expires)
 	if !expiresAt.After(now) {
-		return remote.Worker{}, "", errors.New("pairing token has expired")
+		return remote.Worker{}, "", fmt.Errorf("%w: the pairing token has expired", domain.ErrPairingTokenInvalid)
 	}
 	token, err := randomToken()
 	if err != nil {
@@ -1167,12 +1167,21 @@ func (r *Repository) RebuildAutomaticShootSessions(ctx context.Context, rootID s
 	return tx.Commit()
 }
 
-func (r *Repository) SaveMediaMetadata(ctx context.Context, assetID string, m domain.MediaMetadata, version string) error {
+// SaveMediaMetadata writes the probe result for an asset. jobID/owner bind the
+// write to the caller's lease exactly like SaveTranscript and
+// CommitAnalysisWithShots: the guard runs inside this transaction, so a holder
+// whose lease expired mid-probe rolls the whole write back instead of
+// overwriting the metadata the current holder just committed. Both empty means
+// no lease to check (CLI and fixtures).
+func (r *Repository) SaveMediaMetadata(ctx context.Context, assetID string, m domain.MediaMetadata, version, jobID, owner string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := leaseGuard(ctx, tx, jobID, assetID, owner); err != nil {
+		return err
+	}
 	var oldRaw string
 	err = tx.QueryRowContext(ctx, `SELECT normalized_json FROM media_metadata WHERE asset_id=?`, assetID).Scan(&oldRaw)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1407,9 +1416,28 @@ func (r *Repository) GetArtifact(ctx context.Context, assetID, typ string) (*dom
 	return &a, err
 }
 
-func (r *Repository) SaveSpeechClassification(ctx context.Context, assetID string, c domain.SpeechClassification) error {
-	_, err := r.db.ExecContext(ctx, `INSERT INTO speech_classifications(asset_id,classification,speech_probability,reason,classifier_version,raw_json,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(asset_id) DO UPDATE SET classification=excluded.classification,speech_probability=excluded.speech_probability,reason=excluded.reason,classifier_version=excluded.classifier_version,raw_json=excluded.raw_json,updated_at=excluded.updated_at`, assetID, c.Classification, c.SpeechProbability, c.Reason, "ffmpeg-volumedetect-v1", c.RawJSON, formatTime(time.Now()))
-	return err
+// SaveSpeechClassification records the speech gate's verdict. The lease test
+// rides inside the INSERT's own SELECT rather than running as a separate
+// statement, so there is no window between checking the lease and writing —
+// the same shape SaveTranscript uses. jobID/owner both empty skips the test.
+func (r *Repository) SaveSpeechClassification(ctx context.Context, assetID string, c domain.SpeechClassification, jobID, owner string) error {
+	now := formatTime(time.Now())
+	res, err := r.db.ExecContext(ctx, `INSERT INTO speech_classifications(asset_id,classification,speech_probability,reason,classifier_version,raw_json,updated_at)
+SELECT ?,?,?,?,?,?,? WHERE (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?)) ON CONFLICT(asset_id) DO UPDATE SET classification=excluded.classification,speech_probability=excluded.speech_probability,reason=excluded.reason,classifier_version=excluded.classifier_version,raw_json=excluded.raw_json,updated_at=excluded.updated_at`,
+		assetID, c.Classification, c.SpeechProbability, c.Reason, "ffmpeg-volumedetect-v1", c.RawJSON, now, jobID, jobID, assetID, owner, formatTime(time.Now().UTC()))
+	if err != nil {
+		return err
+	}
+	if jobID != "" {
+		n, e := res.RowsAffected()
+		if e != nil {
+			return e
+		}
+		if n != 1 {
+			return leaseLostErr(jobID, owner)
+		}
+	}
+	return nil
 }
 
 func (r *Repository) EnqueueJob(ctx context.Context, assetID string, typ domain.JobType, inputHash string, priority int) error {
@@ -2268,20 +2296,56 @@ func (r *Repository) GetShot(ctx context.Context, shotID string) (*domain.ShotDe
 		return nil, fmt.Errorf("shot %s references missing asset %s", shotID, shot.AssetID)
 	}
 
-	// 3. Get alignment words within the shot's time range.
-	var words []domain.AlignmentWord
-	words, err = r.getAlignmentWordsInRange(ctx, shot.AssetID, shot.StartMS, shot.EndMS)
+	// 3. Speech for this shot, strongest timing first — the same resolution
+	//    order AssetTranscript applies, so a shot detail and the asset
+	//    transcript never disagree about which source a caller is reading.
+	//    align is an optional stage: returning only aligned words made an
+	//    ASR-only asset look like silent footage.
+	words, err := r.getAlignmentWordsInRange(ctx, shot.AssetID, shot.StartMS, shot.EndMS)
 	if err != nil {
 		return nil, err
 	}
+	detail := &domain.ShotDetail{
+		Shot:      shot,
+		Asset:     *card,
+		Thumbnail: card.ThumbnailURL,
+		Proxy:     card.ProxyURL,
+	}
+	if len(words) > 0 {
+		detail.Transcript = words
+		detail.TranscriptSource = "aligned"
+		return detail, nil
+	}
+	segments, err := r.asrSegmentsInRange(ctx, shot.AssetID, shot.StartMS, shot.EndMS)
+	if err != nil {
+		return nil, err
+	}
+	if len(segments) > 0 {
+		detail.TranscriptSegments = segments
+		detail.TranscriptSource = "asr"
+	}
+	return detail, nil
+}
 
-	return &domain.ShotDetail{
-		Shot:       shot,
-		Asset:      *card,
-		Transcript: words,
-		Thumbnail:  card.ThumbnailURL,
-		Proxy:      card.ProxyURL,
-	}, nil
+// asrSegmentsInRange returns the ASR transcript segments overlapping a time
+// range. Overlap (not containment) is the right test: a sentence that starts
+// before the shot and ends inside it is still spoken during the shot, and the
+// alignment path above is the only one that can speak in word boundaries.
+func (r *Repository) asrSegmentsInRange(ctx context.Context, assetID string, startMS, endMS int64) ([]domain.TranscriptSegment, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT start_ms,end_ms,text FROM asr_segments WHERE asset_id=? AND start_ms < ? AND end_ms > ? ORDER BY ordinal`, assetID, endMS, startMS)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.TranscriptSegment
+	for rows.Next() {
+		var seg domain.TranscriptSegment
+		if err := rows.Scan(&seg.StartMS, &seg.EndMS, &seg.Text); err != nil {
+			return nil, err
+		}
+		out = append(out, seg)
+	}
+	return out, rows.Err()
 }
 
 // assetCardForShot returns the AssetCard for a single asset. Not as
@@ -2741,17 +2805,20 @@ func (r *Repository) hybridSearchShotsRRF(ctx context.Context, q string, limit i
 // Behaviourally identical to SimilarShotsFiltered with a zero-value
 // domain.FacetFilter.
 func (r *Repository) SimilarShots(ctx context.Context, shotID string, limit int) ([]domain.ShotSearchResult, error) {
-	return r.similarShots(ctx, shotID, limit, domain.FacetFilter{})
+	return r.similarShots(ctx, shotID, limit, domain.FacetFilter{}, domain.AssetContextFilter{})
 }
 
-// SimilarShotsFiltered narrows SimilarShots by the controlled vocabulary and
-// a duration range. The source shot itself is looked up unfiltered — a facet
-// only prunes the candidates it is compared against, not the reference point.
-func (r *Repository) SimilarShotsFiltered(ctx context.Context, shotID string, limit int, facets domain.FacetFilter) ([]domain.ShotSearchResult, error) {
-	return r.similarShots(ctx, shotID, limit, facets)
+// SimilarShotsFiltered narrows SimilarShots by the controlled vocabulary, a
+// duration range, and — same as ScoreCandidatesV2 — the owning asset's
+// capture/session/status context. The source shot itself is looked up
+// unfiltered — a filter only prunes the candidates it is compared against,
+// not the reference point, mirroring "narrows the universe by the owning
+// asset's ... predicates" in scoreShotCandidatesWithContext.
+func (r *Repository) SimilarShotsFiltered(ctx context.Context, shotID string, limit int, facets domain.FacetFilter, assetFilter domain.AssetContextFilter) ([]domain.ShotSearchResult, error) {
+	return r.similarShots(ctx, shotID, limit, facets, assetFilter)
 }
 
-func (r *Repository) similarShots(ctx context.Context, shotID string, limit int, facets domain.FacetFilter) ([]domain.ShotSearchResult, error) {
+func (r *Repository) similarShots(ctx context.Context, shotID string, limit int, facets domain.FacetFilter, assetFilter domain.AssetContextFilter) ([]domain.ShotSearchResult, error) {
 	if strings.TrimSpace(shotID) == "" || limit <= 0 {
 		return []domain.ShotSearchResult{}, nil
 	}
@@ -2773,7 +2840,7 @@ func (r *Repository) similarShots(ctx context.Context, shotID string, limit int,
 	if err != nil {
 		return nil, fmt.Errorf("decode source shot vector: %w", err)
 	}
-	records, err := r.loadSemanticShotRecords(ctx, facets)
+	records, err := r.loadSemanticShotRecords(ctx, facets, assetFilter)
 	if err != nil {
 		return nil, err
 	}
@@ -2810,10 +2877,10 @@ func (r *Repository) DiscoverRareShots(ctx context.Context, limit int) ([]domain
 	// frequency computed across every shot, so top-k cannot be applied without
 	// changing the answer. Unlike SimilarShots/HybridSearchShots, leave this
 	// uncapped. It's also not one of the faceted endpoints in this brief, so it
-	// always loads the unfiltered set — a zero-value domain.FacetFilter adds no
-	// WHERE clause beyond loadSemanticShotRecords' own mandatory v.model=? scope
-	// filter.
-	records, err := r.loadSemanticShotRecords(ctx, domain.FacetFilter{})
+	// always loads the unfiltered set — zero-value domain.FacetFilter and
+	// domain.AssetContextFilter add no WHERE clause beyond
+	// loadSemanticShotRecords' own mandatory v.model=? scope filter.
+	records, err := r.loadSemanticShotRecords(ctx, domain.FacetFilter{}, domain.AssetContextFilter{})
 	if err != nil {
 		return nil, err
 	}
@@ -2873,10 +2940,24 @@ type semanticShotRecord struct {
 // a superseded embedding scheme must never reach a caller that scores it
 // against a current-scheme query vector. facets narrows the candidate set
 // further; a zero-value domain.FacetFilter leaves only the model filter.
-func (r *Repository) loadSemanticShotRecords(ctx context.Context, facets domain.FacetFilter) ([]semanticShotRecord, error) {
+// assetFilter is the same owning-asset capture/session/status narrowing
+// scoreShotCandidatesWithContext applies to hybrid search — SimilarShots is
+// otherwise the one candidate-scoring path that ignored the caller's active
+// asset context, surfacing shots from footage the library view had filtered
+// out. A zero-value assetFilter adds neither join nor clause, so
+// DiscoverRareShots (which never had an asset context to narrow by) is
+// unaffected.
+func (r *Repository) loadSemanticShotRecords(ctx context.Context, facets domain.FacetFilter, assetFilter domain.AssetContextFilter) ([]semanticShotRecord, error) {
 	clauses, args := facetWhere(facets)
 	clauses, args = appendShotDurationBounds(clauses, args, facets)
-	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,v.vector_json,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),'') FROM asset_shots s JOIN shot_semantic_vectors v ON v.shot_id=s.id LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id WHERE v.model=?`
+	assetJoins := ""
+	if hasAssetContext(assetFilter) {
+		ctxClauses, ctxArgs := assetContextClauses(assetFilter)
+		clauses = append(clauses, ctxClauses...)
+		args = append(args, ctxArgs...)
+		assetJoins = ` JOIN assets a ON a.id=s.asset_id LEFT JOIN media_metadata m ON m.asset_id=a.id LEFT JOIN capture_metadata cm ON cm.asset_id=a.id`
+	}
+	query := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,v.vector_json,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),'') FROM asset_shots s JOIN shot_semantic_vectors v ON v.shot_id=s.id LEFT JOIN asset_analysis an ON an.asset_id=s.asset_id` + assetJoins + ` WHERE v.model=?`
 	queryArgs := append([]any{discovery.HeuristicVectorModel}, args...)
 	if len(clauses) > 0 {
 		query += ` AND ` + strings.Join(clauses, ` AND `)
@@ -3478,12 +3559,22 @@ func (r *Repository) SaveProviderFile(ctx context.Context, f domain.ProviderFile
 	return err
 }
 
-func (r *Repository) SaveAlignment(ctx context.Context, assetID, provider, model, inputHash, requestJSON string, result domain.AlignmentResult) error {
+// SaveAlignment persists a forced-alignment run and its words. This is the
+// most consequential of the three lease-bound probe writes: the words are a
+// provider result (two attempts need not agree) and transcript_words feeds the
+// evidence gate's speech channel directly, so a stale holder landing its words
+// over the current holder's would change what search reports as spoken. The
+// guard runs inside the transaction, so a lost lease rolls back the run row,
+// the word rows and the asr_segments deletion together.
+func (r *Repository) SaveAlignment(ctx context.Context, assetID, provider, model, inputHash, requestJSON string, result domain.AlignmentResult, jobID, owner string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := leaseGuard(ctx, tx, jobID, assetID, owner); err != nil {
+		return err
+	}
 	runID := idgen.New()
 	now := formatTime(time.Now().UTC())
 	_, err = tx.ExecContext(ctx, `INSERT INTO alignment_runs(id,asset_id,provider,model,input_hash,state,request_json,raw_response,created_at,finished_at) VALUES(?,?,?,?,?,'succeeded',?,?,?,?) ON CONFLICT(asset_id,provider,model,input_hash) DO UPDATE SET state='succeeded',raw_response=excluded.raw_response,finished_at=excluded.finished_at`, runID, assetID, provider, model, inputHash, requestJSON, result.RawResponse, now, now)

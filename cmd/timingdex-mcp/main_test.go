@@ -709,3 +709,126 @@ func TestMCPHubErrorEnvelope(t *testing.T) {
 		t.Fatalf("emitted fields = %v", emitted)
 	}
 }
+
+// TestParseFilters covers the argument that had zero test coverage while it
+// was silently dropping every non-string value. The property under test is
+// that no input is ever ignored: it is either honoured or it is an error.
+func TestParseFilters(t *testing.T) {
+	t.Run("object is honoured", func(t *testing.T) {
+		// The shape a model produces when it follows its instincts rather than
+		// the doc. This used to fall through the string type assertion and
+		// search unfiltered.
+		got, err := parseFilters(map[string]any{"asset_types": []any{"broll"}})
+		if err != nil {
+			t.Fatalf("err=%v", err)
+		}
+		if len(got) != 1 || got["asset_types"] == nil {
+			t.Fatalf("filters=%v, want the asset_types filter preserved", got)
+		}
+	})
+	t.Run("json string is honoured", func(t *testing.T) {
+		got, err := parseFilters(`{"shot_sizes":["wide"]}`)
+		if err != nil {
+			t.Fatalf("err=%v", err)
+		}
+		if got["shot_sizes"] == nil {
+			t.Fatalf("filters=%v, want the shot_sizes filter preserved", got)
+		}
+	})
+	t.Run("absent and empty mean no filter", func(t *testing.T) {
+		for _, arg := range []any{nil, "", "   ", map[string]any{}} {
+			got, err := parseFilters(arg)
+			if err != nil || got != nil {
+				t.Fatalf("parseFilters(%#v) = %v, %v; want nil, nil", arg, got, err)
+			}
+		}
+	})
+	t.Run("misspelled key is an error, not a wider search", func(t *testing.T) {
+		// asset_type (singular) is the plausible typo. The Hub drops unknown
+		// JSON fields, so letting this through would return more shots than
+		// asked for with nothing to signal it.
+		_, err := parseFilters(`{"asset_type":["broll"]}`)
+		if err == nil {
+			t.Fatal("want an error for an unknown facet key")
+		}
+		if !strings.Contains(err.Error(), "asset_type") || !strings.Contains(err.Error(), "asset_types") {
+			t.Fatalf("error must name the bad key and the supported ones, got: %v", err)
+		}
+	})
+	t.Run("malformed json is an error", func(t *testing.T) {
+		if _, err := parseFilters(`{"asset_types":`); err == nil {
+			t.Fatal("want an error for malformed JSON")
+		}
+	})
+	t.Run("wrong type is an error", func(t *testing.T) {
+		if _, err := parseFilters(42.0); err == nil {
+			t.Fatal("want an error for a non-object, non-string argument")
+		}
+	})
+	t.Run("every supported key round-trips", func(t *testing.T) {
+		// Pins facetKeys against domain.FacetFilter's json tags: a key added
+		// to the Hub and forgotten here would start being rejected, and one
+		// removed from the Hub would start being silently ignored again.
+		all := map[string]any{
+			"asset_types": []any{"broll"}, "shot_sizes": []any{"wide"},
+			"camera_motions": []any{"static"}, "audio_types": []any{"dialogue"},
+			"qualities": []any{"good"}, "usable_as": []any{"opening"},
+			"min_duration_ms": 1000.0, "max_duration_ms": 60000.0,
+		}
+		got, err := parseFilters(all)
+		if err != nil {
+			t.Fatalf("err=%v", err)
+		}
+		if len(got) != len(all) {
+			t.Fatalf("got %d keys, want %d", len(got), len(all))
+		}
+	})
+}
+
+// TestGetShotDecodesLargeBody pins get_shot to the getLarge path (audit
+// M1-04). The shot detail response embeds every aligned word inside the
+// shot's time range, and nothing in the tree caps a shot's length — one
+// locked-off take is one shot — so a long dense take can push the body past
+// do()'s 1 MiB bound. Crossing it used to fail with "unexpected end of JSON
+// input", which tells an agent nothing it can act on.
+func TestGetShotDecodesLargeBody(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/shots/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer agent-tok" {
+			http.Error(w, "shot detail requires trusted read", http.StatusForbidden)
+			return
+		}
+		// ~20,000 aligned words: a single ~90-minute take of dense speech,
+		// comfortably over 1 MiB and far under maxTranscriptBytes (64 MiB).
+		const n = 20000
+		words := make([]map[string]any, 0, n)
+		for i := range n {
+			words = append(words, map[string]any{
+				"word":     fmt.Sprintf("word-%d", i),
+				"start_ms": i * 250,
+				"end_ms":   i*250 + 200,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"shot":              map[string]any{"id": r.PathValue("id"), "start_ms": 0, "end_ms": 5000000},
+			"asset":             map[string]any{"id": "long-take"},
+			"transcript":        words,
+			"transcript_source": "aligned",
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := &hubClient{baseURL: srv.URL, agentToken: "agent-tok", http: srv.Client()}
+	shot, err := client.getShot(context.Background(), "big-shot")
+	if err != nil {
+		t.Fatalf("getShot must decode a >1MiB body: %v", err)
+	}
+	words, ok := shot["transcript"].([]any)
+	if !ok || len(words) != 20000 {
+		t.Fatalf("transcript decoded %v words, want all 20000", len(words))
+	}
+	if shot["transcript_source"] != "aligned" {
+		t.Fatalf("transcript_source = %v, want aligned", shot["transcript_source"])
+	}
+}

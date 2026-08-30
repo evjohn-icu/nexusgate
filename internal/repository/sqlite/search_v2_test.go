@@ -743,7 +743,7 @@ func seedOneAsset(t *testing.T, repo *Repository, ids map[string]string, asset g
 		if err := repo.SaveTranscript(ctx, asset.id, "fixture", "fixture-model", "golden-transcript-"+asset.id, domain.Transcript{Language: "zh", Text: joined}, "", ""); err != nil {
 			t.Fatal(err)
 		}
-		if err := repo.SaveAlignment(ctx, asset.id, "fixture", "fixture-model", "golden-align-"+asset.id, "{}", domain.AlignmentResult{Words: words}); err != nil {
+		if err := repo.SaveAlignment(ctx, asset.id, "fixture", "fixture-model", "golden-align-"+asset.id, "{}", domain.AlignmentResult{Words: words}, "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -873,11 +873,11 @@ func TestSearchV2AssetContextFilters(t *testing.T) {
 
 	now := time.Now().UTC()
 	inCaptured := now.AddDate(0, 0, -1)
-	if err := repo.SaveMediaMetadata(ctx, "asset-rain-in", domain.MediaMetadata{CapturedAt: &inCaptured}, "test"); err != nil {
+	if err := repo.SaveMediaMetadata(ctx, "asset-rain-in", domain.MediaMetadata{CapturedAt: &inCaptured}, "test", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	outCaptured := now.AddDate(0, 0, -10)
-	if err := repo.SaveMediaMetadata(ctx, "asset-rain-out", domain.MediaMetadata{CapturedAt: &outCaptured}, "test"); err != nil {
+	if err := repo.SaveMediaMetadata(ctx, "asset-rain-out", domain.MediaMetadata{CapturedAt: &outCaptured}, "test", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	// in is "ready" (a proxy artifact exists); out stays "discovered".

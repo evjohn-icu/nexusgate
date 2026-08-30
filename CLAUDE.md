@@ -5,8 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project
 
 Re:Footage / `timingdex` — a local-first video footage intelligence layer written in Go
-(stdlib + `modernc.org/sqlite`, `github.com/coder/websocket`, `github.com/mark3labs/mcp-go`
-and `golang.org/x/{crypto,net}` only; no web framework, no ORM, no frontend build). The
+(stdlib + nine direct dependencies only — `modernc.org/sqlite`,
+`github.com/coder/websocket`, `github.com/mark3labs/mcp-go`,
+`github.com/grandcat/zeroconf`, `github.com/hirochachacha/go-smb2` and
+`golang.org/x/{crypto,net,sys,text}`; no web framework, no ORM, no frontend build.
+`go.mod` is the source of truth — check it before repeating this list). The
 `timingdex` binary serves two roles: a **Hub** (database, HTTP/HTTPS API, browser
 UI, secrets, local pipeline) and a **Worker** (paired remote node that performs FFmpeg derive
 work, and — only when `worker enroll --provider-operation` declares it — calls a Provider for
@@ -278,15 +281,22 @@ start on an `integrity_check` failure or without free disk for `2×dbsize + 256M
 the database with `VACUUM INTO`, applies every pending file inside one `BEGIN IMMEDIATE` with
 `foreign_keys` off (SQLite ignores the pragma mid-transaction), and runs
 `pragma_foreign_key_check` *after* the commit. The current migration ceiling is
-`0033_asset_probe_identity.sql` — 32 files, not 33: `0025` was abandoned before it landed and
-the numbering simply skips it. The newest migrations are:
+`0035_pipeline_executors.sql`, and the file count is 35 — the numbering does not track it in
+either direction: `0025` was abandoned before it landed and is skipped, while `0034` is used
+**twice**. Ordering is by full filename, and `schema_migrations` is keyed by full filename
+(`repository.go:306`/`:325`), so the duplicate prefix applies and records cleanly —
+`0034_asr_segments.sql` sorts before `0034_asset_shot_ordinal_index.sql` and both run. It is a
+naming-discipline problem, not a correctness one; do not "fix" it by renaming an applied file.
+The newest migrations are:
 
-- `0030_asset_location_primary.sql`
-- `0031_model_run_retryable_dedup.sql`
 - `0032_collection_shot_positions.sql`
 - `0033_asset_probe_identity.sql`
+- `0034_asr_segments.sql`
+- `0034_asset_shot_ordinal_index.sql`
+- `0035_pipeline_executors.sql`
 
-Add a new numbered file; never edit an applied one.
+Add a new numbered file; never edit an applied one. Take the next free number by reading the
+directory, not by incrementing what this paragraph says.
 
 ### Browser UI
 
@@ -299,8 +309,10 @@ Pages are Go string constants of inline HTML/CSS/JS — no templates, no assets,
 builds, serves, and the feature is simply gone, with no compile or runtime error:
 
 - `shelledPage` (`app_shell.go`) — three anchors, every page, injects the shared nav/shell.
-- `enhanceLibraryPage` (`library_page_v015.go`) — **18 ordered anchors**, library page only,
-  applied once at package init to build `libraryIndexHTML` from `legacyLibraryIndexHTML`.
+- `enhanceLibraryPage` (`library_page_v015.go`) — **19 ordered anchors**
+  (`libraryPagePatches`, `library_page_v015.go:121-239`), library page only, applied once at
+  package init to build `libraryIndexHTML` from `legacyLibraryIndexHTML`. Count the slice
+  rather than trusting this number; adding a patch and not updating it here is how it drifted.
 - `brandedPage` (`branding.go`) — two anchors, every page, applied **per request**.
 
 Only the library page carries an overlay; `providers_page_v015.go` and `setup_page_v015.go` are

@@ -40,6 +40,20 @@ func TestClassifyJobFailureSentinelMapping(t *testing.T) {
 		{"context deadline", context.DeadlineExceeded, domain.JobFailureCategoryProviderUnavailable},
 		{"network error", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}, domain.JobFailureCategoryProviderUnavailable},
 		{"plain media decode error", errors.New("ffprobe: exit status 1"), domain.JobFailureCategoryUnknown},
+		// A cold-start Hub with zero providers reaches exactly the first of
+		// these: channelASR.Transcribe and channelVideo.Analyze short-circuit
+		// to ErrProviderChannelNotConfigured before any executor runs, so
+		// ErrNoRoute never surfaces. The other two are the same family — a
+		// route that resolves to no credential, and a protocol the channel
+		// router cannot build — and their own doc comments say so.
+		{"provider channel not configured", ErrProviderChannelNotConfigured, domain.JobFailureCategoryConfiguration},
+		{"provider channel not configured wrapped", fmt.Errorf("analyze asset: %w", ErrProviderChannelNotConfigured), domain.JobFailureCategoryConfiguration},
+		{"provider channel secret missing", errProviderChannelSecretMissing, domain.JobFailureCategoryConfiguration},
+		{"provider channel secret missing wrapped", fmt.Errorf("transcribe: %w", errProviderChannelSecretMissing), domain.JobFailureCategoryConfiguration},
+		{"provider channel multiframe unsupported", errProviderChannelMultiframeUnsupported, domain.JobFailureCategoryConfiguration},
+		// A spent key is not a configuration problem: the deployment is fine,
+		// the credential is dead. It must stay ProviderAuth.
+		{"spent key is not configuration", &common.StatusError{StatusCode: 402, Body: "payment required"}, domain.JobFailureCategoryProviderAuth},
 		{"permanent without a known sentinel", domain.Permanent(errors.New("audio artifact missing")), domain.JobFailureCategoryUnknown},
 		{"nil", nil, domain.JobFailureCategoryUnknown},
 	}

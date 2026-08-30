@@ -3,6 +3,7 @@
  "keys": {
   "zh-CN": {
    "workerSetup.title": "处理节点安装向导",
+   "workerSetup.wizardNavLabel": "处理节点安装向导步骤",
    "workerSetup.environmentOverview": "环境概览",
    "workerSetup.configureNode": "配置处理节点",
    "workerSetup.generateScript": "生成安装脚本",
@@ -56,6 +57,7 @@
   },
   "ja-JP": {
    "workerSetup.title": "ノード設定ウィザード",
+   "workerSetup.wizardNavLabel": "ノード設定ウィザードの手順",
    "workerSetup.environmentOverview": "環境の概要",
    "workerSetup.configureNode": "処理ノードを設定",
    "workerSetup.generateScript": "インストールスクリプトを生成",
@@ -109,6 +111,7 @@
   },
   "en-US": {
    "workerSetup.title": "Worker Setup Wizard",
+   "workerSetup.wizardNavLabel": "Worker setup wizard steps",
    "workerSetup.environmentOverview": "Environment overview",
    "workerSetup.configureNode": "Configure the Worker",
    "workerSetup.generateScript": "Generate install script",
@@ -162,6 +165,7 @@
   },
   "fr-FR": {
    "workerSetup.title": "Assistant d'installation d'un nœud",
+   "workerSetup.wizardNavLabel": "Étapes de l’assistant d’installation du nœud",
    "workerSetup.environmentOverview": "Aperçu de l'environnement",
    "workerSetup.configureNode": "Configurer le nœud",
    "workerSetup.generateScript": "Générer le script d'installation",
@@ -215,6 +219,7 @@
   },
   "es-ES": {
    "workerSetup.title": "Asistente de configuración de nodos",
+   "workerSetup.wizardNavLabel": "Pasos del asistente de instalación del nodo",
    "workerSetup.environmentOverview": "Resumen del entorno",
    "workerSetup.configureNode": "Configurar el nodo",
    "workerSetup.generateScript": "Generar script de instalación",

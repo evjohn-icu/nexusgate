@@ -61,7 +61,7 @@ func newExportFixture(t *testing.T, name string, fps float64, withMetadata bool)
 		t.Fatalf("assets=%+v err=%v", assets, err)
 	}
 	if withMetadata {
-		if err := repo.SaveMediaMetadata(ctx, assets[0].ID, domain.MediaMetadata{DurationMS: 60000, Width: 3840, Height: 2160, FPS: fps, HasAudio: true, Reel: "A001"}, "test"); err != nil {
+		if err := repo.SaveMediaMetadata(ctx, assets[0].ID, domain.MediaMetadata{DurationMS: 60000, Width: 3840, Height: 2160, FPS: fps, HasAudio: true, Reel: "A001"}, "test", "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}

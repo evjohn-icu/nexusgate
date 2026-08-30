@@ -68,9 +68,13 @@ coverage.out
 *.tar.gz
 
 # Stray build artifacts from local packaging. The MCP server builds from
-# cmd/timingdex-mcp; a committed binary only bloats history.
-timingdex-mcp
-timingdex-corpusgen
+# cmd/timingdex-mcp; a committed binary only bloats history. Anchored with a
+# leading slash like /timingdex above, and for the same reason: unanchored,
+# "timingdex-mcp" matches the cmd/timingdex-mcp *directory* too, which made
+# every new file added there invisible to git status and git add. Already
+# tracked files kept working, so the masking only ever bit new ones.
+/timingdex-mcp
+/timingdex-corpusgen
 /dist/
 
 # Playwright CLI session artifacts.

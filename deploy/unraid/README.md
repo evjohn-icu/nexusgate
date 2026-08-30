@@ -58,29 +58,29 @@ on **Read Only slave** — see
 [Mounting remote (SMB/NFS) shares](#mounting-remote-smbnfs-shares-with-live-remount)
 below for why that mode is not optional.
 
-**Admin auth must be set before first start.** The Hub runs in a container and
-the template publishes port 8787 on the bridge network, so the container guard
-`ValidateContainerAdminAuth` refuses to start with the default
-`admin_auth=trusted_network` and no explicit `admin_auth_networks` — and the
-templates ship no admin-auth setting, so a clean `timingdex-hub` appdata
-directory will not boot (the container exits at startup). Add an environment
-variable to the Hub template (**Docker → timingdex-hub → edit → add a
-Variable**):
+**Admin auth is already set, and you should leave it alone.** The Hub template
+ships `管理鉴权模式 TIMINGDEX_HUB_ADMIN_AUTH` with a default of `required`, so a
+clean `timingdex-hub` appdata directory boots as-is and every admin/mutating
+route demands the `admin-token` (in the data directory, mode 0600). That is
+what the rest of this walkthrough assumes; no variable needs adding.
 
-- `TIMINGDEX_HUB_ADMIN_AUTH` = `required` — every admin/mutating route then
-  demands the `admin-token`; this is the recommended setting and the one the
-  rest of this walkthrough assumes.
+The default is not cosmetic. The Hub runs in a container and the template
+publishes port 8787 on the bridge network, so the container guard
+`ValidateContainerAdminAuth` refuses to start under
+`admin_auth=trusted_network` with no explicit `admin_auth_networks` — behind a
+published port every peer appears as the bridge gateway, an RFC1918 address the
+waiver would trust, which would hand admin writes to anything that can reach
+the port.
 
-Alternatively keep `trusted_network` and supply explicit CIDRs via
-`hub_security.admin_auth_networks` in a `config.json` inside the Hub data
-directory — but understand Docker NAT first: behind a published port every
-peer appears as the bridge gateway (an RFC1918 address), so the listed ranges
-end up covering the whole bridge, trusting anything that can reach the port
-from it. Don't work around the guard by disabling auth or by exposing the
-port to the internet.
+If you deliberately want passwordless admin on a trusted LAN, set **both**
+template variables — `TIMINGDEX_HUB_ADMIN_AUTH` = `trusted_network` and
+`管理信任网段 TIMINGDEX_HUB_ADMIN_AUTH_NETWORKS` = your real client CIDRs (e.g.
+`192.168.1.0/24`, an advanced-view field). Leaving the CIDR list empty in that
+mode is what trips the fail-closed guard. Don't work around it by disabling
+auth or by exposing the port to the internet.
 
-Start the container; it should now boot (check `docker logs timingdex-hub`
-for the admin-auth refusal being gone). Read the generated `admin-token` from
+Start the container; it boots on the shipped template values (`docker logs
+timingdex-hub` shows no admin-auth refusal). Read the generated `admin-token` from
 the data directory and open `https://<unraid-ip>:8787/workers` to generate a
 one-time pairing token and read the Hub's certificate fingerprint — both
 templates' `Overview` fields walk through this in more detail.
@@ -196,7 +196,8 @@ or repull the `timingdex:v0.31.0-alpha` tag and recreate both containers from
 the CA UI (**Force Update** / **Apply**).
 
 Recreating keeps template values, so the `TIMINGDEX_HUB_ADMIN_AUTH` Variable
-you added in step 2 and the Worker's data-directory path survive — just confirm
-they are still present after importing a newer template revision. The uid
+and the Worker's data-directory path survive — just confirm they are still
+present, and still hold the values you want, after importing a newer template
+revision. The uid
 stays 10001 across versions, so the one-time `chown` above does not need to be
 repeated.

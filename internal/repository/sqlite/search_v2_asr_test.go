@@ -105,7 +105,7 @@ func TestSearchV2TranscriptAlignedAssetIgnoresAsrSegments(t *testing.T) {
 		{StartMS: 100_000, EndMS: 101_000, Text: "我们"},
 		{StartMS: 101_000, EndMS: 102_000, Text: "明天"},
 		{StartMS: 102_000, EndMS: 103_000, Text: "出发"},
-	}}); err != nil {
+	}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
 

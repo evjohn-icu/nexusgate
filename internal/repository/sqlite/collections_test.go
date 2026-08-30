@@ -132,7 +132,7 @@ func TestCollectionCardsFilterByProcessingStatusWithoutPrivateBrowseFields(t *te
 			t.Fatal(err)
 		}
 		captured := time.Date(2026, 7, 27, 8, 0, 0, 0, time.UTC)
-		if err := repo.SaveMediaMetadata(ctx, fixture.id, domain.MediaMetadata{CapturedAt: &captured, CameraModel: "Sony FX3"}, "fixture"); err != nil {
+		if err := repo.SaveMediaMetadata(ctx, fixture.id, domain.MediaMetadata{CapturedAt: &captured, CameraModel: "Sony FX3"}, "fixture", "", ""); err != nil {
 			t.Fatal(err)
 		}
 		if fixture.id == "ready-1" {

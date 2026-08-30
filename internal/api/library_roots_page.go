@@ -18,8 +18,17 @@ func (s *Server) libraryRootsPage(w http.ResponseWriter, r *http.Request) {
 
 const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · [[i18n:roots.title]]</title><style>
 
-+#step1-status:empty,#discover-status:empty{display:none}
-.panel{padding:20px;margin-bottom:16px}
+/* Both status spans are .callout, which paints a bordered box even with no
+   text; hide them until something is written. The leading "+" this list once
+   carried was a stray combinator, and a selector list is not forgiving — one
+   invalid selector kills the whole comma-separated list, so neither span was
+   ever hidden. */
+#step1-status:empty,#discover-status:empty{display:none}
+/* goStep() toggles .active and nothing else styled it, so every step showed
+   at once and the numbered nav above described a sequence that was not
+   happening. Same shape as .step-panel in worker_setup_page.go. */
+.step{display:none}
+.step.active{display:block}
 .panel{padding:20px;margin-bottom:16px}
 .panel h2{margin:0 0 14px}
 .field{margin:12px 0}
@@ -46,31 +55,31 @@ const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset=
 <div class="panel" id="root-health-section">
 <h2>[[i18n:roots.healthTitle]]</h2>
 <p class="muted">[[i18n:roots.healthIntro]]</p>
-<div id="root-health-wrap"><div class="muted">[[i18n:roots.loadingHealth]]</div></div>
+<div id="root-health-wrap" role="status" aria-live="polite"><div class="muted">[[i18n:roots.loadingHealth]]</div></div>
 </div>
 
-<div class="steps" id="step-nav"><span class="is-active" data-step="1">1. [[i18n:roots.step1]]</span><span data-step="2">2. [[i18n:roots.step2]]</span><span data-step="3">3. [[i18n:roots.step3]]</span><span data-step="4">4. [[i18n:roots.step4]]</span></div>
+<nav class="steps" id="step-nav" aria-label="[[i18n:roots.wizardNavLabel]]"><span class="is-active" data-step="1" aria-current="step">1. [[i18n:roots.step1]]</span><span data-step="2">2. [[i18n:roots.step2]]</span><span data-step="3">3. [[i18n:roots.step3]]</span><span data-step="4">4. [[i18n:roots.step4]]</span></nav>
 
 <div class="panel" id="discover-section">
 <h2>[[i18n:roots.discoverTitle]]</h2>
 <p class="muted">[[i18n:roots.discoverIntro]]</p>
 <div class="step-actions">
   <button class="primary" id="discover-btn" onclick="runDiscover()">[[i18n:roots.discoverButton]]</button>
-  <span class="callout" id="discover-status"></span>
+  <span class="callout" id="discover-status" role="status" aria-live="polite"></span>
 </div>
-<div id="discover-results"></div>
+<div id="discover-results" role="status" aria-live="polite"></div>
 </div>
 
-<div class="step active" id="step-1">
+<div class="step active" id="step-1" role="group" aria-label="[[i18n:roots.step1]]">
 <div class="panel"><h2>[[i18n:roots.step1Title]]</h2>
 <p class="muted">[[i18n:roots.step1IntroBefore]]<code>//nas/Video</code>[[i18n:roots.step1Sep]]<code>smb://user@host/share</code>[[i18n:roots.step1Sep]]<code>host:/export</code>[[i18n:roots.step1IntroAfter]]</p>
 <div class="field"><label for="root-input">[[i18n:roots.pathOrShareLabel]]</label><input id="root-input" type="text" placeholder="[[i18n:roots.pathPlaceholder]]"></div>
-<div id="step1-status" class="callout"></div>
+<div id="step1-status" class="callout" role="status" aria-live="polite"></div>
 <div class="step-actions"><button class="primary" onclick="startInspect()">[[i18n:common.next]] →</button></div>
 </div>
 </div>
 
-<div class="step" id="step-2">
+<div class="step" id="step-2" role="group" aria-label="[[i18n:roots.step2]]">
 <div class="panel"><h2>[[i18n:roots.networkShareTitle]]</h2>
 <div id="share-summary"></div>
 <p class="muted" id="guide-summary"></p>
@@ -81,19 +90,19 @@ const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset=
 <div class="step-actions"><button class="btn btn--ghost" onclick="goStep(1)">← [[i18n:roots.prevStep]]</button><button class="btn btn--primary" onclick="goVerify()">[[i18n:roots.verifyDone]]</button></div>
 </div>
 
-<div class="step" id="step-3">
+<div class="step" id="step-3" role="group" aria-label="[[i18n:roots.step3]]">
 <div class="panel"><h2>[[i18n:roots.verifyTitle]]</h2>
 <p class="muted">[[i18n:roots.verifyIntro]]</p>
-<div id="verify-result"></div>
+<div id="verify-result" role="status" aria-live="polite"></div>
 <div class="step-actions"><button class="btn btn--ghost" onclick="goStep(2)">← [[i18n:roots.backToGuidance]]</button><button class="btn btn--ghost" onclick="verifyMount()">[[i18n:roots.recheck]]</button><button class="btn btn--primary" id="verify-add-btn" style="display:none" onclick="addFromVerify()">[[i18n:roots.addAsRoot]]</button></div>
 </div>
 </div>
 
-<div class="step" id="step-4">
+<div class="step" id="step-4" role="group" aria-label="[[i18n:roots.step4]]">
 <div class="panel"><h2>[[i18n:roots.addedTitle]]</h2>
-<div id="added-summary"></div>
+<div id="added-summary" role="status" aria-live="polite"></div>
 <div class="center"><button class="primary" id="scan-btn" style="display:none" onclick="startScan()">[[i18n:roots.startScan]]</button></div>
-<div id="scan-result"></div>
+<div id="scan-result" role="status" aria-live="polite"></div>
 <p class="muted">[[i18n:roots.scanQueueNote]]<a href="/progress">[[i18n:progress.title]]</a>[[i18n:roots.scanQueueNoteAfter]]</p>
 </div>
 </div>
@@ -123,8 +132,22 @@ function guideText(key,fallback){var msg=tdT(guideKeyPrefix+key);return msg===gu
 
  function csrfToken(){var prefix='__Host-timingdex_csrf=';var item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
  function authHeaders(base){var headers=new Headers(base||{});var csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
-async function json(url,opt){opt=opt||{};var r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok)throw new Error(await tdApiErrorMessage(r));return r.json()}
-function goStep(n){for(var i=1;i<=4;i++){document.getElementById('step-'+i).className='step'+(i===n?' active':'');document.querySelectorAll('.steps span')[i-1].className=(i===n?'is-active':'')}}
+// The status code rides on the thrown Error: every catch on this page needs
+// to separate "you are not logged in" (recoverable here, on this page) from a
+// genuine failure, and tdApiErrorMessage returns prose only.
+async function json(url,opt){opt=opt||{};var r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok){var err=new Error(await tdApiErrorMessage(r));err.status=r.status;throw err}return r.json()}
+// authNotice renders the one thing a 401 needs: a way to log in without
+// leaving the wizard, and a retry that resumes exactly where it stopped.
+// The retry is wired to the admin-auth-changed event the shell dispatches, so
+// it fires on a successful login and not on a dismissed dialog.
+var authRetryPending=null;
+function authNotice(retry){authRetryPending=retry||null;return '<div class="callout callout--attention" role="alert"><span>'+esc(tdT('roots.authRequired'))+'</span><button type="button" class="btn btn--primary btn--sm" onclick="rootsOpenLogin(this)">'+esc(tdT('roots.authLogin'))+'</button></div>'}
+function rootsOpenLogin(opener){tdAdminLoginRequired(opener)}
+window.addEventListener('timingdex:admin-auth-changed',function(ev){if(!ev.detail||!ev.detail.authenticated)return;var retry=authRetryPending;authRetryPending=null;loadRootHealth();if(typeof retry==='function')retry()});
+// aria-current is set on the one active marker and removed from the rest:
+// leaving it on every step (or on step 1 forever) tells a screen reader the
+// wizard never moved.
+function goStep(n){for(var i=1;i<=4;i++){document.getElementById('step-'+i).className='step'+(i===n?' active':'');var marker=document.querySelectorAll('.steps span')[i-1];marker.className=(i===n?'is-active':(i<n?'is-done':''));if(i===n){marker.setAttribute('aria-current','step')}else{marker.removeAttribute('aria-current')}}}
 
 // healthTime renders a timestamp in the selected UI locale. It returns plain
 // text only -- every caller passes the result through esc() before putting it
@@ -134,7 +157,7 @@ async function loadRootHealth(){
   var wrap=document.getElementById('root-health-wrap');
   if(!wrap)return;
   var list;
-  try{list=await json('/api/v1/roots/health')}catch(e){wrap.innerHTML='<div class="muted">'+esc(tdT('roots.healthAuthRequired'))+'</div>';return}
+  try{list=await json('/api/v1/roots/health')}catch(e){wrap.innerHTML=tdAuthDenied(e)?authNotice(loadRootHealth):'<div class="callout callout--contradicted"><span>'+esc(tdT('roots.healthFailed',{message:e.message}))+'</span></div>';return}
   if(!list||!list.length){wrap.innerHTML='<div class="empty"><span class="label">'+esc(tdT('roots.noRootsYetTitle'))+'</span><div class="muted">'+esc(tdT('roots.noRootsYet'))+'</div><div class="muted">'+esc(tdT('roots.noRootsYetAction'))+'</div></div>';return}
   var warns=[];
   var rows=list.map(function(h){
@@ -212,7 +235,8 @@ async function runDiscover(){
     wrap.innerHTML=rows;
     status.textContent=tdPlural('roots.hostsFound',hosts.length);
   }catch(e){
-    status.className='callout callout--contradicted';status.textContent=tdT('roots.scanFailed',{message:e.message});
+    if(tdAuthDenied(e)){status.className='callout callout--attention';status.innerHTML=authNotice(runDiscover)}
+    else{status.className='callout callout--contradicted';status.textContent=tdT('roots.scanFailed',{message:e.message})}
   }finally{
     btn.disabled=false;
   }
@@ -237,7 +261,7 @@ async function addRoot(path){
     shareErr.inspection=body.inspection;
     throw shareErr;
   }
-  if(!response.ok){throw new Error((body&&body.error&&body.error.message)||(body&&typeof body.error==='string'?body.error:'')||response.statusText||tdT('roots.addRootFailed',{status:response.status}))}
+  if(!response.ok){var addErr=new Error((body&&body.error&&body.error.message)||(body&&typeof body.error==='string'?body.error:'')||response.statusText||tdT('roots.addRootFailed',{status:response.status}));addErr.status=response.status;throw addErr}
   return body;
 }
 
@@ -267,6 +291,7 @@ async function startInspect(){
       goStep(2);
       return;
     }
+    if(tdAuthDenied(e)){status.className='callout callout--attention';status.innerHTML=authNotice(startInspect);return}
     status.className='callout callout--contradicted';status.textContent=tdT('roots.checkFailed',{message:e.message});
   }
 }
@@ -378,7 +403,7 @@ async function verifyMount(){
     (inspection.warnings||[]).forEach(function(w){lines.push('<div class="callout">'+esc(w)+'</div>')});
     el.innerHTML=lines.join('');
   }catch(e){
-    el.innerHTML='<div class="callout callout--contradicted">'+esc(tdT('roots.checkFailed',{message:e.message}))+'</div>';
+    el.innerHTML=tdAuthDenied(e)?authNotice(null):'<div class="callout callout--contradicted">'+esc(tdT('roots.checkFailed',{message:e.message}))+'</div>';
   }
 }
 
@@ -397,7 +422,7 @@ async function addFromVerify(){
       goStep(2);
       return;
     }
-    el.innerHTML+='<div class="callout callout--contradicted">'+esc(tdT('roots.addFailed',{message:e.message}))+'</div>';
+    el.innerHTML+=tdAuthDenied(e)?authNotice(addFromVerify):'<div class="callout callout--contradicted">'+esc(tdT('roots.addFailed',{message:e.message}))+'</div>';
   }
 }
 
@@ -425,7 +450,7 @@ async function startScan(){
     html+='<div class="muted" style="margin-top:8px"><a href="/progress">'+esc(tdT('roots.viewProgress'))+' →</a></div>';
     el.innerHTML=html;
   }catch(e){
-    el.innerHTML='<div class="callout callout--contradicted">'+esc(tdT('roots.scanFailed',{message:e.message}))+'</div>';
+    el.innerHTML=tdAuthDenied(e)?authNotice(null):'<div class="callout callout--contradicted">'+esc(tdT('roots.scanFailed',{message:e.message}))+'</div>';
   }finally{
     btn.disabled=false;btn.textContent=tdT('roots.startScan');
   }

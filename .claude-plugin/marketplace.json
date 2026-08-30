@@ -11,7 +11,7 @@
     {
       "name": "timingdex",
       "source": "./plugins/claude",
-      "description": "Timingdex footage capability provider: inspect the local-first library, search shots with evidence, read word-level transcripts, draft and revise edit plans.",
+      "description": "Timingdex footage capability provider for Claude Code: inspect the local-first library, search shots with evidence, and read word-level transcripts through six read-only MCP tools.",
       "category": "productivity",
       "homepage": "https://github.com/evjohn-icu/timingdex",
       "author": {

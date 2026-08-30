@@ -42,11 +42,26 @@ type ShotSearchResult struct {
 // with its owning asset, the transcript fragment within the shot's time
 // range, and thumbnail/proxy references.
 type ShotDetail struct {
-	Shot       AssetShot       `json:"shot"`
-	Asset      AssetCard       `json:"asset"`
+	Shot  AssetShot `json:"shot"`
+	Asset AssetCard `json:"asset"`
+	// Transcript carries word-level timing and is populated only when a
+	// forced alignment covers this shot.
 	Transcript []AlignmentWord `json:"transcript,omitempty"`
-	Thumbnail  string          `json:"thumbnail,omitempty"`
-	Proxy      string          `json:"proxy,omitempty"`
+	// TranscriptSegments carries the ASR transcript's sentence segments that
+	// overlap this shot, for assets the optional align stage never ran on.
+	// align is optional and most assets are ASR-only, so reporting only
+	// aligned words made "this shot has no dialogue" indistinguishable from
+	// "this shot was never aligned" — a consumer reading the first meaning
+	// would skip footage that does have speech.
+	TranscriptSegments []TranscriptSegment `json:"transcript_segments,omitempty"`
+	// TranscriptSource names where the timing came from, using the same
+	// vocabulary as GET /api/v1/assets/{id}/transcript: "aligned" (word
+	// boundaries, strongest evidence), "asr" (sentence segments only), or
+	// empty when the asset has no transcript at all. Segment timing must not
+	// be read as word timing, so the label is part of the answer.
+	TranscriptSource string `json:"transcript_source,omitempty"`
+	Thumbnail        string `json:"thumbnail,omitempty"`
+	Proxy            string `json:"proxy,omitempty"`
 }
 
 // RareShot is a library-relative discovery recommendation. Rarity describes

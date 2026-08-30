@@ -101,6 +101,7 @@ func apiErrorFromError(err error) (int, APIError) {
 		errors.Is(err, domain.ErrPlanRevisionNotFound),
 		errors.Is(err, domain.ErrShotVectorNotFound),
 		errors.Is(err, domain.ErrShotNotFound),
+		errors.Is(err, domain.ErrWorkerJobNotFound),
 		errors.Is(err, app.ErrCollectionNotFound),
 		errors.Is(err, app.ErrWebDAVSpaceNotFound),
 		errors.Is(err, app.ErrTranscriptNotFound):
@@ -120,8 +121,10 @@ func apiErrorFromError(err error) (int, APIError) {
 	case errors.Is(err, domain.ErrJobNotAssignable):
 		return http.StatusConflict, APIError{Code: "job_not_assignable", Message: "the job is running and cannot be reassigned"}
 	case errors.Is(err, app.ErrInvalidRepurposeRevision),
+		errors.Is(err, app.ErrRootPathInvalid),
 		errors.Is(err, app.ErrProviderChannelValidation),
 		errors.Is(err, app.ErrInvalidWorkerArtifact),
+		errors.Is(err, domain.ErrInvalidWorkerRegistration),
 		errors.Is(err, app.ErrWebDAVAccountInvalid),
 		errors.Is(err, app.ErrWebDAVLinkKindInvalid),
 		errors.Is(err, domain.ErrInvalidAssignment):

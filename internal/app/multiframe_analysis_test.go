@@ -152,7 +152,7 @@ func seedMultiframeAsset(t *testing.T, repo *sqlite.Repository, root domain.Libr
 		t.Fatal(err)
 	}
 	assetID := scanned.AssetID
-	if err := repo.SaveMediaMetadata(ctx, assetID, domain.MediaMetadata{DurationMS: 2000}, "test"); err != nil {
+	if err := repo.SaveMediaMetadata(ctx, assetID, domain.MediaMetadata{DurationMS: 2000}, "test", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.EnqueueJob(ctx, assetID, domain.JobDerive, "seed-"+id, 50); err != nil {
