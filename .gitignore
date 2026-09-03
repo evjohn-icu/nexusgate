@@ -88,3 +88,8 @@ demo-*.png
 
 # Repository-local Go module, build, and temporary caches used by constrained CI/dev hosts.
 .cache/
+
+# Personal working notes: these tracked host addresses and a TLS fingerprint
+# until the v0.31 audit found them in pushed history. They stay local.
+state.md
+v021-unreleased-state.md
