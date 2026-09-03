@@ -11,13 +11,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	videoanalysis "github.com/evjohn-icu/timingdex/internal/domain/video_analysis"
-	"github.com/evjohn-icu/timingdex/internal/providerchannels"
-	"github.com/evjohn-icu/timingdex/internal/providers"
-	"github.com/evjohn-icu/timingdex/internal/providers/common"
-	videoproviders "github.com/evjohn-icu/timingdex/internal/providers/video"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	videoanalysis "github.com/evjohn-icu/nexusslate/internal/domain/video_analysis"
+	"github.com/evjohn-icu/nexusslate/internal/providerchannels"
+	"github.com/evjohn-icu/nexusslate/internal/providers"
+	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	videoproviders "github.com/evjohn-icu/nexusslate/internal/providers/video"
 )
 
 // providerChannelRepository is intentionally narrower than Repository. The

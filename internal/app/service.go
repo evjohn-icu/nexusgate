@@ -14,25 +14,25 @@ import (
 	"sync"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/credentials"
-	"github.com/evjohn-icu/timingdex/internal/curator"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/hubauth"
-	"github.com/evjohn-icu/timingdex/internal/idgen"
-	"github.com/evjohn-icu/timingdex/internal/ingest"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	"github.com/evjohn-icu/timingdex/internal/mount"
-	"github.com/evjohn-icu/timingdex/internal/providers"
-	videoproviders "github.com/evjohn-icu/timingdex/internal/providers/video"
-	"github.com/evjohn-icu/timingdex/internal/remote"
-	sqlite "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
-	"github.com/evjohn-icu/timingdex/internal/repurpose"
-	"github.com/evjohn-icu/timingdex/internal/search"
-	"github.com/evjohn-icu/timingdex/internal/secretstore"
-	"github.com/evjohn-icu/timingdex/internal/smbdiscover"
-	"github.com/evjohn-icu/timingdex/internal/staging"
-	"github.com/evjohn-icu/timingdex/internal/webdavspace"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/credentials"
+	"github.com/evjohn-icu/nexusslate/internal/curator"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/hubauth"
+	"github.com/evjohn-icu/nexusslate/internal/idgen"
+	"github.com/evjohn-icu/nexusslate/internal/ingest"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/mount"
+	"github.com/evjohn-icu/nexusslate/internal/providers"
+	videoproviders "github.com/evjohn-icu/nexusslate/internal/providers/video"
+	"github.com/evjohn-icu/nexusslate/internal/remote"
+	sqlite "github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/repurpose"
+	"github.com/evjohn-icu/nexusslate/internal/search"
+	"github.com/evjohn-icu/nexusslate/internal/secretstore"
+	"github.com/evjohn-icu/nexusslate/internal/smbdiscover"
+	"github.com/evjohn-icu/nexusslate/internal/staging"
+	"github.com/evjohn-icu/nexusslate/internal/webdavspace"
 )
 
 var ErrInvalidRepurposeRevision = errors.New("invalid repurpose revision")
@@ -796,7 +796,7 @@ type MountGuidance struct {
 // MountGuideStep carries mount.Step's Key alongside the English Title so the
 // browser wizard (internal/api/library_roots_page.go) can look up a Chinese
 // translation by Key and fall back to Title — which stays the English
-// text — when the key is unrecognised. The CLI (timingdex doctor) never sees
+// text — when the key is unrecognised. The CLI (nexusslate doctor) never sees
 // this type; it renders mount.Guide directly and is unaffected by Key.
 type MountGuideStep struct {
 	Key      string   `json:"key"`
@@ -968,7 +968,7 @@ func (s *Service) ListWorkers(ctx context.Context) ([]remote.Worker, error) {
 
 // RevokeWorker decommissions a Worker so its token stops authenticating and
 // its heartbeat stops registering it as online. It is the write that backs
-// the admin "revoke" endpoint and the `timingdex worker revoke` CLI command;
+// the admin "revoke" endpoint and the `nexusslate worker revoke` CLI command;
 // an unknown id is reported as domain.ErrWorkerNotFound.
 func (s *Service) RevokeWorker(ctx context.Context, id string) error {
 	return s.repo.RevokeWorker(ctx, id)
@@ -1551,7 +1551,7 @@ const executorHeartbeat = 15 * time.Second
 // HealOnStartup so the startup sweep sees this process as alive and reclaims
 // only its dead predecessor's jobs; call the returned stop func on shutdown so
 // the next process does not wait for the heartbeat to age out. Every process
-// that runs the Hub-local queue (`serve`, `timingdex pipeline run`) must call
+// that runs the Hub-local queue (`serve`, `nexusslate pipeline run`) must call
 // it; anything else is free to skip it.
 func (s *Service) StartExecutor(ctx context.Context) (stop func(), err error) {
 	owner := s.leaseOwner
@@ -1785,7 +1785,7 @@ func (s *Service) ListJobs(ctx context.Context, limit int) ([]domain.Job, error)
 }
 
 // ListJobsPage is the paged form of ListJobs: it reports whether another page
-// exists so the API can set X-Timingdex-Has-More. ListJobs itself stays on
+// exists so the API can set X-NexusSlate-Has-More. ListJobs itself stays on
 // the pipeline path unchanged.
 func (s *Service) ListJobsPage(ctx context.Context, limit, offset int) ([]domain.Job, bool, error) {
 	return s.repo.PagedJobs(ctx, limit, offset)
@@ -1838,7 +1838,7 @@ func (s *Service) AssetExists(ctx context.Context, assetID string) (bool, error)
 // timestamps come from — aligned word boundaries are the strongest timing
 // evidence the pipeline has, asr segments are sentence-level only. The word
 // stream stays contiguous across shot boundaries: consumers think in
-// sentences, and imposing timingdex's shot atomicity would break their edit
+// sentences, and imposing nexusslate's shot atomicity would break their edit
 // model.
 type AssetTranscript struct {
 	AssetID  string                     `json:"asset_id"`

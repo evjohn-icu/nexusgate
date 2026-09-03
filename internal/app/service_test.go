@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/config"
 )
 
 func TestNewServiceRejectsUnknownVideoProviderInsteadOfSilentlyUsingMock(t *testing.T) {

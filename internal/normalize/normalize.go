@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 const (

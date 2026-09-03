@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/media"
 )
 
 // fakeBundleSource drives Generate without a live database. Doctor writes
@@ -50,9 +50,9 @@ func TestSupportBundleRedactsSecretsAndBasenames(t *testing.T) {
 	const fakeHeaderValue = "header-value-secret-abcdef"
 
 	cfg := config.Config{
-		DataDir:       "/srv/timingdex",
-		CacheDir:      "/srv/timingdex/cache",
-		DatabasePath:  "/srv/timingdex/timingdex.db",
+		DataDir:       "/srv/nexusslate",
+		CacheDir:      "/srv/nexusslate/cache",
+		DatabasePath:  "/srv/nexusslate/nexusslate.db",
 		ListenAddress: "127.0.0.1:8787",
 		Providers: config.ProvidersConfig{
 			StepFun: config.ProviderConfig{
@@ -67,20 +67,20 @@ func TestSupportBundleRedactsSecretsAndBasenames(t *testing.T) {
 				ExtraHeaders: map[string]string{"X-Proxy-Key": fakeHeaderValue},
 			},
 			Alignment: config.AlignmentConfig{
-				Command: "/opt/timingdex/bin/timingdex-align",
+				Command: "/opt/nexusslate/bin/nexusslate-align",
 				Args:    []string{"-i", "/mnt/nas/clips", `C:\Users\ev\clips\input.mp4`, "https://example.test/media/input.mp4"},
 			},
 			ShotDetection: config.ShotDetectionConfig{Args: []string{`D:\Footage\nested\cut.mp4`}},
 		},
-		HubTLS:   config.HubTLSConfig{Mode: "files", CertificateFile: "/etc/timingdex/tls.crt", KeyFile: "/etc/timingdex/tls.key"},
+		HubTLS:   config.HubTLSConfig{Mode: "files", CertificateFile: "/etc/nexusslate/tls.crt", KeyFile: "/etc/nexusslate/tls.key"},
 		Hardware: media.HardwareConfig{Mode: "auto", Device: "/dev/dri/renderD128", AllowFallback: true, ProxyBitrateKbps: 1800},
 	}
 
 	lastSeen := time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC)
 	report := domain.DoctorReport{
 		System:   domain.SystemInfo{Version: "v0.29.0-test", GoOS: "linux", GoArch: "amd64", Hostname: "nas-01"},
-		DB:       domain.DBInfo{Path: "/srv/timingdex/timingdex.db", IntegrityOK: true, MigrationsApplied: 29, MigrationsTotal: 29, SchemaVersion: "0029_cost_ledger.sql"},
-		Storage:  domain.StorageInfo{CachePath: "/srv/timingdex/cache", FreeDiskBytes: 1 << 40, CacheBytes: 1 << 30, DBSizeBytes: 1 << 20},
+		DB:       domain.DBInfo{Path: "/srv/nexusslate/nexusslate.db", IntegrityOK: true, MigrationsApplied: 29, MigrationsTotal: 29, SchemaVersion: "0029_cost_ledger.sql"},
+		Storage:  domain.StorageInfo{CachePath: "/srv/nexusslate/cache", FreeDiskBytes: 1 << 40, CacheBytes: 1 << 30, DBSizeBytes: 1 << 20},
 		Roots:    []domain.RootInfo{{Path: "/mnt/nas/footage", State: string(domain.RootHealthHealthy), FilesystemType: "cifs", LastHealthyAt: &lastSeen}},
 		FFmpeg:   domain.FFmpegInfo{Path: "/usr/bin/ffmpeg", Present: true, Version: "ffmpeg version 6.1.1-3ubuntu2"},
 		FFprobe:  domain.ToolInfo{Path: "/usr/bin/ffprobe", Present: true},
@@ -127,14 +127,14 @@ func TestSupportBundleRedactsSecretsAndBasenames(t *testing.T) {
 			t.Errorf("config.sanitized.json providers.stepfun.%s = %v, want ***", key, got)
 		}
 	}
-	if got := sanitized["data_dir"]; got != "timingdex" {
-		t.Errorf("config.sanitized.json data_dir = %v, want basename timingdex", got)
+	if got := sanitized["data_dir"]; got != "nexusslate" {
+		t.Errorf("config.sanitized.json data_dir = %v, want basename nexusslate", got)
 	}
 	if got := sanitized["cache_dir"]; got != "cache" {
 		t.Errorf("config.sanitized.json cache_dir = %v, want basename cache", got)
 	}
-	if got := sanitized["database_path"]; got != "timingdex.db" {
-		t.Errorf("config.sanitized.json database_path = %v, want basename timingdex.db", got)
+	if got := sanitized["database_path"]; got != "nexusslate.db" {
+		t.Errorf("config.sanitized.json database_path = %v, want basename nexusslate.db", got)
 	}
 	if got := stepfun["base_url"]; got != "https://api.stepfun.com/step_plan/v1" {
 		t.Errorf("config.sanitized.json base_url = %v, want untouched URL", got)
@@ -143,8 +143,8 @@ func TestSupportBundleRedactsSecretsAndBasenames(t *testing.T) {
 	// install layout and a source input) — they must be basenames, or the
 	// archive leaks where the box lives.
 	align := sanitized["providers"].(map[string]any)["alignment"].(map[string]any)
-	if got := align["command"]; got != "timingdex-align" {
-		t.Errorf("config.sanitized.json alignment.command = %v, want basename timingdex-align", got)
+	if got := align["command"]; got != "nexusslate-align" {
+		t.Errorf("config.sanitized.json alignment.command = %v, want basename nexusslate-align", got)
 	}
 	if args, ok := align["args"].([]any); !ok || len(args) != 4 || args[0] != "-i" || args[1] != "clips" || args[2] != "input.mp4" || args[3] != "https://example.test/media/input.mp4" {
 		t.Errorf("config.sanitized.json alignment.args = %v, want cross-platform basenames with URL preserved", args)
@@ -165,8 +165,8 @@ func TestSupportBundleRedactsSecretsAndBasenames(t *testing.T) {
 	if err := json.Unmarshal(files["bundle.json"], &bundle); err != nil {
 		t.Fatalf("parse bundle.json: %v", err)
 	}
-	if got := bundle.Report.DB.Path; got != "timingdex.db" {
-		t.Errorf("bundle report db.path = %q, want basename timingdex.db", got)
+	if got := bundle.Report.DB.Path; got != "nexusslate.db" {
+		t.Errorf("bundle report db.path = %q, want basename nexusslate.db", got)
 	}
 	if got := bundle.Report.Storage.CachePath; got != "cache" {
 		t.Errorf("bundle report storage.cache_path = %q, want basename cache", got)

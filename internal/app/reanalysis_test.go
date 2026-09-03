@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	videoanalysis "github.com/evjohn-icu/timingdex/internal/domain/video_analysis"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	videoproviders "github.com/evjohn-icu/timingdex/internal/providers/video"
-	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	videoanalysis "github.com/evjohn-icu/nexusslate/internal/domain/video_analysis"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	videoproviders "github.com/evjohn-icu/nexusslate/internal/providers/video"
+	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
 )
 
 type failIndexEnqueueOnceRepo struct {

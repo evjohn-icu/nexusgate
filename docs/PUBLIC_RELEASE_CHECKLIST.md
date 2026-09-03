@@ -1,6 +1,6 @@
 # Public Release Checklist
 
-Pre-public gate for `evjohn-icu/timingdex`. Run through before flipping the
+Pre-public gate for `evjohn-icu/nexusslate`. Run through before flipping the
 repository public or announcing the alpha. Keep this file short; each item is
 a yes/no with the evidence where it lives.
 
@@ -20,7 +20,7 @@ a yes/no with the evidence where it lives.
       which runs with `--redact`; masked report only)
 - [ ] No private endpoints, personal footage, local databases or eval corpora
       with private media tracked (fixtures are lavfi-synthetic)
-- [ ] No stray build artifacts tracked (`timingdex-mcp` removed; source
+- [ ] No stray build artifacts tracked (`nexusslate-mcp` removed; source
       tarballs gitignored)
 - [ ] Git history secret scan clean (automated: the `secret scan (full
       history)` step in `.github/workflows/ci.yml` runs gitleaks over the

@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	videoanalysis "github.com/evjohn-icu/timingdex/internal/domain/video_analysis"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	"github.com/evjohn-icu/timingdex/internal/providers/shotdetect"
-	videoproviders "github.com/evjohn-icu/timingdex/internal/providers/video"
-	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	videoanalysis "github.com/evjohn-icu/nexusslate/internal/domain/video_analysis"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/providers/shotdetect"
+	videoproviders "github.com/evjohn-icu/nexusslate/internal/providers/video"
+	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
 )
 
 // testMultiframeRouter stands in for the providers/video Router: it exposes

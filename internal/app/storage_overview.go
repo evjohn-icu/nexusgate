@@ -5,7 +5,7 @@ import (
 	"errors"
 	"os"
 
-	"github.com/evjohn-icu/timingdex/internal/cache"
+	"github.com/evjohn-icu/nexusslate/internal/cache"
 )
 
 // StorageOverview is the settings page's read-only disk picture. Every number
@@ -36,7 +36,7 @@ type StorageOverview struct {
 	// analysis-windows/, tmp/), which the pipeline is supposed to remove
 	// itself; anything still here is litter.
 	ScratchBytes int64 `json:"scratch_bytes"`
-	// DatabaseBytes is the size of the SQLite file (timingdex.db).
+	// DatabaseBytes is the size of the SQLite file (nexusslate.db).
 	DatabaseBytes int64 `json:"database_bytes"`
 	// TemporaryBytes is everything transient: scratch plus unclassified files
 	// (in-progress uploads, stray writes). Safe to delete at any time.

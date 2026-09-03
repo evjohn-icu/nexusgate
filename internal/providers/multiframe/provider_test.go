@@ -13,10 +13,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	videoanalysis "github.com/evjohn-icu/timingdex/internal/domain/video_analysis"
-	"github.com/evjohn-icu/timingdex/internal/providers/common"
-	videoproviders "github.com/evjohn-icu/timingdex/internal/providers/video"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	videoanalysis "github.com/evjohn-icu/nexusslate/internal/domain/video_analysis"
+	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	videoproviders "github.com/evjohn-icu/nexusslate/internal/providers/video"
 )
 
 func writeFrame(t *testing.T, dir string, name string, ts int64) videoanalysis.Frame {

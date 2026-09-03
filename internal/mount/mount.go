@@ -3,7 +3,7 @@
 //
 // It deliberately mounts nothing. Mounting needs root, and surviving a reboot
 // needs a line in /etc/fstab or a systemd unit — both of them state outside
-// $TIMINGDEX_DATA_DIR, which is the one place this Hub is allowed to own. A
+// $NEXUSSLATE_DATA_DIR, which is the one place this Hub is allowed to own. A
 // tool that quietly acquires root to write files it cannot later account for is
 // worse than one that prints an exact command and lets the operator run it.
 //
@@ -231,7 +231,7 @@ func shareBaseName(share Share) string {
 //
 // A containerised Hub cannot use that answer. Its footage arrives through a
 // bind mount of a host directory, and mount propagation only carries mounts
-// made *under* that bind's source — a share mounted at /mnt/timingdex/<name>
+// made *under* that bind's source — a share mounted at /mnt/nexusslate/<name>
 // on the host is outside the bind entirely and stays invisible inside the
 // container no matter which propagation mode the bind has. So the default
 // moves under the bind's source, and ContainerPath below translates it into
@@ -247,7 +247,7 @@ func DefaultMountpoint(share Share, host Host) string {
 	if host.OS == "darwin" {
 		return "/Volumes/" + name
 	}
-	return "/mnt/timingdex/" + name
+	return "/mnt/nexusslate/" + name
 }
 
 // ContainerPath translates a host-side mount point into the path the same
@@ -379,7 +379,7 @@ func addRootStep(mountpoint string, host Host) Step {
 		return Step{
 			Key:      "add-root",
 			Title:    "Add the mount point as a library root",
-			Commands: []string{"timingdex root add " + mountpoint},
+			Commands: []string{"nexusslate root add " + mountpoint},
 		}
 	}
 	containerPath, ok := ContainerPath(mountpoint, host)
@@ -396,12 +396,12 @@ func addRootStep(mountpoint string, host Host) Step {
 		Title: fmt.Sprintf(
 			"Back inside the Hub container — %s on the host is %s in here, and that is the path to record",
 			mountpoint, containerPath),
-		Commands: []string{"timingdex root add " + containerPath},
+		Commands: []string{"nexusslate root add " + containerPath},
 	}
 }
 
 func credentialsPath(share Share) string {
-	return "/etc/timingdex/" + share.Host + ".cred"
+	return "/etc/nexusslate/" + share.Host + ".cred"
 }
 
 func linuxSteps(share Share, mountpoint string, host Host) []Step {
@@ -443,7 +443,7 @@ func linuxSteps(share Share, mountpoint string, host Host) []Step {
 			Key:   "smb-credentials-file",
 			Title: "Put the credentials in a file only root can read",
 			Commands: []string{
-				"sudo install -d -m 700 /etc/timingdex",
+				"sudo install -d -m 700 /etc/nexusslate",
 				fmt.Sprintf("printf 'username=%s\\npassword=%%s\\n' 'YOUR_NAS_PASSWORD' | sudo tee %s >/dev/null", user, credentials),
 				"sudo chmod 600 " + credentials,
 			},

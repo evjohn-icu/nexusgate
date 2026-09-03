@@ -52,7 +52,7 @@ func copyFile(t *testing.T, src, dst string) {
 
 func TestMigrationSnapshotCreatedOnPendingMigrations(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "timingdex.db")
+	dbPath := filepath.Join(dir, "nexusslate.db")
 	repo, err := Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
@@ -62,11 +62,11 @@ func TestMigrationSnapshotCreatedOnPendingMigrations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files := preSnapshotFiles(t, dir, "timingdex.db")
+	files := preSnapshotFiles(t, dir, "nexusslate.db")
 	if len(files) != 1 {
 		t.Fatalf("Migrate on a fresh DB created %d snapshots, want 1: %v", len(files), files)
 	}
-	pattern := regexp.MustCompile(`^timingdex\.db\.pre-\d+-\d{8}$`)
+	pattern := regexp.MustCompile(`^nexusslate\.db\.pre-\d+-\d{8}$`)
 	if !pattern.MatchString(files[0]) {
 		t.Fatalf("snapshot name %q does not match %s", files[0], pattern)
 	}
@@ -88,7 +88,7 @@ func TestMigrationSnapshotCreatedOnPendingMigrations(t *testing.T) {
 			break
 		}
 	}
-	if !strings.HasPrefix(files[0], "timingdex.db.pre-"+firstToken+"-") {
+	if !strings.HasPrefix(files[0], "nexusslate.db.pre-"+firstToken+"-") {
 		t.Fatalf("snapshot name %q does not carry the first migration's version token %q", files[0], firstToken)
 	}
 
@@ -113,7 +113,7 @@ func TestMigrationSnapshotCreatedOnPendingMigrations(t *testing.T) {
 
 func TestMigrationSnapshotSkippedWhenItAlreadyExists(t *testing.T) {
 	dir := t.TempDir()
-	repo, err := Open(filepath.Join(dir, "timingdex.db"))
+	repo, err := Open(filepath.Join(dir, "nexusslate.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestMigrationSnapshotSkippedWhenItAlreadyExists(t *testing.T) {
 	if err := repo.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	before := preSnapshotFiles(t, dir, "timingdex.db")
+	before := preSnapshotFiles(t, dir, "nexusslate.db")
 	if len(before) != 1 {
 		t.Fatalf("first Migrate created %d snapshots, want 1: %v", len(before), before)
 	}
@@ -131,7 +131,7 @@ func TestMigrationSnapshotSkippedWhenItAlreadyExists(t *testing.T) {
 	if err := repo.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	after := preSnapshotFiles(t, dir, "timingdex.db")
+	after := preSnapshotFiles(t, dir, "nexusslate.db")
 	if len(after) != len(before) {
 		t.Fatalf("second Migrate added snapshots: before %v, after %v", before, after)
 	}
@@ -144,7 +144,7 @@ func TestMigrationSnapshotSkippedWhenItAlreadyExists(t *testing.T) {
 
 func TestMigrationSnapshotNotCreatedWhenUpToDate(t *testing.T) {
 	dir := t.TempDir()
-	repo, err := Open(filepath.Join(dir, "timingdex.db"))
+	repo, err := Open(filepath.Join(dir, "nexusslate.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestMigrationSnapshotNotCreatedWhenUpToDate(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Delete the first-run snapshot so a new one would be visibly created.
-	files := preSnapshotFiles(t, dir, "timingdex.db")
+	files := preSnapshotFiles(t, dir, "nexusslate.db")
 	for _, f := range files {
 		if err := os.Remove(filepath.Join(dir, f)); err != nil {
 			t.Fatal(err)
@@ -162,14 +162,14 @@ func TestMigrationSnapshotNotCreatedWhenUpToDate(t *testing.T) {
 	if err := repo.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if files := preSnapshotFiles(t, dir, "timingdex.db"); len(files) != 0 {
+	if files := preSnapshotFiles(t, dir, "nexusslate.db"); len(files) != 0 {
 		t.Fatalf("Migrate on an up-to-date DB created %d snapshots: %v", len(files), files)
 	}
 }
 
 func TestMigrationSnapshotRestoresCorruptedDatabase(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "timingdex.db")
+	dbPath := filepath.Join(dir, "nexusslate.db")
 	repo, err := Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
@@ -180,7 +180,7 @@ func TestMigrationSnapshotRestoresCorruptedDatabase(t *testing.T) {
 	if err := repo.Close(); err != nil {
 		t.Fatal(err)
 	}
-	files := preSnapshotFiles(t, dir, "timingdex.db")
+	files := preSnapshotFiles(t, dir, "nexusslate.db")
 	if len(files) != 1 {
 		t.Fatalf("Migrate created %d snapshots, want 1: %v", len(files), files)
 	}
@@ -247,7 +247,7 @@ func TestMigrationSnapshotRestoresCorruptedDatabase(t *testing.T) {
 
 func TestMigrationSnapshotSameSizeCorruptionIsReplaced(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "timingdex.db")
+	dbPath := filepath.Join(dir, "nexusslate.db")
 	repo, err := Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
@@ -313,7 +313,7 @@ func TestMigrationSnapshotSameSizeCorruptionIsReplaced(t *testing.T) {
 
 func TestMigrationSnapshotUsesConsistentWALState(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "timingdex.db")
+	dbPath := filepath.Join(dir, "nexusslate.db")
 	repo, err := Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
@@ -323,7 +323,7 @@ func TestMigrationSnapshotUsesConsistentWALState(t *testing.T) {
 		t.Fatal(err)
 	}
 	removeNewestMigration(t, repo)
-	for _, path := range preSnapshotFiles(t, dir, "timingdex.db") {
+	for _, path := range preSnapshotFiles(t, dir, "nexusslate.db") {
 		if err := os.Remove(filepath.Join(dir, path)); err != nil {
 			t.Fatal(err)
 		}
@@ -354,7 +354,7 @@ func TestMigrationSnapshotUsesConsistentWALState(t *testing.T) {
 
 func TestConcurrentMigrateAppliesEachMigrationOnce(t *testing.T) {
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "timingdex.db")
+	dbPath := filepath.Join(dir, "nexusslate.db")
 	first, err := Open(dbPath)
 	if err != nil {
 		t.Fatal(err)

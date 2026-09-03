@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // similarFakeStore is a scripted ShotStore for the similar-shots tests. It

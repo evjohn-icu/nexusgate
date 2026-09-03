@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/providerpool"
-	"github.com/evjohn-icu/timingdex/internal/providers/common"
+	"github.com/evjohn-icu/nexusslate/internal/providerpool"
+	"github.com/evjohn-icu/nexusslate/internal/providers/common"
 )
 
 // healthMetricsClock returns a mutable clock shared by the executor and its

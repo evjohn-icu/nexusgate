@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/app"
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/app"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
 )
 
 func TestAdminTokenSurvivesServiceReopen(t *testing.T) {
@@ -23,7 +23,7 @@ func TestAdminTokenSurvivesServiceReopen(t *testing.T) {
 	if err := os.Mkdir(dataDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	dbPath := filepath.Join(root, "timingdex.db")
+	dbPath := filepath.Join(root, "nexusslate.db")
 	open := func() (*app.Service, *sqlite.Repository) {
 		repo, err := sqlite.Open(dbPath)
 		if err != nil {

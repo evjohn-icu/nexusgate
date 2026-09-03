@@ -3,7 +3,7 @@ package video_analysis
 import (
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 func TestResultToStructuredAnalysisPreservesUnifiedVideoSemantics(t *testing.T) {

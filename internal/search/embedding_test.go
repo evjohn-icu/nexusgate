@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // fakeEmbedder is a deterministic, offline text embedder: each token hashes

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/search"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/search"
 )
 
 // The Search v2 persistence tests run against real SQLite (seedGoldenCorpus

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/providerpool"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/providerpool"
 )
 
 func TestLegacyConfigConversionPreservesOrderedRoutesWithoutSecretValues(t *testing.T) {

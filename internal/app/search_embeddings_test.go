@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
-	"github.com/evjohn-icu/timingdex/internal/search"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/search"
 )
 
 // testEmbedder is a deterministic embedding provider for app-level tests: it

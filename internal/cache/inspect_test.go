@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	sqliterepo "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	sqliterepo "github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
 )
 
 func writeFile(t *testing.T, path string, size int64) {

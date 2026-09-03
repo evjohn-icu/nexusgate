@@ -1,4 +1,4 @@
-// Command timingdex-mcp exposes Timingdex's semantic library to MCP-capable
+// Command nexusslate-mcp exposes NexusSlate's semantic library to MCP-capable
 // agents (Codex, Claude Code, Cursor, ...) over stdio.
 //
 // It is a read-only thin client of the Hub's HTTP API: every tool calls the
@@ -30,10 +30,10 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/evjohn-icu/timingdex/internal/apiclient"
+	"github.com/evjohn-icu/nexusslate/internal/apiclient"
 )
 
-// hubClient talks to the Timingdex Hub HTTP API.
+// hubClient talks to the NexusSlate Hub HTTP API.
 type hubClient struct {
 	baseURL    string
 	agentToken string
@@ -41,7 +41,7 @@ type hubClient struct {
 }
 
 // newHubClient builds the Hub API client. An https base URL requires
-// TIMINGDEX_HUB_FINGERPRINT: cross-machine deployments use the Hub's
+// NEXUSSLATE_HUB_FINGERPRINT: cross-machine deployments use the Hub's
 // self-signed certificate, and accepting it unpinned would silently trust any
 // attacker in the path — the exact boundary fingerprint pinning exists for.
 // http:// stays available only for loopback/link-local development (see
@@ -49,17 +49,17 @@ type hubClient struct {
 // the agent token in cleartext, mirroring the worker CLI's refusal of
 // non-https Hubs.
 func newHubClient() (*hubClient, error) {
-	baseURL := strings.TrimRight(os.Getenv("TIMINGDEX_BASE_URL"), "/")
+	baseURL := strings.TrimRight(os.Getenv("NEXUSSLATE_BASE_URL"), "/")
 	if baseURL == "" {
 		// The default Hub endpoint is the local self-signed HTTPS server.
 		// Defaulting to https is what makes the unconfigured case safe: it
-		// forces TIMINGDEX_HUB_FINGERPRINT below instead of silently talking
+		// forces NEXUSSLATE_HUB_FINGERPRINT below instead of silently talking
 		// to an unpinned Hub identity over plaintext.
 		baseURL = "https://127.0.0.1:8787"
 	}
-	fingerprint := strings.TrimSpace(os.Getenv("TIMINGDEX_HUB_FINGERPRINT"))
+	fingerprint := strings.TrimSpace(os.Getenv("NEXUSSLATE_HUB_FINGERPRINT"))
 	if fingerprint != "" && !ValidFingerprint(fingerprint) {
-		return nil, fmt.Errorf("TIMINGDEX_HUB_FINGERPRINT must be a 64-character SHA-256 hex fingerprint")
+		return nil, fmt.Errorf("NEXUSSLATE_HUB_FINGERPRINT must be a 64-character SHA-256 hex fingerprint")
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if fingerprint != "" {
@@ -79,14 +79,14 @@ func newHubClient() (*hubClient, error) {
 		}
 	}
 	if strings.HasPrefix(strings.ToLower(baseURL), "https://") && fingerprint == "" {
-		return nil, fmt.Errorf("TIMINGDEX_HUB_FINGERPRINT is not set: the Hub base URL is https (%s) and accepting an unpinned certificate would silently trust any attacker in the path; set TIMINGDEX_HUB_FINGERPRINT, or use an explicit loopback http:// base URL for TLS-off development", baseURL)
+		return nil, fmt.Errorf("NEXUSSLATE_HUB_FINGERPRINT is not set: the Hub base URL is https (%s) and accepting an unpinned certificate would silently trust any attacker in the path; set NEXUSSLATE_HUB_FINGERPRINT, or use an explicit loopback http:// base URL for TLS-off development", baseURL)
 	}
 	if strings.HasPrefix(strings.ToLower(baseURL), "http://") && !httpAllowedForLocalDevelopment(hostFromBaseURL(baseURL)) {
-		return nil, fmt.Errorf("TIMINGDEX_BASE_URL is http:// and the host is not loopback or link-local: refusing to send the agent token in cleartext to a remote Hub; use https://")
+		return nil, fmt.Errorf("NEXUSSLATE_BASE_URL is http:// and the host is not loopback or link-local: refusing to send the agent token in cleartext to a remote Hub; use https://")
 	}
 	return &hubClient{
 		baseURL:    baseURL,
-		agentToken: os.Getenv("TIMINGDEX_AGENT_TOKEN"),
+		agentToken: os.Getenv("NEXUSSLATE_AGENT_TOKEN"),
 		http:       &http.Client{Transport: transport, Timeout: 60 * time.Second},
 	}, nil
 }
@@ -454,14 +454,14 @@ func main() {
 		// certificate fingerprint) must fail startup loudly rather than
 		// silently connect to an arbitrary Hub identity — that is the one
 		// case the no-stderr rule below does not cover.
-		fmt.Fprintf(os.Stderr, "timingdex-mcp: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nexusslate-mcp: %v\n", err)
 		os.Exit(1)
 	}
 	// No startup logging to stderr: MCP stdio clients treat stderr strictly,
 	// and the Hub-side logs already cover token absence at serve time. The
 	// tools themselves return clear errors when a token is missing.
 
-	srv := server.NewMCPServer("timingdex", "v0.1", server.WithToolCapabilities(true))
+	srv := server.NewMCPServer("nexusslate", "v0.1", server.WithToolCapabilities(true))
 	registerTools(srv, client)
 
 	if err := server.ServeStdio(srv); err != nil && !errors.Is(err, io.EOF) {
@@ -470,11 +470,11 @@ func main() {
 	}
 }
 
-// registerTools wires every Timingdex tool onto the MCP server.
+// registerTools wires every NexusSlate tool onto the MCP server.
 func registerTools(srv *server.MCPServer, client *hubClient) {
 	srv.AddTool(
 		mcp.NewTool("inspect_library",
-			mcp.WithDescription("Inspect the Timingdex library readiness: health, hardware, setup status (healthy roots, runnable providers, searchable shots, index state) and job summary (queued/running/failed). Use before searching so you do not plan against an incomplete library."),
+			mcp.WithDescription("Inspect the NexusSlate library readiness: health, hardware, setup status (healthy roots, runnable providers, searchable shots, index state) and job summary (queued/running/failed). Use before searching so you do not plan against an incomplete library."),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			info, err := client.inspectLibrary(ctx)

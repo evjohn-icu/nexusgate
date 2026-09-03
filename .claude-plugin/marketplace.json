@@ -1,26 +1,26 @@
 {
-  "name": "timingdex",
+  "name": "nexusslate",
   "owner": {
-    "name": "Timingdex",
-    "url": "https://github.com/evjohn-icu/timingdex"
+    "name": "NexusSlate",
+    "url": "https://github.com/evjohn-icu/nexusslate"
   },
   "metadata": {
-    "description": "Timingdex plugins for Claude Code"
+    "description": "NexusSlate plugins for Claude Code"
   },
   "plugins": [
     {
-      "name": "timingdex",
+      "name": "nexusslate",
       "source": "./plugins/claude",
-      "description": "Timingdex footage capability provider for Claude Code: inspect the local-first library, search shots with evidence, and read word-level transcripts through six read-only MCP tools.",
+      "description": "NexusSlate footage capability provider for Claude Code: inspect the local-first library, search shots with evidence, and read word-level transcripts through six read-only MCP tools.",
       "category": "productivity",
-      "homepage": "https://github.com/evjohn-icu/timingdex",
+      "homepage": "https://github.com/evjohn-icu/nexusslate",
       "author": {
-        "name": "Timingdex",
-        "url": "https://github.com/evjohn-icu/timingdex"
+        "name": "NexusSlate",
+        "url": "https://github.com/evjohn-icu/nexusslate"
       },
       "license": "Apache-2.0",
       "keywords": [
-        "timingdex",
+        "nexusslate",
         "footage",
         "video",
         "video-search",

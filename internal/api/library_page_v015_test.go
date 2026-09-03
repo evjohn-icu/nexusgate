@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/normalize"
+	"github.com/evjohn-icu/nexusslate/internal/normalize"
 )
 
 // enhanceLibraryPage is a chain of exact-match string replacements over a

@@ -3,7 +3,7 @@ package sqlite
 import (
 	"fmt"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // The full-scale retrieval golden corpus. 41 assets (26 handwritten adversarial

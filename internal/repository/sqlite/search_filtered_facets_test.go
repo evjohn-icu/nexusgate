@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 func openSearchFacetTestRepo(t *testing.T, name string) *Repository {

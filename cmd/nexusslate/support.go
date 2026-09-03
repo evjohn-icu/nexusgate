@@ -7,12 +7,12 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/app"
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/support"
+	"github.com/evjohn-icu/nexusslate/internal/app"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/support"
 )
 
-// runSupportBundleCommand assembles the `timingdex support bundle` archive:
+// runSupportBundleCommand assembles the `nexusslate support bundle` archive:
 // a zip of Hub diagnostics plus a sanitized configuration, safe to hand to an
 // operator or upstream support. Safety is the point of the feature — the
 // bundle redacts every secret-bearing configuration value and reduces every
@@ -21,7 +21,7 @@ import (
 // both what it included and what it provably excluded.
 func runSupportBundleCommand(service *app.Service, cfg config.Config, args []string) error {
 	flags := flag.NewFlagSet("support bundle", flag.ContinueOnError)
-	out := flags.String("out", "", "output zip path (default ./timingdex-support-<timestamp>.zip)")
+	out := flags.String("out", "", "output zip path (default ./nexusslate-support-<timestamp>.zip)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -32,7 +32,7 @@ func runSupportBundleCommand(service *app.Service, cfg config.Config, args []str
 	}
 	outPath := *out
 	if outPath == "" {
-		outPath = filepath.Join(".", fmt.Sprintf("timingdex-support-%s.zip", time.Now().Format("20060102-150405")))
+		outPath = filepath.Join(".", fmt.Sprintf("nexusslate-support-%s.zip", time.Now().Format("20060102-150405")))
 	}
 	if err := support.Generate(ctx, report, cfg, service, outPath); err != nil {
 		return fmt.Errorf("generate support bundle: %w", err)

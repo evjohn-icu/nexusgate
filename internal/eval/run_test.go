@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/media"
 )
 
 // TestRunAndScoreEndToEnd drives the whole harness: a real clip through a
@@ -80,7 +80,7 @@ func TestRunAndScoreEndToEnd(t *testing.T) {
 	dataDir := t.TempDir()
 	cfg := config.Config{
 		DataDir: dataDir, CacheDir: filepath.Join(dataDir, "cache"),
-		DatabasePath:  filepath.Join(dataDir, "timingdex.db"),
+		DatabasePath:  filepath.Join(dataDir, "nexusslate.db"),
 		Hardware:      media.HardwareConfig{Mode: "software", AllowFallback: true},
 		SourceStaging: config.SourceStagingConfig{Mode: "none"},
 		Pipeline:      config.PipelineConfig{ProviderRouteDeferralMinutes: 5},

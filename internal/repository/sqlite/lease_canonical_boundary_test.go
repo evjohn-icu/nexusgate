@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 func leaseBoundaryJob(t *testing.T, repo *Repository, owner string) string {

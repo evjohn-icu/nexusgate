@@ -143,7 +143,7 @@ func ShowTray(ctx context.Context, options TrayOptions) error {
 	defer runtime.UnlockOSThread()
 
 	instance, _, _ := procGetModuleHandle.Call(0)
-	className, err := syscall.UTF16PtrFromString("TimingdexWorkerTray")
+	className, err := syscall.UTF16PtrFromString("NexusSlateWorkerTray")
 	if err != nil {
 		return err
 	}

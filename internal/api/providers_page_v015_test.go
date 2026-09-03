@@ -12,11 +12,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/app"
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/app"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
 )
 
 func providerChannelTestService(t *testing.T, name string) *app.Service {
@@ -731,7 +731,7 @@ func TestProvidersPageI18nServedWithoutUnresolvedMarkers(t *testing.T) {
 		`/api/v1/admin/provider-channels/status`, `/api/v1/admin/provider-channels/probe-models`,
 		`/api/v1/admin/provider-channels/'+encodeURIComponent(id)`,
 		`method:'PATCH'`,
-		`admin-token`, `loginAdmin`, `X-CSRF-Token`, `__Host-timingdex_csrf`,
+		`admin-token`, `loginAdmin`, `X-CSRF-Token`, `__Host-nexusslate_csrf`,
 		`tdApiErrorMessage`, `tdFormatDateTime`,
 	} {
 		if !strings.Contains(body, want) {

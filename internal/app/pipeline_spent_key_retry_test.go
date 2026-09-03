@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/providerchannels"
-	"github.com/evjohn-icu/timingdex/internal/providers/common"
+	"github.com/evjohn-icu/nexusslate/internal/providerchannels"
+	"github.com/evjohn-icu/nexusslate/internal/providers/common"
 )
 
 // isRetryableJobError's 4xx block assumes the executor has already turned a

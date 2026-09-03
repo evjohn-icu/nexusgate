@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 func (r *Repository) MatchingDerivedArtifactsByProfilePrefixes(ctx context.Context, prefixes []string) ([]domain.DerivedArtifact, error) {
@@ -82,7 +82,7 @@ func (r *Repository) DeleteDerivedArtifactsByProfilePrefixes(ctx context.Context
 }
 
 // ListDerivedArtifacts returns every derived_artifacts row. It backs the
-// cache-health commands (`timingdex cache gc`, `timingdex cache verify`),
+// cache-health commands (`nexusslate cache gc`, `nexusslate cache verify`),
 // which need the full row inventory to decide what on disk is orphaned and
 // what is a rebuildable gap — SaveArtifact/GetArtifact only ever look at one
 // artifact, and a consistency check that queried per-asset would never see

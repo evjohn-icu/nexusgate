@@ -16,7 +16,7 @@ import (
 //
 //	<dbfile>.pre-<version>-<yyyymmdd>
 //
-// e.g. /data/timingdex.db.pre-0027-20260809, where <version> is the leading
+// e.g. /data/nexusslate.db.pre-0027-20260809, where <version> is the leading
 // digits of the first pending migration file (the target of the upgrade).
 // Doctor/support tooling finds them by globbing "<dbfile>.pre-*-*" beside the
 // live database; the dated suffix means a failed upgrade can be rolled back

@@ -11,11 +11,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/app"
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	sqlite "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/app"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	sqlite "github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
 )
 
 // exportFixture builds the smallest library that can produce a timeline: one
@@ -266,7 +266,7 @@ func TestExportRefusesMissingPlan(t *testing.T) {
 }
 
 // TestAgentCapabilitiesDenyExport keeps the declared contract and the routing
-// table in agreement. skills/timingdex reads this endpoint to decide what it may
+// table in agreement. skills/nexusslate reads this endpoint to decide what it may
 // attempt, so an export that is unreachable in code but unlisted here would
 // still be attempted on every run.
 func TestAgentCapabilitiesDenyExport(t *testing.T) {

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	sqliterepo "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	sqliterepo "github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
 )
 
 func TestCacheRepairDerivedDryRunPreservesRowsFilesAndJobs(t *testing.T) {
@@ -82,7 +82,7 @@ func newRepairDerivedFixture(t *testing.T) repairDerivedFixture {
 	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
-	repo, err := sqliterepo.Open(filepath.Join(dir, "timingdex.db"))
+	repo, err := sqliterepo.Open(filepath.Join(dir, "nexusslate.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

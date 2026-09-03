@@ -11,13 +11,13 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/api"
-	"github.com/evjohn-icu/timingdex/internal/app"
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/hubtls"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/api"
+	"github.com/evjohn-icu/nexusslate/internal/app"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/hubtls"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
 )
 
 const AdminToken = "pw-admin-fixture"
@@ -33,7 +33,7 @@ type Fixture struct {
 }
 
 func New(ctx context.Context) (*Fixture, error) {
-	dir, err := os.MkdirTemp("", "timingdex-playwright-")
+	dir, err := os.MkdirTemp("", "nexusslate-playwright-")
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +43,7 @@ func New(ctx context.Context) (*Fixture, error) {
 			_ = os.RemoveAll(dir)
 		}
 	}()
-	repo, err := sqlite.Open(filepath.Join(dir, "timingdex.db"))
+	repo, err := sqlite.Open(filepath.Join(dir, "nexusslate.db"))
 	if err != nil {
 		return nil, err
 	}

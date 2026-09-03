@@ -1,4 +1,4 @@
-// Package apiclient provides shared client-side decoding of Timingdex Hub
+// Package apiclient provides shared client-side decoding of NexusSlate Hub
 // HTTP error envelopes for API consumers that do not live inside the Hub
 // process: the MCP client and the Worker runtime. The Hub answers failures
 // with a stable JSON envelope —
@@ -21,7 +21,7 @@ import (
 // error text allocate without bound.
 const maxBodyExcerpt = 300
 
-// Error is a decoded Timingdex Hub API error. It mirrors the server-side
+// Error is a decoded NexusSlate Hub API error. It mirrors the server-side
 // envelope so a caller can switch on Code, respect Retryable, and follow
 // Action, while Message stays human-readable and NextRetryAt carries the
 // server's suggested retry instant (RFC 3339) when one exists.

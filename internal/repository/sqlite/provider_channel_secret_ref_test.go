@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // TestProviderChannelMembersRejectSharedSecretRef pins what real SQLite does

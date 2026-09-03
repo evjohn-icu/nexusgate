@@ -12,10 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/app"
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/app"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
 )
 
 // repurposeCJKRE matches the CJK unified-ideograph and CJK-punctuation blocks.
@@ -291,7 +291,7 @@ func TestRepurposePageI18nServedWithoutUnresolvedMarkers(t *testing.T) {
 		`latest_revision`, `missing_needs_count`, `selected_shot_id`, `excluded_shot_ids`,
 		`/api/v1/repurpose/plans`, `/revisions`, `/approve`,
 		`/api/v1/search/shots/hybrid`, `/api/v1/assets/`,
-		`admin-token`, `X-CSRF-Token`, `__Host-timingdex_csrf`,
+		`admin-token`, `X-CSRF-Token`, `__Host-nexusslate_csrf`,
 		`tdApiErrorMessage`,
 	} {
 		if !strings.Contains(body, want) {

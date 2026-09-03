@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/app"
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/app"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
 )
 
 // newLegacyListService builds a migrated real-SQLite service for the paged
@@ -56,18 +56,18 @@ func getJSONList(handler http.Handler, target string) *httptest.ResponseRecorder
 	return response
 }
 
-// assertListPaginationHeaders pins the three X-Timingdex-* response headers on
+// assertListPaginationHeaders pins the three X-NexusSlate-* response headers on
 // a paged list response.
 func assertListPaginationHeaders(t *testing.T, response *httptest.ResponseRecorder, wantLimit, wantOffset int, wantHasMore bool) {
 	t.Helper()
-	if got := response.Header().Get("X-Timingdex-Limit"); got != fmt.Sprintf("%d", wantLimit) {
-		t.Fatalf("X-Timingdex-Limit=%q, want %d", got, wantLimit)
+	if got := response.Header().Get("X-NexusSlate-Limit"); got != fmt.Sprintf("%d", wantLimit) {
+		t.Fatalf("X-NexusSlate-Limit=%q, want %d", got, wantLimit)
 	}
-	if got := response.Header().Get("X-Timingdex-Offset"); got != fmt.Sprintf("%d", wantOffset) {
-		t.Fatalf("X-Timingdex-Offset=%q, want %d", got, wantOffset)
+	if got := response.Header().Get("X-NexusSlate-Offset"); got != fmt.Sprintf("%d", wantOffset) {
+		t.Fatalf("X-NexusSlate-Offset=%q, want %d", got, wantOffset)
 	}
-	if got := response.Header().Get("X-Timingdex-Has-More"); got != fmt.Sprintf("%t", wantHasMore) {
-		t.Fatalf("X-Timingdex-Has-More=%q, want %t", got, wantHasMore)
+	if got := response.Header().Get("X-NexusSlate-Has-More"); got != fmt.Sprintf("%t", wantHasMore) {
+		t.Fatalf("X-NexusSlate-Has-More=%q, want %t", got, wantHasMore)
 	}
 }
 

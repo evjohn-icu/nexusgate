@@ -7,14 +7,14 @@ if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha$ ]]; then
   printf 'invalid VERSION: %s\n' "$version" >&2
   exit 1
 fi
-tags=$(grep -rhoE 'timingdex:v[0-9]+\.[0-9]+\.[0-9]+(-[[:alnum:].-]+)?' \
+tags=$(grep -rhoE 'nexusslate:v[0-9]+\.[0-9]+\.[0-9]+(-[[:alnum:].-]+)?' \
   "$root/docker-compose.yml" "$root"/deploy/unraid/*.xml | sort -u)
 count=$(printf '%s\n' "$tags" | sed '/^$/d' | wc -l)
 if [ "$count" -ne 1 ]; then
   printf 'deployment image tags differ or are missing:\n%s\n' "$tags" >&2
   exit 1
 fi
-if [ "$tags" != "timingdex:$version" ]; then
+if [ "$tags" != "nexusslate:$version" ]; then
   printf 'deployment image tag %s does not match VERSION %s\n' "$tags" "$version" >&2
   exit 1
 fi

@@ -8,8 +8,8 @@ import (
 	"math"
 	"strings"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/textindex"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/textindex"
 )
 
 const VectorSize = 64

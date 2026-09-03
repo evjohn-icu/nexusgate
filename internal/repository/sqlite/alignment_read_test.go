@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 func TestGetAlignmentWordsReadsLatestSucceededRun(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "timingdex-align.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-align.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

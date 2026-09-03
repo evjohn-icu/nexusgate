@@ -1,12 +1,12 @@
-# Timingdex MCP Server — usage
+# NexusSlate MCP Server — usage
 
-`cmd/timingdex-mcp` exposes the Timingdex library to MCP-capable agents
+`cmd/nexusslate-mcp` exposes the NexusSlate library to MCP-capable agents
 (Codex, Claude Code, Cursor, ...) over **stdio**. It is a thin client of the
 Hub HTTP API — it never touches the NAS directly.
 
 ## Install
 
-1. Build the binary: `go build -o /usr/local/bin/timingdex-mcp ./cmd/timingdex-mcp`
+1. Build the binary: `go build -o /usr/local/bin/nexusslate-mcp ./cmd/nexusslate-mcp`
    (or install with the Hub binary).
 2. Copy `mcp/.mcp.json.example` to your agent's MCP config and fill in the
    tokens and the Hub base URL. Codex reads `.mcp.json` from the project
@@ -14,9 +14,9 @@ Hub HTTP API — it never touches the NAS directly.
 
 ## Cross-machine (HTTPS)
 
-When the Hub is on another machine, set `TIMINGDEX_BASE_URL` to
-`https://<hub-host>:8787` and set `TIMINGDEX_HUB_FINGERPRINT` to the Hub's
-SHA-256 certificate fingerprint printed by `timingdex serve` at startup. The
+When the Hub is on another machine, set `NEXUSSLATE_BASE_URL` to
+`https://<hub-host>:8787` and set `NEXUSSLATE_HUB_FINGERPRINT` to the Hub's
+SHA-256 certificate fingerprint printed by `nexusslate serve` at startup. The
 client refuses to start with an https base URL and no fingerprint rather than
 silently accept any certificate; `http://` remains for local development.
 
@@ -33,9 +33,9 @@ silently accept any certificate; `http://` remains for local development.
 
 Every tool is a trusted read: on the Hub's own machine or a trusted LAN/Tailnet
 the request succeeds with no token at all; from any other (remote) network the
-Hub answers 403 unless `TIMINGDEX_AGENT_TOKEN` is configured, so set it unless
+Hub answers 403 unless `NEXUSSLATE_AGENT_TOKEN` is configured, so set it unless
 the Hub is on a trusted network. An https base URL always requires
-`TIMINGDEX_HUB_FINGERPRINT` (see Cross-machine above) or the client refuses to
+`NEXUSSLATE_HUB_FINGERPRINT` (see Cross-machine above) or the client refuses to
 start. `inspect_library` is a readiness probe, not just a liveness one: it
 returns health, hardware, the setup status (healthy roots, runnable providers,
 searchable shots, index state) and the job summary (queued/running/failed) in
@@ -91,7 +91,7 @@ The MCP server is **read-only**: its six tools read library state only, and
 none creates or revises repurpose plans. Drafting and revising plans is a
 separate HTTP agent-token workflow (`POST /api/v1/repurpose/plans` and
 `POST /api/v1/repurpose/plans/{id}/revisions`) exposed through the Skill
-(`skills/timingdex/SKILL.md`), not through MCP.
+(`skills/nexusslate/SKILL.md`), not through MCP.
 
 Approval, pipeline runs, provider keys and raw media paths stay with the
 human/admin boundary, and the Hub administrator token is never given to the

@@ -1,11 +1,11 @@
 // Package buildinfo holds the single-source-of-truth binary version for the
-// timingdex executables. It is a leaf package with no dependencies so both the
+// nexusslate executables. It is a leaf package with no dependencies so both the
 // Hub and Worker binaries can import it without dragging anything in.
 package buildinfo
 
 // Version is the binary version, injected at release build time via
 //
-//	-ldflags "-X github.com/evjohn-icu/timingdex/internal/buildinfo.Version=vX.Y.Z-alpha"
+//	-ldflags "-X github.com/evjohn-icu/nexusslate/internal/buildinfo.Version=vX.Y.Z-alpha"
 //
 // and left at the "dev" default for any local build.
 var Version = "dev"

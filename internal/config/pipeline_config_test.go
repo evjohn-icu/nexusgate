@@ -7,7 +7,7 @@ import "testing"
 // mistyped value is tested at the point of use (NewPipeline in internal/app),
 // where the busy-retry loop it prevents would actually be entered.
 func TestLoadDefaultsProviderRouteDeferralToFiveHours(t *testing.T) {
-	t.Setenv("TIMINGDEX_DATA_DIR", t.TempDir())
+	t.Setenv("NEXUSSLATE_DATA_DIR", t.TempDir())
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -18,8 +18,8 @@ func TestLoadDefaultsProviderRouteDeferralToFiveHours(t *testing.T) {
 }
 
 func TestLoadReadsProviderRouteDeferralFromEnvironment(t *testing.T) {
-	t.Setenv("TIMINGDEX_DATA_DIR", t.TempDir())
-	t.Setenv("TIMINGDEX_PIPELINE_PROVIDER_ROUTE_DEFERRAL_MINUTES", "45")
+	t.Setenv("NEXUSSLATE_DATA_DIR", t.TempDir())
+	t.Setenv("NEXUSSLATE_PIPELINE_PROVIDER_ROUTE_DEFERRAL_MINUTES", "45")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)

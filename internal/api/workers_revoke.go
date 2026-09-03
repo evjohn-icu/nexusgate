@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // revokeWorker is the admin-only write that decommissions a Worker:

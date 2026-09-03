@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	sqliterepo "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	sqliterepo "github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
 )
 
 func TestCacheGCRequeuesEveryRemovedRebuildableAsset(t *testing.T) {
@@ -76,7 +76,7 @@ func TestCacheGCDryRunIsPure(t *testing.T) {
 func cacheGCTestRepo(t *testing.T, count int) (*sqliterepo.Repository, config.Config, []string) {
 	t.Helper()
 	dataDir := t.TempDir()
-	repo, err := sqliterepo.Open(filepath.Join(dataDir, "timingdex.db"))
+	repo, err := sqliterepo.Open(filepath.Join(dataDir, "nexusslate.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -24,18 +24,18 @@ func TestStdioHandshake(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	bin := filepath.Join(t.TempDir(), "timingdex-mcp")
-	build := exec.Command("go", "build", "-o", bin, "./cmd/timingdex-mcp")
+	bin := filepath.Join(t.TempDir(), "nexusslate-mcp")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/nexusslate-mcp")
 	build.Dir = "../.."
 	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build timingdex-mcp: %v\n%s", err, out)
+		t.Fatalf("build nexusslate-mcp: %v\n%s", err, out)
 	}
 
 	// The binary refuses to start without a pinned Hub identity when
-	// TIMINGDEX_BASE_URL is unset (it defaults to https), so give it an
+	// NEXUSSLATE_BASE_URL is unset (it defaults to https), so give it an
 	// explicit loopback http base URL, which is the TLS-off development form
 	// that needs no fingerprint.
-	cli, err := client.NewStdioMCPClient(bin, []string{"TIMINGDEX_BASE_URL=http://127.0.0.1:8787"})
+	cli, err := client.NewStdioMCPClient(bin, []string{"NEXUSSLATE_BASE_URL=http://127.0.0.1:8787"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,8 +51,8 @@ func TestStdioHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.ServerInfo.Name != "timingdex" {
-		t.Fatalf("server name = %q, want timingdex", info.ServerInfo.Name)
+	if info.ServerInfo.Name != "nexusslate" {
+		t.Fatalf("server name = %q, want nexusslate", info.ServerInfo.Name)
 	}
 	tools, err := cli.ListTools(ctx, mcp.ListToolsRequest{})
 	if err != nil {

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // seedReanalysisAsset creates an asset with a proxy artifact and a transcript

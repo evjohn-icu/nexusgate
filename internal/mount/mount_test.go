@@ -81,13 +81,13 @@ func TestSMBGuidanceKeepsThePasswordOutOfCommandsAndFstab(t *testing.T) {
 	if !ok {
 		t.Fatal("share did not parse")
 	}
-	guide := Guidance(share, "/mnt/timingdex/Video", Host{OS: "linux", UID: 1000, GID: 1000})
+	guide := Guidance(share, "/mnt/nexusslate/Video", Host{OS: "linux", UID: 1000, GID: 1000})
 	rendered := strings.Join(guide.Lines(), "\n")
 
-	if !strings.Contains(rendered, "credentials=/etc/timingdex/192.0.2.10.cred") {
+	if !strings.Contains(rendered, "credentials=/etc/nexusslate/192.0.2.10.cred") {
 		t.Error("the mount must read credentials from a file")
 	}
-	if !strings.Contains(rendered, "chmod 600 /etc/timingdex/192.0.2.10.cred") {
+	if !strings.Contains(rendered, "chmod 600 /etc/nexusslate/192.0.2.10.cred") {
 		t.Error("the credentials file must be restricted to its owner")
 	}
 	for _, line := range guide.Lines() {
@@ -205,7 +205,7 @@ func TestGuidanceStepsAndNotesCarryStableKeys(t *testing.T) {
 
 const mountinfoFixture = `21 25 0:20 / /proc rw,relatime shared:5 - proc proc rw
 25 1 8:2 / / rw,relatime shared:1 - ext4 /dev/sda2 rw
-120 25 0:52 / /mnt/timingdex/Video ro,relatime shared:66 - cifs //192.0.2.10/Video ro
+120 25 0:52 / /mnt/nexusslate/Video ro,relatime shared:66 - cifs //192.0.2.10/Video ro
 131 25 0:55 / /mnt/wsl/host ro,relatime shared:70 - drvfs C:\134 ro
 140 25 0:60 / /mnt/backup\040archive rw,relatime shared:80 - nfs4 nas:/export rw
 150 25 0:61 / /mnt/empty rw,relatime shared:90 - ext4 /dev/sdb1 rw
@@ -217,7 +217,7 @@ func TestFilesystemForIdentifiesNetworkRoots(t *testing.T) {
 		wantType    string
 		wantNetwork bool
 	}{
-		{"/mnt/timingdex/Video/2024/clip.mp4", "cifs", true},
+		{"/mnt/nexusslate/Video/2024/clip.mp4", "cifs", true},
 		{"/mnt/wsl/host", "drvfs", true},
 		{"/mnt/backup archive", "nfs4", true},
 		{"/home/example/footage", "ext4", false},
@@ -240,11 +240,11 @@ func TestFilesystemForIdentifiesNetworkRoots(t *testing.T) {
 // The deeper mount describes the path. Taking the first match instead would
 // report every path as being on / and no root would ever look like a NAS.
 func TestFilesystemForPrefersTheDeepestMount(t *testing.T) {
-	got, ok := FilesystemFor("/mnt/timingdex/Video", mountinfoFixture)
+	got, ok := FilesystemFor("/mnt/nexusslate/Video", mountinfoFixture)
 	if !ok {
 		t.Fatal("no filesystem resolved")
 	}
-	if got.Mountpoint != "/mnt/timingdex/Video" {
+	if got.Mountpoint != "/mnt/nexusslate/Video" {
 		t.Errorf("got mountpoint %q, want the cifs mount itself", got.Mountpoint)
 	}
 	if !got.ReadOnly {

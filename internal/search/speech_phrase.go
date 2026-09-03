@@ -4,7 +4,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 const maxSpeechPhraseGapMS int64 = 1500

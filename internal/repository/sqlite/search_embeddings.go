@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/search"
+	"github.com/evjohn-icu/nexusslate/internal/search"
 )
 
 // Text-embedding storage. These rows are the derived retrieval layer (see the

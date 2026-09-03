@@ -23,7 +23,7 @@
 -- and their rowid maps itself, inside the same transaction that reinserts
 -- every row, before marking the state 'ready' again. Migrate() runs this
 -- file and then calls ensureCJKBigramFTS in the same Migrate() call, before
--- the Hub ever serves a request (cmd/timingdex/main.go opens the repo,
+-- the Hub ever serves a request (cmd/nexusslate/main.go opens the repo,
 -- migrates, then constructs the API server), so there is no window where a
 -- query could observe the index empty. A pre-emptive DELETE here would only
 -- matter if the rebuild could be skipped or crash before running -- it

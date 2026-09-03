@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // TestCommitAnalysisRejectsFailedRun verifies that CommitAnalysisWithShots

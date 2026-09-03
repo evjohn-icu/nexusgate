@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
-	"github.com/evjohn-icu/timingdex/internal/search"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/search"
 )
 
 // newDoctorHub builds a Hub on a real migrated SQLite database in a tempdir,
@@ -29,7 +29,7 @@ func newDoctorHub(t *testing.T) (*Service, *sqlite.Repository, config.Config) {
 	cfg := config.Config{
 		DataDir:      dataDir,
 		CacheDir:     filepath.Join(dataDir, "cache"),
-		DatabasePath: filepath.Join(dataDir, "timingdex.db"),
+		DatabasePath: filepath.Join(dataDir, "nexusslate.db"),
 		Hardware:     media.HardwareConfig{Mode: "software", AllowFallback: true},
 	}
 	if err := os.MkdirAll(cfg.CacheDir, 0o700); err != nil {

@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"math"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/providers"
-	"github.com/evjohn-icu/timingdex/internal/search"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/providers"
+	"github.com/evjohn-icu/nexusslate/internal/search"
 )
 
 // searchEmbedderAdapter adapts the Hub's embedding provider (legacy config or
@@ -73,7 +73,7 @@ func (s *Service) ensureShotTextEmbeddings(ctx context.Context, assetID string) 
 	slog.Debug("shot text embedding: incremental embed", "asset_id", assetID, "shots", len(changed))
 	if _, err := embedShotDocuments(ctx, store, adapter, changed); err != nil {
 		// Never fail the job: log and move on. The full rebuild command
-		// (timingdex search rebuild-embeddings) can repair the gap.
+		// (nexusslate search rebuild-embeddings) can repair the gap.
 		slog.Warn("shot text embedding: embed failed (analysis job unaffected)", "asset_id", assetID, "error", err)
 	}
 }

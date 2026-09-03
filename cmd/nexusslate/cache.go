@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/cache"
-	"github.com/evjohn-icu/timingdex/internal/cachecoord"
-	"github.com/evjohn-icu/timingdex/internal/config"
-	sqliterepo "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/cache"
+	"github.com/evjohn-icu/nexusslate/internal/cachecoord"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	sqliterepo "github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
 )
 
 // runCacheCommand is the cache-maintenance surface: `inspect` reports the
@@ -27,7 +27,7 @@ import (
 // disagree about what exists.
 func runCacheCommand(ctx context.Context, repo *sqliterepo.Repository, cfg config.Config, args []string) error {
 	if len(args) < 1 {
-		return errors.New("usage: timingdex cache inspect|gc|verify|repair-derived")
+		return errors.New("usage: nexusslate cache inspect|gc|verify|repair-derived")
 	}
 	switch args[0] {
 	case "inspect":
@@ -39,7 +39,7 @@ func runCacheCommand(ctx context.Context, repo *sqliterepo.Repository, cfg confi
 	case "repair-derived":
 		return runCacheRepairDerived(ctx, repo, cfg, args[1:])
 	default:
-		return errors.New("usage: timingdex cache inspect|gc|verify|repair-derived")
+		return errors.New("usage: nexusslate cache inspect|gc|verify|repair-derived")
 	}
 }
 
@@ -51,7 +51,7 @@ func runCacheRepairDerived(ctx context.Context, repo *sqliterepo.Repository, cfg
 		return err
 	}
 	if !*invalidate {
-		return errors.New("usage: timingdex cache repair-derived --invalidate-hardware-profiles [--yes]")
+		return errors.New("usage: nexusslate cache repair-derived --invalidate-hardware-profiles [--yes]")
 	}
 	prefixes := []string{"thumb-hw-", "proxy-720-hw-"}
 	var files []string
@@ -129,7 +129,7 @@ func runCacheRepairDerived(ctx context.Context, repo *sqliterepo.Repository, cfg
 
 func runCacheInspect(ctx context.Context, repo *sqliterepo.Repository, cfg config.Config, args []string) error {
 	if len(args) != 0 {
-		return errors.New("usage: timingdex cache inspect")
+		return errors.New("usage: nexusslate cache inspect")
 	}
 	stats, err := cache.Inspect(cfg.CacheDir)
 	if err != nil {
@@ -307,7 +307,7 @@ func runCacheGC(ctx context.Context, repo *sqliterepo.Repository, cfg config.Con
 // no artifact row by design.
 func runCacheVerify(ctx context.Context, repo *sqliterepo.Repository, cfg config.Config, args []string) error {
 	if len(args) != 0 {
-		return errors.New("usage: timingdex cache verify")
+		return errors.New("usage: nexusslate cache verify")
 	}
 	result, err := cache.Verify(ctx, repo, cfg.CacheDir)
 	if err != nil {

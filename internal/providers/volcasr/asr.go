@@ -20,8 +20,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/providers/common"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/providers/common"
 )
 
 const (
@@ -214,7 +214,7 @@ func (a *ASR) requestModel() string {
 }
 func (a *ASR) uid() string {
 	if a.UID == "" {
-		return "timingdex"
+		return "nexusslate"
 	}
 	return a.UID
 }
@@ -237,7 +237,7 @@ func toPCM16(ctx context.Context, path string) ([]byte, error) {
 func connectID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("timingdex-%d", time.Now().UnixNano())
+		return fmt.Sprintf("nexusslate-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)
 }

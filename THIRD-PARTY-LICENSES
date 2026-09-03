@@ -1,7 +1,7 @@
 # Third-party licences
 
 This file lists the third-party modules that are statically linked into the
-timingdex binary, with the full licence text of each. It exists so that
+nexusslate binary, with the full licence text of each. It exists so that
 binary redistribution of the software carries the copyright and permission
 notices those licences require.
 

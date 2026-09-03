@@ -7,11 +7,11 @@ import (
 	"net/http"
 	"unicode/utf8"
 
-	"github.com/evjohn-icu/timingdex/internal/app"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/nleexport"
-	"github.com/evjohn-icu/timingdex/internal/providerchannels"
-	"github.com/evjohn-icu/timingdex/internal/search"
+	"github.com/evjohn-icu/nexusslate/internal/app"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/nleexport"
+	"github.com/evjohn-icu/nexusslate/internal/providerchannels"
+	"github.com/evjohn-icu/nexusslate/internal/search"
 )
 
 // APIError is the machine-readable error body every API failure answers with.

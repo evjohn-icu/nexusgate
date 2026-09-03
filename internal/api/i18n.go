@@ -65,7 +65,7 @@ var langMatcher = language.NewMatcher(supportedTags)
 // deployments: no Secure flag, SameSite=Lax, one-year lifetime, and never
 // mirrored into localStorage/sessionStorage (which the credential-leak checks
 // require to remain empty).
-const localeCookie = "timingdex_locale"
+const localeCookie = "nexusslate_locale"
 
 //go:embed locales/*.json
 var localesFS embed.FS
@@ -161,7 +161,7 @@ func localeFromAcceptLanguage(header string) (locale, bool) {
 	return "", false
 }
 
-// resolveLocale is the precedence chain: timingdex_locale cookie → best
+// resolveLocale is the precedence chain: nexusslate_locale cookie → best
 // Accept-Language match → zh-CN.
 func resolveLocale(r *http.Request) locale {
 	if c, err := r.Cookie(localeCookie); err == nil {
@@ -228,7 +228,7 @@ func headRuntimeScript(loc locale) string {
 	locJSON := string(bytes.ReplaceAll(mustJSON(string(loc)), []byte("</"), []byte("<\\/")))
 
 	var b strings.Builder
-	b.WriteString(`<script id="timingdex-i18n">window.TD_LOCALE=`)
+	b.WriteString(`<script id="nexusslate-i18n">window.TD_LOCALE=`)
 	b.WriteString(locJSON)
 	b.WriteString(`;window.TD_CATALOG=`)
 	b.WriteString(catJSON)

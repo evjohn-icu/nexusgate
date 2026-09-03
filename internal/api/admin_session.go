@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	adminSessionCookie = "__Host-timingdex_admin_session"
-	adminCSRFCookie    = "__Host-timingdex_csrf"
+	adminSessionCookie = "__Host-nexusslate_admin_session"
+	adminCSRFCookie    = "__Host-nexusslate_csrf"
 	adminSessionTTL    = 30 * time.Minute
 	adminSessionMaxAge = 8 * time.Hour
 	adminSessionLimit  = 64

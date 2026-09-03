@@ -29,7 +29,7 @@ func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 // drift from the server's last value (serverSnapshot captured by fill() and
 // compared by syncStickySave), and hides again on discard or a successful
 // save -- the controls' .actions buttons ride the same fill() path.
-const settingsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · [[i18n:settings.title]]</title><style>
+const settingsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NexusSlate · [[i18n:settings.title]]</title><style>
 
 .panel-body .hint{line-height:1.6}
 label{font-weight:600;color:var(--text)}
@@ -75,7 +75,7 @@ label{font-weight:600;color:var(--text)}
 <div id="sticky-save" class="sticky-save" hidden><span>[[i18n:settings.unsavedChanges]]</span><div><button type="button" class="ghost" id="discard-btn">[[i18n:settings.discard]]</button><button type="button" class="btn btn--primary" id="save-changes-btn">[[i18n:settings.saveChanges]]</button></div></div>
 <script>
 const MB=1048576;const GB=1073741824;
- function csrfToken(){const prefix='__Host-timingdex_csrf=';const item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
+ function csrfToken(){const prefix='__Host-nexusslate_csrf=';const item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
  function authHeaders(base){const headers=new Headers(base||{});const csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function val(id){return document.getElementById(id).value.trim()}

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // newScanRepo opens a real repository with one empty library root on disk, so

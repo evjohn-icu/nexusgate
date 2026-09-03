@@ -8,7 +8,7 @@ import (
 
 func TestLoadSparseConfigPreservesDefaults(t *testing.T) {
 	dataDir := t.TempDir()
-	t.Setenv("TIMINGDEX_DATA_DIR", dataDir)
+	t.Setenv("NEXUSSLATE_DATA_DIR", dataDir)
 	if err := os.WriteFile(filepath.Join(dataDir, "config.json"), []byte(`{"providers":{"stepfun":{"enabled":true}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +23,7 @@ func TestLoadSparseConfigPreservesDefaults(t *testing.T) {
 
 func TestLoadRejectsExplicitZeroSupervisorIntervalWhenEnabled(t *testing.T) {
 	dataDir := t.TempDir()
-	t.Setenv("TIMINGDEX_DATA_DIR", dataDir)
+	t.Setenv("NEXUSSLATE_DATA_DIR", dataDir)
 	if err := os.WriteFile(filepath.Join(dataDir, "config.json"), []byte(`{"library_supervisor":{"enabled":true,"scan_interval_minutes":0}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestLoadRejectsExplicitZeroSupervisorIntervalWhenEnabled(t *testing.T) {
 
 func TestLoadRejectsInvalidTLSMode(t *testing.T) {
 	dataDir := t.TempDir()
-	t.Setenv("TIMINGDEX_DATA_DIR", dataDir)
+	t.Setenv("NEXUSSLATE_DATA_DIR", dataDir)
 	if err := os.WriteFile(filepath.Join(dataDir, "config.json"), []byte(`{"hub_tls":{"mode":""}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestLoadRejectsInvalidTLSMode(t *testing.T) {
 // because leaving them blank is only correct on the in-process request path —
 // the Worker JSON proxy sends an unprefixed key when the scheme is empty.
 func TestVolcPlanProvidersDefaultToBearerAuth(t *testing.T) {
-	t.Setenv("TIMINGDEX_DATA_DIR", t.TempDir())
+	t.Setenv("NEXUSSLATE_DATA_DIR", t.TempDir())
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -68,8 +68,8 @@ func TestVolcPlanProvidersDefaultToBearerAuth(t *testing.T) {
 }
 
 func TestLoadReadsSourceStagingModeFromEnvironment(t *testing.T) {
-	t.Setenv("TIMINGDEX_DATA_DIR", t.TempDir())
-	t.Setenv("TIMINGDEX_SOURCE_STAGING_MODE", "copy")
+	t.Setenv("NEXUSSLATE_DATA_DIR", t.TempDir())
+	t.Setenv("NEXUSSLATE_SOURCE_STAGING_MODE", "copy")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -83,16 +83,16 @@ func TestLoadReadsSourceStagingModeFromEnvironment(t *testing.T) {
 // would either lock the operator out of their own library or, worse, silently
 // widen what the guard admits.
 func TestLoadRejectsMalformedTrustedReadNetwork(t *testing.T) {
-	t.Setenv("TIMINGDEX_DATA_DIR", t.TempDir())
-	t.Setenv("TIMINGDEX_TRUSTED_READ_NETWORKS", "192.168.1.0/16, not-a-cidr")
+	t.Setenv("NEXUSSLATE_DATA_DIR", t.TempDir())
+	t.Setenv("NEXUSSLATE_TRUSTED_READ_NETWORKS", "192.168.1.0/16, not-a-cidr")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected Load to reject a malformed CIDR range")
 	}
 }
 
 func TestTrustedReadPrefixesParsesConfiguredRanges(t *testing.T) {
-	t.Setenv("TIMINGDEX_DATA_DIR", t.TempDir())
-	t.Setenv("TIMINGDEX_TRUSTED_READ_NETWORKS", "10.9.0.0/16, fd00::/8")
+	t.Setenv("NEXUSSLATE_DATA_DIR", t.TempDir())
+	t.Setenv("NEXUSSLATE_TRUSTED_READ_NETWORKS", "10.9.0.0/16, fd00::/8")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)

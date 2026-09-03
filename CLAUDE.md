@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Re:Footage / `timingdex` — a local-first video footage intelligence layer written in Go
+Re:Footage / `nexusslate` — a local-first video footage intelligence layer written in Go
 (stdlib + nine direct dependencies only — `modernc.org/sqlite`,
 `github.com/coder/websocket`, `github.com/mark3labs/mcp-go`,
 `github.com/grandcat/zeroconf`, `github.com/hirochachacha/go-smb2` and
 `golang.org/x/{crypto,net,sys,text}`; no web framework, no ORM, no frontend build.
 `go.mod` is the source of truth — check it before repeating this list). The
-`timingdex` binary serves two roles: a **Hub** (database, HTTP/HTTPS API, browser
+`nexusslate` binary serves two roles: a **Hub** (database, HTTP/HTTPS API, browser
 UI, secrets, local pipeline) and a **Worker** (paired remote node that performs FFmpeg derive
 work, and — only when `worker enroll --provider-operation` declares it — calls a Provider for
 `video_analysis`/`asr`, either through the Hub JSON proxy or, behind an explicitly enabled
@@ -21,7 +21,7 @@ English.
 ## Commands
 
 ```bash
-go build -o timingdex ./cmd/timingdex
+go build -o nexusslate ./cmd/nexusslate
 go test ./...
 go vet ./...
 
@@ -44,37 +44,37 @@ PATH. Everything else runs offline: provider adapters are covered by `httptest` 
 Run locally with an isolated data dir:
 
 ```bash
-export TIMINGDEX_DATA_DIR="$PWD/.timingdex-dev"
-./timingdex doctor
-./timingdex root add /path/to/footage && ./timingdex root list
-./timingdex root scan <root-id>     # scans, enqueues, and synchronously drains the Pipeline
-./timingdex pipeline run            # leases and runs jobs until the queue is idle
-./timingdex search rebuild          # rebuilds the asset search index
-./timingdex search rebuild-embeddings
-./timingdex cache inspect|gc|verify|repair-derived
-./timingdex serve                   # HTTPS by default; prints the Worker pinning fingerprint
+export NEXUSSLATE_DATA_DIR="$PWD/.nexusslate-dev"
+./nexusslate doctor
+./nexusslate root add /path/to/footage && ./nexusslate root list
+./nexusslate root scan <root-id>     # scans, enqueues, and synchronously drains the Pipeline
+./nexusslate pipeline run            # leases and runs jobs until the queue is idle
+./nexusslate search rebuild          # rebuilds the asset search index
+./nexusslate search rebuild-embeddings
+./nexusslate cache inspect|gc|verify|repair-derived
+./nexusslate serve                   # HTTPS by default; prints the Worker pinning fingerprint
 ```
 
-Hub state lives entirely under `$TIMINGDEX_DATA_DIR`: `timingdex.db`, `config.json`
+Hub state lives entirely under `$NEXUSSLATE_DATA_DIR`: `nexusslate.db`, `config.json`
 (optional; `config.example.json` is the template), `cache/`, `admin-token` (0600),
 `provider-secrets/` (0700). Deleting that directory is the way to reset.
 
-Worker side: `timingdex worker enroll --hub https://... --fingerprint ... --pairing ...`,
-then `timingdex worker run`; its config defaults to `~/.timingdex/worker.json`.
+Worker side: `nexusslate worker enroll --hub https://... --fingerprint ... --pairing ...`,
+then `nexusslate worker run`; its config defaults to `~/.nexusslate/worker.json`.
 
 ## Architecture
 
-`cmd/timingdex/main.go` → `config.Load()` → `sqliterepo.Open` + `Migrate` →
+`cmd/nexusslate/main.go` → `config.Load()` → `sqliterepo.Open` + `Migrate` →
 `app.NewService` (wires providers, staging, hardware, admin token, secret store, pipeline) →
 `api.NewTLSServer`. Everything below `app` is dependency-free of HTTP.
 
-`cmd/` holds five commands, not one. `timingdex` (~1.8k lines) is the product; the other four
-are satellites that must not be mistaken for dead directories: `timingdex-mcp` (~300 lines)
+`cmd/` holds five commands, not one. `nexusslate` (~1.8k lines) is the product; the other four
+are satellites that must not be mistaken for dead directories: `nexusslate-mcp` (~300 lines)
 exposes the library to MCP agents over stdio and is a **thin HTTP client of the Hub** — it
 holds no database handle and never touches the NAS, so its tools follow the same
-agent-token/trusted-read contract as `skills/timingdex/`; `timingdex-eval` and
-`timingdex-corpusgen` are the offline retrieval benchmark and its corpus generator;
-`timingdex-playwright-fixture` exists only so CI can compile-check the browser fixture.
+agent-token/trusted-read contract as `skills/nexusslate/`; `nexusslate-eval` and
+`nexusslate-corpusgen` are the offline retrieval benchmark and its corpus generator;
+`nexusslate-playwright-fixture` exists only so CI can compile-check the browser fixture.
 
 ### Layer map
 
@@ -154,7 +154,7 @@ gate says a shot *contains* something (`confirmed`/`possible`/`contradicted`/`un
 — unknown is never "确认无人"). The text-embedding channel
 (`shot_text_embeddings`, per-shot float32 cosine scan, model-tagged, cluster threshold
 `embeddingCutoffFraction`) is a retrieval signal, never evidence; the pipeline embeds
-changed shots after each analysis commit, and `timingdex search rebuild-embeddings`
+changed shots after each analysis commit, and `nexusslate search rebuild-embeddings`
 rebuilds all rows — the model-switch entry, and it never re-runs VLM analysis. The
 search profile is `v2-profile-2`. Speech phrases are validated as a complete ordered phrase
 within one shot: ASCII components use whole-word matching, CJK segmentation is tolerated,
@@ -165,7 +165,7 @@ legacy GET hybrid endpoint is served by the same engine via
 regression floor is `TestRetrievalGolden` + `TestSearchV2Benchmark` (72 queries, six
 pipelines, per-intent RetrievalFP/AssertionFP) in `internal/repository/sqlite`; a
 ranking change that moves these numbers needs a deliberate reason, not an accident.
-`internal/eval` (with `cmd/timingdex-eval`) is a *separate* offline harness that scores against
+`internal/eval` (with `cmd/nexusslate-eval`) is a *separate* offline harness that scores against
 the legacy `HybridSearchShots` path rather than this engine — useful, but not the source of the
 RetrievalFP/AssertionFP figures above; don't cite one for the other.
 
@@ -243,7 +243,7 @@ These invariants are the point of several packages — preserve them when editin
   guard, and inherits that guard's blind spot: behind a reverse proxy or a
   published Docker port every peer looks RFC1918, so a containerised Hub with
   `trusted_network` and no explicit `admin_auth_networks` refuses to start
-  (see `ValidateContainerAdminAuth` in `cmd/timingdex`). New write endpoints
+  (see `ValidateContainerAdminAuth` in `cmd/nexusslate`). New write endpoints
   default to wrapped, not open. It is not the only mutation guard: agent-facing
   plan writes use `requireAgentOrAdmin`, and the nine `/api/v1/worker/*` routes
   authenticate in-handler through `s.authenticatedWorker(...)` against the node
@@ -336,10 +336,10 @@ v0.18 until v0.21 while the page kept serving.
 - Comments explain *why a boundary exists* rather than what the code does; keep that tone.
 - Long single-line struct literals and dense config defaults are the existing style — match
   the surrounding file rather than reformatting.
-- `skills/timingdex/` is a versioned agent-facing contract. It relies on
+- `skills/nexusslate/` is a versioned agent-facing contract. It relies on
   `GET /api/v1/agent/capabilities` declaring `approval_mode: human_required` and an
   `allowed_actions` allowlist that excludes plan approval, pipeline runs, provider keys and
-  raw media paths. Keep the endpoint and `skills/timingdex/references/api-contract.md` in
+  raw media paths. Keep the endpoint and `skills/nexusslate/references/api-contract.md` in
   sync when API surface changes.
 - Capability claims are deliberately conservative in both code and docs (e.g. proprietary
   RAW is identified but reported as unrendered rather than silently treated as SDR; the

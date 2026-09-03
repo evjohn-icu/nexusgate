@@ -3,7 +3,7 @@ package search
 import (
 	"context"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // ShotEmbeddingRow is one persisted embedding: the owning shot (full row —

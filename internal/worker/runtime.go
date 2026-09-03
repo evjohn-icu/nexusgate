@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/buildinfo"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	"github.com/evjohn-icu/timingdex/internal/remote"
-	"github.com/evjohn-icu/timingdex/internal/staging"
+	"github.com/evjohn-icu/nexusslate/internal/buildinfo"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/remote"
+	"github.com/evjohn-icu/nexusslate/internal/staging"
 )
 
 type RuntimeClient interface {
@@ -130,7 +130,7 @@ func (r *Runtime) Run(ctx context.Context, options RunOptions) error {
 	for {
 		if lastHeartbeat.IsZero() || time.Since(lastHeartbeat) >= options.HeartbeatInterval {
 			// Capabilities are re-detected once, at Run's caller (worker run
-			// startup in cmd/timingdex/main.go), not on this cadence. A device
+			// startup in cmd/nexusslate/main.go), not on this cadence. A device
 			// becoming available requires a container recreate, which restarts
 			// the process anyway, so nothing here would ever observe a change;
 			// re-probing on every 30s heartbeat would only tax the GPU with a

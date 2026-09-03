@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/testhelper"
+	"github.com/evjohn-icu/nexusslate/internal/testhelper"
 )
 
 func TestPreviewRendererRejectsAppleLogWithoutLUT(t *testing.T) {
@@ -166,8 +166,8 @@ func TestGenerateProxyPassesClassifiedHDRFilterToFFmpeg(t *testing.T) {
 	testhelper.InstallCommand(t, binDir, "ffprobe")
 	testhelper.InstallCommand(t, binDir, "ffmpeg")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("TIMINGDEX_FILTER_LOG", filterLog)
-	t.Setenv("TIMINGDEX_FAKE_FFPROBE_COLOR_TRANSFER", "arib-std-b67")
+	t.Setenv("NEXUSSLATE_FILTER_LOG", filterLog)
+	t.Setenv("NEXUSSLATE_FAKE_FFPROBE_COLOR_TRANSFER", "arib-std-b67")
 
 	if _, err := GenerateProxy(context.Background(), "hdr.mov", filepath.Join(t.TempDir(), "proxy.mp4"), HardwarePlan{Mode: "software"}); err != nil {
 		t.Fatal(err)

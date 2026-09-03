@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/idgen"
-	"github.com/evjohn-icu/timingdex/internal/remote"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/idgen"
+	"github.com/evjohn-icu/nexusslate/internal/remote"
 )
 
 // PrepareWorkerArtifact verifies the active derive lease before an upload is

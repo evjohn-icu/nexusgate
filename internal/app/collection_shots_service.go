@@ -3,7 +3,7 @@ package app
 import (
 	"context"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // ErrCollectionNotFound reports that a collection id names nothing. The

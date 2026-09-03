@@ -3,7 +3,7 @@ package search
 import (
 	"sort"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // Retrieval channels. Each channel wraps one ShotStore method and exposes it

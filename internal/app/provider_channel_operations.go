@@ -15,10 +15,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/evjohn-icu/timingdex/internal/credentials"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/remote"
-	"github.com/evjohn-icu/timingdex/internal/secretredact"
+	"github.com/evjohn-icu/nexusslate/internal/credentials"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/remote"
+	"github.com/evjohn-icu/nexusslate/internal/secretredact"
 )
 
 // ProviderChannelMemberUpdate is the write-only shape used by the admin API.

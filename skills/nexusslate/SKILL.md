@@ -1,18 +1,18 @@
 ---
-name: timingdex
-description: Safely inspect a local Timingdex video library and retrieve shot-level footage through its local HTTP API. Use when a user asks to find reusable video material, inspect library readiness, or search and retrieve footage from an existing library; never use it to approve plans, manage provider keys, modify media, or run the processing pipeline.
+name: nexusslate
+description: Safely inspect a local NexusSlate video library and retrieve shot-level footage through its local HTTP API. Use when a user asks to find reusable video material, inspect library readiness, or search and retrieve footage from an existing library; never use it to approve plans, manage provider keys, modify media, or run the processing pipeline.
 ---
 
-# Timingdex Asset Planner
+# NexusSlate Asset Planner
 
-Use Timingdex as an editorial research and draft-planning system. Return
+Use NexusSlate as an editorial research and draft-planning system. Return
 concrete shot IDs, asset IDs and time ranges; do not claim that a clip is
 available unless the API returned it.
 
 ## Preconditions
 
-1. Ask for the local Timingdex base URL when it is not supplied. The normal Hub serves HTTPS, so use `https://127.0.0.1:8787` for a local Hub; use `http://127.0.0.1:8787` only when the operator explicitly configured `hub_tls.mode=off` for local API/CLI development. If an HTTPS reverse proxy is used, give the Skill its external `https://` URL; the plaintext backend mode is not a substitute for an HTTPS client URL.
-2. Ask for the Timingdex **agent token** (a credential distinct from the Hub
+1. Ask for the local NexusSlate base URL when it is not supplied. The normal Hub serves HTTPS, so use `https://127.0.0.1:8787` for a local Hub; use `http://127.0.0.1:8787` only when the operator explicitly configured `hub_tls.mode=off` for local API/CLI development. If an HTTPS reverse proxy is used, give the Skill its external `https://` URL; the plaintext backend mode is not a substitute for an HTTPS client URL.
+2. Ask for the NexusSlate **agent token** (a credential distinct from the Hub
    administrator token) if one is not already supplied. Send it as
    `Authorization: Bearer <agent-token>` on every write request below. Reading
    endpoints (`/api/v1/hardware`, `/api/v1/jobs`, search, plan inspection) need
@@ -24,7 +24,7 @@ available unless the API returned it.
    if the requested action is absent from `allowed_actions`.
 5. Never request, read, retain or print API keys, environment values, raw media
    paths, or provider configuration. The agent token itself is not a provider
-   key: still don't print it back to the user or log it, since Timingdex never
+   key: still don't print it back to the user or log it, since NexusSlate never
    accepts it back in a response body and there is no reason for it to appear
    in transcript output.
 
@@ -49,7 +49,7 @@ field semantics are in [the API contract](references/api-contract.md).
 
 ### Via MCP (recommended for read-only inspection)
 
-If this agent runs with MCP access to `timingdex-mcp` (see
+If this agent runs with MCP access to `nexusslate-mcp` (see
 `mcp/.mcp.json.example` and `references/mcp-usage.md`), prefer the MCP tools over
 hand-built HTTP calls for read-only inspection. The current MCP binary exposes
 six read-only tools; it does not call `/api/v1/agent/capabilities` itself and it
@@ -129,7 +129,7 @@ and provider keys are never read.
 3. Ensure a `selected_shot_id` belongs to that section’s `candidates` and is
    not in `excluded_shot_ids`.
 4. Preserve `locked: true` selections. To change one, send `unlock: true` in
-   that one revision request; Timingdex consumes this action and does not store
+   that one revision request; NexusSlate consumes this action and does not store
    it in the resulting snapshot.
 5. Submit `POST /api/v1/repurpose/plans/{plan-id}/revisions` with the complete
    `sections` array, an `editor_note` that records the user’s decision, and the
@@ -153,7 +153,7 @@ processes on that LAN which the Hub would not stop. See
 `references/api-contract.md` for the full admin-auth table.
 
 When a draft is ready, show the user the selected shots, remaining gaps,
-exclusions and locked sections, then ask them to approve it in the Timingdex
+exclusions and locked sections, then ask them to approve it in the NexusSlate
 workspace. If an API response says a required section needs selection, explain
 which section needs a human choice rather than bypassing the validation.
 

@@ -1,4 +1,4 @@
-module github.com/evjohn-icu/timingdex
+module github.com/evjohn-icu/nexusslate
 
 go 1.25.5
 

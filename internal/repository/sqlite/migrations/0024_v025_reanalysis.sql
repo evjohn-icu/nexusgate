@@ -1,5 +1,5 @@
 -- 0024: Reanalysis requests audit trail
--- timingdex reanalyze forces a succeeded analyze job to run again (new
+-- nexusslate reanalyze forces a succeeded analyze job to run again (new
 -- input hash, new model_run) after prompt/schema/validator changes. Each
 -- invocation records who asked and why here; the model runs themselves
 -- stay immutable and auditable, and the input hash ties the request to the

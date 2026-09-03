@@ -1,11 +1,11 @@
-# Contributing to Re:Footage (`timingdex`)
+# Contributing to Re:Footage (`nexusslate`)
 
 Thanks for looking. This project has a small number of rules that are not style
 preferences — they are the reason several packages exist. This document is
 mostly those. Everything here is enforced either by CI or by review.
 
-Repository: <https://github.com/evjohn-icu/timingdex>
-Module path: `github.com/evjohn-icu/timingdex`
+Repository: <https://github.com/evjohn-icu/nexusslate>
+Module path: `github.com/evjohn-icu/nexusslate`
 Licence: Apache-2.0 — see [`LICENSE`](LICENSE). Contributions are accepted under
 the same licence (Apache-2.0 §5); there is no separate CLA.
 
@@ -217,26 +217,26 @@ Provider channels (SQLite-backed, managed at `/providers`) win over legacy
   tone.
 - Long single-line struct literals and dense config defaults are the existing
   style. Match the surrounding file; do not reformat unrelated code in your diff.
-- `skills/timingdex/` is a versioned agent-facing contract. If you change the API
+- `skills/nexusslate/` is a versioned agent-facing contract. If you change the API
   surface, keep `GET /api/v1/agent/capabilities` and
-  `skills/timingdex/references/api-contract.md` in sync — the skill relies on
+  `skills/nexusslate/references/api-contract.md` in sync — the skill relies on
   `approval_mode: human_required` and an `allowed_actions` allowlist that
   excludes plan approval, pipeline runs, provider keys and raw media paths.
 
 ## Running it locally
 
 ```bash
-export TIMINGDEX_DATA_DIR="$PWD/.timingdex-dev"
-go build -o timingdex ./cmd/timingdex
+export NEXUSSLATE_DATA_DIR="$PWD/.nexusslate-dev"
+go build -o nexusslate ./cmd/nexusslate
 
-./timingdex doctor
-./timingdex root add /path/to/footage && ./timingdex root list
-./timingdex root scan <root-id>     # scans, enqueues, and drains the Pipeline
-./timingdex pipeline run
-./timingdex serve
+./nexusslate doctor
+./nexusslate root add /path/to/footage && ./nexusslate root list
+./nexusslate root scan <root-id>     # scans, enqueues, and drains the Pipeline
+./nexusslate pipeline run
+./nexusslate serve
 ```
 
-All Hub state is under `$TIMINGDEX_DATA_DIR` (`timingdex.db`, optional
+All Hub state is under `$NEXUSSLATE_DATA_DIR` (`nexusslate.db`, optional
 `config.json`, `cache/`, `admin-token`, `agent-token`, `provider-secrets/`).
 Deleting that directory is how you reset. Never commit it, a `config.json` with
 real endpoints, a generated Worker install script, or anything from

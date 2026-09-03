@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // stubScanRepo is an in-memory stub implementing ScanRepository. It has no

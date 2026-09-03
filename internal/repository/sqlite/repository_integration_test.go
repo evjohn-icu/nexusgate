@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 func TestTagCurationApprovalAndAliasSearchIntegration(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "timingdex-test.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestTagCurationApprovalAndAliasSearchIntegration(t *testing.T) {
 
 func TestTagIntelligenceStorageIntegration(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "timingdex-test.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

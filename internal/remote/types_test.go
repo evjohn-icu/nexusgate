@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 func jsonRoundTrip[T any](t *testing.T, name string, in T, wantFields []string) T {

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/testhelper"
+	"github.com/evjohn-icu/nexusslate/internal/testhelper"
 )
 
 func TestNormalizeRejectsStructuralGarbage(t *testing.T) {

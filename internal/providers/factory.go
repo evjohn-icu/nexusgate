@@ -4,24 +4,24 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/providers/common"
-	"github.com/evjohn-icu/timingdex/internal/providers/embedding"
-	"github.com/evjohn-icu/timingdex/internal/providers/externalalign"
-	"github.com/evjohn-icu/timingdex/internal/providers/gemini"
-	"github.com/evjohn-icu/timingdex/internal/providers/multiframe"
-	"github.com/evjohn-icu/timingdex/internal/providers/openaivideo"
-	"github.com/evjohn-icu/timingdex/internal/providers/qwen"
-	"github.com/evjohn-icu/timingdex/internal/providers/repurpose"
-	"github.com/evjohn-icu/timingdex/internal/providers/shotdetect"
-	"github.com/evjohn-icu/timingdex/internal/providers/stepfun"
-	"github.com/evjohn-icu/timingdex/internal/providers/tagcurator"
-	videoproviders "github.com/evjohn-icu/timingdex/internal/providers/video"
-	"github.com/evjohn-icu/timingdex/internal/providers/volcasr"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	"github.com/evjohn-icu/nexusslate/internal/providers/embedding"
+	"github.com/evjohn-icu/nexusslate/internal/providers/externalalign"
+	"github.com/evjohn-icu/nexusslate/internal/providers/gemini"
+	"github.com/evjohn-icu/nexusslate/internal/providers/multiframe"
+	"github.com/evjohn-icu/nexusslate/internal/providers/openaivideo"
+	"github.com/evjohn-icu/nexusslate/internal/providers/qwen"
+	"github.com/evjohn-icu/nexusslate/internal/providers/repurpose"
+	"github.com/evjohn-icu/nexusslate/internal/providers/shotdetect"
+	"github.com/evjohn-icu/nexusslate/internal/providers/stepfun"
+	"github.com/evjohn-icu/nexusslate/internal/providers/tagcurator"
+	videoproviders "github.com/evjohn-icu/nexusslate/internal/providers/video"
+	"github.com/evjohn-icu/nexusslate/internal/providers/volcasr"
 )
 
 // openai_multiframe is the protocol for endpoints that understand still
-// frames only (llama.cpp, LM Studio, vLLM, SGLang). Timingdex samples frames
+// frames only (llama.cpp, LM Studio, vLLM, SGLang). NexusSlate samples frames
 // deterministically and the model describes what it sees.
 const ProtocolOpenAIMultiframe = "openai_multiframe"
 
@@ -97,7 +97,7 @@ func NewVideoUnderstandingProvider(name string, fallbacks []string, c config.Pro
 				return nil, err
 			}
 		case ProtocolOpenAIMultiframe:
-			// The multiframe endpoint never sees a video; Timingdex samples
+			// The multiframe endpoint never sees a video; NexusSlate samples
 			// frames deterministically and the model describes them. The
 			// pipeline detects the protocol via MultiframeShotAnalyzer and
 			// runs the shot/refinement flow instead of window analysis.

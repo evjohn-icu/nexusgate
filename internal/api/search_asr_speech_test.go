@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // TestSearchSpeechViaAsrOnlyEndpoint exercises the end-to-end speech claim for

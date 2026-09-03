@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 )
 
-// SamplePoint is one frame position on the asset timeline. Timingdex decides
+// SamplePoint is one frame position on the asset timeline. NexusSlate decides
 // these positions deterministically; the VLM is never asked to pick them.
 type SamplePoint struct {
 	TimestampMS int64

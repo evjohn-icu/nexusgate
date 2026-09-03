@@ -3,8 +3,8 @@ package app
 import (
 	"context"
 
-	videoanalysis "github.com/evjohn-icu/timingdex/internal/domain/video_analysis"
-	videoproviders "github.com/evjohn-icu/timingdex/internal/providers/video"
+	videoanalysis "github.com/evjohn-icu/nexusslate/internal/domain/video_analysis"
+	videoproviders "github.com/evjohn-icu/nexusslate/internal/providers/video"
 )
 
 // pipelineVideo is the video provider the Pipeline actually sees. Service

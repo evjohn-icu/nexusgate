@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/hubtls"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/hubtls"
 )
 
 type workerMount struct {
@@ -22,9 +22,9 @@ var workerPlatforms = map[string]struct {
 	Filename string
 	Shell    string
 }{
-	"windows-amd64": {"timingdex-windows-amd64.exe", "powershell"},
-	"linux-amd64":   {"timingdex-linux-amd64", "posix"},
-	"linux-arm64":   {"timingdex-linux-arm64", "posix"},
+	"windows-amd64": {"nexusslate-windows-amd64.exe", "powershell"},
+	"linux-amd64":   {"nexusslate-linux-amd64", "posix"},
+	"linux-arm64":   {"nexusslate-linux-arm64", "posix"},
 }
 
 func (s *Server) workerSetupRouteSpecs() []routeSpec {
@@ -192,9 +192,9 @@ func (s *Server) workerGenerateScript(w http.ResponseWriter, r *http.Request) {
 	// config path from cache_dir also pushed a request value through
 	// filepath.Join, which rewrites separators using the Hub's OS and so
 	// mangles a Windows path whenever the Hub is not Windows. The install
-	// scripts keep the config inside a private .timingdex-worker directory
+	// scripts keep the config inside a private .nexusslate-worker directory
 	// that only the enrolled Worker touches.
-	const configPath = "./.timingdex-worker/worker.json"
+	const configPath = "./.nexusslate-worker/worker.json"
 
 	switch info.Shell {
 	case "powershell":
@@ -264,11 +264,11 @@ func (s *Server) generatePOSIX(hubURL, filename, platform, pairingToken, name st
 	b.WriteString("mkdir -p \"$CONFIG_DIR\"\n")
 	b.WriteString("chmod 0700 \"$CONFIG_DIR\"\n")
 	b.WriteString("\n")
-	b.WriteString("echo 'Downloading Timingdex Worker binary...'\n")
+	b.WriteString("echo 'Downloading NexusSlate Worker binary...'\n")
 	// --insecure is required for the Hub's self-signed certificate; the SPKI
 	// pin is the trust that replaces host verification. The one-time pairing
 	// token travels in a request header so it never appears in a URL.
-	b.WriteString("curl --fail --location --insecure --pinnedpubkey \"$SPKI_PIN\" -H \"X-Timingdex-Pairing-Token: $PAIRING_TOKEN\" \"$BINARY_URL\" -o \"$BINARY_TMP\" || { rm -f \"$BINARY_TMP\"; exit 1; }\n")
+	b.WriteString("curl --fail --location --insecure --pinnedpubkey \"$SPKI_PIN\" -H \"X-NexusSlate-Pairing-Token: $PAIRING_TOKEN\" \"$BINARY_URL\" -o \"$BINARY_TMP\" || { rm -f \"$BINARY_TMP\"; exit 1; }\n")
 	b.WriteString("echo \"$BINARY_DIGEST  $BINARY_TMP\" | sha256sum -c - || { rm -f \"$BINARY_TMP\"; exit 1; }\n")
 	b.WriteString("mv \"$BINARY_TMP\" \"$BINARY_OUT\"\n")
 	b.WriteString("chmod 0755 \"$BINARY_OUT\"\n")
@@ -349,7 +349,7 @@ func (s *Server) generatePowerShell(hubURL, filename, platform, pairingToken, na
 	b.WriteString("\n")
 	b.WriteString("New-Item -ItemType Directory -Force -Path $configDir | Out-Null\n")
 	b.WriteString("\n")
-	b.WriteString("Write-Host 'Downloading Timingdex Worker binary...'\n")
+	b.WriteString("Write-Host 'Downloading NexusSlate Worker binary...'\n")
 	// The self-signed Hub certificate is trusted by exact SHA-256 fingerprint
 	// instead of a CA chain; the one-time pairing token travels in a request
 	// header so it never appears in a URL. The file is written to a .download
@@ -369,7 +369,7 @@ func (s *Server) generatePowerShell(hubURL, filename, platform, pairingToken, na
 	b.WriteString("$client = [System.Net.Http.HttpClient]::new($handler)\n")
 	b.WriteString("$response = $null\n")
 	b.WriteString("try {\n")
-	b.WriteString("  $client.DefaultRequestHeaders.Add('X-Timingdex-Pairing-Token', $pairingToken)\n")
+	b.WriteString("  $client.DefaultRequestHeaders.Add('X-NexusSlate-Pairing-Token', $pairingToken)\n")
 	b.WriteString("  $response = $client.GetAsync($binaryUrl).GetAwaiter().GetResult()\n")
 	b.WriteString("  if (-not $response.IsSuccessStatusCode) { throw ('download failed with HTTP ' + [int]$response.StatusCode) }\n")
 	b.WriteString("  $bytes = $response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()\n")
@@ -442,7 +442,7 @@ func quotePOSIX(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-const workerSetupPageHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · [[i18n:workerSetup.title]]</title><style>
+const workerSetupPageHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NexusSlate · [[i18n:workerSetup.title]]</title><style>
 
 .step-panel{display:none}
 .step-panel.active{display:block}
@@ -476,7 +476,7 @@ const workerSetupPageHTML = `<!doctype html><html lang="zh-CN"><head><meta chars
 
 <div class="panel step-panel active" id="step-1" role="group" aria-label="[[i18n:workerSetup.environmentOverview]]">
 <div class="panel"><h2>[[i18n:workerSetup.hubConnectionInfo]]</h2><div id="hub-info" role="status" aria-live="polite"><div class="muted">[[i18n:workerSetup.loadingEnvironment]]</div></div></div>
-<div class="panel"><h2>[[i18n:workerSetup.binaries]]</h2><p class="muted">[[i18n:workerSetup.binariesHint]]</p><div class="binary-grid" id="binary-grid" role="status" aria-live="polite"></div><div class="hint">💡 [[i18n:workerSetup.crossCompileLead]]<code>GOOS=windows GOARCH=amd64 go build -o timingdex-windows-amd64.exe ./cmd/timingdex</code><br>[[i18n:workerSetup.placeFilesLead]]<code>&lt;DataDir&gt;/worker-binaries/</code>[[i18n:workerSetup.placeFilesTrail]]</div></div>
+<div class="panel"><h2>[[i18n:workerSetup.binaries]]</h2><p class="muted">[[i18n:workerSetup.binariesHint]]</p><div class="binary-grid" id="binary-grid" role="status" aria-live="polite"></div><div class="hint">💡 [[i18n:workerSetup.crossCompileLead]]<code>GOOS=windows GOARCH=amd64 go build -o nexusslate-windows-amd64.exe ./cmd/nexusslate</code><br>[[i18n:workerSetup.placeFilesLead]]<code>&lt;DataDir&gt;/worker-binaries/</code>[[i18n:workerSetup.placeFilesTrail]]</div></div>
 <div class="step-actions"><button class="btn btn--primary" onclick="goStep(2)">[[i18n:common.next]] →</button></div>
 </div>
 
@@ -501,8 +501,8 @@ const workerSetupPageHTML = `<!doctype html><html lang="zh-CN"><head><meta chars
 <div class="panel step-panel" id="step-4" role="group" aria-label="[[i18n:workerSetup.startNode]]">
 <div class="panel"><h2>[[i18n:workerSetup.startNode]]</h2>
 <p class="muted">[[i18n:workerSetup.runCommandHint]]</p>
-<div class="script-box">timingdex worker run --config ./.timingdex-worker/worker.json</div>
-<p class="muted">[[i18n:workerSetup.doctorHintLead]]<code>timingdex worker doctor --config ./.timingdex-worker/worker.json</code>[[i18n:workerSetup.doctorHintTrail]]</p>
+<div class="script-box">nexusslate worker run --config ./.nexusslate-worker/worker.json</div>
+<p class="muted">[[i18n:workerSetup.doctorHintLead]]<code>nexusslate worker doctor --config ./.nexusslate-worker/worker.json</code>[[i18n:workerSetup.doctorHintTrail]]</p>
 <p class="muted">[[i18n:workerSetup.workersStatusHintLead]]<a href="/workers">[[i18n:workers.title]]</a>[[i18n:workerSetup.workersStatusHintTrail]]</p>
 </div>
 <div class="step-actions">
@@ -514,7 +514,7 @@ const workerSetupPageHTML = `<!doctype html><html lang="zh-CN"><head><meta chars
 <script>
 const esc=function(v){return String(v??'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','>':'&gt;','<':'&lt;','"':'&quot;',"'":'&#39;'}[c]})};
 var ctx=null,pairingToken=null;
- function csrfToken(){var prefix='__Host-timingdex_csrf=';var item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
+ function csrfToken(){var prefix='__Host-nexusslate_csrf=';var item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
   function authHeaders(base){var headers=new Headers(base||{});var csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
 async function json(url,opt){opt=opt||{};var r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok)throw new Error(await tdApiErrorMessage(r));return r.json()}
 function goStep(n){for(var i=1;i<=4;i++){document.getElementById('step-'+i).className='panel step-panel'+(i===n?' active':'');var marker=document.querySelectorAll('.steps span')[i-1];marker.className=(i===n?'is-active':(i<n?'is-done':''));if(i===n){marker.setAttribute('aria-current','step')}else{marker.removeAttribute('aria-current')}}}
@@ -526,7 +526,7 @@ async function loadContext(){try{var contextResponse=await fetch('/api/v1/hub/wo
   // the admin-only library root details the first (pre-login) context load
   // could not fetch. Reload the whole context then, so the URL, fingerprint,
   // binaries and paths all agree instead of stitching a partial view together.
-  window.addEventListener('timingdex:admin-auth-changed',function(event){if(event.detail&&event.detail.authenticated){loadContext()}else{ctx=ctx||{};ctx.library_roots=(ctx.library_roots||[]).map(function(root){return{id:root.id}});renderMounts()}});
+  window.addEventListener('nexusslate:admin-auth-changed',function(event){if(event.detail&&event.detail.authenticated){loadContext()}else{ctx=ctx||{};ctx.library_roots=(ctx.library_roots||[]).map(function(root){return{id:root.id}});renderMounts()}});
   async function init(){return loadContext()}
  async function generateScript(){var btn=document.getElementById('gen-btn');btn.disabled=true;btn.textContent=tdT('workerSetup.generating');try{var platform=document.getElementById('platform').value;var bins=ctx&&ctx.available_binaries||{};var bin=bins[platform]||{};if(!bin.exists)throw new Error(tdT('workerSetup.binaryRequired'));if(!ctx||!ctx.tls||!ctx.fingerprint||!ctx.spki_pin)throw new Error(tdT('workerSetup.tlsRequired'));var pairing=await json('/api/v1/hub/worker-pairings',{method:'POST'});pairingToken=pairing.token;var name=document.getElementById('worker-name').value.trim();var cacheDir=document.getElementById('cache-dir').value.trim();var mountInputs=document.querySelectorAll('.mount-path');var mounts=[];for(var i=0;i<mountInputs.length;i++){var path=mountInputs[i].value.trim();if(path){mounts.push({root_id:mountInputs[i].getAttribute('data-root-id'),path:path})}}var body=JSON.stringify({platform:platform,name:name,pairing_token:pairingToken,mounts:mounts,cache_dir:cacheDir});var script=await fetch('/api/v1/hub/worker-setup/script',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:body});if(!script.ok)throw new Error(await tdApiErrorMessage(script));var scriptText=await script.text();document.getElementById('script-area').innerHTML='<button class="btn" onclick="copyScript()" id="copy-btn">'+esc(tdT('workerSetup.copyScript'))+'</button><div class="script-box" id="script-output">'+esc(scriptText)+'</div><div class="hint">'+esc(tdT('workerSetup.scriptOneTimeNote'))+'</div><div class="step-actions"><button class="btn btn--primary" onclick="goStep(4)">'+esc(tdT('workerSetup.viewStartupGuide'))+'</button></div>'}catch(e){document.getElementById('script-area').innerHTML='<div class="callout callout--contradicted" role="alert"><span>'+esc(tdT('workerSetup.generateFailed',{message:e.message}))+'</span></div><div class="center"><button class="primary" onclick="generateScript()">'+esc(tdT('common.retry'))+'</button></div>'}finally{btn.disabled=false}}
 function copyScript(){var el=document.getElementById('script-output');if(!el)return;var range=document.createRange();range.selectNode(el);window.getSelection().removeAllRanges();window.getSelection().addRange(range);try{document.execCommand('copy');var btn=document.getElementById('copy-btn');btn.textContent=tdT('common.copied')}catch(e){}}init();

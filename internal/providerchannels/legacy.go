@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/providerpool"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/providerpool"
 )
 
 // FromLegacyConfig converts the primary/fallback provider selectors from the

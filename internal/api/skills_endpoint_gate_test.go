@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// This gate exists because skills/timingdex/ restates the route table by
+// This gate exists because skills/nexusslate/ restates the route table by
 // hand, in three different documents, with three different spellings of the
 // same wildcard ({id} vs {asset-id} vs {shot-id} vs {plan-id}, {n} where the
 // route says {revision}), a literal ellipsis ("POST
@@ -19,9 +19,9 @@ import (
 // four endpoints behind a single shared prefix. A route renamed or removed
 // leaves a dangling doc reference that nothing previously caught; a new
 // agent-reachable route added to Handler() with no corresponding line in
-// skills/timingdex/ is invisible unless someone remembers to grep for it.
+// skills/nexusslate/ is invisible unless someone remembers to grep for it.
 
-// docEndpoint is one endpoint mention found under skills/timingdex/, already
+// docEndpoint is one endpoint mention found under skills/nexusslate/, already
 // normalised: method is "" when the surrounding text named no HTTP verb
 // (e.g. "read `/api/v1/health`"), and path has every {...} wildcard segment
 // collapsed to a single canonical token regardless of the name inside, since
@@ -29,7 +29,7 @@ import (
 type docEndpoint struct {
 	method string
 	path   string
-	file   string // path relative to skills/timingdex/, for failure messages
+	file   string // path relative to skills/nexusslate/, for failure messages
 }
 
 func (d docEndpoint) key() string {
@@ -88,7 +88,7 @@ func endpointsInText(text, file string) []docEndpoint {
 	return out
 }
 
-// extractDocumentedEndpoints scans every file under skills/timingdex/ for
+// extractDocumentedEndpoints scans every file under skills/nexusslate/ for
 // /api/v1/... endpoint mentions.
 func extractDocumentedEndpoints(t *testing.T, skillsDir string) []docEndpoint {
 	t.Helper()
@@ -159,7 +159,7 @@ func buildRouteInventoryIndex(specs []routeSpec) routeInventoryIndex {
 
 // undocumentedAgentRoutes is the maintained exception list for Direction B:
 // every agent-reachable route (public / trusted-read / agent-or-admin) must
-// either be documented somewhere under skills/timingdex/, or be named here
+// either be documented somewhere under skills/nexusslate/, or be named here
 // with a real reason. Adding a new agent-reachable route to Handler() without
 // touching this file means TestAgentReachableRoutesAreDocumentedOrAllowlisted
 // fails until someone makes the deliberate choice: document it, or explain
@@ -196,7 +196,7 @@ var undocumentedAgentRoutes = map[string]string{
 }
 
 // TestSkillsDocumentedEndpointsExistInRouteInventory is Direction A: every
-// /api/v1/... endpoint mentioned anywhere under skills/timingdex/ must exist
+// /api/v1/... endpoint mentioned anywhere under skills/nexusslate/ must exist
 // in the live route table, whether or not the Skill may actually call it.
 // Some documented endpoints (the admin-session routes, the plan-approve and
 // export routes) are routeAuthHubAdmin or routeAuthBrowserSession and are
@@ -209,7 +209,7 @@ func TestSkillsDocumentedEndpointsExistInRouteInventory(t *testing.T) {
 	idx := buildRouteInventoryIndex(server.routeInventory())
 
 	root := agentContractGateRepoRoot(t)
-	skillsDir := filepath.Join(root, "skills/timingdex")
+	skillsDir := filepath.Join(root, "skills/nexusslate")
 	docs := extractDocumentedEndpoints(t, skillsDir)
 
 	seen := map[string]docEndpoint{}
@@ -238,7 +238,7 @@ func TestSkillsDocumentedEndpointsExistInRouteInventory(t *testing.T) {
 }
 
 // TestAgentReachableRoutesAreDocumentedOrAllowlisted is Direction B: every
-// agent-reachable route must be either documented under skills/timingdex/ or
+// agent-reachable route must be either documented under skills/nexusslate/ or
 // named in undocumentedAgentRoutes with a reason. A route counts as
 // documented if it appears with its exact method, or if it appears at all
 // under a mention that named no method (e.g. "read `/api/v1/health`") — the
@@ -254,7 +254,7 @@ func TestAgentReachableRoutesAreDocumentedOrAllowlisted(t *testing.T) {
 	specs := server.routeInventory()
 
 	root := agentContractGateRepoRoot(t)
-	skillsDir := filepath.Join(root, "skills/timingdex")
+	skillsDir := filepath.Join(root, "skills/nexusslate")
 	docs := extractDocumentedEndpoints(t, skillsDir)
 
 	docExact := map[string]bool{}
@@ -291,7 +291,7 @@ func TestAgentReachableRoutesAreDocumentedOrAllowlisted(t *testing.T) {
 			usedAllowlist[key] = true
 			continue
 		}
-		t.Errorf("agent-reachable route %q (auth=%s) is not documented anywhere under skills/timingdex/ and is not in undocumentedAgentRoutes; document it or add an allow-list entry with a reason", key, spec.Auth)
+		t.Errorf("agent-reachable route %q (auth=%s) is not documented anywhere under skills/nexusslate/ and is not in undocumentedAgentRoutes; document it or add an allow-list entry with a reason", key, spec.Auth)
 	}
 
 	// An allow-list entry for a route that no longer exists, or that got

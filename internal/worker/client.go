@@ -22,10 +22,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/apiclient"
-	"github.com/evjohn-icu/timingdex/internal/credentials"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/remote"
+	"github.com/evjohn-icu/nexusslate/internal/apiclient"
+	"github.com/evjohn-icu/nexusslate/internal/credentials"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/remote"
 )
 
 type Enrollment struct {

@@ -113,7 +113,7 @@ func TestEveryPageMarkerAndRuntimeKeyResolves(t *testing.T) {
 	}
 }
 
-// TestResolveLocale pins the precedence chain: timingdex_locale cookie wins,
+// TestResolveLocale pins the precedence chain: nexusslate_locale cookie wins,
 // then the best Accept-Language match, then zh-CN; malformed or unsupported
 // cookie values fall through to Accept-Language; regional variants (fr-CA,
 // en-GB, es-MX, ja) resolve to the canonical family locale.

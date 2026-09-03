@@ -15,12 +15,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/app"
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/hubtls"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/app"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/hubtls"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
 )
 
 func workerSetupHandler(s *Server) http.Handler {
@@ -109,7 +109,7 @@ func TestWorkerSetupPageRendersWithStepMarkers(t *testing.T) {
 	// from the locale catalog: the page constant must carry the markers, and
 	// the served body must never leak an unresolved [[i18n:...]] marker.
 	for _, marker := range []string{
-		`<title>Timingdex · [[i18n:workerSetup.title]]</title>`,
+		`<title>NexusSlate · [[i18n:workerSetup.title]]</title>`,
 		`1. [[i18n:workerSetup.environmentOverview]]`,
 		`2. [[i18n:workerSetup.configureNode]]`,
 		`3. [[i18n:workerSetup.generateScript]]`,
@@ -213,7 +213,7 @@ func TestWorkerSetupPageI18nHasNoHardcodedChinese(t *testing.T) {
 // regressed.
 func TestWorkerSetupPageLocalizedCopy(t *testing.T) {
 	for _, marker := range []string{
-		`<title>Timingdex · [[i18n:workerSetup.title]]</title>`,
+		`<title>NexusSlate · [[i18n:workerSetup.title]]</title>`,
 		`1. [[i18n:workerSetup.environmentOverview]]`,
 		`2. [[i18n:workerSetup.configureNode]]`,
 		`3. [[i18n:workerSetup.generateScript]]`,
@@ -674,13 +674,13 @@ func TestWorkerSetupScriptPowerShellIncludesErrorActionPreference(t *testing.T) 
 	if !strings.Contains(script, "ServerCertificateCustomValidationCallback") {
 		t.Fatalf("PowerShell script missing the certificate fingerprint callback: %s", script)
 	}
-	if !strings.Contains(script, "X-Timingdex-Pairing-Token") {
+	if !strings.Contains(script, "X-NexusSlate-Pairing-Token") {
 		t.Fatalf("PowerShell script missing the pairing token header: %s", script)
 	}
 	if !strings.Contains(script, "--pairing") || !strings.Contains(script, "tok-xyz") {
 		t.Fatalf("PowerShell script missing pairing: %s", script)
 	}
-	if !strings.Contains(script, "timingdex-windows-amd64.exe") {
+	if !strings.Contains(script, "nexusslate-windows-amd64.exe") {
 		t.Fatalf("PowerShell script wrong binary name: %s", script)
 	}
 	if !strings.Contains(script, "single-use credential") {
@@ -865,8 +865,8 @@ func TestWorkerSetupBinaryDownloadSuccess(t *testing.T) {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	binaryContent := []byte("fake-timingdex-binary")
-	if err := os.WriteFile(filepath.Join(binDir, "timingdex-linux-amd64"), binaryContent, 0o755); err != nil {
+	binaryContent := []byte("fake-nexusslate-binary")
+	if err := os.WriteFile(filepath.Join(binDir, "nexusslate-linux-amd64"), binaryContent, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{DataDir: dataDir, Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
@@ -962,7 +962,7 @@ func TestWorkerSetupContextWithBinaryPresent(t *testing.T) {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(binDir, "timingdex-linux-amd64"), []byte("binary-content"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(binDir, "nexusslate-linux-amd64"), []byte("binary-content"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{DataDir: dataDir, Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
@@ -1069,13 +1069,13 @@ func TestWorkerSetupBinaryDownloadServesCorrectFilePerPlatform(t *testing.T) {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(binDir, "timingdex-linux-amd64"), []byte("linux-amd64-content"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(binDir, "nexusslate-linux-amd64"), []byte("linux-amd64-content"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(binDir, "timingdex-linux-arm64"), []byte("linux-arm64-content"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(binDir, "nexusslate-linux-arm64"), []byte("linux-arm64-content"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(binDir, "timingdex-windows-amd64.exe"), []byte("windows-content"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(binDir, "nexusslate-windows-amd64.exe"), []byte("windows-content"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{DataDir: dataDir, Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})

@@ -10,11 +10,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/app"
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	sqliterepo "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
-	"github.com/evjohn-icu/timingdex/internal/webdavspace"
+	"github.com/evjohn-icu/nexusslate/internal/app"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	sqliterepo "github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/webdavspace"
 )
 
 // TestWebDAVDeliveryEndToEnd drives the full on-demand delivery path:

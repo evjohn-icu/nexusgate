@@ -16,7 +16,7 @@ func TestCopyStagesSourceLocallyAndReusesCompleteCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stager, err := New("copy", filepath.Join(t.TempDir(), "timingdex-cache"))
+	stager, err := New("copy", filepath.Join(t.TempDir(), "nexusslate-cache"))
 	if err != nil {
 		t.Fatal(err)
 	}

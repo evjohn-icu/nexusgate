@@ -82,8 +82,8 @@ func TestLibraryRootsPageOffersLoginOnAuthFailure(t *testing.T) {
 		`tdAuthDenied(e)`,       // and every catch branches on it
 		`tdAdminLoginRequired(`, // the login control is reachable from the page
 		`tdT('roots.authRequired')`,
-		`timingdex:admin-auth-changed`, // logging in retries the step
-		`tdT('roots.healthFailed'`,     // a non-auth failure says what actually happened
+		`nexusslate:admin-auth-changed`, // logging in retries the step
+		`tdT('roots.healthFailed'`,      // a non-auth failure says what actually happened
 	} {
 		if !strings.Contains(page, marker) {
 			t.Fatalf("library-roots auth fallback missing %q", marker)
@@ -117,7 +117,7 @@ func TestLibraryRootsPageStatusSelectorIsValid(t *testing.T) {
 
 // TestSetupPageNamesEveryFailedCheck pins U2-02. "✗ 需要处理" told the reader a
 // check had failed and nothing else — not which remedy applies, and not that
-// `timingdex doctor` prints the same probes with the paths this page
+// `nexusslate doctor` prints the same probes with the paths this page
 // deliberately withholds (paths are admin-only everywhere else in the UI).
 func TestSetupPageNamesEveryFailedCheck(t *testing.T) {
 	page := setupHTML
@@ -147,7 +147,7 @@ func TestSetupPageNamesEveryFailedCheck(t *testing.T) {
 	// admin-only.
 	catalog := catalogs[localeZhCN]
 	for _, key := range []string{"setup.env.fixDataDir", "setup.env.fixCache", "setup.env.fixDisk"} {
-		if v := catalog[key]; strings.Contains(v, "/") && !strings.Contains(v, "timingdex cache gc") {
+		if v := catalog[key]; strings.Contains(v, "/") && !strings.Contains(v, "nexusslate cache gc") {
 			t.Fatalf("%s leaks a path-like string: %q", key, v)
 		}
 	}

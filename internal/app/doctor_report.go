@@ -12,14 +12,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	"github.com/evjohn-icu/timingdex/internal/mount"
-	"github.com/evjohn-icu/timingdex/internal/providers"
-	"github.com/evjohn-icu/timingdex/internal/remote"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/mount"
+	"github.com/evjohn-icu/nexusslate/internal/providers"
+	"github.com/evjohn-icu/nexusslate/internal/remote"
 )
 
-// DoctorReport collects every fact `timingdex doctor` renders into one
+// DoctorReport collects every fact `nexusslate doctor` renders into one
 // JSON-safe, secret-free snapshot. It never fails on advisory checks: a
 // missing helper binary, an unreadable mount table or a vanished cache
 // subtree is recorded in the report itself (Present=false, empty,

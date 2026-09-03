@@ -16,37 +16,37 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/api"
-	"github.com/evjohn-icu/timingdex/internal/app"
-	"github.com/evjohn-icu/timingdex/internal/buildinfo"
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/hubauth"
-	"github.com/evjohn-icu/timingdex/internal/hubtls"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	"github.com/evjohn-icu/timingdex/internal/providers"
-	"github.com/evjohn-icu/timingdex/internal/remote"
-	sqliterepo "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
-	"github.com/evjohn-icu/timingdex/internal/secretstore"
-	"github.com/evjohn-icu/timingdex/internal/webdavspace"
-	"github.com/evjohn-icu/timingdex/internal/worker"
+	"github.com/evjohn-icu/nexusslate/internal/api"
+	"github.com/evjohn-icu/nexusslate/internal/app"
+	"github.com/evjohn-icu/nexusslate/internal/buildinfo"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/hubauth"
+	"github.com/evjohn-icu/nexusslate/internal/hubtls"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/providers"
+	"github.com/evjohn-icu/nexusslate/internal/remote"
+	sqliterepo "github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/secretstore"
+	"github.com/evjohn-icu/nexusslate/internal/webdavspace"
+	"github.com/evjohn-icu/nexusslate/internal/worker"
 )
 
 func main() {
 	if err := run(); err != nil {
-		slog.Error("timingdex stopped", "error", err)
+		slog.Error("nexusslate stopped", "error", err)
 		os.Exit(1)
 	}
 }
 
 // setupLogging installs the process-wide slog handler from environment
-// variables. TIMINGDEX_LOG_FORMAT selects text (default) or JSON output;
-// TIMINGDEX_LOG_LEVEL selects debug|info|warn|error (default info). With no
+// variables. NEXUSSLATE_LOG_FORMAT selects text (default) or JSON output;
+// NEXUSSLATE_LOG_LEVEL selects debug|info|warn|error (default info). With no
 // variables set the behaviour is byte-identical to the default slog output, so
 // existing deployments see no change until they opt in. Invalid values fall
 // back to the default and log a warning rather than aborting startup.
 func setupLogging() {
 	level := slog.LevelInfo
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("TIMINGDEX_LOG_LEVEL"))) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("NEXUSSLATE_LOG_LEVEL"))) {
 	case "debug":
 		level = slog.LevelDebug
 	case "warn":
@@ -56,15 +56,15 @@ func setupLogging() {
 	case "", "info":
 		level = slog.LevelInfo
 	default:
-		slog.Warn("ignoring invalid TIMINGDEX_LOG_LEVEL; using info", "level", truncateEnv("TIMINGDEX_LOG_LEVEL", 20))
+		slog.Warn("ignoring invalid NEXUSSLATE_LOG_LEVEL; using info", "level", truncateEnv("NEXUSSLATE_LOG_LEVEL", 20))
 	}
 	var handler slog.Handler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("TIMINGDEX_LOG_FORMAT"))) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("NEXUSSLATE_LOG_FORMAT"))) {
 	case "", "text":
 	case "json":
 		handler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})
 	default:
-		slog.Warn("ignoring invalid TIMINGDEX_LOG_FORMAT; using text", "format", truncateEnv("TIMINGDEX_LOG_FORMAT", 20))
+		slog.Warn("ignoring invalid NEXUSSLATE_LOG_FORMAT; using text", "format", truncateEnv("NEXUSSLATE_LOG_FORMAT", 20))
 	}
 	slog.SetDefault(slog.New(handler))
 }
@@ -185,7 +185,7 @@ func run() error {
 
 	case "root":
 		if len(os.Args) < 3 {
-			return errors.New("usage: timingdex root add|list|scan ...")
+			return errors.New("usage: nexusslate root add|list|scan ...")
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
@@ -193,7 +193,7 @@ func run() error {
 
 	case "pipeline":
 		if len(os.Args) < 3 {
-			return errors.New("usage: timingdex pipeline run|retry-failed")
+			return errors.New("usage: nexusslate pipeline run|retry-failed")
 		}
 		switch os.Args[2] {
 		case "run":
@@ -215,10 +215,10 @@ func run() error {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("requeued %d failed job(s); run `timingdex pipeline run` to process them\n", requeued)
+			fmt.Printf("requeued %d failed job(s); run `nexusslate pipeline run` to process them\n", requeued)
 			return nil
 		default:
-			return errors.New("usage: timingdex pipeline run|retry-failed")
+			return errors.New("usage: nexusslate pipeline run|retry-failed")
 		}
 
 	case "reanalyze":
@@ -226,7 +226,7 @@ func run() error {
 
 	case "search":
 		if len(os.Args) < 3 {
-			return errors.New("usage: timingdex search rebuild|rebuild-embeddings")
+			return errors.New("usage: nexusslate search rebuild|rebuild-embeddings")
 		}
 		switch os.Args[2] {
 		case "rebuild":
@@ -248,10 +248,10 @@ func run() error {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("rebuilt %d shot text embedding(s); run `timingdex pipeline run` if jobs are queued\n", rebuilt)
+			fmt.Printf("rebuilt %d shot text embedding(s); run `nexusslate pipeline run` if jobs are queued\n", rebuilt)
 			return nil
 		default:
-			return errors.New("usage: timingdex search rebuild|rebuild-embeddings")
+			return errors.New("usage: nexusslate search rebuild|rebuild-embeddings")
 		}
 
 	case "doctor":
@@ -289,13 +289,13 @@ func run() error {
 
 	case "cache":
 		if len(os.Args) < 3 {
-			return errors.New("usage: timingdex cache inspect|gc|verify")
+			return errors.New("usage: nexusslate cache inspect|gc|verify")
 		}
 		return runCacheCommand(context.Background(), repo, cfg, os.Args[2:])
 
 	case "support":
 		if len(os.Args) < 3 || os.Args[2] != "bundle" {
-			return errors.New("usage: timingdex support bundle [-out path]")
+			return errors.New("usage: nexusslate support bundle [-out path]")
 		}
 		return runSupportBundleCommand(service, cfg, os.Args[3:])
 
@@ -347,7 +347,7 @@ func runReanalyzeCommand(service *app.Service, args []string) error {
 	if effective == "" {
 		effective = "reanalysis-v1"
 	}
-	fmt.Printf("enqueued reanalysis for %d asset(s) (reason: %s); run `timingdex pipeline run` to process them\n", enqueued, effective)
+	fmt.Printf("enqueued reanalysis for %d asset(s) (reason: %s); run `nexusslate pipeline run` to process them\n", enqueued, effective)
 	return nil
 }
 
@@ -359,7 +359,7 @@ func runReanalyzeCommand(service *app.Service, args []string) error {
 // or the running process.
 func runSecretsCommand(cfg config.Config) error {
 	if len(os.Args) < 3 {
-		return errors.New("usage: timingdex secrets rekey")
+		return errors.New("usage: nexusslate secrets rekey")
 	}
 	switch os.Args[2] {
 	case "rekey":
@@ -377,7 +377,7 @@ func runSecretsCommand(cfg config.Config) error {
 		fmt.Printf("rekeyed provider secret store; previous key backed up to %s\n", filepath.Join(cfg.DataDir, "provider-secrets", "store.key.pre-rekey"))
 		return nil
 	default:
-		return errors.New("usage: timingdex secrets rekey")
+		return errors.New("usage: nexusslate secrets rekey")
 	}
 }
 
@@ -405,7 +405,7 @@ func hubTLSFiles(cfg config.Config) (string, string, error) {
 		return certificate, key, nil
 	case "files":
 		if cfg.HubTLS.CertificateFile == "" || cfg.HubTLS.KeyFile == "" {
-			return "", "", errors.New("TIMINGDEX_TLS_CERT_FILE and TIMINGDEX_TLS_KEY_FILE are required for TLS files mode")
+			return "", "", errors.New("NEXUSSLATE_TLS_CERT_FILE and NEXUSSLATE_TLS_KEY_FILE are required for TLS files mode")
 		}
 		return cfg.HubTLS.CertificateFile, cfg.HubTLS.KeyFile, nil
 	case "off":
@@ -419,7 +419,7 @@ func runRootCommand(ctx context.Context, service *app.Service, args []string) er
 	switch args[0] {
 	case "add":
 		if len(args) != 2 {
-			return errors.New("usage: timingdex root add <path>")
+			return errors.New("usage: nexusslate root add <path>")
 		}
 		root, err := service.AddLibraryRoot(ctx, args[1])
 		if err != nil {
@@ -438,7 +438,7 @@ func runRootCommand(ctx context.Context, service *app.Service, args []string) er
 		return nil
 	case "scan":
 		if len(args) != 2 {
-			return errors.New("usage: timingdex root scan <root-id>")
+			return errors.New("usage: nexusslate root scan <root-id>")
 		}
 		result, err := service.ScanLibraryRoot(ctx, args[1])
 		if err != nil {
@@ -477,40 +477,40 @@ func runRootCommand(ctx context.Context, service *app.Service, args []string) er
 		}
 		return nil
 	default:
-		return errors.New("usage: timingdex root add|list|scan ...")
+		return errors.New("usage: nexusslate root add|list|scan ...")
 	}
 }
 
 func usage() error {
-	fmt.Fprintln(os.Stderr, `Timingdex Footage
+	fmt.Fprintln(os.Stderr, `NexusSlate Footage
 
 Usage:
-  timingdex serve [-addr 127.0.0.1:8787]
-  timingdex root add <path>
-  timingdex root list
-  timingdex root scan <root-id>
-  timingdex pipeline run
-  timingdex pipeline retry-failed
-  timingdex reanalyze [-asset <asset-id> | -root <root-id> | -all] [-reason <text>]
-  timingdex search rebuild
-  timingdex search rebuild-embeddings
-  timingdex cache inspect
-  timingdex cache gc
-  timingdex cache verify
-  timingdex cache repair-derived
-  timingdex doctor [-json]
-  timingdex secrets rekey
-  timingdex support bundle [-out path]
-  timingdex worker enroll [--root <path>] [--cache <path>] [--config <path>] --hub https://nas:8787 --fingerprint <sha256> --pairing <token> [--name worker] [--mount root-id=/mounted/path] [--provider-operation video_analysis]
-  timingdex worker run [--config path] [--tray]
-  timingdex worker doctor [--config path]
-  timingdex worker revoke <worker-id>`)
+  nexusslate serve [-addr 127.0.0.1:8787]
+  nexusslate root add <path>
+  nexusslate root list
+  nexusslate root scan <root-id>
+  nexusslate pipeline run
+  nexusslate pipeline retry-failed
+  nexusslate reanalyze [-asset <asset-id> | -root <root-id> | -all] [-reason <text>]
+  nexusslate search rebuild
+  nexusslate search rebuild-embeddings
+  nexusslate cache inspect
+  nexusslate cache gc
+  nexusslate cache verify
+  nexusslate cache repair-derived
+  nexusslate doctor [-json]
+  nexusslate secrets rekey
+  nexusslate support bundle [-out path]
+  nexusslate worker enroll [--root <path>] [--cache <path>] [--config <path>] --hub https://nas:8787 --fingerprint <sha256> --pairing <token> [--name worker] [--mount root-id=/mounted/path] [--provider-operation video_analysis]
+  nexusslate worker run [--config path] [--tray]
+  nexusslate worker doctor [--config path]
+  nexusslate worker revoke <worker-id>`)
 	return errors.New("invalid command")
 }
 
 func runWorkerCommand(cfg config.Config) error {
 	if len(os.Args) < 3 {
-		return errors.New("usage: timingdex worker enroll|run|doctor|revoke")
+		return errors.New("usage: nexusslate worker enroll|run|doctor|revoke")
 	}
 	switch os.Args[2] {
 	case "enroll":
@@ -631,16 +631,16 @@ func runWorkerCommand(cfg config.Config) error {
 		// against the Hub's own database with the same in-process authority
 		// every other Hub CLI command (pipeline run, root add, reanalyze,
 		// rekey) uses: app.NewService resolves the Hub administrator token
-		// from the standard config/env (TIMINGDEX_HUB_ADMIN_TOKEN or the
+		// from the standard config/env (NEXUSSLATE_HUB_ADMIN_TOKEN or the
 		// mode-0600 DATA_DIR/admin-token file), which is what authorizes this
 		// write. Running it on a Worker node without the Hub database is a
 		// clear "open database" error.
 		if len(os.Args) < 4 {
-			return errors.New("usage: timingdex worker revoke <worker-id>")
+			return errors.New("usage: nexusslate worker revoke <worker-id>")
 		}
 		workerID := strings.TrimSpace(os.Args[3])
 		if workerID == "" {
-			return errors.New("usage: timingdex worker revoke <worker-id>")
+			return errors.New("usage: nexusslate worker revoke <worker-id>")
 		}
 		repo, err := sqliterepo.Open(cfg.DatabasePath)
 		if err != nil {
@@ -660,7 +660,7 @@ func runWorkerCommand(cfg config.Config) error {
 		fmt.Printf("revoked worker %s\n", workerID)
 		return nil
 	default:
-		return errors.New("usage: timingdex worker enroll|run|doctor|revoke")
+		return errors.New("usage: nexusslate worker enroll|run|doctor|revoke")
 	}
 }
 
@@ -692,7 +692,7 @@ func runWorkerWithTray(ctx context.Context, stop context.CancelFunc, runtime *wo
 
 	name := strings.TrimSpace(config.Registration.Name)
 	if name == "" {
-		name = "Timingdex Worker"
+		name = "NexusSlate Worker"
 	}
 	trayErr := worker.ShowTray(ctx, worker.TrayOptions{
 		Tooltip:     name + " → " + config.HubURL,
@@ -741,14 +741,14 @@ func parseWorkerMounts(values []string) (map[string]string, error) {
 }
 
 func defaultWorkerConfigPath() string {
-	if value := os.Getenv("TIMINGDEX_WORKER_CONFIG"); value != "" {
+	if value := os.Getenv("NEXUSSLATE_WORKER_CONFIG"); value != "" {
 		return value
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "timingdex-worker.json"
+		return "nexusslate-worker.json"
 	}
-	return filepath.Join(home, ".timingdex", "worker.json")
+	return filepath.Join(home, ".nexusslate", "worker.json")
 }
 func truncateEnv(name string, maxLen int) string {
 	v := os.Getenv(name)
@@ -761,7 +761,7 @@ func truncateEnv(name string, maxLen int) string {
 func hostname() string {
 	value, err := os.Hostname()
 	if err != nil || value == "" {
-		return "timingdex-worker"
+		return "nexusslate-worker"
 	}
 	return value
 }

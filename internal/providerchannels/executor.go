@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/providerpool"
+	"github.com/evjohn-icu/nexusslate/internal/providerpool"
 )
 
 var (

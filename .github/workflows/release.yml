@@ -21,23 +21,23 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME}"
-          ldflags="-s -w -X github.com/evjohn-icu/timingdex/internal/buildinfo.Version=$version -X github.com/evjohn-icu/timingdex/internal/domain.Version=$version"
+          ldflags="-s -w -X github.com/evjohn-icu/nexusslate/internal/buildinfo.Version=$version -X github.com/evjohn-icu/nexusslate/internal/domain.Version=$version"
           mkdir -p dist
 
           # Hub binary, one per platform the Hub itself runs on.
-          GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags="$ldflags" -o dist/timingdex                ./cmd/timingdex
-          GOOS=linux   GOARCH=arm64 go build -trimpath -ldflags="$ldflags" -o dist/timingdex-linux-arm64    ./cmd/timingdex
-          GOOS=darwin  GOARCH=arm64 go build -trimpath -ldflags="$ldflags" -o dist/timingdex-darwin-arm64   ./cmd/timingdex
+          GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags="$ldflags" -o dist/nexusslate                ./cmd/nexusslate
+          GOOS=linux   GOARCH=arm64 go build -trimpath -ldflags="$ldflags" -o dist/nexusslate-linux-arm64    ./cmd/nexusslate
+          GOOS=darwin  GOARCH=arm64 go build -trimpath -ldflags="$ldflags" -o dist/nexusslate-darwin-arm64   ./cmd/nexusslate
 
-          # Worker binaries are the same timingdex binary, named per
+          # Worker binaries are the same nexusslate binary, named per
           # internal/api/worker_setup_page.go workerPlatforms. linux-amd64 is a
           # copy of the Hub binary; the other two are cross-compiled.
-          cp dist/timingdex dist/timingdex-linux-amd64
-          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="$ldflags" -o dist/timingdex-windows-amd64.exe ./cmd/timingdex
+          cp dist/nexusslate dist/nexusslate-linux-amd64
+          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="$ldflags" -o dist/nexusslate-windows-amd64.exe ./cmd/nexusslate
 
           # MCP client for the two common dev platforms.
-          GOOS=linux  GOARCH=amd64 go build -trimpath -ldflags="$ldflags" -o dist/timingdex-mcp              ./cmd/timingdex-mcp
-          GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="$ldflags" -o dist/timingdex-mcp-darwin-arm64 ./cmd/timingdex-mcp
+          GOOS=linux  GOARCH=amd64 go build -trimpath -ldflags="$ldflags" -o dist/nexusslate-mcp              ./cmd/nexusslate-mcp
+          GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="$ldflags" -o dist/nexusslate-mcp-darwin-arm64 ./cmd/nexusslate-mcp
 
           ls -la dist
 

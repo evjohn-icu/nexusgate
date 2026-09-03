@@ -3,7 +3,7 @@ package app
 import (
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 func TestValidateAnalysisShotsRejectsOutOfBoundsAndBlankDescriptions(t *testing.T) {

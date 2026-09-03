@@ -20,15 +20,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/app"
-	"github.com/evjohn-icu/timingdex/internal/credentials"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/nleexport"
-	"github.com/evjohn-icu/timingdex/internal/normalize"
-	"github.com/evjohn-icu/timingdex/internal/remote"
-	"github.com/evjohn-icu/timingdex/internal/search"
-	"github.com/evjohn-icu/timingdex/internal/smbdiscover"
-	"github.com/evjohn-icu/timingdex/internal/webdavspace"
+	"github.com/evjohn-icu/nexusslate/internal/app"
+	"github.com/evjohn-icu/nexusslate/internal/credentials"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/nleexport"
+	"github.com/evjohn-icu/nexusslate/internal/normalize"
+	"github.com/evjohn-icu/nexusslate/internal/remote"
+	"github.com/evjohn-icu/nexusslate/internal/search"
+	"github.com/evjohn-icu/nexusslate/internal/smbdiscover"
+	"github.com/evjohn-icu/nexusslate/internal/webdavspace"
 )
 
 type Server struct {
@@ -299,7 +299,7 @@ func (s *Server) isHubAgent(r *http.Request) bool {
 // requireAgentOrAdmin accepts either the agent token or the admin token. An
 // admin must never be blocked from an action an agent may take, so this is
 // strictly an OR, never a replacement for requireHubAdmin: only the two
-// draft-plan routes documented in skills/timingdex use it. Approval and
+// draft-plan routes documented in skills/nexusslate use it. Approval and
 // pipeline runs stay behind requireHubAdmin so the agent token can never
 // reach them, keeping CLAUDE.md's "approval is human-only" boundary enforced
 // by access control rather than by prompt text alone.
@@ -1018,8 +1018,8 @@ func (s *Server) agentCapabilities(w http.ResponseWriter, r *http.Request) {
 	// location confidence; location certainty is represented by precision.
 	writeJSON(w, http.StatusOK, map[string]any{
 		// version is the agent contract version, not the product version. The
-		// skills/timingdex package — its SKILL.md and
-		// references/api-contract.md, titled "Timingdex v0.15 Local Agent API
+		// skills/nexusslate package — its SKILL.md and
+		// references/api-contract.md, titled "NexusSlate v0.15 Local Agent API
 		// Contract" — is written against this exact string, and server_test.go
 		// pins it, so it only moves when the contract itself changes: a route,
 		// an action, or a field in this document. It must not track Hub
@@ -1287,7 +1287,7 @@ func parseBoundedInt(value string, fallback, max int) int {
 // malformed or negative value is an error so a bad parameter is a 400 rather
 // than a silent fallback. An explicit limit above max clamps to max — the cap
 // must match what the repository layer will actually return, so the reported
-// X-Timingdex-Limit header is always the page size a client can page with.
+// X-NexusSlate-Limit header is always the page size a client can page with.
 // An explicit 0 is semantically "no limit given": every paged repository
 // method treats limit<=0 as the endpoint default, so the header must report
 // that same default page size, or a client deriving its next offset from the
@@ -1322,9 +1322,9 @@ func parseListPagination(query url.Values, defaultLimit, maxLimit int) (int, int
 // endpoints answered: the limit actually applied (after clamping), the offset,
 // and whether another page exists.
 func writeListPaginationHeaders(w http.ResponseWriter, limit, offset int, hasMore bool) {
-	w.Header().Set("X-Timingdex-Limit", strconv.Itoa(limit))
-	w.Header().Set("X-Timingdex-Offset", strconv.Itoa(offset))
-	w.Header().Set("X-Timingdex-Has-More", strconv.FormatBool(hasMore))
+	w.Header().Set("X-NexusSlate-Limit", strconv.Itoa(limit))
+	w.Header().Set("X-NexusSlate-Offset", strconv.Itoa(offset))
+	w.Header().Set("X-NexusSlate-Has-More", strconv.FormatBool(hasMore))
 }
 
 // facetQueryFields pairs each controlled-vocabulary facet with the vocabulary

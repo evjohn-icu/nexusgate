@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	videoanalysis "github.com/evjohn-icu/timingdex/internal/domain/video_analysis"
-	"github.com/evjohn-icu/timingdex/internal/providers/common"
+	videoanalysis "github.com/evjohn-icu/nexusslate/internal/domain/video_analysis"
+	"github.com/evjohn-icu/nexusslate/internal/providers/common"
 )
 
 func assertGeminiStatus(t *testing.T, err error, key string, status int) {

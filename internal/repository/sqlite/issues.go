@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // JobIssues aggregates the failure backlog by category in one pass. The

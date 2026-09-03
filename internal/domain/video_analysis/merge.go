@@ -4,7 +4,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // WindowResult is one model response together with the slice of the asset it

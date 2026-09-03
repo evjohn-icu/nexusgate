@@ -1,12 +1,12 @@
-// Command timingdex-eval is the offline benchmark harness for comparing video
-// understanding providers on Timingdex's own workload.
+// Command nexusslate-eval is the offline benchmark harness for comparing video
+// understanding providers on NexusSlate's own workload.
 //
-//	timingdex-eval run --corpus ./corpus --data-dir ./eval/gemini --label gemini-flash
-//	timingdex-eval run --corpus ./corpus --data-dir ./eval/qwen --label qwen3vl-4b
-//	timingdex-eval score --corpus ./corpus --data-dir ./eval --labels gemini-flash,qwen3vl-4b
+//	nexusslate-eval run --corpus ./corpus --data-dir ./eval/gemini --label gemini-flash
+//	nexusslate-eval run --corpus ./corpus --data-dir ./eval/qwen --label qwen3vl-4b
+//	nexusslate-eval score --corpus ./corpus --data-dir ./eval --labels gemini-flash,qwen3vl-4b
 //
 // A run is one providers configuration over one corpus. The config is the
-// data dir's config.json (the same file a real timingdex Hub would use), so
+// data dir's config.json (the same file a real nexusslate Hub would use), so
 // comparing models is comparing data dirs. Each run gets its own SQLite
 // database under the data dir; score opens each run's database and evaluates
 // it against corpus/ground_truth.json with the product's hybrid retrieval.
@@ -19,8 +19,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/eval"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/eval"
 )
 
 func main() {
@@ -43,20 +43,20 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "timingdex-eval: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nexusslate-eval: %v\n", err)
 		os.Exit(1)
 	}
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `timingdex-eval — offline provider benchmark harness
+	fmt.Fprint(os.Stderr, `nexusslate-eval — offline provider benchmark harness
 
 Usage:
-  timingdex-eval run --corpus <dir> --data-dir <dir> --label <name>
-  timingdex-eval score --corpus <dir> --data-dir <dir> --labels <a,b,...>
+  nexusslate-eval run --corpus <dir> --data-dir <dir> --label <name>
+  nexusslate-eval score --corpus <dir> --data-dir <dir> --labels <a,b,...>
 
-The data dir holds the providers config.json (the same file a timingdex Hub
-uses) and receives its own timingdex.db. Set TIMINGDEX_DATA_DIR instead of
+The data dir holds the providers config.json (the same file a nexusslate Hub
+uses) and receives its own nexusslate.db. Set NEXUSSLATE_DATA_DIR instead of
 --data-dir if you prefer.
 
 Corpus layout:
@@ -68,7 +68,7 @@ Corpus layout:
 }
 
 func parseRunArgs(args []string) (corpus, dataDir, label string, err error) {
-	fs := flag.NewFlagSet("timingdex-eval run", flag.ContinueOnError)
+	fs := flag.NewFlagSet("nexusslate-eval run", flag.ContinueOnError)
 	corpusFlag := fs.String("corpus", "", "corpus directory (clips/ + ground_truth.json)")
 	dataDirFlag := fs.String("data-dir", "", "evaluation data directory")
 	labelFlag := fs.String("label", "", "run label")
@@ -88,7 +88,7 @@ func parseRunArgs(args []string) (corpus, dataDir, label string, err error) {
 }
 
 func parseScoreArgs(args []string) (corpus, dataDir, labels string, err error) {
-	fs := flag.NewFlagSet("timingdex-eval score", flag.ContinueOnError)
+	fs := flag.NewFlagSet("nexusslate-eval score", flag.ContinueOnError)
 	corpusFlag := fs.String("corpus", "", "corpus directory (clips/ + ground_truth.json)")
 	dataDirFlag := fs.String("data-dir", "", "evaluation data directory")
 	labelsFlag := fs.String("labels", "", "comma-separated run labels")
@@ -119,9 +119,9 @@ func runCmd(ctx context.Context, args []string) error {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return err
 	}
-	// config.Load reads TIMINGDEX_DATA_DIR for its defaults and the data
+	// config.Load reads NEXUSSLATE_DATA_DIR for its defaults and the data
 	// dir's config.json for overrides — exactly the Hub's own resolution.
-	if err := os.Setenv("TIMINGDEX_DATA_DIR", dataDir); err != nil {
+	if err := os.Setenv("NEXUSSLATE_DATA_DIR", dataDir); err != nil {
 		return err
 	}
 	cfg, err := config.Load()

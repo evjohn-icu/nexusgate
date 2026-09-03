@@ -5,13 +5,13 @@
 package video_analysis
 
 import (
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // Frame is one still image extracted from an asset's proxy at a known point
 // on the asset timeline. Providers that understand video whole (Gemini,
 // openai_video) ignore Frames; the multiframe protocol is fed exclusively by
-// them — Timingdex decides the timeline, the model only describes pixels.
+// them — NexusSlate decides the timeline, the model only describes pixels.
 type Frame struct {
 	Path        string `json:"path"`
 	TimestampMS int64  `json:"timestamp_ms"`

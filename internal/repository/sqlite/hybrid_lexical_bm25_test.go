@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // TestLexicalScoreFromBM25Boundaries pins the bm25()->lexical-score
@@ -82,7 +82,7 @@ func TestHybridSearchLexicalScoresStayPositiveForGenuineMatches(t *testing.T) {
 func newBeaconCorpus(t *testing.T) *Repository {
 	t.Helper()
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "timingdex-lexical-strength.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-lexical-strength.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

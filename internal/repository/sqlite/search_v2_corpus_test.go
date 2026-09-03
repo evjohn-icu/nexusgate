@@ -1,7 +1,7 @@
 package sqlite
 
 import (
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // searchV2Corpus is the Search v2 hard-negative corpus. It lives separately

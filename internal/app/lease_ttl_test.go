@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // TestLeaseTTLByStage pins the stage-specific lease ceilings the pipeline

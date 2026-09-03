@@ -15,13 +15,13 @@ COPY . .
 RUN version="$(cat VERSION)" \
     && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath \
-      -ldflags="-s -w -X github.com/evjohn-icu/timingdex/internal/buildinfo.Version=${version} -X github.com/evjohn-icu/timingdex/internal/domain.Version=${version}" \
-      -o /out/timingdex ./cmd/timingdex
+      -ldflags="-s -w -X github.com/evjohn-icu/nexusslate/internal/buildinfo.Version=${version} -X github.com/evjohn-icu/nexusslate/internal/domain.Version=${version}" \
+      -o /out/nexusslate ./cmd/nexusslate
 
 FROM debian:bookworm-slim AS runtime
 
-ARG TIMINGDEX_UID=10001
-ARG TIMINGDEX_GID=10001
+ARG NEXUSSLATE_UID=10001
+ARG NEXUSSLATE_GID=10001
 
 # FFmpeg is used for probing/derived media. Debian ships the exiftool command
 # in libimage-exiftool-perl; keeping both in the runtime image makes the image
@@ -33,21 +33,21 @@ RUN apt-get update \
         ffmpeg \
         libimage-exiftool-perl \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system --gid "${TIMINGDEX_GID}" timingdex \
-    && useradd --system --uid "${TIMINGDEX_UID}" --gid "${TIMINGDEX_GID}" \
-        --home-dir /var/lib/timingdex --no-create-home timingdex \
-    && install -d -o "${TIMINGDEX_UID}" -g "${TIMINGDEX_GID}" -m 0700 \
-        /var/lib/timingdex /var/lib/timingdex-worker /media
+    && groupadd --system --gid "${NEXUSSLATE_GID}" nexusslate \
+    && useradd --system --uid "${NEXUSSLATE_UID}" --gid "${NEXUSSLATE_GID}" \
+        --home-dir /var/lib/nexusslate --no-create-home nexusslate \
+    && install -d -o "${NEXUSSLATE_UID}" -g "${NEXUSSLATE_GID}" -m 0700 \
+        /var/lib/nexusslate /var/lib/nexusslate-worker /media
 
-COPY --from=build /out/timingdex /usr/local/bin/timingdex
+COPY --from=build /out/nexusslate /usr/local/bin/nexusslate
 
-ENV TIMINGDEX_DATA_DIR=/var/lib/timingdex
+ENV NEXUSSLATE_DATA_DIR=/var/lib/nexusslate
 
-USER timingdex:timingdex
-WORKDIR /var/lib/timingdex
+USER nexusslate:nexusslate
+WORKDIR /var/lib/nexusslate
 STOPSIGNAL SIGTERM
 
-ENTRYPOINT ["/usr/local/bin/timingdex"]
+ENTRYPOINT ["/usr/local/bin/nexusslate"]
 CMD ["serve"]
 
 # --------------------------------------------------------------------------
@@ -110,7 +110,7 @@ RUN sed -i 's/Components: main$/Components: main non-free/' /etc/apt/sources.lis
     done \
     && rm -rf /var/lib/apt/lists/*
 
-USER timingdex:timingdex
+USER nexusslate:nexusslate
 
 # --------------------------------------------------------------------------
 # `docker build` with no --target builds the last stage in this file. Without

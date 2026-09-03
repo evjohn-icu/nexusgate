@@ -140,7 +140,7 @@ func generateCertificate() (certificatePEM, keyPEM []byte, fingerprint string, e
 	dnsNames, ipAddresses := localCertificateNames()
 	template := &x509.Certificate{
 		SerialNumber:          serialNumber,
-		Subject:               pkix.Name{CommonName: "Timingdex Hub"},
+		Subject:               pkix.Name{CommonName: "NexusSlate Hub"},
 		NotBefore:             now.Add(-5 * time.Minute),
 		NotAfter:              now.Add(365 * 24 * time.Hour),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,

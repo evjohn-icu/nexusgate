@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/media"
 )
 
 // A mistyped deferral must not reach RunUntilIdle. Zero or negative would

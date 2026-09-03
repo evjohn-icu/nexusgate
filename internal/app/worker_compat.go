@@ -1,6 +1,6 @@
 package app
 
-import "github.com/evjohn-icu/timingdex/internal/domain"
+import "github.com/evjohn-icu/nexusslate/internal/domain"
 
 // MinWorkerVersion is the earliest worker binary whose wire protocol this
 // Hub accepts. The wire (enroll/heartbeat/lease/complete/artifact upload)

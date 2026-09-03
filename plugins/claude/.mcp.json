@@ -1,13 +1,13 @@
 {
   "mcpServers": {
-    "timingdex": {
+    "nexusslate": {
       "type": "stdio",
-      "command": "timingdex-mcp",
+      "command": "nexusslate-mcp",
       "args": [],
       "env": {
-        "TIMINGDEX_BASE_URL": "${TIMINGDEX_BASE_URL}",
-        "TIMINGDEX_AGENT_TOKEN": "${TIMINGDEX_AGENT_TOKEN}",
-        "TIMINGDEX_HUB_FINGERPRINT": "${TIMINGDEX_HUB_FINGERPRINT}"
+        "NEXUSSLATE_BASE_URL": "${NEXUSSLATE_BASE_URL}",
+        "NEXUSSLATE_AGENT_TOKEN": "${NEXUSSLATE_AGENT_TOKEN}",
+        "NEXUSSLATE_HUB_FINGERPRINT": "${NEXUSSLATE_HUB_FINGERPRINT}"
       }
     }
   }

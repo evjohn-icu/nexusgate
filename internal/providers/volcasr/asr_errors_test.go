@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/evjohn-icu/timingdex/internal/providers/common"
-	"github.com/evjohn-icu/timingdex/internal/testhelper"
+	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	"github.com/evjohn-icu/nexusslate/internal/testhelper"
 )
 
 func TestASRErrorPaths(t *testing.T) {

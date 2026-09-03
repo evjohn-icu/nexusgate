@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/app"
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/app"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
 )
 
 // transcriptEndpointFixture wires a Hub with exactly one scanned asset and
@@ -166,7 +166,7 @@ func TestAssetDetailRedactsDerivedArtifactPaths(t *testing.T) {
 	if err != nil || job == nil {
 		t.Fatalf("job=%v err=%v", job, err)
 	}
-	secret := "/home/someone/.timingdex-dev/cache/derived/" + assetID
+	secret := "/home/someone/.nexusslate-dev/cache/derived/" + assetID
 	for _, a := range []domain.DerivedArtifact{
 		{ID: "art-thumb", AssetID: assetID, Type: "thumbnail", LocalPath: secret + "/thumbnail-software.jpg", SizeBytes: 1},
 		{ID: "art-proxy", AssetID: assetID, Type: "proxy", LocalPath: secret + "/proxy-software.mp4", SizeBytes: 2},

@@ -26,7 +26,7 @@ func InstallCommand(t *testing.T, dir, name string) string {
 	name = name + ext
 
 	buildDir := t.TempDir()
-	binary := filepath.Join(buildDir, "timingdex-test-command"+ext)
+	binary := filepath.Join(buildDir, "nexusslate-test-command"+ext)
 	root := repositoryRoot(t)
 	cmd := exec.Command("go", "build", "-trimpath", "-o", binary, "./internal/testhelper/cmd/fakecommand")
 	cmd.Dir = root

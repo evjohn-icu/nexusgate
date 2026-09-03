@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // openTestRepo opens a fresh in-memory-on-disk repository for tests in this

@@ -141,7 +141,7 @@ func Open(dataDir, hubAdminToken string) (*Store, error) {
 // legacyKey reproduces the pre-migration derivation so an existing store can
 // still be read once, at migration time.
 func legacyKey(hubAdminToken string) []byte {
-	key := sha256.Sum256([]byte("timingdex/provider-secrets/v1\x00" + hubAdminToken))
+	key := sha256.Sum256([]byte("nexusslate/provider-secrets/v1\x00" + hubAdminToken))
 	return key[:]
 }
 

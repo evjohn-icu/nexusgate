@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/providers/common"
-	"github.com/evjohn-icu/timingdex/internal/providers/embedding"
-	"github.com/evjohn-icu/timingdex/internal/search"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	"github.com/evjohn-icu/nexusslate/internal/providers/embedding"
+	"github.com/evjohn-icu/nexusslate/internal/search"
 )
 
 func TestUpsertShotTextEmbeddingsRollsBackInvalidBatch(t *testing.T) {

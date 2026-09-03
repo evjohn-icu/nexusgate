@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/evjohn-icu/timingdex/internal/remote"
+	"github.com/evjohn-icu/nexusslate/internal/remote"
 )
 
 // Config intentionally contains only the Hub-issued node token. Provider
@@ -132,5 +132,5 @@ func (c Config) CachePath() string {
 	if value := strings.TrimSpace(c.CacheDir); value != "" {
 		return value
 	}
-	return filepath.Join(os.TempDir(), "timingdex-worker-cache")
+	return filepath.Join(os.TempDir(), "nexusslate-worker-cache")
 }

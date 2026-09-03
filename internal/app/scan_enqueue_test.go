@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	sqliterepo "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	sqliterepo "github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
 )
 
 func scanWriteVideoFile(t *testing.T, path string) {

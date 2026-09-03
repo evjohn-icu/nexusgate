@@ -180,12 +180,12 @@
       "resource_id": "volc.seedasr.sauc.duration",
       "request_model": "bigmodel",
       "model": "doubao-seed-asr-2.0",
-      "uid": "timingdex",
+      "uid": "nexusslate",
       "timeout_seconds": 300
     },
     "alignment": {
       "enabled": false,
-      "command": "timingdex-align",
+      "command": "nexusslate-align",
       "args": [],
       "model": "qwen3-forced-aligner"
     }

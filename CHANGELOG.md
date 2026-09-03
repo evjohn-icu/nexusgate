@@ -42,14 +42,14 @@
   which re-runs the search when there is a query and is exactly the old browse
   listing when there is not.
 
-- **New files under `cmd/timingdex-mcp/` are visible to git again** (audit
+- **New files under `cmd/nexusslate-mcp/` are visible to git again** (audit
   G1-07).
-  `.gitignore` carried a bare `timingdex-mcp` for the built binary, which also
-  matched the `cmd/timingdex-mcp` *directory*, so every new file added there
+  `.gitignore` carried a bare `nexusslate-mcp` for the built binary, which also
+  matched the `cmd/nexusslate-mcp` *directory*, so every new file added there
   was silently invisible to `git status` and `git add` — already-tracked files
   kept working, so it only ever bit new ones, which is the worst way for this
-  to fail. Anchored to `/timingdex-mcp` (and `/timingdex-corpusgen`, which had
-  the same problem), matching the `/timingdex` two lines above it that was
+  to fail. Anchored to `/nexusslate-mcp` (and `/nexusslate-corpusgen`, which had
+  the same problem), matching the `/nexusslate` two lines above it that was
   always right.
 
 - **Worker enrollment and job status say whose mistake it was** (audit F7-02,
@@ -166,7 +166,7 @@
 
 - **`/setup` names each failed check and what to do about it** (audit U2-02).
   Six environment checks reported the same bare failure marker and nothing else
-  — not which remedy applies, and not that `timingdex doctor` prints the same
+  — not which remedy applies, and not that `nexusslate doctor` prints the same
   probes with the paths this page deliberately withholds (root paths are
   admin-only everywhere else in the UI). Each failing check now carries its own
   next step, and the status line stops reporting success while checks fail.
@@ -271,7 +271,7 @@
     capture coordinates. It is free text set by whoever wrote the row, nothing
     reverse-geocodes into it, and calling it a privacy transform promised a
     guarantee the code does not make.
-  - `skills/timingdex/` and the MCP reference no longer promise that the agent
+  - `skills/nexusslate/` and the MCP reference no longer promise that the agent
     token is refused with `401` on administrator routes. That holds under
     `hub_security.admin_auth: required` and from a remote network; under the
     default `trusted_network` the guard waives the credential for a trusted
@@ -287,7 +287,7 @@
     needs a manual admin-auth override, and the README claimed `doctor` cannot
     run before provider keys are configured. Both were fixed in this same
     Unreleased block; only the docs lagged. Compose and the Unraid template
-    both ship `TIMINGDEX_HUB_ADMIN_AUTH=required`, both admin-auth settings are
+    both ship `NEXUSSLATE_HUB_ADMIN_AUTH=required`, both admin-auth settings are
     environment variables (the README said the CIDR list had none), and
     `doctor` is deliberately exempt from the provider validator — a diagnostic
     you must fix the problem to run would be useless.
@@ -317,10 +317,10 @@
   nothing anywhere checks a semantic claim.
 
 - **Clean container startup by default**: the shipped Docker Compose and Unraid
-  Hub entry points now default `TIMINGDEX_HUB_ADMIN_AUTH=required`, so a fresh
+  Hub entry points now default `NEXUSSLATE_HUB_ADMIN_AUTH=required`, so a fresh
   container demands its generated administrator token on every write instead of
   failing the container guard or waiving writes for the bridge gateway's
-  RFC1918 address. `TIMINGDEX_HUB_ADMIN_AUTH_NETWORKS` is split and validated
+  RFC1918 address. `NEXUSSLATE_HUB_ADMIN_AUTH_NETWORKS` is split and validated
   by `config.Load` into `hub_security.admin_auth_networks`, letting an operator
   who deliberately selects `trusted_network` name the real client CIDRs.
   Bare-metal defaults are unchanged.
@@ -370,15 +370,15 @@
   `offset`/`limit`/`has_more`/`next_offset`/`window_exhausted` with global
   ranks; the six legacy list endpoints (`/api/v1/assets`, `/jobs`,
   `/repurpose/plans`, `/tags/unresolved`, `/tags/proposals`, `/shoot-sessions`)
-  accept optional `offset` and answer with `X-Timingdex-Limit`/
-  `X-Timingdex-Offset`/`X-Timingdex-Has-More`; parent/child endpoints distinguish
+  accept optional `offset` and answer with `X-NexusSlate-Limit`/
+  `X-NexusSlate-Offset`/`X-NexusSlate-Has-More`; parent/child endpoints distinguish
   a known parent with zero children (`200 []`) from an unknown parent (404 with
   `action: check_the_identifier`); successful empty lists serialize `[]`, never
   `null`. MCP `getTimeline` moves onto the 64 MiB decode path, `search_shots`
   takes an optional `offset`, `inspectLibrary` reports setup/status and
   jobs/summary, and MCP/Worker errors decode a shared `internal/apiclient`
-  envelope exposing the stable `code`. An unset `TIMINGDEX_BASE_URL` now
-  defaults to `https://127.0.0.1:8787` (requiring `TIMINGDEX_HUB_FINGERPRINT`
+  envelope exposing the stable `code`. An unset `NEXUSSLATE_BASE_URL` now
+  defaults to `https://127.0.0.1:8787` (requiring `NEXUSSLATE_HUB_FINGERPRINT`
   unless the URL is an explicit loopback/link-local HTTP).
 
 - **Generated Worker installer works against the default self-signed Hub**: the
@@ -388,9 +388,9 @@
   and enroll with `--fingerprint` before `--pairing`. A non-consuming
   `WorkerPairingValid` backs a strict bootstrap route that rejects a presented
   redeemed token even from trusted networks, and the setup page retries context
-  after an `timingdex:admin-auth-changed` login.
+  after an `nexusslate:admin-auth-changed` login.
 
-- **CLI usage synopsis**: `timingdex` help now enumerates
+- **CLI usage synopsis**: `nexusslate` help now enumerates
   `search rebuild|rebuild-embeddings`, `cache inspect|gc|verify|repair-derived`,
   and the Worker enrollment `--root`/`--cache`/`--config` flags.
 
@@ -400,7 +400,7 @@
   collections, settings) now render in Simplified Chinese (the default),
   Japanese, US English, French or Spanish from one embedded locale catalog. A
   first visit negotiates from `Accept-Language`; a language selector in the
-  shared sidebar writes a non-sensitive `timingdex_locale` preference cookie
+  shared sidebar writes a non-sensitive `nexusslate_locale` preference cookie
   (SameSite=Lax, one-year, no browser storage) that overrides negotiation on
   later loads. Dynamic copy calls the injected `tdT`/`tdPlural`/`tdFormat*`
   helpers; API error envelopes are localized client-side through
@@ -435,7 +435,7 @@
   0-0 placeholder segment still contributes no timing, so untimed ASR stays
   asset-level. Mixed CJK/ASCII multi-component phrases over ASR segments keep
   the honest no-result behaviour rather than over-matching.
-- **Footage capability provider**: Timingdex now exposes its library to
+- **Footage capability provider**: NexusSlate now exposes its library to
   transcript-driven AI editing frontends as a product-neutral capability
   contract. New `GET /api/v1/assets/{id}/transcript` returns the asset's
   word-level timeline transcript: `source=aligned` carries the forced-alignment
@@ -448,16 +448,16 @@
   (`SKILL.md`, `references/api-contract.md`) is re-versioned and re-validated
   in the same change. The route guard matrix also gains the previously missing
   `GET /api/v1/admin/hub/worker-setup/library-roots` admin row.
-- **MCP**: `timingdex-mcp` gains a sixth tool `get_transcript(asset_id)`,
+- **MCP**: `nexusslate-mcp` gains a sixth tool `get_transcript(asset_id)`,
   plus certificate fingerprint pinning for cross-machine Hubs:
-  `TIMINGDEX_HUB_FINGERPRINT` (printed by `timingdex serve`) pins the Hub's
+  `NEXUSSLATE_HUB_FINGERPRINT` (printed by `nexusslate serve`) pins the Hub's
   self-signed leaf certificate over `https://`. An https base URL without a
   fingerprint now fails at startup instead of silently accepting an arbitrary
   certificate; `http://` remains available for local development. Added a
   Claude Code plugin marketplace (`.claude-plugin/marketplace.json` +
-  `plugins/claude/`) that declares `timingdex-mcp` over stdio and passes
-  through `TIMINGDEX_BASE_URL`, `TIMINGDEX_AGENT_TOKEN` and
-  `TIMINGDEX_HUB_FINGERPRINT`; the plugin ships no binary.
+  `plugins/claude/`) that declares `nexusslate-mcp` over stdio and passes
+  through `NEXUSSLATE_BASE_URL`, `NEXUSSLATE_AGENT_TOKEN` and
+  `NEXUSSLATE_HUB_FINGERPRINT`; the plugin ships no binary.
 - **Design round — the browser UI now closes its core workflows**: the
   Repurpose workspace gained a plan inbox, deep links, revision history and
   per-candidate proxy preview, so an agent-drafted plan can be discovered,
@@ -495,7 +495,7 @@
   成本参考值、部署、Worker setup 路径脱敏和 Search evidence correctness 文档。
 - Analysis now enqueues an idempotent `JobIndex` successor after every successful analyzer
   path, keeping asset-level FTS in sync without rebuilding it inside the canonical commit.
-  Added offline `timingdex search rebuild` to repair all assets with canonical analysis or
+  Added offline `nexusslate search rebuild` to repair all assets with canonical analysis or
  successful transcripts; it never re-runs models.
 - `root scan` now starts the existing single-run Pipeline after discovery: the API reports
   whether it started or found an existing pass, while the CLI waits for its synchronous pass
@@ -503,7 +503,7 @@
   same-origin Origin and CSRF checks; CLI, Agent, and Worker Bearer authentication remains
   unchanged.
 - **Real-machine deployment hardening (107 / NAS / agent-plan)**:
-  - **Fail-fast provider validation**: `timingdex serve`/`pipeline run` now refuse to start
+  - **Fail-fast provider validation**: `nexusslate serve`/`pipeline run` now refuse to start
     when a selected provider (`asr_primary`, `vision_primary`, `repurpose_primary`, …) is
     enabled but its `api_key_env` did not resolve. Previously the Hub came up "healthy" with a
     dead ASR/vision route and only failed on the first real job. A selected-but-disabled block
@@ -517,7 +517,7 @@
     (`asr`/`vision`/`repurpose`/`tag_curator`/`embedding`/`alignment`) listing the selected
     primary/fallbacks and the enabled blocks (`name`, `protocol`, `model`, never credentials),
     so an operator can see at a glance what the Hub is actually running.
-  - 部署运维要点（SSH 里用 `pkill -x timingdex`、`/tmp` 满、key 环境变量、`pipeline run`
+  - 部署运维要点（SSH 里用 `pkill -x nexusslate`、`/tmp` 满、key 环境变量、`pipeline run`
     单轮语义）写入 [v0.31 部署指南](docs/v0.31-deployment.md)。
 - **模型通道一键配置**：`/providers` 新增通道时，选择已知 Provider 会自动带出 well-known
   端点（火山 Agent/Coding Plan、火山视频、千问、Gemini、StepFun、本地 VLM），并在模型字段
@@ -532,7 +532,7 @@
   视频理解），模型同样预填可改。用户全程不需要读模型列表，也没有探测按钮；已配置的能力
   跳过、未填 Key 的行跳过，全部为纯前端编排，复用既有建通道与探测端点。
 - **素材目录状态表加「提示」列**：`/library-roots` 的健康表对每个已添加根显示
-  `timingdex doctor` 同源的存储建议（网络挂载提示、SMB/NFS 根建议 `source_staging.mode
+  `nexusslate doctor` 同源的存储建议（网络挂载提示、SMB/NFS 根建议 `source_staging.mode
   =copy`、可写挂载提示），`GET /api/v1/roots/health` 每行新增 `warnings` 字段——原本只能
   在 CLI 里看到的 NAS 性能建议，现在网页上就能看到。
 
@@ -546,7 +546,7 @@
 - 设置 API 在一个版本内兼容读取旧的 `daily_budget` 与 `monthly_budget` 字段，
   但响应和页面只使用新的成本参考命名。历史 `budget_exhausted` 持久化类别保留，
   新流程不再产生。
-- **缓存维护 CLI**：新增 `timingdex cache inspect`、`gc`、`verify` 与
+- **缓存维护 CLI**：新增 `nexusslate cache inspect`、`gc`、`verify` 与
   `repair-derived`。`inspect` 汇总各类缓存、孤儿目录和可重建空间；`verify`
   双向核对数据库 artifact 行与文件；`gc` 只处理明确指定的 scratch、可重建
   派生物或孤儿目录，默认仅预览，实际删除必须 `--yes`。数据库、Provider 密钥、
@@ -558,13 +558,13 @@
   的结果，也不会留下可重复的 model run。迁移 0031 让失败 run 可重试，并以
   capability/provider/model/input/prompt/schema 组合去重非失败 run；对已有数据的
   重建可安全执行。
-- **搜索索引维护**：分析成功后幂等地排队 `JobIndex`，`timingdex search rebuild`
+- **搜索索引维护**：分析成功后幂等地排队 `JobIndex`，`nexusslate search rebuild`
   可离线重建拥有 canonical analysis 或成功 transcript 的资产索引，失败会传播而
   不是静默吞掉 I/O 错误，且不会重新运行模型。元数据通道采用稳定排序；分页会
   正确覆盖 `offset+limit` 的候选窗口，不会因为前页偏移而提前截断结果。
 - **Embedding 防护**：文本 embedding 拒绝维度错误、非有限值和无效向量，重建
   计数只报告实际写入的 shot；embedding provider 的响应与 metadata 通道均有界，
-  embedding 仍只是 retrieval 信号而不是 evidence。`timingdex search
+  embedding 仍只是 retrieval 信号而不是 evidence。`nexusslate search
   rebuild-embeddings` 继续只重建 embedding 层，不重跑 VLM analysis。
 - **Evidence 与短语匹配**：检索中的 CJK 短语改为按完整短语、顺序和可接受的
   分词边界匹配，部分或乱序 token 只能参与召回，不能升级为 evidence；证据冲突时
@@ -644,7 +644,7 @@ Search v2 的第五检索通道：真正的文本 embedding，retrieval_generati
   冲垮 RRF。
 - **自动增量 + 全量重建**：pipeline 提交后 hook（分析/精修两个提交点）
   只重嵌 derived 文本变化的 shot，错误只记日志绝不失败分析 job；
-  `timingdex search rebuild-embeddings` 全量重建。换 embedding 模型 =
+  `nexusslate search rebuild-embeddings` 全量重建。换 embedding 模型 =
   重建 derived 层，**绝不重跑 VLM analysis**。
 - **语义 profile 调整**：semantic `{heuristic 0.45, text_embedding 0.35,
   lexical 0.20}`、fact 含 `text_embedding 0.15`；speech/creative 不参与。
@@ -708,10 +708,10 @@ local-first footage retrieval and selection engine：**召回可以大胆，
   噪声），使无关 shot 进入所有含语义权重的 top-10——正是「搜汽车命中
   没有汽车的时间段」这类错误。修复：无共享语义 token 时语义分强制为 0
   （alias-canonical token 算共享）。这是打分契约，不是权重微调。
-- **eval 工具修复**：`timingdex-eval score` 的位置索引 flag 校验 bug
+- **eval 工具修复**：`nexusslate-eval score` 的位置索引 flag 校验 bug
   （传 `--labels` 却检查 `label`，导致正确调用报 "--labels is required"）
   重写为显式校验 + 回归测试；`score` 输出新增按信号归因的
-  semantic/lexical false positives。新增 `cmd/timingdex-corpusgen`
+  semantic/lexical false positives。新增 `cmd/nexusslate-corpusgen`
   生成可复现的离线 eval 语料（lavfi 合成 clips + ground_truth.json）。
 - **shot 检测真正 merge**：`Normalize` 从 stretch 改为 merge（stretch 在
   相邻边界下无空间，150ms 闪帧此前会残留为 canonical shot 并多付一次
@@ -754,17 +754,17 @@ local-first footage retrieval and selection engine：**召回可以大胆，
 
 ## v0.25.1 — 2026-08-08（Local Multiframe Analysis v1）
 
-Roadmap 第一阶段：把 shot 时间轴从 LLM 手里拿出来。Timingdex 负责检测与采样，
+Roadmap 第一阶段：把 shot 时间轴从 LLM 手里拿出来。NexusSlate 负责检测与采样，
 VLM 只负责描述画面。目标部署：插上一张 8–16GB 消费级 GPU 就能在后台慢慢索引。
 
 - **`openai_multiframe` 协议**：`local_vlm.protocol` 支持
   `openai_multiframe`（llama.cpp / LM Studio / vLLM / SGLang 的 OpenAI 兼容
-  chat/completions 表面）。端点永不接收整段视频；Timingdex 对每个 shot 采样
+  chat/completions 表面）。端点永不接收整段视频；NexusSlate 对每个 shot 采样
   2/4/6 帧（boundary-aware 默认，10/35/65/90% 位置）、按 shot 切 transcript、
   每 shot 一次模型调用，模型只返回纯元数据（无时间字段）。
 - **确定性 shot 检测**：`shot_detection` 配置块，两种 detector——
   `external_command`（PySceneDetect wrapper，stdin/stdout JSON 契约，与
-  forced aligner 同款）与内置 `ffmpeg_scene`（零新依赖）。Timingdex 硬校验：
+  forced aligner 同款）与内置 `ffmpeg_scene`（零新依赖）。NexusSlate 硬校验：
   单调、非重叠、界内、最短 300ms、上限 2000；违规=永久失败。detector 身份
   进入 model_run 的 request_json，换命令/阈值自动重跑分析。
 - **双模式编排**：配置了 detector 时走纯 detector 模式（detector 出边界 +
@@ -776,7 +776,7 @@ VLM 只负责描述画面。目标部署：插上一张 8–16GB 消费级 GPU �
 - **资产级字段**：per-shot shot_size/camera_motion/quality/usable_as 聚合
   （众数/最差/并集）折叠进资产级 analysis；audio_type/has_speech 诚实声明为
   帧模型不可判（has_speech 由 transcript 判定，audio_type 留 summary 推断）。
-- **eval 工具**：`cmd/timingdex-eval`（内部 `internal/eval`）——真实 clips 进
+- **eval 工具**：`cmd/nexusslate-eval`（内部 `internal/eval`）——真实 clips 进
   隔离数据目录、走真实 Pipeline（probe→derive→analyze→index），`score` 用
   产品同款 hybrid 检索 + golden 同口径指标输出 R@10/P@10/FP/RT factor/帧数
   对比表与逐 query 明细。离线工具，不进 CI。
@@ -784,8 +784,8 @@ VLM 只负责描述画面。目标部署：插上一张 8–16GB 消费级 GPU �
   0/1 数字出现在 json_object 里，Go bool 拒绝）——API 详情页的资产级分析
   一直是 nil，现修复。
 
-使用：`timingdex-eval run --corpus ./corpus --data-dir ./eval/qwen --label
-qwen3vl-4b && timingdex-eval score --corpus ./corpus --data-dir ./eval
+使用：`nexusslate-eval run --corpus ./corpus --data-dir ./eval/qwen --label
+qwen3vl-4b && nexusslate-eval score --corpus ./corpus --data-dir ./eval
 --labels qwen3vl-4b,gemini-flash`。Worker 路径不在本版本范围（multiframe 是
 Hub 本地 GPU 路径；worker 继续走 proxy 的 openai_video）。
 ## v0.25.0 — 2026-08-07（shot truth / transcript timeline / retrieval correctness）
@@ -824,7 +824,7 @@ shot 的证据"。全部 5 条 finding 在代码中验证属实（其中 2 条�
   usable_as 均解析自素材级 `asset_analysis`，参数重命名为 `asset_*` 前缀，
   旧名保留为别名；UI 标注"景别(素材级)"等；close-up shot 被素材级 wide 命中
   现在是文档化语义而非 bug。
-- **P1 reanalysis 机制（新增）**：`timingdex reanalyze --asset <id> | --root <id> |
+- **P1 reanalysis 机制（新增）**：`nexusslate reanalyze --asset <id> | --root <id> |
   --all [--reason]`。nonce 化 input hash 打破 job/model_run 双重 dedup，产生新
   model_run、canonical 切换、FTS/vector 重建；旧 run 留在 model_runs 可审计；
   `reanalysis_requests` 表记录 who/why；不需要删库刷新旧分析。
@@ -834,7 +834,7 @@ shot 的证据"。全部 5 条 finding 在代码中验证属实（其中 2 条�
   derive 初始租约 2m→30m；lost-lease 竞态测试保持全绿。
 
 **Migration**：无需 schema 迁移；新增 `reanalysis_requests` 表随迁移自动创建。
-**旧素材需要 `timingdex reanalyze --all`** 才能吃到 v4 prompt 的新 shot 语义
+**旧素材需要 `nexusslate reanalyze --all`** 才能吃到 v4 prompt 的新 shot 语义
 与时间轴逻辑。
 
 ## v0.24.1 — 2026-08-05（luna 交叉复核修复批 + 第三方裁决收尾）
@@ -861,7 +861,7 @@ Luna 四轮抓到的问题前三轮均为真实 P1/P2，全部修复；第四轮
 - **P3 收尾（第三方裁决采纳）**：顶层 JSON 字符串标量脱敏；resultCh/merge
   误导注释修正。
 
-Docker 镜像 tag：`timingdex:v0.24.1`。
+Docker 镜像 tag：`nexusslate:v0.24.1`。
 
 ## v0.24.0 — 2026-08-05（全量 review 修复批：8 reviewer 覆盖全部 21 包）
 
@@ -886,10 +886,10 @@ API 加固、性能、密钥安全、测试覆盖。
 - **密钥安全**：Credential 实现 GoStringer/Formatter（`%+v` 不再泄漏
   APIKey，含测试）；worker 错误消息 redactSecrets 过滤；postJSON 限长；
   UploadArtifact goroutine 感知 ctx 取消；volcasr APIKey 加 `json:"-"`。
-- **测试覆盖**：cmd/timingdex 17.4%→55.9%（run() 子命令分发 table-driven）；
+- **测试覆盖**：cmd/nexusslate 17.4%→55.9%（run() 子命令分发 table-driven）；
   internal/remote 新增 12 个 wire type 往返测试。
 
-Docker 镜像 tag：`timingdex:v0.24.0`。
+Docker 镜像 tag：`nexusslate:v0.24.0`。
 
 ## v0.23.1 — 2026-08-05（review 修复批）
 
@@ -912,14 +912,14 @@ Docker 镜像 tag：`timingdex:v0.24.0`。
 - **P3 批量**：dirFile.Readdir 空列表、接口去重、integrity_test 独立文件、
   未知空间 401 统一、LOG_FORMAT 非法值回退 warn。
 
-Docker 镜像 tag：`timingdex:v0.23.1`。
+Docker 镜像 tag：`nexusslate:v0.23.1`。
 
 ## v0.23.0 — 2026-08-05（剪辑 agent 接入：MCP + 按需 WebDAV 交付）
 
-剪辑 agent 接入的两层能力：`cmd/timingdex-mcp`（MCP 语义检索，Codex 等客户端
+剪辑 agent 接入的两层能力：`cmd/nexusslate-mcp`（MCP 语义检索，Codex 等客户端
 可接入）+ 按需 WebDAV 交付空间（素材经软链按需可见、只读、流式）。
 
-### MCP server（cmd/timingdex-mcp）：独立 stdio 二进制，Codex 等 MCP 客户端
+### MCP server（cmd/nexusslate-mcp）：独立 stdio 二进制，Codex 等 MCP 客户端
   可接入。5 个剪辑语义工具：`inspect_library` / `search_footage` /
   `create_edit_plan` / `revise_edit_plan` / `request_source_media`。agent token
   用于计划类，admin token 用于 WebDAV 软链（该端点 admin-only）。启动不写
@@ -943,7 +943,7 @@ admin 建账号/建空间/软链 asset（`/api/v1/admin/webdav/*`），WebDAV Ba
 
 三轮并行优化的合集（openspec changes 0021–0033），覆盖：依赖升级、测试覆盖
 提升、CI 门禁强化、素材级搜索相关度、分面多选、Rekey CLI、Worker 离线检测、
-结构化日志、SQLite integrity 检查。Docker 镜像 tag：`timingdex:v0.22.0`。
+结构化日志、SQLite integrity 检查。Docker 镜像 tag：`nexusslate:v0.22.0`。
 
 ### S1 — 依赖卫生 + 测试覆盖 + CI 门禁
 
@@ -953,7 +953,7 @@ admin 建账号/建空间/软链 asset（`/api/v1/admin/webdav/*`），WebDAV Ba
   1.23 → 1.25（按 sqlite v1.56 要求）。
 - **测试覆盖**：`internal/ingest`（无人值守扫描核心）覆盖率 3.5% → **82.4%**
   （25 个新测试：嵌套递归、扩展名过滤、变更/删除上报、错误传播、ctx 取消）；
-  `cmd/timingdex` 0% → **14%+**（usage/parseWorkerMounts/repeatedFlag/hubTLSFiles
+  `cmd/nexusslate` 0% → **14%+**（usage/parseWorkerMounts/repeatedFlag/hubTLSFiles
   纯函数补测）；`internal/providers/common` → 60%+（URL 拼接、client 超时、
   认证 header 组合、ReadError 未截断路径）。
 - **CI 门禁**：`go test -race` 从 `./internal/...` 扩为全量 `./...`；新增覆盖率
@@ -968,7 +968,7 @@ admin 建账号/建空间/软链 asset（`/api/v1/admin/webdav/*`），WebDAV Ba
 - **页面分面多选**：景别/运镜/音频/画质/可用性 5 个分面控件从单选改为
   `<select multiple>`，多选值 `join(',')` 传入（后端 `facetWhere` 本就支持
   `IN(...)` 多值），素材类型保持单选；清除筛选同步清空多选。
-- **secretstore Rekey CLI**：新增 `timingdex secrets rekey`——轮换数据加密密钥、
+- **secretstore Rekey CLI**：新增 `nexusslate secrets rekey`——轮换数据加密密钥、
   全量重加密、旧 key 备份到 `provider-secrets/store.key.pre-rekey`；复用
   `EnsureAdminToken` 取凭证，无 store/token 时报错不 panic；docs 补轮换操作说明。
 - **0027（设计结论）**：`providers.*` → `/providers` 通道双轨经查为刻意 Worker
@@ -979,15 +979,15 @@ admin 建账号/建空间/软链 asset（`/api/v1/admin/webdav/*`），WebDAV Ba
 - **Worker 离线检测**：`ListWorkers` 按 `last_seen_at` 距今是否超过 90s 派生
   offline 状态（此前心跳把 status 写死 online 永不回落，挂掉的节点永远显示
   "在线"）；阈值 = 3× 默认 30s 心跳间隔，容忍丢 1–2 个心跳；revoked 不被覆盖。
-- **结构化日志**：`TIMINGDEX_LOG_FORMAT`（text|json，默认 text）+
-  `TIMINGDEX_LOG_LEVEL`（debug|info|warn|error，默认 info）环境变量配置
+- **结构化日志**：`NEXUSSLATE_LOG_FORMAT`（text|json，默认 text）+
+  `NEXUSSLATE_LOG_LEVEL`（debug|info|warn|error，默认 info）环境变量配置
   slog handler；无变量时行为与默认一致，非法值回退并告警。
-- **SQLite integrity**：`timingdex doctor` 增加 `PRAGMA integrity_check`，
+- **SQLite integrity**：`nexusslate doctor` 增加 `PRAGMA integrity_check`，
   健康库输出 `sqlite: ok`，损坏库报告错误并非零退出。
 
 ## v0.21.0 — 2026-08-04（首个 GitHub release）
 
-合并 `hardware-and-mounts` 全量（v0.20 NAS 挂载 + v0.21 无人值守巡检/时间线导出，此前均未发布）与 2026-08-04 全库审查批（OpenSpec 落地、API 硬化、model_runs 边界、21 个 change，见下方对应小节）。Docker 镜像 tag：`timingdex:v0.21.0`。
+合并 `hardware-and-mounts` 全量（v0.20 NAS 挂载 + v0.21 无人值守巡检/时间线导出，此前均未发布）与 2026-08-04 全库审查批（OpenSpec 落地、API 硬化、model_runs 边界、21 个 change，见下方对应小节）。Docker 镜像 tag：`nexusslate:v0.21.0`。
 
 ### v0.21 — Unattended Library and Timeline Export
 
@@ -1138,7 +1138,7 @@ See `docs/v0.21-unattended-and-export.md`,
   the card query, not search relevance, which the tag and text branches do not
   currently share a comparable score for.
 
-- `timingdex serve` can now rescan every library root on a timer and drain the
+- `nexusslate serve` can now rescan every library root on a timer and drain the
   queue behind it, so footage dropped onto a share is indexed without anyone
   running `root scan` and `pipeline run`. Off by default
   (`library_supervisor.enabled`, `scan_interval_minutes`, default 15, floored
@@ -1248,7 +1248,7 @@ See `docs/v0.21-unattended-and-export.md`,
   every original, which is precisely what `access_original_media_paths`
   denies, and an EDL is the artifact someone cuts with — so both sit on the
   human side of the approval boundary rather than in the agent allowlist.
-  `skills/timingdex/references/api-contract.md` says the same thing, so a
+  `skills/nexusslate/references/api-contract.md` says the same thing, so a
   Skill reading the handshake does not attempt a route that will 401.
 - A plan that is not approved returns 409 rather than a document. A plan whose
   selected shot sits on an asset the pipeline has not probed returns 422
@@ -1569,7 +1569,7 @@ See `docs/v0.21-unattended-and-export.md`,
   语义、cooldown 默认值、页面 JS 健壮性、Worker 产物校验等，低风险集中修复。
 - Provider 错误路径测试：补齐各适配器在 4xx/5xx/超时/空响应下的行为覆盖，
   避免错误分类逻辑因缺测回退到文本匹配。
-- Skills 契约恢复：`skills/timingdex/references/api-contract.md` 与
+- Skills 契约恢复：`skills/nexusslate/references/api-contract.md` 与
   `/api/v1/agent/capabilities` 的 `allowed_actions`/`denied_actions` 重新对齐。
 - `openspec/` 引入：新增 `openspec/` 目录，收录本轮审查产生的变更规格与
   设计记录，作为后续变更的参考基线。
@@ -1598,13 +1598,13 @@ See `docs/v0.21-unattended-and-export.md`,
   group ownership is host-specific) and NVIDIA
   (`deploy.resources.reservations.devices` plus
   `NVIDIA_DRIVER_CAPABILITIES=all`). Nothing about the existing hardening —
-  `ports`, `TIMINGDEX_BIND`, the read-only media binds, the Worker's
+  `ports`, `NEXUSSLATE_BIND`, the read-only media binds, the Worker's
   read-only rootfs — changed to add them. The NVIDIA comment calls out the
   Container Toolkit's default `compute,utility` capability set explicitly:
   it does not inject `libnvidia-encode.so.1`, so `h264_nvenc` lists in
   `ffmpeg -encoders` and then fails on the first frame, indistinguishable
   from no GPU at all, until `all` (or `compute,utility,video`) is set.
-- Added `deploy/unraid/timingdex-hub.xml` and `deploy/unraid/timingdex-worker.xml`,
+- Added `deploy/unraid/nexusslate-hub.xml` and `deploy/unraid/nexusslate-worker.xml`,
   standalone Community Applications templates mirroring the Compose services
   for operators without the (optional) Compose Manager plugin. Device
   passthrough goes through `ExtraParams: --device=/dev/dri:/dev/dri` rather
@@ -1655,7 +1655,7 @@ See `docs/v0.21-unattended-and-export.md`,
 
 ## v0.18 — Disk Load Limits and Worker Onboarding
 
-- Added `timingdex worker run --tray`: a Windows notification-area icon with a
+- Added `nexusslate worker run --tray`: a Windows notification-area icon with a
   settings link and a quit item, built on Win32 through stdlib `syscall`. A tray
   icon is one API plus a message pump, and the alternatives each cost the property
   the install wizard depends on — one cross-compiled .exe with no DLLs beside it.
@@ -1727,7 +1727,7 @@ See `docs/v0.21-unattended-and-export.md`,
   itself. A valid admin or agent token is admitted from any network: this closes
   anonymous reads without breaking remote use. The HTML pages stay open; they
   hold no library data and are where the token is entered.
-- Added a way back for failed jobs: `timingdex pipeline retry-failed`, and a
+- Added a way back for failed jobs: `nexusslate pipeline retry-failed`, and a
   "重试失败作业" button on `/progress` backed by
   `POST /api/v1/pipeline/retry-failed` (admin only). Both ways a job stops being
   retried — exhausted attempts and permanent classification — were one-way, and
@@ -1901,17 +1901,17 @@ See `docs/v0.21-unattended-and-export.md`,
 ## v0.13.2 — Network Source Staging
 
 - Added optional `source_staging.mode: copy` for mounted NAS/network libraries.
-  Timingdex copies a source to a local, versioned cache before processing and
+  NexusSlate copies a source to a local, versioned cache before processing and
   reuses that completed cache on later jobs.
 - Kept NAS originals read-only: FFmpeg, ASR, proxy generation and model work
   execute on the local machine; no sidecars or derived files are written back
   to the mounted share.
 - Added a NAS/local-source choice to the startup-command page via
-  `TIMINGDEX_SOURCE_STAGING_MODE=copy`.
+  `NEXUSSLATE_SOURCE_STAGING_MODE=copy`.
 
 ## v0.13.0 — Library-First Footage Browser
 
-- Reframed `/` as the primary Timingdex experience: an editor now sees each
+- Reframed `/` as the primary NexusSlate experience: an editor now sees each
   source as a left thumbnail, central semantic summary, and right-side
   horizontal shot timeline.
 - Timeline blocks are populated from persisted `asset_shots` time ranges and
@@ -1922,7 +1922,7 @@ See `docs/v0.21-unattended-and-export.md`,
 
 ## v0.12.0 — Bounded Agent Skill
 
-- Added a project-bundled `timingdex` Agent Skill for local API-only readiness
+- Added a project-bundled `nexusslate` Agent Skill for local API-only readiness
   checks, shot retrieval, draft-plan creation and user-directed draft
   revisions.
 - Added `GET /api/v1/agent/capabilities`, declaring the allowed Agent actions
@@ -2052,7 +2052,7 @@ See `docs/v0.21-unattended-and-export.md`,
 ## v0.6 — Hardware-accelerated derived media
 
 - Added FFmpeg capability detection and an inspectable `GET /api/v1/hardware`
-  endpoint plus `timingdex doctor` output.
+  endpoint plus `nexusslate doctor` output.
 - Added `auto`, `software`, `cuda` (NVDEC/NVENC), `qsv`, `vaapi`, and
   `videotoolbox` media profiles for thumbnail/proxy work.
 - Hardware is used only for decoding frames and encoding the local 720p H.264

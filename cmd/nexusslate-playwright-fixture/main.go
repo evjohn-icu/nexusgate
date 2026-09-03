@@ -11,11 +11,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/evjohn-icu/timingdex/internal/api/browserfixture"
+	"github.com/evjohn-icu/nexusslate/internal/api/browserfixture"
 )
 
 func main() {
-	addr := os.Getenv("TIMINGDEX_PLAYWRIGHT_ADDR")
+	addr := os.Getenv("NEXUSSLATE_PLAYWRIGHT_ADDR")
 	if addr == "" {
 		addr = "127.0.0.1:4173"
 	}

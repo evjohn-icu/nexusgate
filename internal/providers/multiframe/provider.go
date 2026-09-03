@@ -1,6 +1,6 @@
 // Package multiframe adapts OpenAI-compatible multimodal chat endpoints to
-// Timingdex's multiframe analysis contract. The endpoint never sees a video:
-// Timingdex extracts deterministic frames from a shot, tags each with its
+// NexusSlate's multiframe analysis contract. The endpoint never sees a video:
+// NexusSlate extracts deterministic frames from a shot, tags each with its
 // timestamp, slices the transcript to the shot's window, and the model simply
 // describes the pixels it is shown — it is never asked to guess a timeline.
 //
@@ -20,11 +20,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	videoanalysis "github.com/evjohn-icu/timingdex/internal/domain/video_analysis"
-	"github.com/evjohn-icu/timingdex/internal/normalize"
-	"github.com/evjohn-icu/timingdex/internal/providers/common"
-	videoproviders "github.com/evjohn-icu/timingdex/internal/providers/video"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	videoanalysis "github.com/evjohn-icu/nexusslate/internal/domain/video_analysis"
+	"github.com/evjohn-icu/nexusslate/internal/normalize"
+	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	videoproviders "github.com/evjohn-icu/nexusslate/internal/providers/video"
 )
 
 type Provider struct {
@@ -61,7 +61,7 @@ func (p *Provider) Capabilities() []videoproviders.Capability {
 
 // Analyze is the asset-level summary call: a handful of representative frames
 // plus the transcript, answered as the legacy analysis object. It carries no
-// per-shot timeline — the shot boundaries were decided by Timingdex's
+// per-shot timeline — the shot boundaries were decided by NexusSlate's
 // detector before this call was ever made.
 func (p *Provider) Analyze(ctx context.Context, input videoanalysis.Input) (videoanalysis.Result, string, error) {
 	if len(input.Frames) == 0 {
@@ -250,7 +250,7 @@ func shotPrompt(req videoproviders.ShotAnalysisRequest) string {
 
 // frameDataURL encodes a local frame file as a data URL, the only form every
 // OpenAI-compatible runtime accepts for local images. The frames come from
-// Timingdex's own proxy and are already at VLM-friendly resolution.
+// NexusSlate's own proxy and are already at VLM-friendly resolution.
 func frameDataURL(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

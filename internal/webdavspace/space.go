@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/cachecoord"
+	"github.com/evjohn-icu/nexusslate/internal/cachecoord"
 	"golang.org/x/net/webdav"
 )
 

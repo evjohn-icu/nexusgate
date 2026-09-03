@@ -6,12 +6,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 func TestRepurposePlanPersistsStructuredRecommendations(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "timingdex-repurpose.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-repurpose.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestRepurposePlanPersistsStructuredRecommendations(t *testing.T) {
 
 func TestRepurposePlanRevisionsPreserveHistoryAndApprovedPlanIsImmutable(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "timingdex-revision.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-revision.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,7 +4,7 @@ package api
 // All product copy is referenced through [[i18n:library.*]] markers (static HTML)
 // and tdT('library.*') calls (dynamic JS); the markers are resolved by
 // serveLocalizedPage, so the same constant renders in every UI locale.
-const legacyLibraryIndexHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Timingdex · [[i18n:library.title]]</title><style>
+const legacyLibraryIndexHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NexusSlate · [[i18n:library.title]]</title><style>
 
 .legend{display:flex;gap:12px;color:var(--text-muted);font-size:12px;align-items:center}
 .library{display:grid;gap:13px}

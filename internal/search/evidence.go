@@ -3,7 +3,7 @@ package search
 import (
 	"strings"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // Evidence is the honest bridge between retrieval and assertion. A semantic

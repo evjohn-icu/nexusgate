@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // insertPagedAsset seeds the minimal assets row the FK-referencing tables in

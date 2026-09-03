@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // recordingTranscriptStore is a minimal ShotStore that records the last query

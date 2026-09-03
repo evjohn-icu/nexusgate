@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	"github.com/evjohn-icu/timingdex/internal/remote"
-	"github.com/evjohn-icu/timingdex/internal/testhelper"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/remote"
+	"github.com/evjohn-icu/nexusslate/internal/testhelper"
 )
 
 type runtimeTestClient struct {
@@ -53,7 +53,7 @@ func TestFFmpegDeriverFallbackUploadsSoftwareProfiles(t *testing.T) {
 	}
 	testhelper.InstallCommand(t, bin, "ffprobe")
 	testhelper.InstallCommand(t, bin, "ffmpeg")
-	t.Setenv("TIMINGDEX_FAKE_FFMPEG_FAIL_HARDWARE", "1")
+	t.Setenv("NEXUSSLATE_FAKE_FFMPEG_FAIL_HARDWARE", "1")
 	oldPath := os.Getenv("PATH")
 	if err := os.Setenv("PATH", bin+string(os.PathListSeparator)+oldPath); err != nil {
 		t.Fatal(err)

@@ -137,7 +137,7 @@ const cjkReindexMigrationFile = "0022_v021_cjk_bigram_reindex.sql"
 // for 0022 is deleted to put this database back in the state a real
 // pre-existing library is in the first time it runs a binary that ships
 // 0022 (the file has never been recorded as applied on it before), then
-// Migrate() is called again the same way cmd/timingdex/main.go calls it on
+// Migrate() is called again the same way cmd/nexusslate/main.go calls it on
 // every startup.
 func TestStaleCJKIndexRowIsUnsearchableUntilMigrationReruns(t *testing.T) {
 	ctx := context.Background()

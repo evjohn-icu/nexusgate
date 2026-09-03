@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/secretstore"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/secretstore"
 )
 
 func TestUsage(t *testing.T) {
@@ -50,7 +50,7 @@ func captureUsageText(t *testing.T) string {
 func TestUsageListsAllCommands(t *testing.T) {
 	text := captureUsageText(t)
 	for _, command := range []string{"serve", "root", "pipeline", "reanalyze", "search", "doctor", "secrets", "worker", "cache"} {
-		if !strings.Contains(text, "timingdex "+command) {
+		if !strings.Contains(text, "nexusslate "+command) {
 			t.Errorf("usage() output does not mention the %q command", command)
 		}
 	}
@@ -62,12 +62,12 @@ func TestUsageListsAllCommands(t *testing.T) {
 func TestUsageDocumentsCompleteSubcommands(t *testing.T) {
 	text := captureUsageText(t)
 	for _, want := range []string{
-		"timingdex search rebuild",
-		"timingdex search rebuild-embeddings",
-		"timingdex cache inspect",
-		"timingdex cache gc",
-		"timingdex cache verify",
-		"timingdex cache repair-derived",
+		"nexusslate search rebuild",
+		"nexusslate search rebuild-embeddings",
+		"nexusslate cache inspect",
+		"nexusslate cache gc",
+		"nexusslate cache verify",
+		"nexusslate cache repair-derived",
 		"--root",
 		"--cache",
 		"--config",
@@ -140,7 +140,7 @@ func TestRepeatedFlag(t *testing.T) {
 }
 
 func TestDefaultWorkerConfigPathEnvOverride(t *testing.T) {
-	t.Setenv("TIMINGDEX_WORKER_CONFIG", "/tmp/worker.json")
+	t.Setenv("NEXUSSLATE_WORKER_CONFIG", "/tmp/worker.json")
 	if got := defaultWorkerConfigPath(); got != "/tmp/worker.json" {
 		t.Fatalf("defaultWorkerConfigPath() with env = %q, want %q", got, "/tmp/worker.json")
 	}
@@ -163,7 +163,7 @@ func TestHubTLSFilesModes(t *testing.T) {
 		{
 			name:    "files mode requires cert and key",
 			cfg:     config.Config{HubTLS: config.HubTLSConfig{Mode: "files"}},
-			wantErr: "TIMINGDEX_TLS_CERT_FILE",
+			wantErr: "NEXUSSLATE_TLS_CERT_FILE",
 		},
 		{
 			name: "files mode returns configured paths",
@@ -222,7 +222,7 @@ func TestRunSecretsCommandRekeySmoke(t *testing.T) {
 	// to data-dir creation — the explicit path is what a real operator uses).
 	cfg := config.Config{DataDir: dataDir, HubSecurity: config.HubSecurityConfig{AdminToken: adminToken}}
 	origArgs := os.Args
-	os.Args = []string{"timingdex", "secrets", "rekey"}
+	os.Args = []string{"nexusslate", "secrets", "rekey"}
 	t.Cleanup(func() { os.Args = origArgs })
 	if err := runSecretsCommand(cfg); err != nil {
 		t.Fatalf("runSecretsCommand(rekey) = %v", err)
@@ -257,8 +257,8 @@ func TestRunSecretsCommandRekeySmoke(t *testing.T) {
 }
 
 func TestSetupLoggingJSONFormatAndLevel(t *testing.T) {
-	t.Setenv("TIMINGDEX_LOG_FORMAT", "json")
-	t.Setenv("TIMINGDEX_LOG_LEVEL", "debug")
+	t.Setenv("NEXUSSLATE_LOG_FORMAT", "json")
+	t.Setenv("NEXUSSLATE_LOG_LEVEL", "debug")
 	setupLogging()
 	if !strings.Contains(fmt.Sprintf("%T", slog.Default().Handler()), "JSONHandler") {
 		t.Fatalf("handler = %T, want JSONHandler", slog.Default().Handler())
@@ -266,8 +266,8 @@ func TestSetupLoggingJSONFormatAndLevel(t *testing.T) {
 }
 
 func TestSetupLoggingTextDefault(t *testing.T) {
-	t.Setenv("TIMINGDEX_LOG_FORMAT", "text")
-	t.Setenv("TIMINGDEX_LOG_LEVEL", "info")
+	t.Setenv("NEXUSSLATE_LOG_FORMAT", "text")
+	t.Setenv("NEXUSSLATE_LOG_LEVEL", "info")
 	setupLogging()
 	if strings.Contains(fmt.Sprintf("%T", slog.Default().Handler()), "JSONHandler") {
 		t.Fatalf("handler = %T, want TextHandler for text format", slog.Default().Handler())
@@ -275,8 +275,8 @@ func TestSetupLoggingTextDefault(t *testing.T) {
 }
 
 func TestSetupLoggingInvalidLevelFallsBackToInfo(t *testing.T) {
-	t.Setenv("TIMINGDEX_LOG_FORMAT", "text")
-	t.Setenv("TIMINGDEX_LOG_LEVEL", "bogus")
+	t.Setenv("NEXUSSLATE_LOG_FORMAT", "text")
+	t.Setenv("NEXUSSLATE_LOG_LEVEL", "bogus")
 	setupLogging() // must not panic; falls back to info with a warning
 	if got := slog.Default().Enabled(context.Background(), slog.LevelDebug); got {
 		t.Fatalf("invalid level fell back to debug instead of info")
@@ -284,8 +284,8 @@ func TestSetupLoggingInvalidLevelFallsBackToInfo(t *testing.T) {
 }
 
 func TestSetupLoggingInvalidFormatFallsBackToText(t *testing.T) {
-	t.Setenv("TIMINGDEX_LOG_FORMAT", "bogus")
-	t.Setenv("TIMINGDEX_LOG_LEVEL", "debug")
+	t.Setenv("NEXUSSLATE_LOG_FORMAT", "bogus")
+	t.Setenv("NEXUSSLATE_LOG_LEVEL", "debug")
 	setupLogging() // must not panic; falls back to text with a warning
 	if strings.Contains(fmt.Sprintf("%T", slog.Default().Handler()), "JSONHandler") {
 		t.Fatalf("invalid format fell back to JSONHandler instead of TextHandler")
@@ -332,29 +332,29 @@ func TestRunSubcommandDispatch(t *testing.T) {
 		// env sets additional environment variables for this sub-test.
 		env map[string]string
 	}{
-		{name: "no args", args: []string{"timingdex"}, wantErr: "invalid command"},
-		{name: "unknown subcommand", args: []string{"timingdex", "bogus"}, wantErr: "invalid command"},
-		{name: "worker without subcommand", args: []string{"timingdex", "worker"}, wantErr: "usage: timingdex worker enroll|run|doctor"},
-		{name: "worker unknown subcommand", args: []string{"timingdex", "worker", "bogus"}, wantErr: "usage: timingdex worker enroll|run|doctor"},
-		{name: "root without subcommand", args: []string{"timingdex", "root"}, wantErr: "usage: timingdex root add|list|scan"},
-		{name: "root unknown subcommand", args: []string{"timingdex", "root", "bogus"}, wantErr: "usage: timingdex root add|list|scan"},
-		{name: "pipeline without subcommand", args: []string{"timingdex", "pipeline"}, wantErr: "usage: timingdex pipeline run|retry-failed"},
-		{name: "pipeline unknown subcommand", args: []string{"timingdex", "pipeline", "bogus"}, wantErr: "usage: timingdex pipeline run|retry-failed"},
-		{name: "secrets without subcommand", args: []string{"timingdex", "secrets"}, wantErr: "usage: timingdex secrets rekey"},
-		{name: "secrets unknown subcommand", args: []string{"timingdex", "secrets", "bogus"}, wantErr: "usage: timingdex secrets rekey"},
-		{name: "serve invalid flag", args: []string{"timingdex", "serve", "-bogus"}, wantErr: "flag provided but not defined"},
-		{name: "worker enroll invalid flag", args: []string{"timingdex", "worker", "enroll", "-bogus"}, wantErr: "flag provided but not defined"},
-		{name: "worker run invalid flag", args: []string{"timingdex", "worker", "run", "-bogus"}, wantErr: "flag provided but not defined"},
-		{name: "worker doctor invalid flag", args: []string{"timingdex", "worker", "doctor", "-bogus"}, wantErr: "flag provided but not defined"},
-		{name: "doctor", args: []string{"timingdex", "doctor"}},
-		{name: "root list empty", args: []string{"timingdex", "root", "list"}},
+		{name: "no args", args: []string{"nexusslate"}, wantErr: "invalid command"},
+		{name: "unknown subcommand", args: []string{"nexusslate", "bogus"}, wantErr: "invalid command"},
+		{name: "worker without subcommand", args: []string{"nexusslate", "worker"}, wantErr: "usage: nexusslate worker enroll|run|doctor"},
+		{name: "worker unknown subcommand", args: []string{"nexusslate", "worker", "bogus"}, wantErr: "usage: nexusslate worker enroll|run|doctor"},
+		{name: "root without subcommand", args: []string{"nexusslate", "root"}, wantErr: "usage: nexusslate root add|list|scan"},
+		{name: "root unknown subcommand", args: []string{"nexusslate", "root", "bogus"}, wantErr: "usage: nexusslate root add|list|scan"},
+		{name: "pipeline without subcommand", args: []string{"nexusslate", "pipeline"}, wantErr: "usage: nexusslate pipeline run|retry-failed"},
+		{name: "pipeline unknown subcommand", args: []string{"nexusslate", "pipeline", "bogus"}, wantErr: "usage: nexusslate pipeline run|retry-failed"},
+		{name: "secrets without subcommand", args: []string{"nexusslate", "secrets"}, wantErr: "usage: nexusslate secrets rekey"},
+		{name: "secrets unknown subcommand", args: []string{"nexusslate", "secrets", "bogus"}, wantErr: "usage: nexusslate secrets rekey"},
+		{name: "serve invalid flag", args: []string{"nexusslate", "serve", "-bogus"}, wantErr: "flag provided but not defined"},
+		{name: "worker enroll invalid flag", args: []string{"nexusslate", "worker", "enroll", "-bogus"}, wantErr: "flag provided but not defined"},
+		{name: "worker run invalid flag", args: []string{"nexusslate", "worker", "run", "-bogus"}, wantErr: "flag provided but not defined"},
+		{name: "worker doctor invalid flag", args: []string{"nexusslate", "worker", "doctor", "-bogus"}, wantErr: "flag provided but not defined"},
+		{name: "doctor", args: []string{"nexusslate", "doctor"}},
+		{name: "root list empty", args: []string{"nexusslate", "root", "list"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dataDir := secureTestDataDir(t)
-			t.Setenv("TIMINGDEX_DATA_DIR", dataDir)
-			t.Setenv("TIMINGDEX_TLS_MODE", "off")    // avoid auto-generating self-signed certs
-			t.Setenv("TIMINGDEX_LOG_LEVEL", "error") // suppress info output
+			t.Setenv("NEXUSSLATE_DATA_DIR", dataDir)
+			t.Setenv("NEXUSSLATE_TLS_MODE", "off")    // avoid auto-generating self-signed certs
+			t.Setenv("NEXUSSLATE_LOG_LEVEL", "error") // suppress info output
 			for k, v := range tt.env {
 				t.Setenv(k, v)
 			}
@@ -375,12 +375,12 @@ func TestRunSubcommandDispatch(t *testing.T) {
 
 func TestRunServeDispatchTLSFilesMissing(t *testing.T) {
 	dataDir := secureTestDataDir(t)
-	t.Setenv("TIMINGDEX_DATA_DIR", dataDir)
-	t.Setenv("TIMINGDEX_TLS_MODE", "files")
-	t.Setenv("TIMINGDEX_TLS_CERT_FILE", filepath.Join(dataDir, "cert.pem"))
-	t.Setenv("TIMINGDEX_TLS_KEY_FILE", filepath.Join(dataDir, "key.pem"))
-	t.Setenv("TIMINGDEX_LOG_LEVEL", "error")
-	setArgs(t, []string{"timingdex", "serve"})
+	t.Setenv("NEXUSSLATE_DATA_DIR", dataDir)
+	t.Setenv("NEXUSSLATE_TLS_MODE", "files")
+	t.Setenv("NEXUSSLATE_TLS_CERT_FILE", filepath.Join(dataDir, "cert.pem"))
+	t.Setenv("NEXUSSLATE_TLS_KEY_FILE", filepath.Join(dataDir, "key.pem"))
+	t.Setenv("NEXUSSLATE_LOG_LEVEL", "error")
+	setArgs(t, []string{"nexusslate", "serve"})
 	err := run()
 	if err == nil {
 		t.Fatal("expected error from missing TLS files")
@@ -395,9 +395,9 @@ func TestRunServeDispatchTLSFilesMissing(t *testing.T) {
 // fails fast before any service work.
 func TestDoctorReportsInvalidProviderConfig(t *testing.T) {
 	dataDir := secureTestDataDir(t)
-	t.Setenv("TIMINGDEX_DATA_DIR", dataDir)
-	t.Setenv("TIMINGDEX_TLS_MODE", "off")
-	t.Setenv("TIMINGDEX_LOG_LEVEL", "error")
+	t.Setenv("NEXUSSLATE_DATA_DIR", dataDir)
+	t.Setenv("NEXUSSLATE_TLS_MODE", "off")
+	t.Setenv("NEXUSSLATE_LOG_LEVEL", "error")
 	t.Setenv("GEMINI_API_KEY", "") // deliberately unset
 	if err := os.WriteFile(filepath.Join(dataDir, "config.json"), []byte(`{"providers":{"vision_primary":"gemini","gemini":{"enabled":true}}}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -411,7 +411,7 @@ func TestDoctorReportsInvalidProviderConfig(t *testing.T) {
 	}
 	os.Stdout = w
 	t.Cleanup(func() { os.Stdout = origStdout })
-	setArgs(t, []string{"timingdex", "doctor"})
+	setArgs(t, []string{"nexusslate", "doctor"})
 	runErr := run()
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
@@ -437,7 +437,7 @@ func TestDoctorReportsInvalidProviderConfig(t *testing.T) {
 	}
 
 	// An operational command must still fail before any service work.
-	setArgs(t, []string{"timingdex", "serve"})
+	setArgs(t, []string{"nexusslate", "serve"})
 	err = run()
 	if err == nil || !strings.Contains(err.Error(), "invalid provider config") {
 		t.Fatalf("serve with invalid provider config = %v, want invalid provider config failure", err)

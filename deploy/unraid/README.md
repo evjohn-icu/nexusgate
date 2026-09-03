@@ -6,8 +6,8 @@ it is installed. Instead there are two standalone Community Applications
 templates here, mirroring the `hub` and `worker` services in
 [`docker-compose.yml`](../../docker-compose.yml):
 
-- `timingdex-hub.xml` — the database, HTTPS API and browser UI.
-- `timingdex-worker.xml` — a paired node that only runs FFmpeg derive work.
+- `nexusslate-hub.xml` — the database, HTTPS API and browser UI.
+- `nexusslate-worker.xml` — a paired node that only runs FFmpeg derive work.
 
 Both reference the GPU image built by `docker build --target gpu` (see
 [`Dockerfile`](../../Dockerfile)) and default `ExtraParams` to
@@ -19,15 +19,15 @@ caveat); this file is the Unraid-specific walkthrough.
 ## 1. Build (or obtain) the GPU image
 
 This project does not publish images to a registry yet, so the exact tag the
-templates reference (`timingdex:v0.31.0-alpha`) has to exist somewhere Unraid's
+templates reference (`nexusslate:v0.31.0-alpha`) has to exist somewhere Unraid's
 Docker can see. The simplest path is building it directly on the Unraid box,
 which needs no registry at all — Unraid's Docker daemon will use a locally
 tagged image instead of trying to pull it:
 
 ```sh
 # From the Unraid terminal, with the repo checked out somewhere under /mnt/user:
-cd /mnt/user/.../timingdex
-docker build --target gpu -t timingdex:v0.31.0-alpha .
+cd /mnt/user/.../nexusslate
+docker build --target gpu -t nexusslate:v0.31.0-alpha .
 ```
 
 If you'd rather build elsewhere, push the same tag to a registry your Unraid
@@ -37,7 +37,7 @@ box can reach (Docker Hub, ghcr.io, or a LAN registry) and adjust
 ## 2. Install the Hub template
 
 In the Unraid UI: **Docker → Add Container → Template: (select) →** point it
-at `timingdex-hub.xml` (via **Template repositories** if you host this repo's
+at `nexusslate-hub.xml` (via **Template repositories** if you host this repo's
 `deploy/unraid/` directory, or by pasting the local file path / using
 **Add Container → XML view** and pasting the file's contents directly).
 
@@ -49,8 +49,8 @@ comment; adding one would mean the image doing privileged setup steps at
 startup).
 
 ```sh
-mkdir -p /mnt/user/appdata/timingdex-hub
-chown -R 10001:10001 /mnt/user/appdata/timingdex-hub
+mkdir -p /mnt/user/appdata/nexusslate-hub
+chown -R 10001:10001 /mnt/user/appdata/nexusslate-hub
 ```
 
 Point **素材库目录 Media library** at your footage and leave its access mode
@@ -59,8 +59,8 @@ on **Read Only slave** — see
 below for why that mode is not optional.
 
 **Admin auth is already set, and you should leave it alone.** The Hub template
-ships `管理鉴权模式 TIMINGDEX_HUB_ADMIN_AUTH` with a default of `required`, so a
-clean `timingdex-hub` appdata directory boots as-is and every admin/mutating
+ships `管理鉴权模式 NEXUSSLATE_HUB_ADMIN_AUTH` with a default of `required`, so a
+clean `nexusslate-hub` appdata directory boots as-is and every admin/mutating
 route demands the `admin-token` (in the data directory, mode 0600). That is
 what the rest of this walkthrough assumes; no variable needs adding.
 
@@ -73,14 +73,14 @@ waiver would trust, which would hand admin writes to anything that can reach
 the port.
 
 If you deliberately want passwordless admin on a trusted LAN, set **both**
-template variables — `TIMINGDEX_HUB_ADMIN_AUTH` = `trusted_network` and
-`管理信任网段 TIMINGDEX_HUB_ADMIN_AUTH_NETWORKS` = your real client CIDRs (e.g.
+template variables — `NEXUSSLATE_HUB_ADMIN_AUTH` = `trusted_network` and
+`管理信任网段 NEXUSSLATE_HUB_ADMIN_AUTH_NETWORKS` = your real client CIDRs (e.g.
 `192.168.1.0/24`, an advanced-view field). Leaving the CIDR list empty in that
 mode is what trips the fail-closed guard. Don't work around it by disabling
 auth or by exposing the port to the internet.
 
 Start the container; it boots on the shipped template values (`docker logs
-timingdex-hub` shows no admin-auth refusal). Read the generated `admin-token` from
+nexusslate-hub` shows no admin-auth refusal). Read the generated `admin-token` from
 the data directory and open `https://<unraid-ip>:8787/workers` to generate a
 one-time pairing token and read the Hub's certificate fingerprint — both
 templates' `Overview` fields walk through this in more detail.
@@ -103,7 +103,7 @@ network shares:
    lands under `/mnt/remotes/<server>_<share>` on the host.
 2. **Point the media path at the `/mnt/remotes` parent, not one specific
    share.** Both templates already default to `/mnt/remotes` rather than
-   `/mnt/remotes/<server>_<share>`. Timingdex still records whatever
+   `/mnt/remotes/<server>_<share>`. NexusSlate still records whatever
    subpath you pass to `root add`/`root scan` inside the container, so
    nothing about the app's view of a given root changes — the only
    difference is that a share added *later* through Unassigned Devices
@@ -119,52 +119,52 @@ network shares:
    mount and unmount events into the container going forward, and only in
    that direction: the container still cannot create or affect mounts the
    host sees, and the bind stays read-only exactly as before.
-4. The one-time `chown -R 10001:10001 /mnt/user/appdata/timingdex-hub` (and
-   the matching one for `timingdex-worker`) described above is unaffected by
+4. The one-time `chown -R 10001:10001 /mnt/user/appdata/nexusslate-hub` (and
+   the matching one for `nexusslate-worker`) described above is unaffected by
    any of this — it applies to the Hub/Worker data directories, not the
    read-only media bind, and still only needs to run once.
 
 ## 3. Enroll and install the Worker template
 
 The Worker container's default command is `worker run --config
-/var/lib/timingdex-worker/worker.json`, and that file only exists after
+/var/lib/nexusslate-worker/worker.json`, and that file only exists after
 enrollment succeeds — starting the container before enrolling just exits
 immediately with a missing-config error (the same reason the Compose worker
 service sits behind a profile and isn't started by `docker compose up`).
 
-Add the `timingdex-worker.xml` template but run the enrollment command
+Add the `nexusslate-worker.xml` template but run the enrollment command
 **before** starting it — a one-off `docker run`, not `docker exec` into the
 persistent container (it isn't running yet, and `worker run` without a
 config exits too fast to exec into):
 
 ```sh
-mkdir -p /mnt/user/appdata/timingdex-worker
-chown -R 10001:10001 /mnt/user/appdata/timingdex-worker
+mkdir -p /mnt/user/appdata/nexusslate-worker
+chown -R 10001:10001 /mnt/user/appdata/nexusslate-worker
 
 docker run --rm -it \
-  -v /mnt/user/appdata/timingdex-worker:/var/lib/timingdex-worker \
-  timingdex:v0.31.0-alpha \
+  -v /mnt/user/appdata/nexusslate-worker:/var/lib/nexusslate-worker \
+  nexusslate:v0.31.0-alpha \
   worker enroll --hub https://<hub-ip>:8787 \
     --fingerprint <hub-fingerprint-from-/workers> \
     --pairing <one-time-token-from-/workers> \
     --name unraid-worker \
     --mount <root-id>=/media/library \
-    --config /var/lib/timingdex-worker/worker.json
+    --config /var/lib/nexusslate-worker/worker.json
 ```
 
 The bind mount above must be the exact host path you set as the Worker
 template's **Worker 数据目录 Data directory**, so the `worker.json` this
 command writes lands where the persistent container will actually look for it.
 
-`--config /var/lib/timingdex-worker/worker.json` is mandatory: the Worker's
-default config path is `~/.timingdex/worker.json` (not its data directory),
+`--config /var/lib/nexusslate-worker/worker.json` is mandatory: the Worker's
+default config path is `~/.nexusslate/worker.json` (not its data directory),
 and the template's PostArgs run `worker run --config
-/var/lib/timingdex-worker/worker.json`. Enroll and run must agree on the same
+/var/lib/nexusslate-worker/worker.json`. Enroll and run must agree on the same
 path, and that path must live on the persistent data directory
-(`/mnt/user/appdata/timingdex-worker`) so a container recreate does not lose
+(`/mnt/user/appdata/nexusslate-worker`) so a container recreate does not lose
 the pairing.
 
-Once it succeeds, start the `timingdex-worker` container normally.
+Once it succeeds, start the `nexusslate-worker` container normally.
 
 Same GPU note as the Hub: if this box has no `/dev/dri`, remove
 `--device=/dev/dri:/dev/dri` from the Worker template's Extra Parameters too.
@@ -176,26 +176,26 @@ library, a permission problem, or a driver too old for the hardware all list
 fine and fail on the first frame. Check with:
 
 ```sh
-docker exec timingdex-hub timingdex doctor
-docker exec timingdex-worker timingdex worker doctor
-docker exec timingdex-hub vainfo      # only present in the gpu image variant
+docker exec nexusslate-hub nexusslate doctor
+docker exec nexusslate-worker nexusslate worker doctor
+docker exec nexusslate-hub vainfo      # only present in the gpu image variant
 ```
 
-`timingdex worker doctor` is a local hardware/enrollment report (Hub URL,
+`nexusslate worker doctor` is a local hardware/enrollment report (Hub URL,
 platform, name, detected hardware) — it does not contact the Hub or verify
 leases, so use it to confirm acceleration, and the Worker's own `worker run`
 logs plus the Hub's `/workers` page for connectivity.
 
 ## Updating
 
-Back up the Hub data directory before upgrading: stop the `timingdex-hub`
-container and copy `/mnt/user/appdata/timingdex-hub` (the SQLite database
+Back up the Hub data directory before upgrading: stop the `nexusslate-hub`
+container and copy `/mnt/user/appdata/nexusslate-hub` (the SQLite database
 together with its `-wal`/`-shm` sidecars), and note the current
 `schema_migrations` state so a rollback can restore the snapshot. Then rebuild
-or repull the `timingdex:v0.31.0-alpha` tag and recreate both containers from
+or repull the `nexusslate:v0.31.0-alpha` tag and recreate both containers from
 the CA UI (**Force Update** / **Apply**).
 
-Recreating keeps template values, so the `TIMINGDEX_HUB_ADMIN_AUTH` Variable
+Recreating keeps template values, so the `NEXUSSLATE_HUB_ADMIN_AUTH` Variable
 and the Worker's data-directory path survive — just confirm they are still
 present, and still hold the values you want, after importing a newer template
 revision. The uid

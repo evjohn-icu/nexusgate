@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "nexusslate": {
+      "type": "stdio",
+      "command": "nexusslate-mcp",
+      "args": [],
+      "env": {
+        "NEXUSSLATE_BASE_URL": "https://127.0.0.1:8787",
+        "NEXUSSLATE_AGENT_TOKEN": "put-your-agent-token-here",
+        "NEXUSSLATE_HUB_FINGERPRINT": "put-64-hex-sha256-fingerprint-here"
+      }
+    }
+  }
+}

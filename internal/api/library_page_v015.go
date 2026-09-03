@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/evjohn-icu/timingdex/internal/normalize"
+	"github.com/evjohn-icu/nexusslate/internal/normalize"
 )
 
 var libraryIndexHTML = enhanceLibraryPage(legacyLibraryIndexHTML)

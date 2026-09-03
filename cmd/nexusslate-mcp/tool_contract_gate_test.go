@@ -270,7 +270,7 @@ func diffToolNameSets(a, b []string) (onlyInA, onlyInB []string) {
 func TestMCPToolsMatchUsageDoc(t *testing.T) {
 	root := repoRootFromMCPTest(t)
 
-	mainGoPath := filepath.Join(root, "cmd/timingdex-mcp/main.go")
+	mainGoPath := filepath.Join(root, "cmd/nexusslate-mcp/main.go")
 	src, err := os.ReadFile(mainGoPath)
 	if err != nil {
 		t.Fatalf("read %s: %v", mainGoPath, err)
@@ -282,12 +282,12 @@ func TestMCPToolsMatchUsageDoc(t *testing.T) {
 	}
 	toolMethods := parseToolClientMethods(t, file)
 
-	t.Setenv("TIMINGDEX_BASE_URL", "http://127.0.0.1:8787")
+	t.Setenv("NEXUSSLATE_BASE_URL", "http://127.0.0.1:8787")
 	client, err := newHubClient()
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := server.NewMCPServer("timingdex", "v0.1", server.WithToolCapabilities(true))
+	srv := server.NewMCPServer("nexusslate", "v0.1", server.WithToolCapabilities(true))
 	registerTools(srv, client)
 	var registered []string
 	for name := range srv.ListTools() {
@@ -295,7 +295,7 @@ func TestMCPToolsMatchUsageDoc(t *testing.T) {
 	}
 	sort.Strings(registered)
 
-	docPath := filepath.Join(root, "skills/timingdex/references/mcp-usage.md")
+	docPath := filepath.Join(root, "skills/nexusslate/references/mcp-usage.md")
 	docBytes, err := os.ReadFile(docPath)
 	if err != nil {
 		t.Fatalf("read %s: %v", docPath, err)

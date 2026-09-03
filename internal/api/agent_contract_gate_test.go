@@ -38,7 +38,7 @@ type agentCapabilitiesContract struct {
 
 // agentContractGateRepoRoot locates the repository root from this test file's
 // own path, the same runtime.Caller technique
-// search_relevance_eval_test.go uses, so the gate resolves skills/timingdex/
+// search_relevance_eval_test.go uses, so the gate resolves skills/nexusslate/
 // regardless of the working directory `go test` was invoked from.
 func agentContractGateRepoRoot(t *testing.T) string {
 	t.Helper()
@@ -192,7 +192,7 @@ func TestAgentCapabilitiesMatchesSkillMD(t *testing.T) {
 	capabilities := fetchAgentCapabilities(t)
 
 	root := agentContractGateRepoRoot(t)
-	skillPath := filepath.Join(root, "skills/timingdex/SKILL.md")
+	skillPath := filepath.Join(root, "skills/nexusslate/SKILL.md")
 	raw, err := os.ReadFile(skillPath)
 	if err != nil {
 		t.Fatalf("read %s: %v", skillPath, err)
@@ -233,7 +233,7 @@ func TestAgentCapabilitiesMatchesAPIContractDoc(t *testing.T) {
 	capabilities := fetchAgentCapabilities(t)
 
 	root := agentContractGateRepoRoot(t)
-	docPath := filepath.Join(root, "skills/timingdex/references/api-contract.md")
+	docPath := filepath.Join(root, "skills/nexusslate/references/api-contract.md")
 	raw, err := os.ReadFile(docPath)
 	if err != nil {
 		t.Fatalf("read %s: %v", docPath, err)

@@ -8,7 +8,7 @@
 // prove each stage in isolation.
 //
 // The suite is skipped cleanly when ffmpeg/ffprobe are absent locally: CI
-// installs ffmpeg, so the full chain runs there. Set TIMINGDEX_MEDIA_OPTIONAL=1
+// installs ffmpeg, so the full chain runs there. Set NEXUSSLATE_MEDIA_OPTIONAL=1
 // to retain local skips in an environment where a fixture cannot be encoded.
 // When unset in CI, fixture failures are test failures rather than skips.
 package e2e
@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/media"
 )
 
 // AudioKind selects what the fixture's audio track is made of. There is no
@@ -321,7 +321,7 @@ func generateClip(t testing.TB, outDir, name string, opts ClipOpts) string {
 
 func fixtureSkipOrFail(t testing.TB, message string) {
 	t.Helper()
-	if fixtureFailureShouldSkip(os.Getenv("TIMINGDEX_MEDIA_OPTIONAL"), os.Getenv("CI"), os.Getenv("GITHUB_ACTIONS")) {
+	if fixtureFailureShouldSkip(os.Getenv("NEXUSSLATE_MEDIA_OPTIONAL"), os.Getenv("CI"), os.Getenv("GITHUB_ACTIONS")) {
 		t.Skip(message)
 	}
 	t.Fatal(message)

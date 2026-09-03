@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/providers/common"
-	"github.com/evjohn-icu/timingdex/internal/testhelper"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	"github.com/evjohn-icu/nexusslate/internal/testhelper"
 )
 
 func TestAlign_EmptyCommand(t *testing.T) {
@@ -22,7 +22,7 @@ func TestAlign_EmptyCommand(t *testing.T) {
 }
 
 func TestAlign_CommandNotFound(t *testing.T) {
-	p := &Provider{Command: "/nonexistent/timingdex_aligner_test_cmd"}
+	p := &Provider{Command: "/nonexistent/nexusslate_aligner_test_cmd"}
 	_, err := p.Align(context.Background(), common.AlignRequest{})
 	if err == nil {
 		t.Fatal("expected error for non-existent command")

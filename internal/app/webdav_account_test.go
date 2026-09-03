@@ -7,14 +7,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	sqlite "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
-	"github.com/evjohn-icu/timingdex/internal/webdavspace"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	sqlite "github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/webdavspace"
 )
 
 // newWebDAVAccountTestService builds a Service whose WebDAV account store is
-// repository-backed (as in production, setupWebDAVDelivery in cmd/timingdex),
+// repository-backed (as in production, setupWebDAVDelivery in cmd/nexusslate),
 // because CreateWebDAVAccount deliberately refuses a non-repository store.
 func newWebDAVAccountTestService(t *testing.T) *Service {
 	t.Helper()

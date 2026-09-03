@@ -1,6 +1,6 @@
-# Timingdex v0.15 Local Agent API Contract
+# NexusSlate v0.15 Local Agent API Contract
 
-Base URL: the user’s local Timingdex server, normally
+Base URL: the user’s local NexusSlate server, normally
 `https://127.0.0.1:8787` when using the default Hub TLS mode. Use
 `http://127.0.0.1:8787` only when the operator explicitly configured
 `hub_tls.mode=off` for local development. All requests and responses are JSON
@@ -8,7 +8,7 @@ unless noted. This Skill is limited to the following requests.
 
 ## Authentication
 
-Timingdex has two independent bearer credentials, generated once on first Hub
+NexusSlate has two independent bearer credentials, generated once on first Hub
 start and stored under the Hub's data directory as raw token text in exact-0600
 files (never in SQLite, never returned by any API response):
 
@@ -90,7 +90,7 @@ background. The response keeps the scan counters and adds
 `pipeline_started`, `pipeline_busy`, and `pipeline_status`, where the status is
 `started` or `already_running`. These fields describe the trigger, not Pipeline
 completion; jobs and Progress remain the source of execution status. The CLI
-command `timingdex root scan <root-id>` uses the same scan path but runs the
+command `nexusslate root scan <root-id>` uses the same scan path but runs the
 Pipeline synchronously before exiting. This does not enable the unattended
 `library_supervisor`, whose default remains disabled.
 
@@ -345,5 +345,5 @@ POST /api/v1/repurpose/plans/{plan-id}/revisions
 
 When changing a previously locked selected shot, add `"unlock": true` to
 that section in this one request. Do not send the approve endpoint: approval is
-reserved for a human in the Timingdex workspace, and the agent token is refused
+reserved for a human in the NexusSlate workspace, and the agent token is refused
 with `401` there under every `admin_auth` mode (see the table above).

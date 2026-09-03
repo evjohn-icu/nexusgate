@@ -7,11 +7,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
-// LibrarySupervisor is the unattended half of `timingdex serve`: it rescans
+// LibrarySupervisor is the unattended half of `nexusslate serve`: it rescans
 // every library root on a timer and then drains the queue, so footage dropped
 // onto a share is indexed without anyone running `root scan` and
 // `pipeline run`.

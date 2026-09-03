@@ -15,7 +15,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/evjohn-icu/timingdex/internal/timecode"
+	"github.com/evjohn-icu/nexusslate/internal/timecode"
 )
 
 // placeholderReel is the stable label used when a clip's reel sanitizes to

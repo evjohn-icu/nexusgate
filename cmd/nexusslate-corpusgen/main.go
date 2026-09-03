@@ -1,14 +1,14 @@
-// Command timingdex-corpusgen generates the offline eval corpus for
-// timingdex-eval: deterministic ffmpeg clips plus ground_truth.json in the
+// Command nexusslate-corpusgen generates the offline eval corpus for
+// nexusslate-eval: deterministic ffmpeg clips plus ground_truth.json in the
 // exact format internal/eval LoadCorpus expects.
 //
 //	# generate the corpus into ./corpus
-//	timingdex-corpusgen --out ./corpus
+//	nexusslate-corpusgen --out ./corpus
 //
 //	# then benchmark a provider config the way the Hub itself would:
-//	timingdex-eval run  --corpus ./corpus --data-dir ./eval/qwen   --label qwen3vl-4b
-//	timingdex-eval run  --corpus ./corpus --data-dir ./eval/gemini --label gemini-flash
-//	timingdex-eval score --corpus ./corpus --data-dir ./eval --labels qwen3vl-4b,gemini-flash
+//	nexusslate-eval run  --corpus ./corpus --data-dir ./eval/qwen   --label qwen3vl-4b
+//	nexusslate-eval run  --corpus ./corpus --data-dir ./eval/gemini --label gemini-flash
+//	nexusslate-eval score --corpus ./corpus --data-dir ./eval --labels qwen3vl-4b,gemini-flash
 //
 // The clips are synthetic (lavfi test sources), so the corpus is
 // reproducible, licence-free and safe to commit or distribute: no personal
@@ -74,15 +74,15 @@ type groundTruthSpan struct {
 func main() {
 	out := flag.String("out", "./corpus", "corpus output directory")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, `timingdex-corpusgen — generate the offline eval corpus for timingdex-eval
+		fmt.Fprintf(os.Stderr, `nexusslate-corpusgen — generate the offline eval corpus for nexusslate-eval
 
 Writes <out>/clips/*.mp4 (deterministic synthetic clips) and <out>/ground_truth.json
 (the queries + expected shot spans internal/eval LoadCorpus expects). The clips
-mirror the retrieval golden set's adversarial assets, so timingdex-eval scores a
+mirror the retrieval golden set's adversarial assets, so nexusslate-eval scores a
 provider the way the Hub's own search would. Never part of CI.
 
 Usage:
-  timingdex-corpusgen --out <dir>
+  nexusslate-corpusgen --out <dir>
 
 Flags:
 `)
@@ -90,7 +90,7 @@ Flags:
 	}
 	flag.Parse()
 	if err := generate(*out); err != nil {
-		fmt.Fprintf(os.Stderr, "timingdex-corpusgen: %v\n", err)
+		fmt.Fprintf(os.Stderr, "nexusslate-corpusgen: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("corpus written to %s (clips/ + ground_truth.json)\n", *out)

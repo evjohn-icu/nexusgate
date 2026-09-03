@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // Service is the Search v2 engine over a ShotStore. Construction is cheap and

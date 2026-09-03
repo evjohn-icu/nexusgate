@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
 )
 
 // CostSummary is the trusted-read view of the cost ledger: the accumulated

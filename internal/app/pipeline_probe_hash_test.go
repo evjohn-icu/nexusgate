@@ -13,10 +13,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/ingest"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	sqlite "github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/ingest"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	sqlite "github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
 )
 
 // newProbeAsset builds a real repository with one library root and one

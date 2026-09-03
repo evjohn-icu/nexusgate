@@ -17,11 +17,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/timingdex/internal/app"
-	"github.com/evjohn-icu/timingdex/internal/config"
-	"github.com/evjohn-icu/timingdex/internal/domain"
-	"github.com/evjohn-icu/timingdex/internal/media"
-	"github.com/evjohn-icu/timingdex/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusslate/internal/app"
+	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusslate/internal/media"
+	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
 )
 
 // lanRequest stands in for the browser UI on the home network. httptest's
@@ -1217,7 +1217,7 @@ func TestScanRootStartsPipelineAndReportsStatus(t *testing.T) {
 
 // TestAgentTokenScope proves the boundary requireAgentOrAdmin is supposed to
 // enforce: the agent token can create and revise a draft repurpose plan (the
-// two routes documented in skills/timingdex) but is refused, by access
+// two routes documented in skills/nexusslate) but is refused, by access
 // control rather than convention, on approval and pipeline runs — the two
 // actions /api/v1/agent/capabilities lists under denied_actions. It also
 // checks the admin token still does all four, and that no credential at all

@@ -1,6 +1,6 @@
 # Security Policy
 
-Re:Footage (`timingdex`) holds third-party provider API keys in an encrypted
+Re:Footage (`nexusslate`) holds third-party provider API keys in an encrypted
 local store, serves an administrator-token-protected HTTP API, and pairs remote
 Worker nodes over TLS with certificate fingerprint pinning. Those three things
 are where the interesting bugs are, so this document is specific about them
@@ -11,7 +11,7 @@ rather than generic.
 Report privately through **GitHub private security advisories** on this
 repository:
 
-<https://github.com/evjohn-icu/timingdex/security/advisories/new>
+<https://github.com/evjohn-icu/nexusslate/security/advisories/new>
 
 (Repository page → **Security** → **Advisories** → **Report a vulnerability**.)
 
@@ -45,7 +45,7 @@ Reporters are credited in the advisory unless they ask not to be.
 
 ## Deployment model this policy assumes
 
-Timingdex is **local-first**: one trusted machine on a trusted LAN, running the
+NexusSlate is **local-first**: one trusted machine on a trusted LAN, running the
 Hub, optionally with paired Workers on other machines on the same network. It is
 not designed or hardened to be a multi-tenant service or to be published to the
 open internet, and it is not a privilege boundary between users of the Hub host.
@@ -141,7 +141,7 @@ single trusted machine:
   `provider-secrets/store.key`, and read the SQLite database. The store protects
   keys at rest and against the *application's own* output paths, not against
   local root or against the account that owns the data directory.
-- Reading `$TIMINGDEX_DATA_DIR` from a backup, a snapshot, a synced folder, or a
+- Reading `$NEXUSSLATE_DATA_DIR` from a backup, a snapshot, a synced folder, or a
   disk image the operator chose to create. Encrypting backups is the operator's
   job.
 - **Publishing the Hub to the internet** and then reporting what that exposes.
@@ -165,7 +165,7 @@ single trusted machine:
 - Cost or quota exhaustion at a provider caused by an operator's own
   configuration (retry budget, fallback chain, library size).
 - Vulnerabilities in `ffmpeg`, `ffprobe`, `exiftool`, or a local VLM/aligner you
-  configured — report those upstream. A bug in *how Timingdex invokes them* is
+  configured — report those upstream. A bug in *how NexusSlate invokes them* is
   in scope (see path handling above).
 - Missing hardening headers, missing rate limits, or scanner output with no
   demonstrated impact on one of the boundaries above.
@@ -242,7 +242,7 @@ design, and changing them is a design discussion, not a security fix.
   the bridge gateway / proxy is an RFC1918 address, so the default
   `trusted_network` would otherwise waive the admin password for anyone who can
   reach the port.
-- Keep `$TIMINGDEX_DATA_DIR` on a filesystem that honours Unix permissions, and
+- Keep `$NEXUSSLATE_DATA_DIR` on a filesystem that honours Unix permissions, and
   encrypt any backup of it — it contains both tokens and the secret store's key.
 - Treat the generated Worker install script as a credential: it embeds a
   single-use pairing token. Do not commit it.

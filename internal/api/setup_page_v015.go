@@ -2,7 +2,7 @@ package api
 
 const setupHTML = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Timingdex · [[i18n:setup.title]]</title>
+<title>NexusSlate · [[i18n:setup.title]]</title>
 <style>.panel{background:var(--raised);border:1px solid var(--rule);border-radius:15px;padding:20px;margin-bottom:16px}.panel-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:8px}.panel-head h2{margin:0;font-size:18px}.pill{border-radius:99px;padding:3px 11px;font-size:12px;font-weight:800;background:var(--inset);color:var(--text-muted);white-space:nowrap}.pill.ok{background:var(--ev-confirmed-wash);color:var(--ev-confirmed)}.pill.warn{background:var(--ev-attention-wash);color:var(--ev-attention)}.env-row{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--rule)}.env-row:last-child{border:0}.env-row b.ok{color:var(--ev-confirmed)}.env-row b.bad{color:var(--ev-contradicted)}.env-row b.warn{color:var(--ev-attention)}.env-actions{margin-top:12px}.env-fix-list{margin:6px 0 0;padding-left:18px;line-height:1.7}.env-fix-list li+li{margin-top:4px}.status{margin-top:12px;padding:12px;border-radius:9px;background:var(--inset)}.ok{color:var(--ev-confirmed)}.bad{color:var(--ev-contradicted)}.note{margin:14px 0 0;font-size:13px}</style></head>
 <body><!--SHELL_HEADER-->
 <main class="wrap"><div class="muted">[[i18n:setup.subtitle]]</div><h1>[[i18n:setup.title]]</h1><p class="muted">[[i18n:setup.intro]]</p>

@@ -1,0 +1,73 @@
+<?xml version="1.0"?>
+<!--
+  Community Applications template for a NexusSlate (Re:Footage) Worker, GPU
+  variant. Install nexusslate-hub.xml first and pair against it: this
+  container's worker.json only exists after enrollment succeeds, and without
+  it `nexusslate worker run` exits immediately (see the Overview below).
+
+  Mirrors the `worker` service in docker-compose.yml: worker.json lives in
+  its own volume, never the Hub's; media is bound read-only; there is no
+  WebUI. Keep the two in sync when either changes.
+-->
+<Container version="2">
+  <Name>nexusslate-worker</Name>
+  <Repository>nexusslate:v0.31.0-alpha</Repository>
+  <Registry/>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/evjohn-icu/nexusslate</Support>
+  <Project>https://github.com/evjohn-icu/nexusslate</Project>
+  <Overview>Re:Footage (nexusslate) Worker —— GPU 加速版本，只负责执行 FFmpeg 转码/生成缩略图等 derive 工作，不持有数据库，也打不开 Hub 的 SQLite 文件。
+
+【前提】必须先安装并启动 nexusslate-hub 模板，并在 Hub 的 /workers 页面生成一次性配对 Token 和 Hub 证书指纹（详见 nexusslate-hub.xml 的说明）。
+
+【两步注册：先配对，再启动这个容器】
+本容器启动时直接执行 `nexusslate worker run`，如果配对文件 worker.json 不存在会立即报错退出 —— 这个文件必须在容器第一次真正运行之前就已经生成好，所以配对不是在这个容器里做的，而是在 Unraid 终端里单独跑一次性的 `docker run`（等价于 docker-compose 里的 `docker compose run --rm worker worker enroll ...`，只是没有 Compose 时手写成等价的 docker run）：
+
+  docker run --rm -it \
+    -v /mnt/user/appdata/nexusslate-worker:/var/lib/nexusslate-worker \
+    nexusslate:v0.31.0-alpha \
+    worker enroll --hub https://&lt;Hub的IP&gt;:8787 \
+      --fingerprint &lt;Hub证书指纹&gt; \
+      --pairing &lt;一次性配对Token&gt; \
+      --name unraid-worker \
+      --mount &lt;root-id&gt;=/media/library \
+      --config /var/lib/nexusslate-worker/worker.json
+
+挂载路径必须和下面"Worker 数据目录"这一项完全一致，这样生成的 worker.json 才会落在这个持久容器实际挂载的位置。执行成功后再启动（Start）这个 nexusslate-worker 容器；这时 worker.json 已经存在，`worker run` 就能正常连上 Hub。
+
+【首次启动前的一次性权限修复】
+和 Hub 一样，Unraid 会把 appdata 目录创建为 root:root 或 nobody:users(99:100)，而镜像固定以非特权用户 uid 10001 运行，没有 PUID/PGID 包装脚本。执行注册命令前，先在 Unraid 终端执行一次：
+  chown -R 10001:10001 /mnt/user/appdata/nexusslate-worker
+
+【GPU 加速】
+Extra Parameters 已包含 --device=/dev/dri:/dev/dri，Worker 是实际跑 FFmpeg 的角色，这里比 Hub 更需要它生效。纯 CPU 主机请把这一项删掉，否则容器会因为设备不存在而无法启动。启动后用 `docker exec nexusslate-worker nexusslate worker doctor` 确认硬件加速是否真的生效，而不是仅仅"看起来装上了"。
+
+【素材目录：请用「只读 - slave」访问模式】
+和 Hub 一样，素材库目录的访问模式必须是 Unraid 的 "Read Only slave"（ro,slave），模板已预设。默认的 private 传播模式下，容器启动之后才在宿主机挂载的共享在容器里是空目录，而 Unassigned Devices 在阵列启停时会重新挂载远程共享——Worker 是实际跑 FFmpeg 读素材的一端，这里踩到就是整批 derive 作业失败。路径必须和 Hub 模板里的素材路径指向同一份素材；同样建议填 /mnt/remotes 这个挂载根目录而不是某一个具体共享。</Overview>
+  <Category>MediaApp: Tools:</Category>
+  <WebUI/>
+  <TemplateURL>https://raw.githubusercontent.com/evjohn-icu/nexusslate/main/deploy/unraid/nexusslate-worker.xml</TemplateURL>
+  <!-- No <Icon> yet: the repository ships no deploy/unraid/icon.png, and pointing
+       Community Applications at a URL that 404s renders a broken image rather than
+       Unraid's neutral placeholder. Restore
+       <Icon>https://raw.githubusercontent.com/evjohn-icu/nexusslate/main/deploy/unraid/icon.png</Icon>
+       once that file exists. -->
+  <ExtraParams>--device=/dev/dri:/dev/dri</ExtraParams>
+  <PostArgs>worker run --config /var/lib/nexusslate-worker/worker.json</PostArgs>
+  <DonateLink/>
+  <DonateText/>
+  <Description>GPU-capable NexusSlate Worker: executes FFmpeg derive jobs leased from a paired Hub. Holds no database and never opens the Hub's SQLite file. Requires enrollment (see Overview) before its first real start.</Description>
+  <Labels/>
+  <Config Name="Worker 数据目录 Data directory" Target="/var/lib/nexusslate-worker" Default="/mnt/user/appdata/nexusslate-worker" Mode="rw" Description="worker.json（配对令牌、Hub 指纹、挂载映射）和临时处理状态的唯一存放位置。绝不是 Hub 的数据卷 —— Worker 不允许打开 Hub 的数据库。" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/nexusslate-worker</Config>
+  <!-- Mode is "ro,slave" for the same reason as in nexusslate-hub.xml: a
+       share Unassigned Devices mounts under /mnt/remotes after this
+       container started is invisible under the default private propagation.
+       It bites harder here — the Worker is the end that actually reads the
+       footage — and slave stays host->container only, so the bind is still
+       read-only and the container still cannot affect host mounts. -->
+  <Config Name="素材库目录 Media library (read-only)" Target="/media/library" Default="/mnt/remotes" Mode="ro,slave" Description="必须和 Hub 模板里的素材路径指向同一份素材，只读挂载。访问模式必须保持「只读 - slave」(ro,slave)，否则容器启动后才挂载的远程共享在容器内是空目录，derive 作业会整批失败（见 Overview）。" Type="Path" Display="always" Required="true" Mask="false">/mnt/remotes</Config>
+  <Config Name="数据目录环境变量 NEXUSSLATE_DATA_DIR" Target="NEXUSSLATE_DATA_DIR" Default="/var/lib/nexusslate-worker" Mode="" Description="镜像默认的 NEXUSSLATE_DATA_DIR 指向 Hub 的路径，Worker 必须覆盖成自己的数据目录。" Type="Variable" Display="advanced-hide" Required="true" Mask="false">/var/lib/nexusslate-worker</Config>
+</Container>

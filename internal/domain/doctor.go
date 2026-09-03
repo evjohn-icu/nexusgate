@@ -7,7 +7,7 @@ import "time"
 // here with -ldflags; an unreleased source build reports "(devel)".
 var Version = "(devel)"
 
-// DoctorReport is the JSON-safe, secret-free diagnostic snapshot `timingdex
+// DoctorReport is the JSON-safe, secret-free diagnostic snapshot `nexusslate
 // doctor` collects and prints. Every field is a primitive, a path, or a
 // derived status; nothing here can hold a provider key, a token, or a secret
 // reference, so the whole value is safe to marshal and ship to an operator.

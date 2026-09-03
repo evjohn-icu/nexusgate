@@ -14,10 +14,10 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/evjohn-icu/timingdex/internal/apiclient"
+	"github.com/evjohn-icu/nexusslate/internal/apiclient"
 )
 
-// fakeHub is a minimal in-test Timingdex Hub API.
+// fakeHub is a minimal in-test NexusSlate Hub API.
 type fakeHub struct {
 	searchHits []map[string]any
 
@@ -286,7 +286,7 @@ func TestGetTranscriptDecodesLargeTranscript(t *testing.T) {
 	}
 }
 
-// A client that never configured TIMINGDEX_AGENT_TOKEN is exactly the remote
+// A client that never configured NEXUSSLATE_AGENT_TOKEN is exactly the remote
 // 403 the v0.23.1 changelog claimed to have fixed and did not: the read routes
 // behind requireTrustedRead reject empty tokens off the trusted network, and
 // the MCP tool must surface that as a clear error instead of silently passing.
@@ -358,12 +358,12 @@ func TestGetShotNotFound(t *testing.T) {
 }
 
 func TestNoWriteTools(t *testing.T) {
-	t.Setenv("TIMINGDEX_BASE_URL", "http://127.0.0.1:8787")
+	t.Setenv("NEXUSSLATE_BASE_URL", "http://127.0.0.1:8787")
 	client, err := newHubClient()
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := server.NewMCPServer("timingdex", "v0.1", server.WithToolCapabilities(true))
+	srv := server.NewMCPServer("nexusslate", "v0.1", server.WithToolCapabilities(true))
 	registerTools(srv, client)
 	var names []string
 	for name := range srv.ListTools() {
@@ -420,23 +420,23 @@ func TestRequireString(t *testing.T) {
 }
 
 // TestNewHubClientRequiresFingerprintForHTTPS pins the cross-machine trust
-// boundary: an https base URL without TIMINGDEX_HUB_FINGERPRINT must refuse
+// boundary: an https base URL without NEXUSSLATE_HUB_FINGERPRINT must refuse
 // to start rather than silently accept any Hub certificate, and a malformed
 // fingerprint is refused too. Plain http (local development) stays usable
 // without one.
 func TestNewHubClientRequiresFingerprintForHTTPS(t *testing.T) {
-	t.Setenv("TIMINGDEX_BASE_URL", "https://nas.lan:8787")
-	t.Setenv("TIMINGDEX_HUB_FINGERPRINT", "")
-	if _, err := newHubClient(); err == nil || !strings.Contains(err.Error(), "TIMINGDEX_HUB_FINGERPRINT") {
+	t.Setenv("NEXUSSLATE_BASE_URL", "https://nas.lan:8787")
+	t.Setenv("NEXUSSLATE_HUB_FINGERPRINT", "")
+	if _, err := newHubClient(); err == nil || !strings.Contains(err.Error(), "NEXUSSLATE_HUB_FINGERPRINT") {
 		t.Fatalf("https without fingerprint must fail startup, got %v", err)
 	}
 
-	t.Setenv("TIMINGDEX_HUB_FINGERPRINT", "not-a-fingerprint")
+	t.Setenv("NEXUSSLATE_HUB_FINGERPRINT", "not-a-fingerprint")
 	if _, err := newHubClient(); err == nil || !strings.Contains(err.Error(), "64-character SHA-256") {
 		t.Fatalf("malformed fingerprint must fail startup, got %v", err)
 	}
 
-	t.Setenv("TIMINGDEX_HUB_FINGERPRINT", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	t.Setenv("NEXUSSLATE_HUB_FINGERPRINT", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	client, err := newHubClient()
 	if err != nil {
 		t.Fatalf("https with a valid fingerprint must construct: %v", err)
@@ -445,12 +445,12 @@ func TestNewHubClientRequiresFingerprintForHTTPS(t *testing.T) {
 		t.Fatal("expected a pinned TLS client config for https + fingerprint")
 	}
 
-	t.Setenv("TIMINGDEX_BASE_URL", "")
-	t.Setenv("TIMINGDEX_HUB_FINGERPRINT", "")
-	if _, err := newHubClient(); err == nil || !strings.Contains(err.Error(), "TIMINGDEX_HUB_FINGERPRINT") {
+	t.Setenv("NEXUSSLATE_BASE_URL", "")
+	t.Setenv("NEXUSSLATE_HUB_FINGERPRINT", "")
+	if _, err := newHubClient(); err == nil || !strings.Contains(err.Error(), "NEXUSSLATE_HUB_FINGERPRINT") {
 		t.Fatalf("unset base URL defaults to https and must require a fingerprint, got %v", err)
 	}
-	t.Setenv("TIMINGDEX_HUB_FINGERPRINT", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	t.Setenv("NEXUSSLATE_HUB_FINGERPRINT", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	if _, err := newHubClient(); err != nil {
 		t.Fatalf("default https base URL with a valid fingerprint must construct: %v", err)
 	}
@@ -462,34 +462,34 @@ func TestNewHubClientRequiresFingerprintForHTTPS(t *testing.T) {
 // fails startup — mirroring the worker CLI's https-only enrollment — while the
 // loopback/local development forms keep working.
 func TestNewHubClientRejectsRemoteHTTP(t *testing.T) {
-	t.Setenv("TIMINGDEX_HUB_FINGERPRINT", "")
+	t.Setenv("NEXUSSLATE_HUB_FINGERPRINT", "")
 
-	t.Setenv("TIMINGDEX_BASE_URL", "http://192.168.1.50:8787")
+	t.Setenv("NEXUSSLATE_BASE_URL", "http://192.168.1.50:8787")
 	if _, err := newHubClient(); err == nil || !strings.Contains(err.Error(), "cleartext") {
 		t.Fatalf("remote LAN http must fail startup, got %v", err)
 	}
 
-	t.Setenv("TIMINGDEX_BASE_URL", "http://hub.example.com:8787")
+	t.Setenv("NEXUSSLATE_BASE_URL", "http://hub.example.com:8787")
 	if _, err := newHubClient(); err == nil || !strings.Contains(err.Error(), "cleartext") {
 		t.Fatalf("remote http hostname must fail startup, got %v", err)
 	}
 
-	t.Setenv("TIMINGDEX_BASE_URL", "http://127.0.0.1:8787")
+	t.Setenv("NEXUSSLATE_BASE_URL", "http://127.0.0.1:8787")
 	if _, err := newHubClient(); err != nil {
 		t.Fatalf("loopback http must construct: %v", err)
 	}
 
-	t.Setenv("TIMINGDEX_BASE_URL", "http://localhost:8787")
+	t.Setenv("NEXUSSLATE_BASE_URL", "http://localhost:8787")
 	if _, err := newHubClient(); err != nil {
 		t.Fatalf("localhost http must construct: %v", err)
 	}
 
-	t.Setenv("TIMINGDEX_BASE_URL", "http://[::1]:8787")
+	t.Setenv("NEXUSSLATE_BASE_URL", "http://[::1]:8787")
 	if _, err := newHubClient(); err != nil {
 		t.Fatalf("IPv6 loopback http must construct: %v", err)
 	}
 
-	t.Setenv("TIMINGDEX_BASE_URL", "http://169.254.10.10:8787")
+	t.Setenv("NEXUSSLATE_BASE_URL", "http://169.254.10.10:8787")
 	if _, err := newHubClient(); err != nil {
 		t.Fatalf("link-local http must construct: %v", err)
 	}
@@ -509,12 +509,12 @@ func TestValidFingerprint(t *testing.T) {
 // TestToolNamesRegistered verifies the MCP server exposes exactly the tools we
 // intend, and that the stdio server can be constructed without panicking.
 func TestToolNamesRegistered(t *testing.T) {
-	t.Setenv("TIMINGDEX_BASE_URL", "http://127.0.0.1:8787")
+	t.Setenv("NEXUSSLATE_BASE_URL", "http://127.0.0.1:8787")
 	client, err := newHubClient()
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := server.NewMCPServer("timingdex", "v0.1", server.WithToolCapabilities(true))
+	srv := server.NewMCPServer("nexusslate", "v0.1", server.WithToolCapabilities(true))
 	registerTools(srv, client)
 
 	var names []string
