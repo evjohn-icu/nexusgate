@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+- **The wizard now asks which platform owns mounts, instead of guessing or
+  ignoring the question.** Unraid is the one common host where attaching a NAS
+  share needs no terminal at all — Unassigned Devices does it from the web UI,
+  and `deploy/unraid/README.md` already documented that path — yet the wizard
+  emitted `sudo mount -t cifs`, which on Unraid is not merely redundant but
+  wrong: the plugin remounts its remote shares when the array stops and starts,
+  and a hand-rolled mount is what the `ro,slave` propagation exists to avoid
+  needing. The Hub cannot detect this for itself. Inside a container
+  `runtime.GOOS` is the container's, `/.dockerenv` says only that it is one,
+  `/etc/unraid-version` sits on a host it cannot read, and a media bind landing
+  on `/mnt/remotes` is a directory anyone can create — `classify.go` already
+  refuses to identify a mount by path for exactly this reason, because an
+  operator follows a guessed path and the share ends up where the Hub will
+  never look. So `mount.Host` gains `Platform`, `/api/v1/roots/inspect` accepts
+  a hint, and step 2 of the wizard asks. `app.HostHint` validates the platform
+  against a closed set and can only ever turn `Service` on, so a request can
+  supply the two facts the process cannot observe and none of the ones it
+  proved. The Unraid branch issues no commands at all, and deliberately does
+  not assemble `/mnt/remotes/<server>_<share>` for the operator: only the plain
+  form is documented, the plugin's handling of spaces and collisions is not,
+  and a confidently wrong path is the failure this whole boundary exists to
+  prevent.
+
+- **`@` in a share name stopped the address being recognised as a share.**
+  Scoping the credentials here-doc fix had switched the userinfo search to the
+  last `@` in the whole string, but `@` is legal in an SMB share name, so
+  `//nas/My@Share` split into a username of `nas/My` and left nothing that
+  parsed as host/share — the wizard then offered local-directory advice for a
+  NAS path. Userinfo can only precede the host, so the search is now bounded to
+  the authority; a UPN username keeps working because within that span the last
+  `@` is still the right one.
+
+- **The translation guard covered four host shapes and none of the switches.**
+  `TestLibraryRootsPageTranslatesEveryGuidanceKey` enumerated Guidance over
+  four `mount.Host` values that differed only by OS, so any branch behind
+  `Container`, `Service` or `Platform` could ship with no translation in any
+  language and the guard stayed green — which is precisely what the new Unraid
+  steps did. The matrix now covers every switch Guidance branches on.
+
+- **Discovery diagnostics stated one cause per empty result.** The branches ran
+  as an if/else chain led by the container case, which swallowed the others,
+  while "nothing answered on 445" could print beside "the sweep ran out of
+  time" — a sweep that was cut short has not shown that nothing answers. A
+  subnet skipped for being too wide is likewise not the same as having no
+  subnet to sweep. The all-unusable verdict now requires an explicit per-host
+  verdict, so an older payload without `probe` is no longer reported as a set
+  of hosts that cannot be read, and a host merely needing credentials is not
+  folded in with them.
+
 - **The Windows mount wizard contradicted itself in two consecutive steps.**
   `windowsSteps` mapped a drive letter with `net use Z:`, and `DefaultMountpoint`
   — which had no `windows` branch at all — then fell through to

@@ -317,7 +317,7 @@ builds, serves, and the feature is simply gone, with no compile or runtime error
 
 - `shelledPage` (`app_shell.go`) — three anchors, every page, injects the shared nav/shell.
 - `enhanceLibraryPage` (`library_page_v015.go`) — **19 ordered anchors**
-  (`libraryPagePatches`, `library_page_v015.go:121-239`), library page only, applied once at
+  (`libraryPagePatches`, `library_page_v015.go:121-237`), library page only, applied once at
   package init to build `libraryIndexHTML` from `legacyLibraryIndexHTML`. Count the slice
   rather than trusting this number; adding a patch and not updating it here is how it drifted.
 - `brandedPage` (`branding.go`) — two anchors, every page, applied **per request**.
@@ -335,10 +335,11 @@ pages, so a branding anchor that goes stale on one page alone still passes. `pag
 That last one exists because one misplaced character left `/worker-setup`'s script dead from
 v0.18 until v0.21 while the page kept serving.
 
-**UI copy lives in two files per language, and only one of them ships.** `i18n.go` embeds
+**UI copy lives in two places, and only one of them ships.** `i18n.go` embeds
 `//go:embed locales/*.json`, which does **not** match `locales/fragments/` — the runtime
 catalog is the top-level `locales/<lang>.json`, and `locales/fragments/<page>.json` is a
-separate, hand-synced authoring copy. Two different tests watch the two files, so editing one
+separate, hand-synced authoring copy — one file per *page*, each holding all
+five languages, rather than one file per language. Two different tests watch the two files, so editing one
 of them looks half-green: `TestLibraryRootsPageTranslatesEveryGuidanceKey` reads the fragment
 and passes, while `TestEveryPageMarkerAndRuntimeKeyResolves` reads the catalog and fails. A new
 key belongs in both, in all five languages, or the page renders the raw key name at runtime.

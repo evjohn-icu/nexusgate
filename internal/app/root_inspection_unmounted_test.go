@@ -84,7 +84,7 @@ func TestInspectRootPathWarningsGateOnRegistration(t *testing.T) {
 
 	// Case 1: unregistered path — no empty-directory warning.
 	unregisteredSvc := newRootWarningsService(t, map[string]bool{emptyDir: false})
-	insp := unregisteredSvc.InspectRootPath(context.Background(), emptyDir, "")
+	insp := unregisteredSvc.InspectRootPath(context.Background(), emptyDir, "", HostHint{})
 	// LooksUnmounted is set based purely on filesystem state (may be true or
 	// false depending on whether /proc/self/mountinfo is readable and the
 	// test's temp dir is on a known filesystem). The point: it's always set,
@@ -98,7 +98,7 @@ func TestInspectRootPathWarningsGateOnRegistration(t *testing.T) {
 
 	// Case 2: registered path — the warning may appear (if mount table readable).
 	registeredSvc := newRootWarningsService(t, map[string]bool{emptyDir: true})
-	insp = registeredSvc.InspectRootPath(context.Background(), emptyDir, "")
+	insp = registeredSvc.InspectRootPath(context.Background(), emptyDir, "", HostHint{})
 	// When registered and mount table is readable and the dir looks unmounted,
 	// the warning SHOULD be present. But we can only assert this when
 	// /proc/self/mountinfo is readable. Just verify the API doesn't panic and

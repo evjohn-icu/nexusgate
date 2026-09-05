@@ -89,7 +89,19 @@ func ParseShare(input string) (Share, bool) {
 
 func parseHostAndName(rest string, protocol Protocol) (Share, bool) {
 	user := ""
-	if at := strings.LastIndex(rest, "@"); at >= 0 {
+	// Userinfo can only precede the host, so only an "@" before the first "/"
+	// is a separator. Searching the whole string finds one inside the share
+	// name instead — "@" is legal there — which split //nas/My@Share into a
+	// username of "nas/My" and left nothing that parsed as host/share, so the
+	// address stopped being recognised as a share at all and the wizard
+	// treated a NAS path as a local directory. Searching the last "@" within
+	// the authority is still right: a UPN username (alice@corp.com@nas) puts
+	// one inside the userinfo itself.
+	authority := rest
+	if slash := strings.Index(rest, "/"); slash >= 0 {
+		authority = rest[:slash]
+	}
+	if at := strings.LastIndex(authority, "@"); at >= 0 {
 		user, rest = rest[:at], rest[at+1:]
 		// A pasted URL sometimes carries user:password@host, the form every
 		// browser address bar accepts. The password half is discarded here,
@@ -168,6 +180,10 @@ func validUser(user string) bool {
 // that is not this one, and so it can be tested without one.
 type Host struct {
 	OS string
+	// Platform is empty when the host platform is unknown, or "unraid" when
+	// Unraid's GUI owns remote-share mounts. Keeping this closed set explicit
+	// prevents an unverified platform label from changing mount instructions.
+	Platform string
 	// WSL changes the advice materially rather than cosmetically: a mount made
 	// in an interactive shell lands in that shell's mount namespace and is
 	// simply absent from a service started by systemd or over SSH.
@@ -288,6 +304,12 @@ func shareBaseName(share Share) string {
 // the path the Hub will actually be able to open.
 func DefaultMountpoint(share Share, host Host) string {
 	name := shareBaseName(share)
+	// Unassigned Devices decides the final directory name, including its
+	// handling of collisions and unusual characters; returning no default is
+	// safer than presenting a path the Hub may never see.
+	if host.Platform == "unraid" {
+		return ""
+	}
 	// Checked before the darwin branch because host.OS here is the
 	// *container's* OS (always linux), not the Docker host's, so the /Volumes
 	// answer would be wrong twice over.
@@ -409,6 +431,11 @@ func Guidance(share Share, mountpoint string, host Host) Guide {
 		mountpoint = DefaultMountpoint(share, host)
 	}
 	guide := Guide{Summary: fmt.Sprintf("%s is a network share, not a local path. Mount it, then add the mount point.", share)}
+	if host.Platform == "unraid" {
+		guide.Steps = unraidSteps(share, mountpoint, host)
+		guide.Notes = notes(share, host)
+		return guide
+	}
 	switch host.OS {
 	case "windows":
 		guide.Steps = windowsSteps(share, mountpoint, host)
@@ -448,6 +475,13 @@ func Guidance(share Share, mountpoint string, host Host) Guide {
 // fails immediately, or succeeds against an empty directory Docker created
 // on demand and registers a library root that will never contain anything.
 func addRootStep(mountpoint string, host Host) Step {
+	if host.Platform == "unraid" {
+		return Step{
+			Key:      "add-root",
+			Title:    "Add the mount point confirmed by Unassigned Devices as a library root",
+			Commands: []string{},
+		}
+	}
 	if !host.Container {
 		return Step{
 			Key:      "add-root",
@@ -475,6 +509,17 @@ func addRootStep(mountpoint string, host Host) Step {
 
 func credentialsPath(share Share) string {
 	return "/etc/nexusgate/" + share.Host + ".cred"
+}
+
+func unraidSteps(share Share, mountpoint string, host Host) []Step {
+	return []Step{
+		{Key: "unraid-install-unassigned-devices", Title: "In Apps, search for Unassigned Devices and install the plugin", Commands: []string{}},
+		{Key: "unraid-add-remote-smb", Title: "On the Main page, find the Unassigned Devices area, choose the option to add a remote SMB share, and enter the NAS address, share name, username, and password", Commands: []string{}},
+		{Key: "unraid-mount-remote", Title: "Use the Mount action for the remote share", Commands: []string{}},
+		{Key: "unraid-confirm-mountpoint", Title: "Confirm the Mount Point shown by the Unassigned Devices plugin; use the path it actually reports", Commands: []string{}},
+		{Key: "unraid-readonly-slave", Title: "On the Docker page, edit the container so the media path points to the /mnt/remotes parent directory, and confirm Access Mode is Read Only slave", Commands: []string{}},
+		addRootStep(mountpoint, host),
+	}
 }
 
 func linuxSteps(share Share, mountpoint string, host Host) []Step {

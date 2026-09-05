@@ -1161,7 +1161,7 @@ func (s *Server) createRoot(w http.ResponseWriter, r *http.Request) {
 				// The same inspection the wizard would have shown before the
 				// operator ever tried to add the root: an API caller that never
 				// opens /library-roots still gets the mount commands.
-				Inspection: s.service.InspectRootPath(r.Context(), request.Path, ""),
+				Inspection: s.service.InspectRootPath(r.Context(), request.Path, "", app.HostHint{}),
 			})
 			return
 		}
@@ -1264,6 +1264,13 @@ func (s *Server) inspectRoot(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Path       string `json:"path"`
 		Mountpoint string `json:"mountpoint"`
+		// The browser supplies these two because the Hub cannot see them: which
+		// platform owns mounts on the Docker host, and whether the Hub itself
+		// runs under a service manager. app.HostHint validates the platform
+		// against a closed set and can only ever turn Service on, so neither
+		// field can override anything the process proved about itself.
+		Platform string `json:"platform"`
+		Service  bool   `json:"service"`
 	}
 	if !decodeStrictJSON(w, r, &request, 4<<10) {
 		return
@@ -1272,7 +1279,7 @@ func (s *Server) inspectRoot(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid request body"})
 		return
 	}
-	writeJSON(w, http.StatusOK, s.service.InspectRootPath(r.Context(), request.Path, request.Mountpoint))
+	writeJSON(w, http.StatusOK, s.service.InspectRootPath(r.Context(), request.Path, request.Mountpoint, app.HostHint{Platform: request.Platform, Service: request.Service}))
 }
 
 func parseInt(value string, fallback int) int {

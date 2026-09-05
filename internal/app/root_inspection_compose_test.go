@@ -28,7 +28,7 @@ func newComposeTestService(t *testing.T) *Service {
 func TestInspectRootPathOmitsComposeVolumeWhenNotContainerised(t *testing.T) {
 	service := newComposeTestService(t)
 	service.hostOverride = &mount.Host{OS: "linux", UID: 1000, GID: 1000, Container: false}
-	inspection := service.InspectRootPath(context.Background(), "//192.0.2.10/Video", "")
+	inspection := service.InspectRootPath(context.Background(), "//192.0.2.10/Video", "", HostHint{})
 	if !inspection.IsShare {
 		t.Fatal("//192.0.2.10/Video should parse as a share")
 	}
@@ -47,7 +47,7 @@ func TestInspectRootPathAddsComposeVolumeWhenContainerised(t *testing.T) {
 	service := newComposeTestService(t)
 	service.hostOverride = &mount.Host{OS: "linux", UID: 1000, GID: 1000, Container: true}
 
-	nfs := service.InspectRootPath(context.Background(), "192.0.2.10:/volume1/Video", "")
+	nfs := service.InspectRootPath(context.Background(), "192.0.2.10:/volume1/Video", "", HostHint{})
 	if !nfs.IsShare {
 		t.Fatal("192.0.2.10:/volume1/Video should parse as a share")
 	}
@@ -61,7 +61,7 @@ func TestInspectRootPathAddsComposeVolumeWhenContainerised(t *testing.T) {
 		t.Errorf("NFS compose YAML missing the nfs driver type, got:\n%s", nfs.ComposeVolume.YAML)
 	}
 
-	smb := service.InspectRootPath(context.Background(), "//192.0.2.10/Video", "")
+	smb := service.InspectRootPath(context.Background(), "//192.0.2.10/Video", "", HostHint{})
 	if !smb.IsShare {
 		t.Fatal("//192.0.2.10/Video should parse as a share")
 	}
@@ -86,7 +86,7 @@ func TestInspectRootPathComposeVolumeNeverEchoesAPastedPassword(t *testing.T) {
 	service := newComposeTestService(t)
 	service.hostOverride = &mount.Host{OS: "linux", UID: 1000, GID: 1000, Container: true}
 
-	inspection := service.InspectRootPath(context.Background(), "smb://ev:hunter2@192.0.2.10/Video", "")
+	inspection := service.InspectRootPath(context.Background(), "smb://ev:hunter2@192.0.2.10/Video", "", HostHint{})
 	if inspection.ComposeVolume == nil {
 		t.Fatal("a containerised host must get a compose-volume suggestion for this SMB share")
 	}
@@ -111,7 +111,7 @@ func TestInspectRootPathComposeVolumeNeverEchoesAPastedPassword(t *testing.T) {
 func TestMountGuideStepProjectionCarriesKindAndFile(t *testing.T) {
 	service := newComposeTestService(t)
 	service.hostOverride = &mount.Host{OS: "linux", UID: 1000, GID: 1000, Container: false}
-	inspection := service.InspectRootPath(context.Background(), "//192.0.2.10/Video", "/mnt/video")
+	inspection := service.InspectRootPath(context.Background(), "//192.0.2.10/Video", "/mnt/video", HostHint{})
 	if inspection.Guidance == nil {
 		t.Fatal("a share must carry mount guidance")
 	}
@@ -139,5 +139,57 @@ func TestMountGuideStepProjectionCarriesKindAndFile(t *testing.T) {
 	}
 	if projected != upstream {
 		t.Fatalf("projected %d file-line steps, upstream produced %d — MountGuideStep is dropping fields", projected, upstream)
+	}
+}
+
+// The hint carries the two things this process cannot observe about its own
+// deployment. Everything else in mount.Host is proven locally, and a caller
+// able to claim Container or MediaBind would be choosing which paths the
+// wizard tells an operator to mount — instructions the operator follows.
+func TestHostHintCannotOverrideProvenHostFacts(t *testing.T) {
+	service := newComposeTestService(t)
+	proven := mount.Host{OS: "linux", UID: 1000, GID: 1000, Container: true, MediaBind: mount.Bind{Target: "/media/library", Source: "/mnt/remotes"}}
+	service.hostOverride = &proven
+	applied := HostHint{Platform: "unraid", Service: true}.apply(proven)
+	if applied.Platform != "unraid" || !applied.Service {
+		t.Fatalf("the hint must set the two facts it owns, got %+v", applied)
+	}
+	if applied.Container != proven.Container || applied.UID != proven.UID || applied.GID != proven.GID || applied.MediaBind != proven.MediaBind || applied.OS != proven.OS || applied.WSL != proven.WSL {
+		t.Fatalf("the hint changed a locally proven fact: %+v vs %+v", applied, proven)
+	}
+	// Service is one-way: detection proves it, and a caller must not be able to
+	// suppress a warning that detection established.
+	provenService := proven
+	provenService.Service = true
+	if !(HostHint{Service: false}.apply(provenService)).Service {
+		t.Fatal("a hint must not be able to turn Service off once it was detected")
+	}
+}
+
+// Platform selects which instructions an administrator is shown, so a label
+// outside the closed set is dropped rather than carried through to guidance.
+func TestUnknownPlatformHintIsDroppedNotCarried(t *testing.T) {
+	service := newComposeTestService(t)
+	service.hostOverride = &mount.Host{OS: "linux", UID: 1000, GID: 1000, Container: true, MediaBind: mount.Bind{Target: "/media/library", Source: "/mnt/remotes"}}
+	unraid := service.InspectRootPath(context.Background(), "//192.0.2.10/Video", "", HostHint{Platform: "unraid"})
+	bogus := service.InspectRootPath(context.Background(), "//192.0.2.10/Video", "", HostHint{Platform: "unraid-but-not-really"})
+	keys := func(inspection RootInspection) string {
+		if inspection.Guidance == nil {
+			t.Fatal("a share must carry guidance")
+		}
+		var out string
+		for _, step := range inspection.Guidance.Steps {
+			out += step.Key + " "
+		}
+		return out
+	}
+	unraidKeys, bogusKeys := keys(unraid), keys(bogus)
+	// Positive control: the accepted label really does reach a different branch,
+	// so the inequality below is evidence and not an accident of formatting.
+	if !strings.Contains(unraidKeys, "unraid-") {
+		t.Fatalf("platform=unraid did not reach the Unraid branch: %s", unraidKeys)
+	}
+	if strings.Contains(bogusKeys, "unraid-") {
+		t.Fatalf("an unrecognised platform label reached the Unraid branch: %s", bogusKeys)
 	}
 }

@@ -90,6 +90,19 @@ const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset=
 <div class="panel"><h2>[[i18n:roots.networkShareTitle]]</h2>
 <div id="share-summary"></div>
 <p class="muted" id="guide-summary"></p>
+<!-- The Hub cannot see either of these about itself. Inside a container its own
+     OS is the container's, /etc/unraid-version lives on a host it cannot read,
+     and no path is proof: anyone can create /mnt/remotes. Rather than guess —
+     a guessed platform sends the operator to mount somewhere the Hub will
+     never look — the wizard asks, once. -->
+<div class="field"><label for="host-platform">[[i18n:roots.hostWhere]]</label>
+<select id="host-platform" onchange="regenerateGuidance()">
+<option value="">[[i18n:roots.hostAuto]]</option>
+<option value="unraid">[[i18n:roots.hostUnraid]]</option>
+</select>
+<label class="muted"><input id="host-service" type="checkbox" onchange="regenerateGuidance()"> [[i18n:roots.hostServiceLabel]]</label>
+<p class="muted">[[i18n:roots.hostHintNote]]</p>
+</div>
 <div class="field"><label for="mountpoint">[[i18n:roots.mountpointLabel]]</label><input id="mountpoint" type="text" onchange="regenerateGuidance()"></div>
 <div id="guide-body"></div>
 </div>
@@ -280,22 +293,53 @@ function discoverDiagnostics(data,hosts){
   var skipped=(data.skipped_networks||[]).join(', ');
   var lines=[];
   var note=function(cls,text){lines.push('<div class="callout '+cls+'">'+esc(text)+'</div>')};
-  if(!hosts.length&&data.hub_containerised){
-    note('callout--attention',tdT('roots.diag.containerBridge',{nets:nets}));
-  }else if(!hosts.length&&!data.mdns_available&&!nets){
-    note('callout--attention',tdT('roots.diag.noNetworks'));
-  }else if(!hosts.length&&nets){
-    note('',tdT('roots.diag.noHosts',{nets:nets}));
+  // One cause per empty result, most specific first, and each condition states
+  // only what it can support. A sweep that ran out of budget has not shown that
+  // nothing answers on 445, and a subnet skipped for being too wide is not the
+  // same as having no network to sweep — saying either of those alongside
+  // "nothing was found" sends the operator after a fault that is not there.
+  if(!hosts.length){
+    if(data.hub_containerised){
+      note('callout--attention',tdT('roots.diag.containerBridge',{nets:nets}));
+    }else if(!nets&&skipped){
+      note('callout--attention',tdT('roots.diag.skipped',{nets:skipped}));
+      skipped='';
+    }else if(!nets){
+      note('callout--attention',tdT('roots.diag.noNetworks'));
+    }else if(!data.truncated){
+      note('',tdT('roots.diag.noHosts',{nets:nets}));
+    }
   }
   if(skipped){note('callout--attention',tdT('roots.diag.skipped',{nets:skipped}))}
   if(data.truncated){note('callout--attention',tdT('roots.diag.truncated'))}
-  // A host that answered 445 but is not a usable SMB2/3 target is not a host
-  // the operator can do anything with from here, so a list of them reads as
-  // success unless this says otherwise.
-  if(hosts.length&&!hosts.some(function(h){return (h.probe||(h.shares&&h.shares.length?'ok':''))==='ok'})){
+  // mdns_available is false only when the multicast browse could not start at
+  // all, never merely because nobody answered — so it is a fact about this
+  // machine's network, and it is the reason a NAS that does advertise itself
+  // went unseen. It stands on its own rather than being folded into the
+  // no-subnet message, which would claim it even where multicast works fine.
+  if(!hosts.length&&data.mdns_available===false){
+    note('',tdT('roots.diag.noMulticast'));
+  }
+  // Only an explicit verdict counts. A host with no probe field at all is an
+  // older payload, not an unusable host, and reporting "none of these can be
+  // read" over a list the operator can see is worse than saying nothing. A
+  // host needing credentials is likewise a usable SMB server, so it must not
+  // be folded in here either — its own card already asks for the share name.
+  var verdicts=hosts.map(function(h){return h.probe||(h.shares&&h.shares.length?'ok':'')}).filter(Boolean);
+  if(hosts.length&&verdicts.length===hosts.length&&verdicts.every(function(v){return v==='unusable'||v==='timeout'})){
     note('callout--attention',tdT('roots.diag.allUnusable',{count:hosts.length}));
   }
   return lines.join('');
+}
+
+// hostHint collects the two deployment facts the Hub cannot observe about
+// itself and the operator can. The server validates platform against a closed
+// set and can only ever turn service on, so nothing here overrides something
+// the process proved locally.
+function hostHint(){
+  var platform=document.getElementById('host-platform');
+  var service=document.getElementById('host-service');
+  return {platform:platform?platform.value:'',service:service?!!service.checked:false};
 }
 
 function escAttr(v){return String(v??'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','>':'&gt;','<':'&lt;','"':'&quot;',"'":'&#39;'}[c]})}
@@ -359,7 +403,7 @@ async function startInspect(){
   status.className='callout';status.textContent=tdT('roots.checking');
   lastInput=input;
   try{
-    var inspection=await json('/api/v1/roots/inspect',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({path:input})});
+    var inspection=await json('/api/v1/roots/inspect',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify(Object.assign({path:input},hostHint()))});
     if(inspection.is_share){
       renderGuidance(inspection);
       status.textContent='';
@@ -459,7 +503,7 @@ async function regenerateGuidance(){
   if(!lastInput)return;
   var container=document.getElementById('guide-body');
   try{
-    var inspection=await json('/api/v1/roots/inspect',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({path:lastInput,mountpoint:mp})});
+    var inspection=await json('/api/v1/roots/inspect',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify(Object.assign({path:lastInput,mountpoint:mp},hostHint()))});
     renderGuideBody(inspection.guidance);
     renderComposeVolume(inspection);
   }catch(e){

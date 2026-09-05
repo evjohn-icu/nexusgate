@@ -328,6 +328,37 @@ func (s *Service) HubContainerised() bool {
 	return s.mountHost().Container
 }
 
+// HostHint carries the two facts about a deployment that this process cannot
+// observe for itself: which platform owns mounts on the Docker host, and
+// whether the Hub runs under a service manager. Everything else in mount.Host
+// is proven locally and deliberately cannot be set from here — a caller able to
+// claim Container or MediaBind would be choosing which paths the wizard tells
+// an operator to mount, and the operator will follow them.
+type HostHint struct {
+	Platform string `json:"platform,omitempty"`
+	Service  bool   `json:"service,omitempty"`
+}
+
+// knownPlatforms is the closed set of platform labels. Platform selects which
+// instructions an administrator is shown, so an unrecognised label is dropped
+// rather than carried: the alternative is letting request data steer generated
+// shell commands, and there is no version of that which is safe enough to be
+// worth the flexibility.
+var knownPlatforms = map[string]bool{"unraid": true}
+
+// apply overlays the hint onto locally proven facts. Service can only be turned
+// on: systemd's INVOCATION_ID proves it when present, and a caller must not be
+// able to suppress a warning that detection established.
+func (h HostHint) apply(host mount.Host) mount.Host {
+	if knownPlatforms[h.Platform] {
+		host.Platform = h.Platform
+	}
+	if h.Service {
+		host.Service = true
+	}
+	return host
+}
+
 // mountHost is the mount.Host InspectRootPath generates advice for.
 func (s *Service) mountHost() mount.Host {
 	if s.hostOverride != nil {
@@ -879,7 +910,7 @@ type ComposeVolumeSuggestion struct {
 // command text (credentials path, uid/gid, the WSL nsenter prefix) is
 // generated here rather than duplicated in JavaScript. Passing "" for
 // mountpoint uses the default.
-func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string) RootInspection {
+func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string, hint HostHint) RootInspection {
 	trimmed := strings.TrimSpace(path)
 	result := RootInspection{Path: trimmed}
 	registered := false
@@ -889,7 +920,7 @@ func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string) 
 	if trimmed == "" {
 		return result
 	}
-	host := s.mountHost()
+	host := hint.apply(s.mountHost())
 	if share, ok := mount.ParseShare(trimmed); ok {
 		result.IsShare = true
 		// Echo the parsed share rather than what was typed. Share.String()

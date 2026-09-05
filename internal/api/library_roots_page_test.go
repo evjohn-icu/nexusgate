@@ -235,11 +235,20 @@ func TestLibraryRootsPageTranslatesEveryGuidanceKey(t *testing.T) {
 	if !ok {
 		t.Fatal("nfs fixture did not parse as a share")
 	}
+	// The matrix has to cover every switch Guidance branches on, not just OS.
+	// It listed four OS shapes and nothing behind Container, Service or
+	// Platform, so an entire branch could ship with no translation at all and
+	// this guard would stay green — which is exactly what happened to the
+	// Unraid steps.
 	hosts := []mount.Host{
 		{OS: "linux", UID: 1000, GID: 1000},
 		{OS: "linux", UID: 1000, GID: 1000, WSL: true},
+		{OS: "linux", UID: 1000, GID: 1000, Container: true, MediaBind: mount.Bind{Target: "/media/library", Source: "/mnt/remotes"}},
 		{OS: "darwin"},
+		{OS: "darwin", Service: true},
 		{OS: "windows"},
+		{OS: "windows", Service: true},
+		{OS: "linux", UID: 1000, GID: 1000, Container: true, Platform: "unraid", MediaBind: mount.Bind{Target: "/media/library", Source: "/mnt/remotes"}},
 	}
 	keys := map[string]bool{}
 	for _, share := range []mount.Share{smb, nfs} {
@@ -915,7 +924,7 @@ func TestLibraryRootsPageDiagnosesEmptyDiscoveryResults(t *testing.T) {
 	}
 	for _, key := range []string{
 		"roots.diag.containerBridge", "roots.diag.noNetworks", "roots.diag.noHosts",
-		"roots.diag.skipped", "roots.diag.truncated", "roots.diag.allUnusable",
+		"roots.diag.skipped", "roots.diag.truncated", "roots.diag.allUnusable", "roots.diag.noMulticast",
 	} {
 		if !strings.Contains(body, key) {
 			t.Errorf("page never renders %s", key)
@@ -950,5 +959,62 @@ func TestLibraryRootsPageCopyButtonReportsOutcome(t *testing.T) {
 	}
 	if strings.Contains(legacy, "catch(e){}") {
 		t.Error("a bare catch is back in the copy path: a swallowed failure is indistinguishable from success")
+	}
+}
+
+// The Hub cannot see which platform owns mounts on its Docker host, nor
+// whether it runs under a service manager, and no path is proof of either.
+// The wizard therefore asks — and must actually send the answer, or the whole
+// Unraid branch is unreachable no matter what the mount package can generate.
+func TestLibraryRootsPageAsksAndSendsTheHostHint(t *testing.T) {
+	body := libraryRootsHTML
+	for _, marker := range []string{
+		`id="host-platform"`, `value="unraid"`, `id="host-service"`,
+		"roots.hostWhere", "roots.hostUnraid", "roots.hostServiceLabel", "roots.hostHintNote",
+		"function hostHint()",
+	} {
+		if !strings.Contains(body, marker) {
+			t.Errorf("page missing host-hint marker %q", marker)
+		}
+	}
+	// Sending it is the part that silently breaks: the selector can sit on the
+	// page looking correct while no inspect call carries its value.
+	sends := strings.Count(body, "hostHint()")
+	if sends < 3 {
+		t.Errorf("hostHint() is referenced %d times; it must be defined and sent on both the initial inspect and every regeneration", sends)
+	}
+	// The selector belongs in step 2, where the guidance it changes is shown.
+	stepTwo := strings.Index(body, `id="step-2"`)
+	selector := strings.Index(body, `id="host-platform"`)
+	stepThree := strings.Index(body, `id="step-3"`)
+	if !(stepTwo < selector && selector < stepThree) {
+		t.Fatalf("host selector at %d must sit between step-2 (%d) and step-3 (%d)", selector, stepTwo, stepThree)
+	}
+}
+
+// The endpoint must accept the hint and must drop a platform label outside the
+// closed set, because that label chooses which instructions an administrator is
+// shown and the request is the least trustworthy place it could come from.
+func TestInspectRootHonoursKnownPlatformAndDropsUnknown(t *testing.T) {
+	service := newLibraryRootsTestService(t, "inspect-platform.db", "required")
+	handler := NewServer("", service).Handler()
+	inspect := func(platform string) string {
+		request := lanRequest(http.MethodPost, "/api/v1/roots/inspect",
+			strings.NewReader(`{"path":"//192.0.2.10/Video","platform":"`+platform+`"}`))
+		request.Header.Set("Authorization", "Bearer "+service.AdminToken())
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("platform=%q: status=%d body=%s", platform, response.Code, response.Body.String())
+		}
+		return response.Body.String()
+	}
+	// This test binary is not in a container, so the Unraid branch is reachable
+	// only through the hint; that is exactly the wiring under test.
+	if !strings.Contains(inspect("unraid"), "unraid-") {
+		t.Error("platform=unraid did not reach the Unraid guidance")
+	}
+	if strings.Contains(inspect("unraid-but-not-really"), "unraid-") {
+		t.Error("an unrecognised platform label reached the Unraid guidance")
 	}
 }

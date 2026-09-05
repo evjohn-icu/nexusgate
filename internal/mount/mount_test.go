@@ -67,12 +67,21 @@ func TestParseShareRejectsUserThatCouldBreakOutOfGeneratedSyntax(t *testing.T) {
 		{"comma", `smb://evil,user@nas/Video`},
 		{"semicolon", `smb://evil;user@nas/Video`},
 	}
+	parsed := 0
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			share, ok := ParseShare(tc.input)
+			// Two outcomes are safe and which one an input gets is a property of
+			// the input, not a weaker assertion: userinfo is only searched for
+			// "@" ahead of the first "/", so a payload carrying a slash of its
+			// own (the here-doc case embeds /tmp/pwned) puts a host in front of
+			// it that fails validHost and is rejected outright. Rejecting is
+			// strictly safer than the alternative below, so both are accepted
+			// here; what neither may do is keep the hostile text.
 			if !ok {
-				t.Fatalf("ParseShare(%q) rejected a network share with dirty userinfo", tc.input)
+				return
 			}
+			parsed++
 			if share.Host != "nas" || share.Name != "Video" {
 				t.Fatalf("ParseShare(%q) = %+v, want host nas and share Video preserved", tc.input, share)
 			}
@@ -80,6 +89,12 @@ func TestParseShareRejectsUserThatCouldBreakOutOfGeneratedSyntax(t *testing.T) {
 				t.Fatalf("ParseShare(%q).User = %q, want dirty userinfo discarded", tc.input, share.User)
 			}
 		})
+	}
+	// Positive control for the early return above: if every case were rejected
+	// outright, the drop-the-username path would be untested and this whole
+	// table would pass without exercising validUser at all.
+	if parsed == 0 {
+		t.Fatal("no hostile input reached the parse-and-discard path, so validUser was never exercised")
 	}
 }
 
@@ -105,10 +120,18 @@ func TestParseShareAcceptsSafeSMBUsernames(t *testing.T) {
 }
 
 func TestGuidanceGeneratedCommandsSurviveHostileShareInput(t *testing.T) {
-	const input = "smb://evil\nNEXUSGATE_CREDS\nid > /tmp/pwned\n@nas/Video"
+	// No slash inside the payload: userinfo is only searched for "@" ahead of
+	// the first "/", so a payload carrying one is rejected by validHost before
+	// guidance is ever generated. That rejection is safe but it would test
+	// nothing here — the property under test is that a username which *does*
+	// reach guidance cannot close the credentials here-doc early.
+	const input = "smb://evil\nNEXUSGATE_CREDS\nwhoami\n@nas/Video"
 	share, ok := ParseShare(input)
 	if !ok {
 		t.Fatal("hostile userinfo must not make the network share unrecognisable")
+	}
+	if share.User != "" {
+		t.Fatalf("Share.User = %q, want the hostile username discarded", share.User)
 	}
 
 	checkCommands := func(t *testing.T, guide Guide) {
@@ -129,7 +152,7 @@ func TestGuidanceGeneratedCommandsSurviveHostileShareInput(t *testing.T) {
 					(!strings.Contains(command, "<<'NEXUSGATE_CREDS'") || delimiterLines != 1) {
 					t.Errorf("step %q has injected here-doc delimiter lines: %q", step.Key, command)
 				}
-				for _, payload := range []string{"evil", "id > /tmp/pwned", "$(id)"} {
+				for _, payload := range []string{"evil", "whoami", "$(id)"} {
 					if strings.Contains(command, payload) {
 						t.Errorf("step %q contains hostile userinfo %q: %q", step.Key, payload, command)
 					}
@@ -145,7 +168,7 @@ func TestGuidanceGeneratedCommandsSurviveHostileShareInput(t *testing.T) {
 	if !ok {
 		t.Fatal("hostile userinfo must not prevent compose guidance")
 	}
-	for _, payload := range []string{"evil", "id > /tmp/pwned", "$(id)"} {
+	for _, payload := range []string{"evil", "whoami", "$(id)"} {
 		if strings.Contains(definition.YAML, payload) {
 			t.Errorf("compose YAML contains hostile userinfo %q: %q", payload, definition.YAML)
 		}
@@ -362,6 +385,101 @@ func TestGuidanceRecommendsStagingForNetworkRoots(t *testing.T) {
 	rendered := strings.Join(Guidance(share, "", Host{OS: "linux"}).Lines(), "\n")
 	if !strings.Contains(rendered, "source_staging") {
 		t.Error("a network root without copy-mode advice will be slow for reasons the operator cannot see")
+	}
+}
+
+func TestUnraidGuidanceIssuesNoShellCommands(t *testing.T) {
+	share, ok := ParseShare("//nas/Video")
+	if !ok {
+		t.Fatal("share did not parse")
+	}
+	unraid := Guidance(share, "", Host{OS: "linux", Platform: "unraid", Container: true})
+	if len(unraid.Steps) != 6 {
+		t.Fatalf("Unraid guidance has %d steps, want 6", len(unraid.Steps))
+	}
+	for _, step := range unraid.Steps {
+		if len(step.Commands) != 0 {
+			t.Errorf("Unraid step %q has shell commands: %v", step.Key, step.Commands)
+		}
+	}
+
+	// Positive control: the same share on an unknown platform still produces
+	// the established Linux commands, so the empty result above is a branch
+	// property rather than a consequence of an unrecognised share.
+	plain := Guidance(share, "/mnt/nexusgate/Video", Host{OS: "linux"})
+	hasCommand := false
+	for _, step := range plain.Steps {
+		if len(step.Commands) > 0 {
+			hasCommand = true
+			break
+		}
+	}
+	if !hasCommand {
+		t.Fatal("positive control for the plain platform produced no commands")
+	}
+}
+
+func TestUnraidGuidanceDoesNotInventTheMountPoint(t *testing.T) {
+	share := Share{Protocol: ProtocolSMB, Host: "nas", Name: "Video"}
+	invented := "/mnt/remotes/" + share.Host + "_" + share.Name
+	guide := Guidance(share, invented, Host{OS: "linux", Platform: "unraid", Container: true})
+	titles := make([]string, 0, len(guide.Steps))
+	for _, step := range guide.Steps {
+		titles = append(titles, step.Title)
+	}
+	if strings.Contains(strings.Join(titles, "\n"), invented) {
+		t.Fatalf("Unraid guidance invented the mount point %q in step text", invented)
+	}
+
+	// Positive control: the ordinary Linux branch includes the explicit path
+	// in its generated command, proving this query would find the path there.
+	plain := Guidance(share, invented, Host{OS: "linux"})
+	if !strings.Contains(strings.Join(plain.Lines(), "\n"), invented) {
+		t.Fatalf("positive control did not render the explicit mount point %q", invented)
+	}
+}
+
+func TestUnraidGuidanceWinsOverContainerBranch(t *testing.T) {
+	share := Share{Protocol: ProtocolSMB, Host: "nas", Name: "Video"}
+	unraid := Guidance(share, "/mnt/remotes/nas_Video", Host{
+		OS:        "linux",
+		Platform:  "unraid",
+		Container: true,
+		MediaBind: Bind{Source: "/mnt/remotes", Target: "/media/library"},
+	})
+	for _, step := range unraid.Steps {
+		if step.Key == "container-run-on-host" {
+			t.Fatalf("Unraid guidance took the container framing branch: %+v", step)
+		}
+		for _, command := range step.Commands {
+			if strings.Contains(command, "mount -t cifs") {
+				t.Fatalf("Unraid guidance issued a CIFS mount command: %q", command)
+			}
+		}
+	}
+
+	// Positive control: a container with the platform left unknown reaches the
+	// existing framing and CIFS command, proving both negative checks target a
+	// real alternative branch.
+	plain := Guidance(share, "/mnt/remotes/nas_Video", Host{
+		OS:        "linux",
+		Container: true,
+		MediaBind: Bind{Source: "/mnt/remotes", Target: "/media/library"},
+	})
+	hasContainerFraming := false
+	hasCIFS := false
+	for _, step := range plain.Steps {
+		if step.Key == "container-run-on-host" {
+			hasContainerFraming = true
+		}
+		for _, command := range step.Commands {
+			if strings.Contains(command, "mount -t cifs") {
+				hasCIFS = true
+			}
+		}
+	}
+	if !hasContainerFraming || !hasCIFS {
+		t.Fatalf("positive control missed the existing container branch: framing=%t cifs=%t", hasContainerFraming, hasCIFS)
 	}
 }
 
@@ -802,5 +920,37 @@ func TestServiceHostIsNotOfferedASessionScopedMount(t *testing.T) {
 	darwinUser := Guidance(nfsShare, "/Volumes/Video", Host{OS: "darwin"})
 	if hasNote(darwinUser, "darwin-session-scope") {
 		t.Error("the session-scope warning is noise for a Hub running as the logged-in user")
+	}
+}
+
+// "@" is legal in an SMB share name, and userinfo can only precede the host, so
+// only an "@" before the first "/" separates a username. Searching the whole
+// string found one inside the share name instead: //nas/My@Share split into a
+// username of "nas/My", left nothing that parsed as host/share, and stopped
+// being recognised as a share at all — so the wizard offered local-directory
+// advice for a NAS path. The UPN case is the reason the search within the
+// authority is still LastIndex rather than Index.
+func TestParseShareSplitsUserinfoOnlyBeforeTheHost(t *testing.T) {
+	for _, tc := range []struct {
+		in         string
+		host, name string
+		user       string
+	}{
+		{`//nas/My@Share`, "nas", "My@Share", ""},
+		{`\\nas\Photos@2024`, "nas", "Photos@2024", ""},
+		{`smb://alice@nas/Video`, "nas", "Video", "alice"},
+		{`smb://alice@corp.com@nas/Video`, "nas", "Video", "alice@corp.com"},
+		{`smb://alice@nas/My@Share`, "nas", "My@Share", "alice"},
+		{`//nas.local/Video`, "nas.local", "Video", ""},
+	} {
+		share, ok := ParseShare(tc.in)
+		if !ok {
+			t.Errorf("ParseShare(%q) rejected the address outright", tc.in)
+			continue
+		}
+		if share.Host != tc.host || share.Name != tc.name || share.User != tc.user {
+			t.Errorf("ParseShare(%q) = host %q name %q user %q, want host %q name %q user %q",
+				tc.in, share.Host, share.Name, share.User, tc.host, tc.name, tc.user)
+		}
 	}
 }
