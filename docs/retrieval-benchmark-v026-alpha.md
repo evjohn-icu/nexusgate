@@ -73,14 +73,14 @@ notRelevant shot 进入了**所有含语义权重的 blend**（含 RRF）的 top
 
 ## 离线 eval 语料
 
-`cmd/nexusslate-corpusgen` 生成与 golden 家族对应的合成 clips + 
+`cmd/nexusgate-corpusgen` 生成与 golden 家族对应的合成 clips + 
 `ground_truth.json`（lavfi 测试源，可复现、无版权、可分发）：
 
 ```bash
-nexusslate-corpusgen --out ./corpus
-nexusslate-eval run  --corpus ./corpus --data-dir ./eval/qwen   --label qwen3vl-4b
-nexusslate-eval run  --corpus ./corpus --data-dir ./eval/gemini --label gemini-flash
-nexusslate-eval score --corpus ./corpus --data-dir ./eval --labels qwen3vl-4b,gemini-flash
+nexusgate-corpusgen --out ./corpus
+nexusgate-eval run  --corpus ./corpus --data-dir ./eval/qwen   --label qwen3vl-4b
+nexusgate-eval run  --corpus ./corpus --data-dir ./eval/gemini --label gemini-flash
+nexusgate-eval score --corpus ./corpus --data-dir ./eval --labels qwen3vl-4b,gemini-flash
 ```
 
 `score` 的 RunScore 输出新增 `semantic_false_positives` /

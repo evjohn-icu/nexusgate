@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/evjohn-icu/nexusslate/internal/app"
+	"github.com/evjohn-icu/nexusgate/internal/app"
 )
 
 // maxTestDriveBodyBytes bounds the POST body of /api/v1/test-drive. The

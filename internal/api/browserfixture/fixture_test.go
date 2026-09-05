@@ -25,7 +25,7 @@ func TestFixtureCloseRemovesTemporaryDirectory(t *testing.T) {
 }
 
 func TestServePlaywrightFixture(t *testing.T) {
-	if os.Getenv("NEXUSSLATE_PLAYWRIGHT_SERVE") != "1" {
+	if os.Getenv("NEXUSGATE_PLAYWRIGHT_SERVE") != "1" {
 		t.Skip("fixture server is opt-in")
 	}
 	f, err := New(context.Background())
@@ -33,7 +33,7 @@ func TestServePlaywrightFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	addr := os.Getenv("NEXUSSLATE_PLAYWRIGHT_ADDR")
+	addr := os.Getenv("NEXUSGATE_PLAYWRIGHT_ADDR")
 	if addr == "" {
 		addr = "127.0.0.1:4173"
 	}

@@ -3,9 +3,9 @@ package video
 import (
 	"context"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	videoanalysis "github.com/evjohn-icu/nexusslate/internal/domain/video_analysis"
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	videoanalysis "github.com/evjohn-icu/nexusgate/internal/domain/video_analysis"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 )
 
 type Capability string
@@ -23,7 +23,7 @@ type VideoUnderstandingProvider interface {
 	Analyze(context.Context, videoanalysis.Input) (videoanalysis.Result, string, error)
 }
 
-// ShotAnalysisRequest is one shot handed to a multiframe VLM. NexusSlate has
+// ShotAnalysisRequest is one shot handed to a multiframe VLM. NexusGate has
 // already decided the shot's boundaries, sampled its frames and sliced the
 // transcript to the shot's window — the model is only asked to describe what
 // the frames show. Frame timestamps are asset-relative.
@@ -36,7 +36,7 @@ type ShotAnalysisRequest struct {
 }
 
 // ShotMetadata is what a multiframe VLM returns: pure per-shot understanding,
-// with no timeline fields. The boundaries come from NexusSlate's detector; the
+// with no timeline fields. The boundaries come from NexusGate's detector; the
 // model must not be able to move a shot, only describe it. Enum-valued fields
 // (shot_size, camera_motion, quality) use the same controlled vocabularies as
 // the asset-level analysis.

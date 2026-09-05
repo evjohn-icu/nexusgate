@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/app"
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	videoanalysis "github.com/evjohn-icu/nexusslate/internal/domain/video_analysis"
-	sqlite "github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/app"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	videoanalysis "github.com/evjohn-icu/nexusgate/internal/domain/video_analysis"
+	sqlite "github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
 
 // e2eService bundles the app.Service (the scan boundary) with the

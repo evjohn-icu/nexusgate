@@ -46,7 +46,7 @@ config.json
 worker.json
 
 # --- Data directories & credentials ---
-.nexusslate*/
+.nexusgate*/
 admin-token
 agent-token
 provider-secrets/

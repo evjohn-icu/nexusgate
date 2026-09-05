@@ -37,9 +37,19 @@ type Host struct {
 	// Empty with NeedsAuth=true means the host answered on 445 but refused
 	// the anonymous session.
 	Shares []string `json:"shares,omitempty"`
-	// NeedsAuth reports that the host exists but the anonymous guest session
-	// could not enumerate its shares; a credential is required to read them.
+	// NeedsAuth reports that the anonymous guest session was refused for this
+	// host. It is retained for API compatibility and is equivalent to Probe ==
+	// "auth".
 	NeedsAuth bool `json:"needs_auth,omitempty"`
+	// Probe says what the anonymous guest probe concluded about this host.
+	// "ok"        — shares were enumerated (Shares is populated).
+	// "auth"      — the server answered SMB and refused the anonymous session;
+	//               a credential is the thing that is missing.
+	// "unusable"  — the host answered on 445 but is not a usable SMB2/3 target
+	//               (SMB1-only, a non-SMB service, a mid-negotiation reset).
+	//               A password will not help; say so rather than promising it will.
+	// "timeout"   — the probe ran out of budget and concluded nothing.
+	Probe string `json:"probe"`
 	// Source says which layer found it: "mdns", "portscan" or "mdns+portscan".
 	Source string `json:"source"`
 }
@@ -83,9 +93,28 @@ func DefaultOptions() Options {
 	}
 }
 
+// Result is one discovery run: the hosts found, plus what the run actually did,
+// so the caller can explain an empty result instead of guessing at it.
+type Result struct {
+	Hosts []Host `json:"hosts"`
+	// ScannedNetworks lists the CIDRs the port scan actually swept.
+	ScannedNetworks []string `json:"scanned_networks,omitempty"`
+	// SkippedNetworks lists CIDRs that were refused for being wider than
+	// maxScanHosts, so "we did not look there" is never reported as "nothing
+	// is there".
+	SkippedNetworks []string `json:"skipped_networks,omitempty"`
+	// MDNSAvailable is false when the multicast browse could not start at all
+	// (no resolver). It does not become false merely because nobody answered.
+	MDNSAvailable bool `json:"mdns_available"`
+	// Truncated is true when the port scan ran out of budget before dialling
+	// every candidate address, so a caller never reports a partial sweep as a
+	// complete one.
+	Truncated bool `json:"truncated"`
+}
+
 // Discover runs the three-layer discovery and returns a deduplicated, sorted
-// list of SMB hosts.
-func Discover(ctx context.Context, opts Options) ([]Host, error) {
+// list of SMB hosts together with diagnostics about the run.
+func Discover(ctx context.Context, opts Options) (Result, error) {
 	return discoverWith(ctx, opts, browseMDNS, scanPort, enumerateShares)
 }
 
@@ -94,10 +123,10 @@ func Discover(ctx context.Context, opts Options) ([]Host, error) {
 func discoverWith(
 	ctx context.Context,
 	opts Options,
-	browse func(context.Context) []Host,
-	scan func(context.Context, time.Duration) []net.IP,
+	browse func(context.Context) ([]Host, bool),
+	scan func(context.Context, time.Duration) ([]net.IP, []string, []string, bool),
 	enumerate func(context.Context, time.Duration, map[string]*Host, []string),
-) ([]Host, error) {
+) (Result, error) {
 	if opts.ScanTimeout <= 0 {
 		opts.ScanTimeout = DefaultTimeout
 	}
@@ -107,19 +136,26 @@ func discoverWith(
 	if opts.ShareTimeout <= 0 {
 		opts.ShareTimeout = DefaultShareTimeout
 	}
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, opts.ScanTimeout)
-		defer cancel()
-	}
+	runCtx, runCancel := context.WithTimeout(ctx, opts.ScanTimeout)
+	defer runCancel()
 
-	// Layer 1: mDNS.
-	mdnsHosts := browse(ctx)
+	mdnsBudget := opts.ScanTimeout / 5
+	portBudget := opts.ScanTimeout * 8 / 15
+	shareBudget := opts.ScanTimeout - mdnsBudget - portBudget
 
-	// Layer 2: port scan of the local network.
+	// Keep mDNS and port scanning sequential: deciding which addresses to scan
+	// and which hosts mDNS has reported would otherwise race for little gain.
+	mdnsCtx, mdnsCancel := context.WithTimeout(runCtx, mdnsBudget)
+	mdnsHosts, mdnsAvailable := browse(mdnsCtx)
+	mdnsCancel()
+
 	var scanned []net.IP
+	var scannedNetworks, skippedNetworks []string
+	var truncated bool
 	if !opts.DisablePortScan {
-		scanned = scan(ctx, opts.PortDialTimeout)
+		portCtx, portCancel := context.WithTimeout(runCtx, portBudget)
+		scanned, scannedNetworks, skippedNetworks, truncated = scan(portCtx, opts.PortDialTimeout)
+		portCancel()
 	}
 
 	// Merge mDNS results with port-scan hits by IP. A host found by both is
@@ -128,6 +164,7 @@ func discoverWith(
 	var order []string // stable first-seen order
 	addHost := func(h Host) {
 		h.Name = strings.TrimSuffix(h.Name, ".")
+		h.NeedsAuth = h.Probe == "auth"
 		key := h.IP
 		if existing, ok := byIP[key]; ok {
 			// Merge: keep the better name, union sources.
@@ -137,8 +174,13 @@ func discoverWith(
 			if !strings.Contains(existing.Source, h.Source) {
 				existing.Source = mergeSources(existing.Source, h.Source)
 			}
+			if existing.Probe == "" && h.Probe != "" {
+				existing.Probe = h.Probe
+				existing.NeedsAuth = existing.Probe == "auth"
+			}
 			if len(h.Shares) > 0 && len(existing.Shares) == 0 {
 				existing.Shares = h.Shares
+				existing.Probe = "ok"
 				existing.NeedsAuth = false
 			}
 			return
@@ -157,7 +199,12 @@ func discoverWith(
 	// Layer 3: guest share enumeration for every host that answered 445
 	// (mDNS hosts also imply 445 is open, so enumerate them too).
 	if !opts.DisableShareEnum {
-		enumerate(ctx, opts.ShareTimeout, byIP, order)
+		shareCtx, shareCancel := context.WithTimeout(runCtx, shareBudget)
+		enumerate(shareCtx, opts.ShareTimeout, byIP, order)
+		shareCancel()
+	}
+	for _, key := range order {
+		byIP[key].NeedsAuth = byIP[key].Probe == "auth"
 	}
 
 	out := make([]Host, 0, len(order))
@@ -175,7 +222,13 @@ func discoverWith(
 		}
 		return out[i].IP < out[j].IP
 	})
-	return out, nil
+	return Result{
+		Hosts:           out,
+		ScannedNetworks: scannedNetworks,
+		SkippedNetworks: skippedNetworks,
+		MDNSAvailable:   mdnsAvailable,
+		Truncated:       truncated,
+	}, nil
 }
 
 func normalizeSource(source string) string {

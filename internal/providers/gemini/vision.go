@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	videoanalysis "github.com/evjohn-icu/nexusslate/internal/domain/video_analysis"
-	"github.com/evjohn-icu/nexusslate/internal/normalize"
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
-	videoproviders "github.com/evjohn-icu/nexusslate/internal/providers/video"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	videoanalysis "github.com/evjohn-icu/nexusgate/internal/domain/video_analysis"
+	"github.com/evjohn-icu/nexusgate/internal/normalize"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
+	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
 )
 
 type Vision struct {

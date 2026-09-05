@@ -1,16 +1,16 @@
 {
-  "name": "nexusslate",
+  "name": "nexusgate",
   "version": "0.31.0",
-  "description": "NexusSlate footage capability provider for Claude Code: inspect the local-first library, search shots with evidence, and read word-level transcripts through six read-only MCP tools.",
+  "description": "NexusGate footage capability provider for Claude Code: inspect the local-first library, search shots with evidence, and read word-level transcripts through six read-only MCP tools.",
   "author": {
-    "name": "NexusSlate",
-    "url": "https://github.com/evjohn-icu/nexusslate"
+    "name": "NexusGate",
+    "url": "https://github.com/evjohn-icu/nexusgate"
   },
-  "homepage": "https://github.com/evjohn-icu/nexusslate",
-  "repository": "https://github.com/evjohn-icu/nexusslate.git",
+  "homepage": "https://github.com/evjohn-icu/nexusgate",
+  "repository": "https://github.com/evjohn-icu/nexusgate.git",
   "license": "Apache-2.0",
   "keywords": [
-    "nexusslate",
+    "nexusgate",
     "footage",
     "video",
     "video-search",

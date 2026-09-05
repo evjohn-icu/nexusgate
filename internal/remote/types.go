@@ -5,7 +5,7 @@ package remote
 import (
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 // WorkerJob contains only a portable source locator. Hub absolute paths never

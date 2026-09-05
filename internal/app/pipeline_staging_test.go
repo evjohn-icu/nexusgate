@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/staging"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/staging"
 )
 
 func TestPipelineSourcePathStagesNetworkSourceBeforeMediaWork(t *testing.T) {

@@ -3,7 +3,7 @@ package app
 import (
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 func TestCostGuidesAreAdvisoryPipelineSettings(t *testing.T) {

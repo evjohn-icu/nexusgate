@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 // MarkRootScanStarted records that a scan walk of the root began. It is the

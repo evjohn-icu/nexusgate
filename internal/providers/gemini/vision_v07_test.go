@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	videoanalysis "github.com/evjohn-icu/nexusslate/internal/domain/video_analysis"
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	videoanalysis "github.com/evjohn-icu/nexusgate/internal/domain/video_analysis"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 )
 
 func TestVideoProviderDecodesUnifiedGeminiResponse(t *testing.T) {

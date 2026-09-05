@@ -1,4 +1,4 @@
-// Package support assembles the `nexusslate support bundle`: one zip of Hub
+// Package support assembles the `nexusgate support bundle`: one zip of Hub
 // diagnostics — the structured doctor report, the queue summary, worker
 // versions, recent failure codes, the sanitized configuration and the
 // human-readable doctor text — meant to be handed to an operator or upstream
@@ -28,8 +28,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/config"
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 const (
@@ -368,7 +368,7 @@ func writeZip(outPath string, entries []zipEntry) error {
 	if total > maxBundleTotalBytes {
 		return fmt.Errorf("support bundle exceeds %d-byte entry limit", maxBundleTotalBytes)
 	}
-	file, err := os.CreateTemp(filepath.Dir(outPath), ".nexusslate-support-*.tmp")
+	file, err := os.CreateTemp(filepath.Dir(outPath), ".nexusgate-support-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temporary archive: %w", err)
 	}

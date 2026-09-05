@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 // facetUniverseStore is a minimal scripted ShotStore for the facet-universe

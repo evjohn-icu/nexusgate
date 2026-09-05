@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/ingest"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/ingest"
 )
 
 // scanGateRepo implements the full Repository by embedding it as a nil field

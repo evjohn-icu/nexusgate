@@ -3,7 +3,7 @@ package video_analysis
 import (
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 // The model is shown one window at a time and answers in window-relative time.

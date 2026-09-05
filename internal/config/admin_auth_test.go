@@ -105,7 +105,7 @@ func TestAdminAuthPrefixesRejectsMalformedCIDR(t *testing.T) {
 // three modes fails startup instead of silently falling back to a default.
 func TestLoadRejectsInvalidAdminAuth(t *testing.T) {
 	dataDir := t.TempDir()
-	t.Setenv("NEXUSSLATE_DATA_DIR", dataDir)
+	t.Setenv("NEXUSGATE_DATA_DIR", dataDir)
 	if err := os.WriteFile(filepath.Join(dataDir, "config.json"), []byte(`{"hub_security":{"admin_auth":"yes"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestLoadRejectsInvalidAdminAuth(t *testing.T) {
 // that never mentions admin_auth (or leaves it blank) must load as
 // trusted_network, not fail validation.
 func TestLoadNormalizesEmptyAdminAuthToTrustedNetwork(t *testing.T) {
-	t.Setenv("NEXUSSLATE_DATA_DIR", t.TempDir())
+	t.Setenv("NEXUSGATE_DATA_DIR", t.TempDir())
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -129,14 +129,14 @@ func TestLoadNormalizesEmptyAdminAuthToTrustedNetwork(t *testing.T) {
 }
 
 // TestLoadReadsAdminAuthNetworksFromEnvironment pins that the container
-// deployment variable NEXUSSLATE_HUB_ADMIN_AUTH_NETWORKS lands in
+// deployment variable NEXUSGATE_HUB_ADMIN_AUTH_NETWORKS lands in
 // HubSecurity.AdminAuthNetworks after a comma split, alongside the mode
 // override, so a Compose/Unraid operator can deliberately select
 // trusted_network and name the real client CIDRs in one place.
 func TestLoadReadsAdminAuthNetworksFromEnvironment(t *testing.T) {
-	t.Setenv("NEXUSSLATE_DATA_DIR", t.TempDir())
-	t.Setenv("NEXUSSLATE_HUB_ADMIN_AUTH", "trusted_network")
-	t.Setenv("NEXUSSLATE_HUB_ADMIN_AUTH_NETWORKS", "10.9.0.0/16, fd00::/8")
+	t.Setenv("NEXUSGATE_DATA_DIR", t.TempDir())
+	t.Setenv("NEXUSGATE_HUB_ADMIN_AUTH", "trusted_network")
+	t.Setenv("NEXUSGATE_HUB_ADMIN_AUTH_NETWORKS", "10.9.0.0/16, fd00::/8")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -160,8 +160,8 @@ func TestLoadReadsAdminAuthNetworksFromEnvironment(t *testing.T) {
 // in the container variable fails startup instead of silently widening or
 // narrowing the admin waiver.
 func TestLoadRejectsMalformedAdminAuthNetworksFromEnvironment(t *testing.T) {
-	t.Setenv("NEXUSSLATE_DATA_DIR", t.TempDir())
-	t.Setenv("NEXUSSLATE_HUB_ADMIN_AUTH_NETWORKS", "192.168.1.0/16, not-a-cidr")
+	t.Setenv("NEXUSGATE_DATA_DIR", t.TempDir())
+	t.Setenv("NEXUSGATE_HUB_ADMIN_AUTH_NETWORKS", "192.168.1.0/16, not-a-cidr")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected Load to reject a malformed admin_auth_networks CIDR")
 	}
@@ -169,14 +169,14 @@ func TestLoadRejectsMalformedAdminAuthNetworksFromEnvironment(t *testing.T) {
 
 // TestDeploymentContainerDefaultsPassGuard pins the repository deployment
 // defaults: both shipped NAT/container entry points (docker-compose.yml and
-// the Unraid template) default NEXUSSLATE_HUB_ADMIN_AUTH to "required", which
+// the Unraid template) default NEXUSGATE_HUB_ADMIN_AUTH to "required", which
 // loads and clears the container guard with no networks configured. The
 // bare-metal default trusted_network with an empty networks list still fails
 // closed inside a container, so an operator who wants the waiver must name
 // the real CIDRs explicitly.
 func TestDeploymentContainerDefaultsPassGuard(t *testing.T) {
-	t.Setenv("NEXUSSLATE_DATA_DIR", t.TempDir())
-	t.Setenv("NEXUSSLATE_HUB_ADMIN_AUTH", "required")
+	t.Setenv("NEXUSGATE_DATA_DIR", t.TempDir())
+	t.Setenv("NEXUSGATE_HUB_ADMIN_AUTH", "required")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -185,7 +185,7 @@ func TestDeploymentContainerDefaultsPassGuard(t *testing.T) {
 		t.Fatalf("required container default must pass the guard: %v", err)
 	}
 
-	t.Setenv("NEXUSSLATE_HUB_ADMIN_AUTH", "trusted_network")
+	t.Setenv("NEXUSGATE_HUB_ADMIN_AUTH", "trusted_network")
 	cfg, err = Load()
 	if err != nil {
 		t.Fatal(err)

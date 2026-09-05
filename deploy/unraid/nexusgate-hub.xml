@@ -1,0 +1,73 @@
+<?xml version="1.0"?>
+<!--
+  Community Applications template for the NexusGate (Re:Footage) Hub, GPU
+  variant. Install this one first: the Worker template
+  (nexusgate-worker.xml) needs a running, paired Hub before it can start.
+
+  Unraid has no native Compose support (Compose Manager is an optional
+  plugin), so this mirrors the `hub` service in docker-compose.yml as a
+  standalone CA template instead of assuming Compose is installed. Keep the
+  two in sync when either changes: read-only media bind, Hub-only data
+  volume, loopback-safe defaults, and the GPU device passthrough below.
+-->
+<Container version="2">
+  <Name>nexusgate-hub</Name>
+  <Repository>nexusgate:v0.31.0-alpha</Repository>
+  <Registry/>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/evjohn-icu/nexusgate</Support>
+  <Project>https://github.com/evjohn-icu/nexusgate</Project>
+  <Overview>Re:Footage (nexusgate) Hub —— GPU 加速版本。Hub 是唯一持有 SQLite 数据库、HTTPS API 与浏览器界面的角色；原始素材始终只读挂载，NexusGate 绝不写入源文件。
+
+【部署顺序：先 Hub，后 Worker】
+1. 先启动本 Hub 容器。首次启动会在数据目录下生成自签名证书和管理员令牌 admin-token（权限 0600），浏览器打开 WebUI 时会看到自签名证书警告，属于预期行为，接受一次即可。
+2. 用 admin-token 登录 https://&lt;你的IP&gt;:8787/workers 页面，点击"生成配对 Token"，记下一次性配对令牌和 Hub 证书指纹。
+3. 再安装并配置 nexusgate-worker 模板 —— Worker 容器首次启动前必须先用这个配对令牌完成注册（worker enroll），否则会因为找不到 worker.json 立即退出。完整步骤见 nexusgate-worker.xml 的说明和 deploy/unraid/README.md。
+
+【首次启动前的一次性权限修复】
+Unraid 会把 appdata 目录创建为 root:root 或 nobody:users(99:100)，而本镜像固定以非特权用户 uid 10001 运行，没有 PUID/PGID 包装脚本（这是刻意的：镜像不做特权切换，也不会以 root 身份修复权限）。首次启动前，在 Unraid 终端执行一次：
+  chown -R 10001:10001 /mnt/user/appdata/nexusgate-hub
+素材目录是只读挂载，Unraid 共享的默认权限已经可读，不需要额外处理。
+
+【GPU 加速】
+本模板的 Extra Parameters 已包含 --device=/dev/dri:/dev/dri，用于 Intel/AMD 核显通过 VAAPI 加速转码（两者共用同一个 DRM 渲染节点，走同一个镜像）。如果这台 Unraid 主机没有 /dev/dri（纯 CPU 主机，或者只有 NVIDIA 独显走 NVIDIA-Driver 插件的 --runtime=nvidia 方案），请把这一项从 Extra Parameters 里删掉，否则容器会因为设备不存在而无法启动。NVIDIA 方案和已知的 Intel N100/N150 驱动版本问题见 docs/v0.19-gpu-docker-unraid.md。
+
+用 `docker exec nexusgate-hub nexusgate doctor` 检查加速是否真的生效。
+
+【素材目录：请用「只读 - slave」访问模式】
+素材库目录这一项的访问模式（Access Mode）必须是 Unraid 的 "Read Only slave"，模板里已经预设为 ro,slave。原因是挂载传播：默认的 private 模式下，容器启动之后才在宿主机上挂载的共享，在容器里永远是一个空目录，只能重建容器才能看到——而 Unassigned Devices 插件挂载远程 SMB/NFS 共享正是这个场景，它在阵列启停时也会重新挂载。slave 是单向的（宿主机的挂载对容器可见，容器无法反过来影响宿主机的挂载），所以它不会削弱这里的只读约束。
+
+路径建议填 Unassigned Devices 的挂载根目录 /mnt/remotes，而不是某一个具体共享：这样以后新挂载的共享无需重建容器就会直接出现在容器内。如果素材在阵列上，填 /mnt/user/... 也可以。容器内固定用 root add /media/library 记录这个只读路径。</Overview>
+  <Category>MediaApp: Tools:</Category>
+  <WebUI>https://[IP]:[PORT:8787]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/evjohn-icu/nexusgate/main/deploy/unraid/nexusgate-hub.xml</TemplateURL>
+  <!-- No <Icon> yet: the repository ships no deploy/unraid/icon.png, and pointing
+       Community Applications at a URL that 404s renders a broken image rather than
+       Unraid's neutral placeholder. Restore
+       <Icon>https://raw.githubusercontent.com/evjohn-icu/nexusgate/main/deploy/unraid/icon.png</Icon>
+       once that file exists. -->
+  <ExtraParams>--device=/dev/dri:/dev/dri</ExtraParams>
+  <DonateLink/>
+  <DonateText/>
+  <Description>Local-first video footage intelligence Hub (database, HTTPS API, browser UI, local pipeline). GPU-capable image: VAAPI for Intel/AMD via /dev/dri. Pair a nexusgate-worker container against this Hub for remote FFmpeg derive capacity.</Description>
+  <Labels/>
+  <Config Name="WebUI/API 端口 Port" Target="8787" Default="8787" Mode="tcp" Description="Hub 的 HTTPS 端口。默认 TLS 模式为 auto（自签名证书），浏览器会提示证书警告，属预期行为。" Type="Port" Display="always" Required="true" Mask="false">8787</Config>
+  <Config Name="Hub 数据目录 Data directory" Target="/var/lib/nexusgate" Default="/mnt/user/appdata/nexusgate-hub" Mode="rw" Description="数据库、缓存、admin-token、provider-secrets 的唯一存放位置，仅 Hub 可写。首次启动前需要 chown -R 10001:10001 到这个目录（见 Overview）。" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/nexusgate-hub</Config>
+  <!--
+    Mode is "ro,slave", not plain "ro". Unraid's Access Mode control offers
+    slave as a first-class choice ("Read Only slave") precisely for this
+    case: a share that Unassigned Devices mounts under /mnt/remotes after
+    this container started is invisible under the default private
+    propagation, and stays invisible across UD's own remount on array
+    start/stop, until the container is recreated. slave propagates
+    host->container only, so the container still cannot create or affect a
+    mount the host would see, and the bind stays read-only.
+  -->
+  <Config Name="素材库目录 Media library (read-only)" Target="/media/library" Default="/mnt/remotes" Mode="ro,slave" Description="原始素材目录，只读挂载，NexusGate 绝不写入。访问模式必须保持「只读 - slave」(ro,slave)，否则容器启动后才挂载的远程共享在容器内是空目录（见 Overview）。建议填 Unassigned Devices 的挂载根目录 /mnt/remotes 而不是某一个具体共享，这样以后新挂的共享无需重建容器即可出现；素材在阵列上则填 /mnt/user/... 。容器内用 root add /media/library 记录这个只读路径。" Type="Path" Display="always" Required="true" Mask="false">/mnt/remotes</Config>
+  <Config Name="监听地址 NEXUSGATE_LISTEN_ADDRESS" Target="NEXUSGATE_LISTEN_ADDRESS" Default="0.0.0.0:8787" Mode="" Description="容器内必须监听 0.0.0.0，否则桥接网络下端口发布后仍无法访问（镜像内默认是 127.0.0.1:8787）。" Type="Variable" Display="advanced-hide" Required="true" Mask="false">0.0.0.0:8787</Config>
+  <Config Name="管理鉴权模式 NEXUSGATE_HUB_ADMIN_AUTH" Target="NEXUSGATE_HUB_ADMIN_AUTH" Default="required" Mode="" Description="管理/写入接口的鉴权模式。默认 required：所有写入请求都必须携带 Hub 生成的管理员令牌（admin-token，位于数据目录，权限 0600）。发布端口后，Docker 网桥网关（RFC1918 地址）让所有请求都看似来自局域网，trusted_network 无法区分局域网和公网调用者，因此不要改成 trusted_network，除非你同时在下方的网段白名单里列出真实客户端网段。" Type="Variable" Display="always" Required="false" Mask="false">required</Config>
+  <Config Name="管理信任网段 NEXUSGATE_HUB_ADMIN_AUTH_NETWORKS" Target="NEXUSGATE_HUB_ADMIN_AUTH_NETWORKS" Default="" Mode="" Description="仅当管理鉴权模式为 trusted_network 时使用：逗号分隔的真实客户端 CIDR 白名单（例如 192.168.1.0/24, 10.0.0.0/8）。留空且模式为 trusted_network 时容器会拒绝启动（fail closed），避免发布端口后管理写入对公网开放。" Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+</Container>

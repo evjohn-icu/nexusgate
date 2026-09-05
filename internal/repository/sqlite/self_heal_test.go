@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/idgen"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/idgen"
 )
 
 func TestHealStaleRunningJobs(t *testing.T) {

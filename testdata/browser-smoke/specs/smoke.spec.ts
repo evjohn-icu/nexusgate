@@ -8,7 +8,7 @@ const pageRoutes = ['/', '/setup', '/progress', '/workers', '/library-roots', '/
 // The closed set of UI locales; the config's default context locale is zh-CN.
 const supportedLocales = ['zh-CN', 'ja-JP', 'en-US', 'fr-FR', 'es-ES'];
 
-const fixtureBaseUrl = process.env.NEXUSSLATE_PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1:4173';
+const fixtureBaseUrl = process.env.NEXUSGATE_PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1:4173';
 
 async function login(page: Page) {
   await page.goto('/');
@@ -58,8 +58,8 @@ test.describe('core browser surface', () => {
       expect(storage).toEqual({ local: 0, session: 0, token: false });
 
       const cookies = await context.cookies();
-      const session = cookies.find((cookie) => cookie.name === '__Host-nexusslate_admin_session');
-      const csrf = cookies.find((cookie) => cookie.name === '__Host-nexusslate_csrf');
+      const session = cookies.find((cookie) => cookie.name === '__Host-nexusgate_admin_session');
+      const csrf = cookies.find((cookie) => cookie.name === '__Host-nexusgate_csrf');
       expect(session).toMatchObject({ secure: true, httpOnly: true, sameSite: 'Strict', path: '/' });
       expect(csrf).toMatchObject({ secure: true, httpOnly: false, sameSite: 'Strict', path: '/' });
       expect(session?.value).not.toBe(adminToken);
@@ -241,7 +241,7 @@ test.describe('localization', () => {
   test('renders every route in every locale cookie with matching lang and selector', async ({ browser }) => {
     for (const locale of supportedLocales) {
       const context = await browser.newContext();
-      await context.addCookies([{ name: 'nexusslate_locale', value: locale, url: fixtureBaseUrl }]);
+      await context.addCookies([{ name: 'nexusgate_locale', value: locale, url: fixtureBaseUrl }]);
       const page = await context.newPage();
       for (const route of pageRoutes) {
         const label = `${route} in ${locale}`;
@@ -266,7 +266,7 @@ test.describe('localization', () => {
     ];
     for (const c of cases) {
       const context = await browser.newContext();
-      await context.addCookies([{ name: 'nexusslate_locale', value: c.locale, url: fixtureBaseUrl }]);
+      await context.addCookies([{ name: 'nexusgate_locale', value: c.locale, url: fixtureBaseUrl }]);
       const page = await context.newPage();
       await page.goto(c.route);
       await expect(page.locator('body'), `${c.locale} on ${c.route}`).toContainText(c.term);
@@ -302,7 +302,7 @@ test.describe('localization', () => {
     // The cookie value is the canonical supported tag, and no browser storage
     // was used to remember the preference.
     const cookies = await ja.cookies(fixtureBaseUrl);
-    const localeCookie = cookies.find((cookie) => cookie.name === 'nexusslate_locale');
+    const localeCookie = cookies.find((cookie) => cookie.name === 'nexusgate_locale');
     expect(localeCookie?.value).toBe('en-US');
     const storage = await persisted.evaluate(() => ({
       local: window.localStorage.length,
@@ -383,8 +383,8 @@ test.describe('usability repair (2026-08-28 audit)', () => {
     // Create a scratch collection through the admin API so the seeded fixture
     // collection survives this destructive test.
     const created = await page.evaluate(async () => {
-      const csrf = document.cookie.split('; ').find((c) => c.startsWith('__Host-nexusslate_csrf='));
-      const token = csrf ? decodeURIComponent(csrf.slice('__Host-nexusslate_csrf='.length)) : '';
+      const csrf = document.cookie.split('; ').find((c) => c.startsWith('__Host-nexusgate_csrf='));
+      const token = csrf ? decodeURIComponent(csrf.slice('__Host-nexusgate_csrf='.length)) : '';
       const r = await fetch('/api/v1/collections', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
@@ -622,7 +622,7 @@ test.describe('usability repair (2026-08-29 audit, tranche 2)', () => {
     await expect(fixes).toContainText('FFmpeg');
     await expect(fixes).toContainText('PATH');
     await expect(fixes).toContainText('数据库健康');
-    await expect(fixes).toContainText('nexusslate doctor');
+    await expect(fixes).toContainText('nexusgate doctor');
     // A check that passed must not be listed as needing work.
     await expect(fixes).not.toContainText('FFprobe');
     // ...and the status line must stop claiming success.

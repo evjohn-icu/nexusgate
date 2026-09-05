@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/app"
-	"github.com/evjohn-icu/nexusslate/internal/providerchannels"
+	"github.com/evjohn-icu/nexusgate/internal/app"
+	"github.com/evjohn-icu/nexusgate/internal/providerchannels"
 )
 
 // TestProviderChannelRuntimeStatusDistinguishesRetiredFromLiveMember is the

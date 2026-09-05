@@ -3,7 +3,7 @@ package embedding
 import (
 	"context"
 	"errors"
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 	"net/http"
 	"net/http/httptest"
 	"strings"

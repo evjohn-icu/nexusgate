@@ -1,0 +1,16 @@
+{
+  "name": "nexusgate-dsh",
+  "version": "0.31.0-alpha",
+  "private": true,
+  "description": "NexusGate footage capability provider for DeepSeek Harness (DSH): mounts nexusgate-mcp as an external stdio MCP server so the dsh agent can search the local-first library and read shot-level evidence through the six read-only tools.",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "Apache-2.0"
+}

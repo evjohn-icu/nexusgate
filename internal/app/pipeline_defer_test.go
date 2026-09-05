@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/media"
-	"github.com/evjohn-icu/nexusslate/internal/providerchannels"
-	"github.com/evjohn-icu/nexusslate/internal/providerpool"
-	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/providerchannels"
+	"github.com/evjohn-icu/nexusgate/internal/providerpool"
+	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
 
 // indexFailureRepo is the real repository with one pipeline stage forced to
@@ -77,7 +77,7 @@ func newQueuedIndexJob(t *testing.T, fail error) *indexFailureRepo {
 // returns as soon as the next job is not due yet, which is what a bounded
 // backoff looks like from the outside, so a job that is meant to burn three
 // attempts needs the pipeline to be woken again after each delay — exactly what
-// re-running `nexusslate pipeline run` does.
+// re-running `nexusgate pipeline run` does.
 func singleJob(t *testing.T, repo *indexFailureRepo, pipeline *Pipeline, settled func(domain.Job) bool) domain.Job {
 	t.Helper()
 	ctx := context.Background()

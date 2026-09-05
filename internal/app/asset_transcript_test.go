@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 // transcriptFallbackRepo answers only the two reads AssetTranscript uses —

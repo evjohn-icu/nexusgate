@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 // seedCostEstimate inserts one ledger row via the public method so the tests

@@ -3,7 +3,7 @@ package search
 import (
 	"sort"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 // Retrieval channels. Each channel wraps one ShotStore method and exposes it

@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/app"
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/mount"
-	"github.com/evjohn-icu/nexusslate/internal/nleexport"
-	"github.com/evjohn-icu/nexusslate/internal/providerchannels"
+	"github.com/evjohn-icu/nexusgate/internal/app"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/mount"
+	"github.com/evjohn-icu/nexusgate/internal/nleexport"
+	"github.com/evjohn-icu/nexusgate/internal/providerchannels"
 )
 
 // TestWriteAPIErrorEnvelopeShape pins the wire contract: one JSON object with

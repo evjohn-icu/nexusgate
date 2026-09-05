@@ -12,10 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/app"
-	"github.com/evjohn-icu/nexusslate/internal/config"
-	"github.com/evjohn-icu/nexusslate/internal/media"
-	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/app"
+	"github.com/evjohn-icu/nexusgate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
 
 // pageRoutes is the closed set of GET routes in the route inventory that serve an HTML

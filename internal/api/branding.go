@@ -2,7 +2,7 @@ package api
 
 import "strings"
 
-// Re:Footage is the product-facing name. NexusSlate remains the binary,
+// Re:Footage is the product-facing name. NexusGate remains the binary,
 // configuration namespace and protocol name so existing libraries and Workers
 // stay compatible while the UI makes the product promise more memorable.
 const productName = "Re:Footage"
@@ -14,8 +14,8 @@ const productName = "Re:Footage"
 // silently no-oping (the same guard TestLibraryPagePatchesApplyInOrderAndBite
 // gives the library overlay).
 var brandReplacements = []pagePatch{
-	{anchor: "<title>NexusSlate", replacement: "<title>" + productName},
-	{anchor: `<span class="brand">NexusSlate</span>`, replacement: `<span class="brand">` + strings.Replace(productName, ":", `<i>:</i>`, 1) + `</span>`},
+	{anchor: "<title>NexusGate", replacement: "<title>" + productName},
+	{anchor: `<span class="brand">NexusGate</span>`, replacement: `<span class="brand">` + strings.Replace(productName, ":", `<i>:</i>`, 1) + `</span>`},
 }
 
 func brandedPage(page string) string {

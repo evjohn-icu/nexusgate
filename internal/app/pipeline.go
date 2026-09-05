@@ -16,18 +16,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/cachecoord"
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/idgen"
-	"github.com/evjohn-icu/nexusslate/internal/ingest"
-	"github.com/evjohn-icu/nexusslate/internal/media"
-	"github.com/evjohn-icu/nexusslate/internal/providerchannels"
-	"github.com/evjohn-icu/nexusslate/internal/providerpool"
-	"github.com/evjohn-icu/nexusslate/internal/providers"
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
-	"github.com/evjohn-icu/nexusslate/internal/providers/shotdetect"
-	videoproviders "github.com/evjohn-icu/nexusslate/internal/providers/video"
-	"github.com/evjohn-icu/nexusslate/internal/staging"
+	"github.com/evjohn-icu/nexusgate/internal/cachecoord"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/idgen"
+	"github.com/evjohn-icu/nexusgate/internal/ingest"
+	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/providerchannels"
+	"github.com/evjohn-icu/nexusgate/internal/providerpool"
+	"github.com/evjohn-icu/nexusgate/internal/providers"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
+	"github.com/evjohn-icu/nexusgate/internal/providers/shotdetect"
+	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
+	"github.com/evjohn-icu/nexusgate/internal/staging"
 )
 
 type PipelineRepository interface {
@@ -222,7 +222,7 @@ const maxConsecutiveLeaseErrors = 3
 // leaseTTLByType gives each stage a lease ceiling it can plausibly outlive.
 // The old flat 2-minute lease was routinely exceeded by derive encodes,
 // windowed analysis and ASR calls, so a second process (a paired Worker, or
-// `nexusslate serve` alongside `nexusslate pipeline run`) reclaimed the job
+// `nexusgate serve` alongside `nexusgate pipeline run`) reclaimed the job
 // mid-flight and both executors burned the same paid work. Correctness never
 // broke -- every completion write is CAS-protected -- but cost doubled. The
 // ceiling is a heuristic: a lease that still expires is simply reclaimed,
@@ -290,7 +290,7 @@ func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 		if err := p.execute(ctx, *job, worker, throttle); err != nil {
 			// A stale execution: something else's compare-and-swap already won
 			// this job (a paired Worker on `derive`, or a second Hub process --
-			// `nexusslate serve` and `nexusslate pipeline run` are both
+			// `nexusgate serve` and `nexusgate pipeline run` are both
 			// documented, and the in-process single-pass mutex at service.go
 			// cannot span processes). Every completion write below is now
 			// CAS-protected, so attempting one under our own (no-longer-valid)

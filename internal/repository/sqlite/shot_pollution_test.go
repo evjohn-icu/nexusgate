@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	videoanalysis "github.com/evjohn-icu/nexusslate/internal/domain/video_analysis"
+	videoanalysis "github.com/evjohn-icu/nexusgate/internal/domain/video_analysis"
 )
 
 // TestShotSearchNotPollutedByAssetGlobalObjects is the regression test for
@@ -17,7 +17,7 @@ import (
 // fallback put "car" into shot A's FTS row and semantic vector as well.
 func TestShotSearchNotPollutedByAssetGlobalObjects(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-pollution.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusgate-pollution.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

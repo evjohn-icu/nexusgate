@@ -1,7 +1,7 @@
 package api
 
 // repurposeWorkspaceHTML is the /repurpose workspace.
-const repurposeWorkspaceHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NexusSlate · [[i18n:repurpose.title]]</title><style>
+const repurposeWorkspaceHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NexusGate · [[i18n:repurpose.title]]</title><style>
 
 .head-actions{display:flex;gap:10px;align-items:center}
 .repurpose-layout{display:grid;grid-template-columns:300px 1fr;gap:20px;align-items:start}
@@ -74,7 +74,7 @@ const repurposeWorkspaceHTML = `<!doctype html><html lang="zh-CN"><head><meta ch
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const fmt=ms=>{ms=Math.max(0,Math.floor((ms||0)/1000));return String(Math.floor(ms/60)).padStart(2,'0')+':'+String(ms%60).padStart(2,'0')};const fmtDateTime=v=>{if(!v)return '';const d=new Date(v);return isNaN(d.getTime())?'':tdFormatDateTime(d)};
 const roleKeys={opening:'repurpose.role.opening',hook:'repurpose.role.hook',body:'repurpose.role.body',ending:'repurpose.role.ending',transition:'repurpose.role.transition',broll:'repurpose.role.broll',cta:'repurpose.role.cta'};const roleName=role=>tdT(roleKeys[role]||role);
 const state={plans:[],filter:'draft',active:null,revision:null,revisions:[],dirty:false};
-function csrfToken(){const prefix='__Host-nexusslate_csrf=';const item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
+function csrfToken(){const prefix='__Host-nexusgate_csrf=';const item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
 function authHeaders(base){const headers=new Headers(base||{});const csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
 async function api(url,opt){opt=opt||{};const r=await fetch(url,{...opt,headers:authHeaders(opt.headers)});if(!r.ok){if(r.status===401)throw Error(tdT('common.loginRequiredTop'));throw Error(await tdApiErrorMessage(r))}return r.json()}
 function status(text){const el=document.getElementById('statusline');if(el)el.textContent=text}

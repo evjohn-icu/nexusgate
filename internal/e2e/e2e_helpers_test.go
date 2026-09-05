@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/app"
-	"github.com/evjohn-icu/nexusslate/internal/config"
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	videoanalysis "github.com/evjohn-icu/nexusslate/internal/domain/video_analysis"
-	"github.com/evjohn-icu/nexusslate/internal/media"
-	videoproviders "github.com/evjohn-icu/nexusslate/internal/providers/video"
-	sqlite "github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/app"
+	"github.com/evjohn-icu/nexusgate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	videoanalysis "github.com/evjohn-icu/nexusgate/internal/domain/video_analysis"
+	"github.com/evjohn-icu/nexusgate/internal/media"
+	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
+	sqlite "github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
 
 // e2eVideoMock stands in for a vision provider. It answers deterministically
@@ -107,7 +107,7 @@ func generateSceneChangeClip(t testing.TB, outDir, name string, first, second Cl
 func openE2ERepo(t *testing.T) (*sqlite.Repository, string) {
 	t.Helper()
 	dataDir := secureDataDir(t)
-	repo, err := sqlite.Open(filepath.Join(dataDir, "nexusslate.db"))
+	repo, err := sqlite.Open(filepath.Join(dataDir, "nexusgate.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

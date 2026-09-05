@@ -247,7 +247,7 @@ func (s *Server) catchAllRouteSpecs() []routeSpec {
 // routeAuthWorkerBootstrap guards the Worker binary download. It admits the
 // existing trusted-read path (a trusted source address, or a Hub admin/agent
 // token) for requests that carry no pairing credential, OR a valid, unredeemed
-// X-NexusSlate-Pairing-Token header, so an operator can bootstrap a Worker from
+// X-NexusGate-Pairing-Token header, so an operator can bootstrap a Worker from
 // a remote network before enrollment without making the route public. A token
 // that IS presented is validated strictly — a redeemed or expired token gets a
 // 403 even from a trusted network, never a silent trusted-read fallback, so a
@@ -258,7 +258,7 @@ func (s *Server) catchAllRouteSpecs() []routeSpec {
 func (s *Server) routeAuthWorkerBootstrap(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		raw := strings.TrimSpace(r.Header.Get("X-NexusSlate-Pairing-Token"))
+		raw := strings.TrimSpace(r.Header.Get("X-NexusGate-Pairing-Token"))
 		if raw == "" {
 			if s.fromTrustedNetwork(r) || s.isHubAdmin(r) || s.isHubAgent(r) {
 				next(w, r)

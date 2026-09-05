@@ -5,7 +5,7 @@ import (
 	"errors"
 	"math"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 // ErrNoEmbeddingSearch is the "embeddings unavailable" verdict for the

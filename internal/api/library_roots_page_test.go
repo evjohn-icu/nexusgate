@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/app"
-	"github.com/evjohn-icu/nexusslate/internal/config"
-	"github.com/evjohn-icu/nexusslate/internal/media"
-	"github.com/evjohn-icu/nexusslate/internal/mount"
-	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
-	"github.com/evjohn-icu/nexusslate/internal/smbdiscover"
+	"github.com/evjohn-icu/nexusgate/internal/app"
+	"github.com/evjohn-icu/nexusgate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/mount"
+	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/smbdiscover"
 )
 
 // rootsCJKRE matches the CJK unified-ideograph and CJK-punctuation blocks.

@@ -1,7 +1,7 @@
 // Package externalalign implements a Provider that delegates word-level
 // alignment to an external command configured by the operator.  The command
 // is executed via os/exec and runs with the same OS identity (user, groups)
-// as the nexusslate process itself.
+// as the nexusgate process itself.
 package externalalign
 
 import (
@@ -14,8 +14,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 )
 
 type Provider struct {

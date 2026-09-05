@@ -12,13 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/discovery"
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/discovery"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 func TestAssetShotsPersistTimeRangesAndSupportSearch(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-shots.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusgate-shots.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestCommitAnalysisLeavesAssetSearchForJobIndex(t *testing.T) {
 
 func TestCJKShotSearchUsesIndexedBigramsInsteadOfSubstringScan(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-cjk-fts.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusgate-cjk-fts.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestCJKShotSearchUsesIndexedBigramsInsteadOfSubstringScan(t *testing.T) {
 
 func TestCJKBigramMigrationBackfillsPendingIndex(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-cjk-backfill.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusgate-cjk-backfill.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestCJKBigramMigrationBackfillsPendingIndex(t *testing.T) {
 
 func TestCommitAnalysisWithShotsKeepsTrustedDataWhenReplacementShotsAreInvalid(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-atomic-analysis.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusgate-atomic-analysis.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +269,7 @@ func TestCommitAnalysisWithShotsKeepsTrustedDataWhenReplacementShotsAreInvalid(t
 
 func TestHybridShotSearchUsesSemanticFeaturesBeyondLiteralFTS(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-hybrid-shots.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusgate-hybrid-shots.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +301,7 @@ func TestHybridShotSearchUsesSemanticFeaturesBeyondLiteralFTS(t *testing.T) {
 
 func TestSimilarAndRareShotDiscoveryUseLibraryRelativeSemantics(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-discovery.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusgate-discovery.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestSimilarAndRareShotDiscoveryUseLibraryRelativeSemantics(t *testing.T) {
 
 func TestReplacingShotsInvalidatesInMemoryFeatureVectorCache(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-vector-cache.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusgate-vector-cache.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestReplacingShotsInvalidatesInMemoryFeatureVectorCache(t *testing.T) {
 
 func TestSemanticSearchFiltersVectorsFromSupersededModel(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-vector-model.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusgate-vector-model.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,7 +431,7 @@ func TestSemanticSearchFiltersVectorsFromSupersededModel(t *testing.T) {
 
 func TestSemanticVectorRejectsWrongDimension(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-vector-dim.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusgate-vector-dim.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +475,7 @@ func TestSemanticVectorRejectsWrongDimension(t *testing.T) {
 // rather than fail the whole analysis.
 func TestCommitAnalysisKeepsOneRowForTagsThatNormalizeAlike(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-tag-collision.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusgate-tag-collision.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -602,7 +602,7 @@ func assertShotIDOrder(t *testing.T, got []domain.ShotSearchResult, want []strin
 // set and order as scoring everything then sorting.
 func TestSimilarShotsBoundedTopKMatchesReference(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-topk-reference.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusgate-topk-reference.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -641,7 +641,7 @@ func TestSimilarShotsBoundedTopKMatchesReference(t *testing.T) {
 // their scores are bit-for-bit equal and the tie-break is exercised.
 func TestSimilarShotsBoundedTopKIsDeterministic(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-topk-deterministic.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusgate-topk-deterministic.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -690,7 +690,7 @@ func TestSimilarShotsBoundedTopKIsDeterministic(t *testing.T) {
 // shot, not an arbitrary member of a tie group).
 func TestSimilarShotsBoundedTopKEdgeLimits(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-topk-limits.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusgate-topk-limits.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -731,7 +731,7 @@ func TestSimilarShotsBoundedTopKEdgeLimits(t *testing.T) {
 
 func TestGetShotReturnsFullDetail(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-getshot.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusgate-getshot.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -804,7 +804,7 @@ func TestGetShotReturnsFullDetail(t *testing.T) {
 // the same way a legacy or externally-managed DB would look.
 func TestGetShotOrphanedShotDoesNotPanic(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "nexusslate-getshot-orphan.db")
+	path := filepath.Join(t.TempDir(), "nexusgate-getshot-orphan.db")
 	repo, err := Open(path)
 	if err != nil {
 		t.Fatal(err)

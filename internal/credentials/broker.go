@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/config"
 )
 
 type Operation string

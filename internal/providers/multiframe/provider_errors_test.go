@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	videoanalysis "github.com/evjohn-icu/nexusslate/internal/domain/video_analysis"
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
-	videoproviders "github.com/evjohn-icu/nexusslate/internal/providers/video"
+	videoanalysis "github.com/evjohn-icu/nexusgate/internal/domain/video_analysis"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
+	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
 )
 
 func TestProviderErrorFixtures(t *testing.T) {

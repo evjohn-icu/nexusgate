@@ -1,6 +1,6 @@
 // Package shotdetect turns deterministic shot-boundary detection into a
-// NexusSlate-owned service. The VLM must never be the one to decide where a
-// shot begins and ends — it is asked to describe pixels, and NexusSlate is the
+// NexusGate-owned service. The VLM must never be the one to decide where a
+// shot begins and ends — it is asked to describe pixels, and NexusGate is the
 // one that knows the timeline. Two detectors exist: an external command
 // (PySceneDetect wrappers and the like) following the same stdin-JSON /
 // stdout-JSON contract as the forced aligner, and a built-in FFmpeg scene
@@ -8,7 +8,7 @@
 // depends on.
 //
 // Whatever the source, the boundaries pass through Normalize, where the
-// NexusSlate-owned rules are enforced: monotonic, non-overlapping, inside the
+// NexusGate-owned rules are enforced: monotonic, non-overlapping, inside the
 // asset, and not shorter than a minimum shot length. A detector that produces
 // structural garbage is rejected, not worked around; a shot that is merely
 // short is merged into its neighbor.
@@ -54,9 +54,9 @@ const (
 	MaxShots = 2000
 )
 
-// Normalize enforces the NexusSlate-owned shot rules on raw detector output
+// Normalize enforces the NexusGate-owned shot rules on raw detector output
 // and returns the shots that may be analysed. The rules below are
-// deterministic verdicts on bytes NexusSlate already holds, so a violation is
+// deterministic verdicts on bytes NexusGate already holds, so a violation is
 // permanent at the call site; the caller marks it so.
 //
 // A shot shorter than MinShotLengthMS carries no information a model call can

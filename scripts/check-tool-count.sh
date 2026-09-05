@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # check-tool-count.sh — verify the MCP tool count agrees between the actual
-# registrations in cmd/nexusslate-mcp/main.go and every manifest/doc that
+# registrations in cmd/nexusgate-mcp/main.go and every manifest/doc that
 # states it in prose. A plugin manifest advertising a stale tool count after
 # a tool was added or removed is exactly the kind of drift an audit had to
 # catch by hand once; this makes the next one fail CI instead.
 set -euo pipefail
 
 root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-main_go="$root/cmd/nexusslate-mcp/main.go"
+main_go="$root/cmd/nexusgate-mcp/main.go"
 
 if [[ ! -f "$main_go" ]]; then
   printf '%s not found\n' "$main_go" >&2
@@ -75,7 +75,7 @@ do
   if [[ "$claim_lc" == "$registered" || "$claim_lc" == "$word" ]]; then
     continue
   fi
-  printf '%s claims %s tools, but %s registers %s (%s) via AddTool(\n' "$doc" "$claim_lc" "cmd/nexusslate-mcp/main.go" "$registered" "$word" >&2
+  printf '%s claims %s tools, but %s registers %s (%s) via AddTool(\n' "$doc" "$claim_lc" "cmd/nexusgate-mcp/main.go" "$registered" "$word" >&2
   failures=$((failures + 1))
 done
 

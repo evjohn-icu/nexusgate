@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 // revokeWorker is the admin-only write that decommissions a Worker:

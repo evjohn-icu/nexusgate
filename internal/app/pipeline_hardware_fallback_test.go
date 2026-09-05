@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/media"
-	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
-	"github.com/evjohn-icu/nexusslate/internal/staging"
-	"github.com/evjohn-icu/nexusslate/internal/testhelper"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/staging"
+	"github.com/evjohn-icu/nexusgate/internal/testhelper"
 )
 
 func TestPipelineDeriveHardwareFallbackPersistsActualProfile(t *testing.T) {
@@ -131,8 +131,8 @@ func writeFakeMediaCommands(t *testing.T, dir string, failHardware bool) {
 	testhelper.InstallCommand(t, dir, "ffprobe")
 	testhelper.InstallCommand(t, dir, "ffmpeg")
 	if failHardware {
-		t.Setenv("NEXUSSLATE_FAKE_FFMPEG_FAIL_HARDWARE", "1")
+		t.Setenv("NEXUSGATE_FAKE_FFMPEG_FAIL_HARDWARE", "1")
 	} else {
-		t.Setenv("NEXUSSLATE_FAKE_FFMPEG_FAIL_HARDWARE", "0")
+		t.Setenv("NEXUSGATE_FAKE_FFMPEG_FAIL_HARDWARE", "0")
 	}
 }

@@ -20,7 +20,7 @@ func TestGeneratedPOSIXScriptIsRunnableNotJustSafe(t *testing.T) {
 	service := throttleTestService(t, "worker-script-shape.db")
 	handler := workerSetupTLSServer(t, service, map[string]string{"linux-amd64": "binary-content"})
 
-	body := `{"platform":"linux-amd64","name":"studio-linux","pairing_token":"pair-abc123","mounts":[{"root_id":"root-1","path":"/mnt/nas/footage"}],"cache_dir":"/var/cache/nexusslate"}`
+	body := `{"platform":"linux-amd64","name":"studio-linux","pairing_token":"pair-abc123","mounts":[{"root_id":"root-1","path":"/mnt/nas/footage"}],"cache_dir":"/var/cache/nexusgate"}`
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, tlsAdminRequest(service, http.MethodPost, "/api/v1/hub/worker-setup/script", strings.NewReader(body)))
 	if response.Code != http.StatusOK {
@@ -31,10 +31,10 @@ func TestGeneratedPOSIXScriptIsRunnableNotJustSafe(t *testing.T) {
 	// The enroll invocation must be a command followed by arguments. If the whole
 	// line were quoted as one word there would be no unquoted space between the
 	// binary and "worker".
-	if !strings.Contains(script, `'./nexusslate-linux-amd64' 'worker' 'enroll'`) {
+	if !strings.Contains(script, `'./nexusgate-linux-amd64' 'worker' 'enroll'`) {
 		t.Fatalf("enroll line is not a command plus arguments:\n%s", script)
 	}
-	for _, expected := range []string{`'--pairing' 'pair-abc123'`, `'--mount' 'root-1=/mnt/nas/footage'`, `'--cache' '/var/cache/nexusslate'`, `'--name' 'studio-linux'`} {
+	for _, expected := range []string{`'--pairing' 'pair-abc123'`, `'--mount' 'root-1=/mnt/nas/footage'`, `'--cache' '/var/cache/nexusgate'`, `'--name' 'studio-linux'`} {
 		if !strings.Contains(script, expected) {
 			t.Fatalf("missing %s in:\n%s", expected, script)
 		}

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 // reportLimit caps the paths carried in GCResult.Removed and
@@ -33,7 +33,7 @@ type GCOptions struct {
 	// RemoveRebuildable deletes thumbnail-*.jpg / proxy-*.mp4 / audio.m4a
 	// files (see IsRebuildableArtifactName). Their derived_artifacts rows
 	// survive; the CLI re-enqueues a JobDerive per affected committed asset
-	// after a real run (see cmd/nexusslate/cache.go), and the derive stage
+	// after a real run (see cmd/nexusgate/cache.go), and the derive stage
 	// re-creates the files while skipping the paid chain.
 	RemoveRebuildable bool
 	// RemoveOrphans deletes exactly these per-asset directories (as returned

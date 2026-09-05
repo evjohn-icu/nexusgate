@@ -1,4 +1,4 @@
-// Package textindex keeps the write and query token boundaries for NexusSlate
+// Package textindex keeps the write and query token boundaries for NexusGate
 // full-text search in one place. SQLite unicode61 does not split adjacent Han
 // characters, so continuous CJK text is represented as overlapping bigrams.
 package textindex

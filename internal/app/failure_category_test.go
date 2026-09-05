@@ -8,9 +8,9 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/providerchannels"
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/providerchannels"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 )
 
 // classifyJobFailure's contract: the category is decided by the sentinel the

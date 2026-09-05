@@ -22,7 +22,7 @@ package api
 //     member row by id: both sides carry the provider_channel_members row id,
 //     so the match is exact. A member the executor filters out (disabled, or
 //     no stored secret) simply has no status row and renders no health line.
-const providersHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NexusSlate · [[i18n:providers.title]]</title><style>
+const providersHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NexusGate · [[i18n:providers.title]]</title><style>
 
 .head-actions{display:flex;gap:10px}
 .formgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -127,7 +127,7 @@ async function wizardSave(){const status=document.getElementById('wizard-status'
 
 let channelCache=[];let statusCache=[];let channelHealth=new Map();let anyRuntimeData=false;
 function syncProviderOptions(){const capability=document.getElementById('capability').value;const select=document.getElementById('provider-name');const prior=select.value;select.innerHTML=(providerOptions[capability]||[]).map((value)=>'<option value="'+esc(value)+'">'+esc(tdT(providerNameKeys[value]||value))+'</option>').join('');if([...select.options].some(o=>o.value===prior))select.value=prior;applyEndpointPreset();applyProviderNote()}
- function csrfToken(){const prefix='__Host-nexusslate_csrf=';const item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
+ function csrfToken(){const prefix='__Host-nexusgate_csrf=';const item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
  function adminHeaders(json=false){const headers={};const csrf=csrfToken();if(csrf)headers['X-CSRF-Token']=csrf;if(json)headers['Content-Type']='application/json';return headers}
 async function json(r){if(!r.ok)throw Error(await tdApiErrorMessage(r));return r.status===204?null:r.json()}
 function duplicateLabel(labels){const seen=new Set();for(const raw of labels){const key=String(raw||'').trim().toLowerCase();if(!key)continue;if(seen.has(key))return raw;seen.add(key)}return ''}
@@ -170,8 +170,8 @@ document.getElementById('wizard-key').addEventListener('input',function(){wizard
 document.getElementById('capability').addEventListener('change',syncProviderOptions);syncProviderOptions();
 document.getElementById('provider-name').addEventListener('change',function(){applyEndpointPreset();applyProviderNote()});
 document.getElementById('endpoint').addEventListener('input',function(){endpointTouched=true});
-loadChannels();window.addEventListener('nexusslate:admin-auth-changed',loadChannels);
+loadChannels();window.addEventListener('nexusgate:admin-auth-changed',loadChannels);
 
 document.getElementById('login-prompt').addEventListener('click',openAdminDialog);
-window.addEventListener('nexusslate:admin-auth-changed',function(){const state=fetch('/api/v1/auth/admin/session').then(function(r){document.getElementById('auth-callout').hidden=r.ok})});
+window.addEventListener('nexusgate:admin-auth-changed',function(){const state=fetch('/api/v1/auth/admin/session').then(function(r){document.getElementById('auth-callout').hidden=r.ok})});
 </script></body></html>`

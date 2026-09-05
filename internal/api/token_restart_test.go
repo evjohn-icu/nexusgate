@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/app"
-	"github.com/evjohn-icu/nexusslate/internal/config"
-	"github.com/evjohn-icu/nexusslate/internal/media"
-	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/app"
+	"github.com/evjohn-icu/nexusgate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
 
 func TestAdminTokenSurvivesServiceReopen(t *testing.T) {
@@ -23,7 +23,7 @@ func TestAdminTokenSurvivesServiceReopen(t *testing.T) {
 	if err := os.Mkdir(dataDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	dbPath := filepath.Join(root, "nexusslate.db")
+	dbPath := filepath.Join(root, "nexusgate.db")
 	open := func() (*app.Service, *sqlite.Repository) {
 		repo, err := sqlite.Open(dbPath)
 		if err != nil {

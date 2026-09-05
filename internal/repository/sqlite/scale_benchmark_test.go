@@ -18,15 +18,15 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/discovery"
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/search"
+	"github.com/evjohn-icu/nexusgate/internal/discovery"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/search"
 )
 
 const (
 	scaleShotsPerAsset  = 10
 	scaleEmbeddingDim   = 256
-	scaleEmbeddingModel = "nexusslate-scale-embedding-v1"
+	scaleEmbeddingModel = "nexusgate-scale-embedding-v1"
 )
 
 // scaleCorpus is kept open while the benchmark process runs. Keeping one
@@ -224,7 +224,7 @@ type scaleScenario func(context.Context, *Repository) error
 func benchSQLiteScale(b *testing.B, shots int, freshOpen bool, scenario scaleScenario) {
 	b.Helper()
 	if !scaleSizeEnabled(shots) {
-		b.Skipf("size %d is disabled; set NEXUSSLATE_SQLITE_SCALE_SIZES to enable it", shots)
+		b.Skipf("size %d is disabled; set NEXUSGATE_SQLITE_SCALE_SIZES to enable it", shots)
 	}
 	corpus := scaleBenchmarkCorpus(b, shots)
 	ctx := context.Background()
@@ -304,7 +304,7 @@ func scaleEmbedding(ctx context.Context, repo *Repository) error {
 
 type scaleEmbedder struct{}
 
-func (scaleEmbedder) Name() string  { return "nexusslate-scale-embedder" }
+func (scaleEmbedder) Name() string  { return "nexusgate-scale-embedder" }
 func (scaleEmbedder) Model() string { return scaleEmbeddingModel }
 func (scaleEmbedder) Embed(context.Context, []string) ([][]float64, error) {
 	vector := make([]float64, scaleEmbeddingDim)
@@ -315,7 +315,7 @@ func (scaleEmbedder) Embed(context.Context, []string) ([][]float64, error) {
 }
 
 func scaleSizeEnabled(shots int) bool {
-	value := strings.TrimSpace(os.Getenv("NEXUSSLATE_SQLITE_SCALE_SIZES"))
+	value := strings.TrimSpace(os.Getenv("NEXUSGATE_SQLITE_SCALE_SIZES"))
 	if value == "" {
 		return shots == 1_000
 	}
@@ -407,7 +407,7 @@ func seedScaleCorpus(ctx context.Context, repo *Repository, shots int) error {
 	defer tx.Rollback()
 	now := "2026-01-01T00:00:00.000000000Z"
 	rootID := "scale-root"
-	if _, err := tx.ExecContext(ctx, `INSERT INTO library_roots(id,path,created_at,updated_at) VALUES(?,?,?,?)`, rootID, "/nexusslate-scale-corpus", now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO library_roots(id,path,created_at,updated_at) VALUES(?,?,?,?)`, rootID, "/nexusgate-scale-corpus", now, now); err != nil {
 		return err
 	}
 
@@ -456,7 +456,7 @@ func seedScaleCorpus(ctx context.Context, repo *Repository, shots int) error {
 		if _, err := assetStmt.ExecContext(ctx, assetID, "scale-fingerprint-"+strconv.Itoa(i), now, now); err != nil {
 			return err
 		}
-		if _, err := locationStmt.ExecContext(ctx, "scale-location-"+strconv.Itoa(i), assetID, rootID, fmt.Sprintf("clips/scale-%07d.mp4", i), fmt.Sprintf("/nexusslate-scale-corpus/clips/scale-%07d.mp4", i), now); err != nil {
+		if _, err := locationStmt.ExecContext(ctx, "scale-location-"+strconv.Itoa(i), assetID, rootID, fmt.Sprintf("clips/scale-%07d.mp4", i), fmt.Sprintf("/nexusgate-scale-corpus/clips/scale-%07d.mp4", i), now); err != nil {
 			return err
 		}
 		for ordinal := 0; ordinal < scaleShotsPerAsset; ordinal++ {

@@ -7,14 +7,14 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/app"
-	"github.com/evjohn-icu/nexusslate/internal/config"
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/media"
-	"github.com/evjohn-icu/nexusslate/internal/providers"
-	"github.com/evjohn-icu/nexusslate/internal/providers/shotdetect"
-	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
-	"github.com/evjohn-icu/nexusslate/internal/staging"
+	"github.com/evjohn-icu/nexusgate/internal/app"
+	"github.com/evjohn-icu/nexusgate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/providers"
+	"github.com/evjohn-icu/nexusgate/internal/providers/shotdetect"
+	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/staging"
 )
 
 // Run drives one provider configuration over the whole corpus: every clip
@@ -29,7 +29,7 @@ func Run(ctx context.Context, cfg config.Config, corpus *Corpus, dataDir, label 
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, err
 	}
-	repo, err := sqlite.Open(filepath.Join(dataDir, "nexusslate.db"))
+	repo, err := sqlite.Open(filepath.Join(dataDir, "nexusgate.db"))
 	if err != nil {
 		return nil, err
 	}

@@ -7,8 +7,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/search"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/search"
 )
 
 // The Search v2 benchmark compares five retrieval pipelines over the golden +

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/config"
 )
 
 func TestBrokerIssuesOnlyConfiguredCredentialForVideoAnalysis(t *testing.T) {

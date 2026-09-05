@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/remote"
+	"github.com/evjohn-icu/nexusgate/internal/remote"
 )
 
 func openWorkerOfflineRepo(t *testing.T, name string) *Repository {

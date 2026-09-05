@@ -13,7 +13,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/search"
+	"github.com/evjohn-icu/nexusgate/internal/search"
 )
 
 // The relevance eval is deliberately an ordinary Go test rather than a
@@ -173,7 +173,7 @@ func TestSearchRelevanceEval(t *testing.T) {
 	}
 	t.Logf("search relevance queries=%d intent-match=%d/%d metrics=%s", acc.queries, acc.intentCorrect, acc.queries, formatSearchEvalMetrics(actual))
 
-	updateBaseline := os.Getenv("NEXUSSLATE_UPDATE_SEARCH_EVAL_BASELINE") == "1"
+	updateBaseline := os.Getenv("NEXUSGATE_UPDATE_SEARCH_EVAL_BASELINE") == "1"
 	if updateBaseline {
 		baseline.Version = 1
 		baseline.Runner = searchEvalRunner{

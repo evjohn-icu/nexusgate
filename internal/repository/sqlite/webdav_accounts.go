@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/webdavspace"
+	"github.com/evjohn-icu/nexusgate/internal/webdavspace"
 )
 
 // SaveWebDAVAccount inserts a new WebDAV delivery account. If an account

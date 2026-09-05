@@ -1,5 +1,5 @@
 // Package openaivideo adapts OpenAI-compatible video-chat endpoints to the
-// provider-independent NexusSlate video analysis contract. It is used by Qwen,
+// provider-independent NexusGate video analysis contract. It is used by Qwen,
 // Ark/Volcengine endpoints configured for video input, and local VLM gateways.
 package openaivideo
 
@@ -14,10 +14,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	videoanalysis "github.com/evjohn-icu/nexusslate/internal/domain/video_analysis"
-	"github.com/evjohn-icu/nexusslate/internal/normalize"
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
-	videoproviders "github.com/evjohn-icu/nexusslate/internal/providers/video"
+	videoanalysis "github.com/evjohn-icu/nexusgate/internal/domain/video_analysis"
+	"github.com/evjohn-icu/nexusgate/internal/normalize"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
+	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
 )
 
 type Provider struct {

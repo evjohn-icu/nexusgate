@@ -4,7 +4,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 func HeuristicDraft(brief domain.RepurposeBrief) domain.RepurposePlanDraft {

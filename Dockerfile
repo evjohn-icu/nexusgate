@@ -15,13 +15,13 @@ COPY . .
 RUN version="$(cat VERSION)" \
     && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath \
-      -ldflags="-s -w -X github.com/evjohn-icu/nexusslate/internal/buildinfo.Version=${version} -X github.com/evjohn-icu/nexusslate/internal/domain.Version=${version}" \
-      -o /out/nexusslate ./cmd/nexusslate
+      -ldflags="-s -w -X github.com/evjohn-icu/nexusgate/internal/buildinfo.Version=${version} -X github.com/evjohn-icu/nexusgate/internal/domain.Version=${version}" \
+      -o /out/nexusgate ./cmd/nexusgate
 
 FROM debian:bookworm-slim AS runtime
 
-ARG NEXUSSLATE_UID=10001
-ARG NEXUSSLATE_GID=10001
+ARG NEXUSGATE_UID=10001
+ARG NEXUSGATE_GID=10001
 
 # FFmpeg is used for probing/derived media. Debian ships the exiftool command
 # in libimage-exiftool-perl; keeping both in the runtime image makes the image
@@ -33,21 +33,21 @@ RUN apt-get update \
         ffmpeg \
         libimage-exiftool-perl \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system --gid "${NEXUSSLATE_GID}" nexusslate \
-    && useradd --system --uid "${NEXUSSLATE_UID}" --gid "${NEXUSSLATE_GID}" \
-        --home-dir /var/lib/nexusslate --no-create-home nexusslate \
-    && install -d -o "${NEXUSSLATE_UID}" -g "${NEXUSSLATE_GID}" -m 0700 \
-        /var/lib/nexusslate /var/lib/nexusslate-worker /media
+    && groupadd --system --gid "${NEXUSGATE_GID}" nexusgate \
+    && useradd --system --uid "${NEXUSGATE_UID}" --gid "${NEXUSGATE_GID}" \
+        --home-dir /var/lib/nexusgate --no-create-home nexusgate \
+    && install -d -o "${NEXUSGATE_UID}" -g "${NEXUSGATE_GID}" -m 0700 \
+        /var/lib/nexusgate /var/lib/nexusgate-worker /media
 
-COPY --from=build /out/nexusslate /usr/local/bin/nexusslate
+COPY --from=build /out/nexusgate /usr/local/bin/nexusgate
 
-ENV NEXUSSLATE_DATA_DIR=/var/lib/nexusslate
+ENV NEXUSGATE_DATA_DIR=/var/lib/nexusgate
 
-USER nexusslate:nexusslate
-WORKDIR /var/lib/nexusslate
+USER nexusgate:nexusgate
+WORKDIR /var/lib/nexusgate
 STOPSIGNAL SIGTERM
 
-ENTRYPOINT ["/usr/local/bin/nexusslate"]
+ENTRYPOINT ["/usr/local/bin/nexusgate"]
 CMD ["serve"]
 
 # --------------------------------------------------------------------------
@@ -110,7 +110,7 @@ RUN sed -i 's/Components: main$/Components: main non-free/' /etc/apt/sources.lis
     done \
     && rm -rf /var/lib/apt/lists/*
 
-USER nexusslate:nexusslate
+USER nexusgate:nexusgate
 
 # --------------------------------------------------------------------------
 # `docker build` with no --target builds the last stage in this file. Without

@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 )
 
 func TestDecodeFrameRejectsOversizedPayload(t *testing.T) {
@@ -204,7 +204,7 @@ func TestASRFormatDoesNotLeakAPIKey(t *testing.T) {
 		ResourceID:     "volc.seedasr.sauc.duration",
 		RequestModel:   "bigmodel",
 		ModelName:      "doubao-seed-asr-2.0",
-		UID:            "nexusslate",
+		UID:            "nexusgate",
 		TimeoutSeconds: 30,
 	}
 
@@ -236,7 +236,7 @@ func TestASRFormatSanitizesURL(t *testing.T) {
 		ResourceID:     "volc.seedasr.sauc.duration",
 		RequestModel:   "bigmodel",
 		ModelName:      "doubao-seed-asr-2.0",
-		UID:            "nexusslate",
+		UID:            "nexusgate",
 		TimeoutSeconds: 30,
 	}
 

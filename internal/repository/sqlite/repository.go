@@ -20,12 +20,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/capture"
-	"github.com/evjohn-icu/nexusslate/internal/discovery"
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/idgen"
-	"github.com/evjohn-icu/nexusslate/internal/remote"
-	"github.com/evjohn-icu/nexusslate/internal/textindex"
+	"github.com/evjohn-icu/nexusgate/internal/capture"
+	"github.com/evjohn-icu/nexusgate/internal/discovery"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/idgen"
+	"github.com/evjohn-icu/nexusgate/internal/remote"
+	"github.com/evjohn-icu/nexusgate/internal/textindex"
 	_ "modernc.org/sqlite"
 )
 
@@ -214,7 +214,7 @@ const workerOfflineAfter = 90 * time.Second
 
 // IntegrityCheck runs SQLite's own self-check (PRAGMA integrity_check). It
 // returns nil when the database is consistent and an error naming the first
-// problem otherwise. Exposed for the `nexusslate doctor` command so an operator
+// problem otherwise. Exposed for the `nexusgate doctor` command so an operator
 // can confirm a library survived a NAS power event without guessing.
 func (r *Repository) IntegrityCheck(ctx context.Context) error {
 	var result string
@@ -436,7 +436,7 @@ func (r *Repository) checkPreMigrationConditionsWith(ctx context.Context, q migr
 	}
 	required := migrationFreeSpaceRequired(dbSize.Size())
 	if free < uint64(required) {
-		return fmt.Errorf("migration preflight: not enough free disk space to upgrade %s: need %d bytes, have %d free (free space on that volume or set NEXUSSLATE_DATA_DIR to a location with room)", r.dbPath, required, free)
+		return fmt.Errorf("migration preflight: not enough free disk space to upgrade %s: need %d bytes, have %d free (free space on that volume or set NEXUSGATE_DATA_DIR to a location with room)", r.dbPath, required, free)
 	}
 	return nil
 }

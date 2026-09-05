@@ -20,7 +20,7 @@ HTTP / CLI / MCP
 Human / App / Agent
 ```
 
-`Re:Footage` is the product name; `nexusslate` remains the binary and the
+`Re:Footage` is the product name; `nexusgate` remains the binary and the
 configuration namespace, so existing libraries and Workers keep working.
 
 ## 30 seconds: 这是什么? 为什么有用? 长什么样? 怎么跑起来?
@@ -42,18 +42,18 @@ indexed, searchable down to the individual shot.
 environment check and an analysis provider configured **before** the first scan:
 a scan enqueues jobs and starts draining them immediately with whatever is
 configured (`vision_primary` defaults to `none`, so jobs fail visibly rather than
-fabricating a result). For a native install, run `./nexusslate doctor`; for Docker,
-run `docker compose run --rm hub doctor` after setting `NEXUSSLATE_MEDIA_ROOT`.
+fabricating a result). For a native install, run `./nexusgate doctor`; for Docker,
+run `docker compose run --rm hub doctor` after setting `NEXUSGATE_MEDIA_ROOT`.
 
-- **Browser-wizard route** — start the Hub (`./nexusslate serve` for a native
+- **Browser-wizard route** — start the Hub (`./nexusgate serve` for a native
   install, or the Docker command below), then open the HTTPS URL it prints. The
   `/setup` first-use wizard checks the environment, walks you through adding a
   footage root and configuring the model channels, and guides the first scan —
   no CLI beyond starting the Hub.
 - **Native CLI route** — configure the provider, then
-  `./nexusslate root add /path/to/footage && ./nexusslate root scan <root-id>`
+  `./nexusgate root add /path/to/footage && ./nexusgate root scan <root-id>`
   to import, enqueue and drain the currently-leasable queue, and run
-  `./nexusslate pipeline run` (or `serve`, which also exposes `/progress`) for
+  `./nexusgate pipeline run` (or `serve`, which also exposes `/progress`) for
   any later passes.
 
 ### The loop in 30 seconds
@@ -82,14 +82,14 @@ assumes a single trusted machine.
 
 ## What it is, and what it is not
 
-NexusSlate does:
+NexusGate does:
 - Ingest and probe footage
 - Detect shots and build a shot-level index
 - Understand content via ASR and VLM
 - Retrieve shots with evidence-backed results
 - Serve results over HTTP API, CLI, and MCP
 
-NexusSlate does not:
+NexusGate does not:
 - Make editorial decisions
 - Edit timelines or re-encode footage
 - Automatically produce finished videos
@@ -106,12 +106,12 @@ Two more deliberate non-claims:
   vectors, cosine scan in Go — no vector database), but shot similarity itself
   is not a learned visual embedding.
 
-NexusSlate is independently usable and is also being developed as part of the
+NexusGate is independently usable and is also being developed as part of the
 underlying footage intelligence layer for ChatCut.
 
 ## How it works
 
-**NexusSlate owns the timeline. VLMs describe the frames.**
+**NexusGate owns the timeline. VLMs describe the frames.**
 
 A scan enqueues jobs; each stage enqueues its successor, so the whole chain is
 idempotent and resumable.
@@ -152,7 +152,7 @@ that refuses to claim a shot contains something without shot-level evidence
 (`confirmed`/`possible`/`contradicted`/`unknown` — unknown is never "确认无
 人"), and a diversity selection pass. A configured embedding provider adds a
 text-embedding channel (`providers.embedding`); its vectors are a retrieval
-signal, never evidence, and `nexusslate search rebuild-embeddings` rebuilds
+signal, never evidence, and `nexusgate search rebuild-embeddings` rebuilds
 them when the model changes. The structured endpoint
 `POST /api/v1/search/shots` serves UI, MCP and editing agents alike with
 per-constraint evidence; the legacy GET endpoints keep their exact behaviour.
@@ -193,16 +193,16 @@ approve.**
 
 ## Interfaces
 
-NexusSlate exposes its library through four co-equal interfaces:
+NexusGate exposes its library through four co-equal interfaces:
 
 | Interface | Transport | Use case |
 |---|---|---|
 | **HTTP API** | HTTPS (self-signed) | Web UI, custom integrations, scripts |
 | **CLI** | Local process | Import (`root add` / `root scan`), pipeline runs (`pipeline run` / `retry-failed`), maintenance (cache, search, secrets), Worker enrollment |
-| **MCP** | stdio (JSON-RPC) | Read-only library queries for AI agents (Claude Code, Codex, Cursor) |
+| **MCP** | stdio (JSON-RPC) | Read-only library queries for AI agents (Claude Code, Codex, Cursor, DeepSeek Harness via `plugins/dsh`) |
 | **Agent Skill** | HTTPS (self-signed) + agent token | HTTP draft / revise workflow for Repurpose plans |
 
-The MCP server (`nexusslate-mcp`) is a thin client of the HTTP API — it holds
+The MCP server (`nexusgate-mcp`) is a thin client of the HTTP API — it holds
 no database handle and never touches the NAS. Every tool calls the same
 `/api/v1/...` endpoints the browser uses, with the same agent-token and
 trusted-read contracts. MCP is read-only and exposes exactly six tools:
@@ -211,9 +211,12 @@ trusted-read contracts. MCP is read-only and exposes exactly six tools:
 revising plans is the **Agent Skill**'s HTTP workflow (agent token,
 `POST /api/v1/repurpose/plans` and its revision routes); approval and export
 stay human-only actions in the browser UI.
+DeepSeek Harness consumes the same MCP server through the bundle plugin in
+`plugins/dsh/` (one `dsh-mcp-client` row spawning `nexusgate-mcp` over
+stdio); its install steps mirror the Claude Code plugin above.
 
-Cross-machine MCP needs an `https://` Hub URL plus `NEXUSSLATE_HUB_FINGERPRINT`
-— the SHA-256 certificate fingerprint `nexusslate serve` prints. A plain
+Cross-machine MCP needs an `https://` Hub URL plus `NEXUSGATE_HUB_FINGERPRINT`
+— the SHA-256 certificate fingerprint `nexusgate serve` prints. A plain
 `http://` URL is refused for any non-loopback host, and an `https://` URL
 without the fingerprint refuses to start rather than trusting an unpinned
 certificate.
@@ -228,7 +231,7 @@ certificate.
 - `exiftool` — recommended, optional. Without it, capture metadata is limited to
   what ffprobe exposes.
 
-No database server, no web framework, no frontend build step. NexusSlate
+No database server, no web framework, no frontend build step. NexusGate
 intentionally keeps its dependency surface small and avoids a web framework,
 ORM and frontend build system; `go.mod` lists every direct dependency.
 
@@ -237,7 +240,7 @@ ORM and frontend build system; `go.mod` lists every direct dependency.
 ```bash
 go mod tidy
 go test ./...
-go build -o nexusslate ./cmd/nexusslate
+go build -o nexusgate ./cmd/nexusgate
 ```
 
 Or build nothing locally: `Dockerfile` is multi-stage and compiles inside the
@@ -246,11 +249,11 @@ come with the runtime image. That is the shortest path on Windows.
 
 ```bash
 # First create the docker-compose.override.yml shown below.
-NEXUSSLATE_MEDIA_ROOT=/path/to/footage docker compose up -d --build hub
+NEXUSGATE_MEDIA_ROOT=/path/to/footage docker compose up -d --build hub
 ```
 
 **Admin auth in a container defaults to `required`.** The shipped
-`docker-compose.yml` sets `NEXUSSLATE_HUB_ADMIN_AUTH: ${NEXUSSLATE_HUB_ADMIN_AUTH:-required}`,
+`docker-compose.yml` sets `NEXUSGATE_HUB_ADMIN_AUTH: ${NEXUSGATE_HUB_ADMIN_AUTH:-required}`,
 so a clean `docker compose up -d --build hub` starts with the administrator
 token demanded on every administrator call and no LAN passwordless waiver. No
 override file is needed.
@@ -271,8 +274,8 @@ relaxing the mode blindly:
 services:
   hub:
     environment:
-      NEXUSSLATE_HUB_ADMIN_AUTH: trusted_network
-      NEXUSSLATE_HUB_ADMIN_AUTH_NETWORKS: 192.168.1.0/24
+      NEXUSGATE_HUB_ADMIN_AUTH: trusted_network
+      NEXUSGATE_HUB_ADMIN_AUTH_NETWORKS: 192.168.1.0/24
 ```
 
 Both variables are read from the environment, so no `config.json` edit is
@@ -310,18 +313,18 @@ non-Worker command does fail fast on that config, so fix what `doctor` names
 before `scan` or `serve`.
 
 ```bash
-export NEXUSSLATE_DATA_DIR="$PWD/.nexusslate-dev"
+export NEXUSGATE_DATA_DIR="$PWD/.nexusgate-dev"
 
-./nexusslate doctor                        # check ffmpeg, hardware profile, paths
-./nexusslate root add /path/to/footage     # read-only; nothing is written there
-./nexusslate root scan <root-id>           # scans, enqueues, then drains the queue
-./nexusslate pipeline run                  # drain again (backoff/deferred/off-peak passes)
-./nexusslate search rebuild                # rebuild asset-level FTS from canonical rows
-./nexusslate search rebuild-embeddings     # re-embed all shots (after a model switch)
-./nexusslate cache inspect                 # report cache categories and rebuildable space
-./nexusslate cache verify                  # compare derived-artifact rows with cache files
-./nexusslate cache gc --rebuildable --yes  # delete rebuildable artifacts and enqueue re-derive
-./nexusslate serve                         # HTTPS by default; prints the Hub HTTPS fingerprint
+./nexusgate doctor                        # check ffmpeg, hardware profile, paths
+./nexusgate root add /path/to/footage     # read-only; nothing is written there
+./nexusgate root scan <root-id>           # scans, enqueues, then drains the queue
+./nexusgate pipeline run                  # drain again (backoff/deferred/off-peak passes)
+./nexusgate search rebuild                # rebuild asset-level FTS from canonical rows
+./nexusgate search rebuild-embeddings     # re-embed all shots (after a model switch)
+./nexusgate cache inspect                 # report cache categories and rebuildable space
+./nexusgate cache verify                  # compare derived-artifact rows with cache files
+./nexusgate cache gc --rebuildable --yes  # delete rebuildable artifacts and enqueue re-derive
+./nexusgate serve                         # HTTPS by default; prints the Hub HTTPS fingerprint
 ```
 
 Then open the browser UI. Analysis commits shot-level
@@ -333,7 +336,7 @@ floor or the off-peak window stay queued and are picked up by a later pass.
 The `library_supervisor` (an optional `serve` config) rescans every root and
 drains on a timer, unattended — it is not a prerequisite for a manual run.
 
-Everything lives under `$NEXUSSLATE_DATA_DIR`: `nexusslate.db`, optional
+Everything lives under `$NEXUSGATE_DATA_DIR`: `nexusgate.db`, optional
 `config.json`, `cache/`, `admin-token`, `agent-token`, `provider-secrets/`.
 Deleting that directory is how you reset.
 
@@ -347,28 +350,28 @@ it in Worker configuration or browser storage.
 If jobs failed because a provider was not configured yet, configure it and then:
 
 ```bash
-./nexusslate pipeline retry-failed
+./nexusgate pipeline retry-failed
 ```
 
 ### Maintenance commands
 
-`nexusslate search rebuild` repairs all asset-level FTS rows from canonical data.
+`nexusgate search rebuild` repairs all asset-level FTS rows from canonical data.
 It is separate from `search rebuild-embeddings`, which rebuilds the shot text
 embedding rows after an embedding-model change and never reruns VLM analysis.
 
 Cache maintenance is intentionally explicit:
 
-- `nexusslate cache inspect` reports artifact classes, orphan directories and
+- `nexusgate cache inspect` reports artifact classes, orphan directories and
   rebuildable space.
-- `nexusslate cache verify` reports missing derived files and cache files without
+- `nexusgate cache verify` reports missing derived files and cache files without
   database rows. Source staging under `cache/sources/` is excluded by design.
-- `nexusslate cache gc [--scratch] [--rebuildable] [--orphans] [--yes]` removes
+- `nexusgate cache gc [--scratch] [--rebuildable] [--orphans] [--yes]` removes
   only the named disposable categories. Without `--yes` it is a dry run; with
   `--rebuildable --yes`, completed assets are queued for re-derive.
-- `nexusslate cache repair-derived --invalidate-hardware-profiles [--yes]`
+- `nexusgate cache repair-derived --invalidate-hardware-profiles [--yes]`
   removes hardware-derived thumbnail/proxy rows and files and, with `--yes`,
   queues re-derive jobs. Without `--yes` it only reports what would change.
-- `nexusslate secrets rekey` rotates the encrypted provider-secret store's data
+- `nexusgate secrets rekey` rotates the encrypted provider-secret store's data
   key, re-encrypts all secrets and keeps the previous key at
   `provider-secrets/store.key.pre-rekey`. The operation is journaled and
   recovers interrupted file replacement on the next open.
@@ -378,7 +381,7 @@ re-scanning, so this is the way back.
 
 ## The browser UI
 
-Served by `nexusslate serve` over HTTPS by default. The browser uses a short-lived,
+Served by `nexusgate serve` over HTTPS by default. The browser uses a short-lived,
 memory-only Hub administrator Session in an HttpOnly cookie plus a readable CSRF
 cookie; the pasted administrator token is used only to establish that Session and
 is never stored in browser storage. CLI, Agent, and Worker clients keep their
@@ -396,7 +399,7 @@ separate Bearer credentials.
 | `/tags` | Tag governance: review and approve staged proposals. |
 | `/settings` | Disk-load limits (below). |
 | `/setup` | First-use wizard: environment check, add a root, configure providers, guide the first scan. The working configuration pages are `/library-roots` and `/providers`. |
-| `/repurpose` | Labs — turn an editorial brief into a reviewable plan; experimental workflow built on NexusSlate retrieval. |
+| `/repurpose` | Labs — turn an editorial brief into a reviewable plan; experimental workflow built on NexusGate retrieval. |
 
 The first-import path is `/setup` (or directly `/library-roots`) to add a
 footage root, then `/` to search it, then `/collections` to pin the shots
@@ -448,7 +451,7 @@ for a window never consumes a job's retry budget.
 
 ## Configuration
 
-Copy `config.example.json` to `$NEXUSSLATE_DATA_DIR/config.json`. Most settings
+Copy `config.example.json` to `$NEXUSGATE_DATA_DIR/config.json`. Most settings
 also have an environment variable. Prefer environment variables for legacy
 Provider keys or the encrypted `/providers` channel store; an explicit legacy
 `api_key` field in `config.json` is plaintext on disk and should be treated as a
@@ -474,14 +477,14 @@ never modified.
 | `software` | force libx264 |
 
 The detector inspects the installed FFmpeg build rather than guessing from the
-machine — `nexusslate doctor` or `GET /api/v1/hardware` reports what was chosen.
+machine — `nexusgate doctor` or `GET /api/v1/hardware` reports what was chosen.
 With `allow_fallback`, an unsupported codec or driver retries in software.
 Hardware and software cache paths are kept distinct, so a software proxy is never
 mislabelled as a hardware result.
 
 ### NAS and network shares
 
-NexusSlate runs on a machine with CPU/GPU, not on the NAS. Mount the share, add the
+NexusGate runs on a machine with CPU/GPU, not on the NAS. Mount the share, add the
 mounted folder as a normal library root, and enable copy staging:
 
 ```json
@@ -489,11 +492,11 @@ mounted folder as a normal library root, and enable copy staging:
 ```
 
 The source is opened read-only and copied once into
-`$NEXUSSLATE_DATA_DIR/cache/sources/` before jobs that decode or transform the
+`$NEXUSGATE_DATA_DIR/cache/sources/` before jobs that decode or transform the
 source. The NAS receives no derived files, sidecars or metadata writes, and a
 completed cache entry keeps working if the share disconnects after staging.
 Budget local disk for the files being processed; the cache is disposable while
-NexusSlate is stopped.
+NexusGate is stopped.
 
 **Probe exception (current behaviour):** the `probe` stage still reads the
 original path directly, even with `mode: copy`; the initial metadata read is not
@@ -552,13 +555,13 @@ rather than failing mid-analysis. See below.
 
 ### Local multimodal analysis (Local Multiframe)
 
-NexusSlate detects shot boundaries itself (ffmpeg scene filter or an external
+NexusGate detects shot boundaries itself (ffmpeg scene filter or an external
 detector), samples 2/4/6 representative frames per shot, slices the timed
 transcript per shot, and sends *still frames* to a local OpenAI-compatible
 VLM — the endpoint never receives whole videos. This is the cheapest way to
 index a library on one machine with an 8–16 GB consumer GPU.
 
-NexusSlate does **not** download models or start the VLM runtime. Point it at
+NexusGate does **not** download models or start the VLM runtime. Point it at
 an OpenAI-compatible multimodal HTTP endpoint:
 
 ```json
@@ -582,12 +585,12 @@ an OpenAI-compatible multimodal HTTP endpoint:
 ```
 
 ```bash
-export NEXUSSLATE_DATA_DIR="$PWD/.nexusslate-dev"
-./nexusslate root add /path/to/footage
-./nexusslate root scan <root-id>
-./nexusslate pipeline run      # leases and runs jobs until the queue is idle
-./nexusslate search rebuild-embeddings   # after switching the embedding model
-./nexusslate serve
+export NEXUSGATE_DATA_DIR="$PWD/.nexusgate-dev"
+./nexusgate root add /path/to/footage
+./nexusgate root scan <root-id>
+./nexusgate pipeline run      # leases and runs jobs until the queue is idle
+./nexusgate search rebuild-embeddings   # after switching the embedding model
+./nexusgate serve
 ```
 
 Any OpenAI-compatible multimodal runtime (llama.cpp, LM Studio, vLLM, SGLang,
@@ -616,7 +619,7 @@ Direct provider endpoints and relays use the same configuration shape:
   "protocol": "openai_chat",
   "base_url": "https://relay.example.com/v1",
   "path": "chat/completions",
-  "api_key_env": "NEXUSSLATE_RELAY_KEY",
+  "api_key_env": "NEXUSGATE_RELAY_KEY",
   "model": "gemini-3.6-flash"
 }
 ```
@@ -686,7 +689,7 @@ raw tags → normalize → exact canonical/alias resolution → unresolved pool
 
 The heuristic curator is deliberately conservative. An optional OpenAI-compatible
 or Gemini-native small model implements the same proposal contract — it can return
-semantic groups only. NexusSlate derives the database IDs itself, rejects aliases
+semantic groups only. NexusGate derives the database IDs itself, rejects aliases
 absent from the unresolved pool, and writes nothing to the canonical catalog until
 a human approves.
 
@@ -699,7 +702,7 @@ provider interface: it embeds shot text — description/tags/speech — and only
 ever ranks, never proves; evidence comes from the gate, not the vectors.)
 
 ```bash
-curl -k -H "Authorization: Bearer $(cat \"$NEXUSSLATE_DATA_DIR/admin-token\")" \
+curl -k -H "Authorization: Bearer $(cat \"$NEXUSGATE_DATA_DIR/admin-token\")" \
   -X POST 'https://127.0.0.1:8787/api/v1/tags/clusters?limit=500&threshold=0.86'
 ```
 
@@ -708,7 +711,7 @@ automatically.
 
 ### Optional forced alignment
 
-With `providers.alignment.enabled`, NexusSlate runs the configured command and
+With `providers.alignment.enabled`, NexusGate runs the configured command and
 writes one JSON object to stdin:
 
 ```json
@@ -748,7 +751,7 @@ brief → optional planner (or deterministic fallback) → material needs
 ```
 
 ```bash
-curl -k -H "Authorization: Bearer $(cat \"$NEXUSSLATE_DATA_DIR/admin-token\")" \
+curl -k -H "Authorization: Bearer $(cat \"$NEXUSGATE_DATA_DIR/admin-token\")" \
   -X POST https://127.0.0.1:8787/api/v1/repurpose/plans \
   -H 'content-type: application/json' \
   -d '{"brief":"我要做一个深圳城市宣传视频","duration_ms":30000,"style":"城市生活","audience":"品牌客户"}'
@@ -770,7 +773,7 @@ trade-off rather than a silently missing ending.
 An approved plan exports as a CMX3600 EDL or an FCPXML 1.9 document:
 
 ```bash
-curl -k -H "Authorization: Bearer $(cat "$NEXUSSLATE_DATA_DIR/admin-token")" \
+curl -k -H "Authorization: Bearer $(cat "$NEXUSGATE_DATA_DIR/admin-token")" \
   https://127.0.0.1:8787/api/v1/repurpose/plans/<plan-id>/export.edl
 ```
 
@@ -796,13 +799,13 @@ Worker is offline.
 Easiest path: open `/worker-setup`, which generates a ready-to-run install script
 (PowerShell for Windows, POSIX `sh` for Linux) with the hub URL, certificate
 fingerprint, one-time pairing token and mounts already filled in. Cross-compile
-the Worker and drop it into `$NEXUSSLATE_DATA_DIR/worker-binaries/` — the Hub
+the Worker and drop it into `$NEXUSGATE_DATA_DIR/worker-binaries/` — the Hub
 serves it, so the LAN needs no second web server:
 
 ```bash
-GOOS=windows GOARCH=amd64 go build -o nexusslate-windows-amd64.exe ./cmd/nexusslate
-GOOS=linux   GOARCH=amd64 go build -o nexusslate-linux-amd64      ./cmd/nexusslate
-GOOS=linux   GOARCH=arm64 go build -o nexusslate-linux-arm64      ./cmd/nexusslate
+GOOS=windows GOARCH=amd64 go build -o nexusgate-windows-amd64.exe ./cmd/nexusgate
+GOOS=linux   GOARCH=amd64 go build -o nexusgate-linux-amd64      ./cmd/nexusgate
+GOOS=linux   GOARCH=arm64 go build -o nexusgate-linux-arm64      ./cmd/nexusgate
 ```
 
 That endpoint is administrator-gated because the generated script embeds a
@@ -811,10 +814,10 @@ single-use pairing token. Treat the script as a credential; do not commit it.
 By hand:
 
 ```bash
-nexusslate worker enroll --hub https://nas:8787 --fingerprint <fingerprint> \
+nexusgate worker enroll --hub https://nas:8787 --fingerprint <fingerprint> \
   --pairing <one-time-token> --name studio-windows \
   --mount <library-root-id>=D:\\NAS\\Footage
-nexusslate worker run
+nexusgate worker run
 ```
 
 `provider_operations` is enrollment-time trust; heartbeats cannot grant provider
@@ -823,7 +826,7 @@ access. Re-enroll to change it.
 ### Windows: tray icon
 
 ```bash
-nexusslate worker run --tray
+nexusgate worker run --tray
 ```
 
 Puts an icon in the notification area with **设置…** and **退出**. Quitting from
@@ -846,7 +849,7 @@ changed without re-pasting a credential you cannot read.
 
 ### Under WSL
 
-This works. WSL is **Linux**, so use `nexusslate-linux-amd64`, not the `.exe`, and
+This works. WSL is **Linux**, so use `nexusgate-linux-amd64`, not the `.exe`, and
 expect `--tray` to refuse — there is no notification area for a Linux binary, and
 it says so rather than starting a process you cannot quit. Stop it with `Ctrl-C`
 or run it under `systemd` inside the distro.
@@ -873,12 +876,12 @@ yours:
 
 ```bash
 sudo mount -t cifs //nas/footage /mnt/footage -o ro,username=<user>,vers=3.0
-nexusslate worker enroll --hub https://nas:8787 --fingerprint <fingerprint> \
+nexusgate worker enroll --hub https://nas:8787 --fingerprint <fingerprint> \
   --pairing <one-time-token> --name wsl-worker \
   --mount <library-root-id>=/mnt/footage
 ```
 
-Mount read-only: NexusSlate never writes beside source media, and `ro` makes that a
+Mount read-only: NexusGate never writes beside source media, and `ro` makes that a
 property of the mount rather than a promise.
 
 One WSL-specific detection gap to know about: `/dev/dri` does not exist under
@@ -966,10 +969,10 @@ These are load-bearing, not aspirational.
 
 ## Agent Skill
 
-A versioned Skill lives at `skills/nexusslate`. It can inspect readiness, retrieve
+A versioned Skill lives at `skills/nexusgate`. It can inspect readiness, retrieve
 shot evidence, create a draft plan and submit a user-directed revision. Point a
 Skill session at that folder and the local server URL (HTTPS by default — the
-URL `nexusslate serve` prints), and give it the **agent** token — not the
+URL `nexusgate serve` prints), and give it the **agent** token — not the
 administrator token.
 
 Before acting it calls `GET /api/v1/agent/capabilities`, which declares that plan
@@ -986,7 +989,7 @@ curl -k https://127.0.0.1:8787/api/v1/jobs
 curl -k https://127.0.0.1:8787/api/v1/hardware
 curl -k https://127.0.0.1:8787/api/v1/pipeline/throttle
 curl -k https://127.0.0.1:8787/api/v1/assets/<asset-id>/shots
-curl -k -H "Authorization: Bearer $(cat "$NEXUSSLATE_DATA_DIR/admin-token")" \
+curl -k -H "Authorization: Bearer $(cat "$NEXUSGATE_DATA_DIR/admin-token")" \
   -X POST https://127.0.0.1:8787/api/v1/pipeline/run
 ```
 
@@ -1016,10 +1019,10 @@ GOOS=windows GOARCH=amd64 go vet ./...   # the tray is Win32 code CI cannot run
 
 ### Offline eval corpus（评估语料）
 
-`nexusslate-corpusgen` generates the offline eval corpus: deterministic
+`nexusgate-corpusgen` generates the offline eval corpus: deterministic
 synthetic clips (lavfi test sources, reproducible and licence-free) plus
 `ground_truth.json`, mirroring the retrieval golden set's adversarial assets
-in `internal/repository/sqlite/retrieval_golden_corpus_test.go`. `nexusslate-eval`
+in `internal/repository/sqlite/retrieval_golden_corpus_test.go`. `nexusgate-eval`
 then runs a provider configuration against that corpus exactly the way a Hub
 would and scores the results with the product's hybrid retrieval; `score`
 attributes false positives per signal (`semantic_false_positives` /
@@ -1029,10 +1032,10 @@ database, so comparing models is comparing data dirs. Not part of CI — it is
 the manual, offline benchmark.
 
 ```bash
-nexusslate-corpusgen --out ./corpus
-nexusslate-eval run  --corpus ./corpus --data-dir ./eval/qwen   --label qwen3vl-4b
-nexusslate-eval run  --corpus ./corpus --data-dir ./eval/gemini --label gemini-flash
-nexusslate-eval score --corpus ./corpus --data-dir ./eval --labels qwen3vl-4b,gemini-flash
+nexusgate-corpusgen --out ./corpus
+nexusgate-eval run  --corpus ./corpus --data-dir ./eval/qwen   --label qwen3vl-4b
+nexusgate-eval run  --corpus ./corpus --data-dir ./eval/gemini --label gemini-flash
+nexusgate-eval score --corpus ./corpus --data-dir ./eval --labels qwen3vl-4b,gemini-flash
 ```
 
 ## Documentation
@@ -1084,4 +1087,4 @@ licences — see `THIRD-PARTY-LICENSES` for the full list (`modernc.org/sqlite`
 BSD-3-Clause, `github.com/coder/websocket` ISC, `github.com/mark3labs/mcp-go`
 MIT, `golang.org/x/crypto` / `golang.org/x/net` BSD-3-Clause, and their
 transitive modules). `ffmpeg`, `ffprobe` and `exiftool` are external programs
-NexusSlate invokes, not bundled code — their licences are their own.
+NexusGate invokes, not bundled code — their licences are their own.

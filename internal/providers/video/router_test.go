@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	videoanalysis "github.com/evjohn-icu/nexusslate/internal/domain/video_analysis"
+	videoanalysis "github.com/evjohn-icu/nexusgate/internal/domain/video_analysis"
 )
 
 type stubProvider struct {

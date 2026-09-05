@@ -14,25 +14,25 @@ import (
 	"sync"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/config"
-	"github.com/evjohn-icu/nexusslate/internal/credentials"
-	"github.com/evjohn-icu/nexusslate/internal/curator"
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/hubauth"
-	"github.com/evjohn-icu/nexusslate/internal/idgen"
-	"github.com/evjohn-icu/nexusslate/internal/ingest"
-	"github.com/evjohn-icu/nexusslate/internal/media"
-	"github.com/evjohn-icu/nexusslate/internal/mount"
-	"github.com/evjohn-icu/nexusslate/internal/providers"
-	videoproviders "github.com/evjohn-icu/nexusslate/internal/providers/video"
-	"github.com/evjohn-icu/nexusslate/internal/remote"
-	sqlite "github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
-	"github.com/evjohn-icu/nexusslate/internal/repurpose"
-	"github.com/evjohn-icu/nexusslate/internal/search"
-	"github.com/evjohn-icu/nexusslate/internal/secretstore"
-	"github.com/evjohn-icu/nexusslate/internal/smbdiscover"
-	"github.com/evjohn-icu/nexusslate/internal/staging"
-	"github.com/evjohn-icu/nexusslate/internal/webdavspace"
+	"github.com/evjohn-icu/nexusgate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/credentials"
+	"github.com/evjohn-icu/nexusgate/internal/curator"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/hubauth"
+	"github.com/evjohn-icu/nexusgate/internal/idgen"
+	"github.com/evjohn-icu/nexusgate/internal/ingest"
+	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/mount"
+	"github.com/evjohn-icu/nexusgate/internal/providers"
+	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
+	"github.com/evjohn-icu/nexusgate/internal/remote"
+	sqlite "github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/repurpose"
+	"github.com/evjohn-icu/nexusgate/internal/search"
+	"github.com/evjohn-icu/nexusgate/internal/secretstore"
+	"github.com/evjohn-icu/nexusgate/internal/smbdiscover"
+	"github.com/evjohn-icu/nexusgate/internal/staging"
+	"github.com/evjohn-icu/nexusgate/internal/webdavspace"
 )
 
 var ErrInvalidRepurposeRevision = errors.New("invalid repurpose revision")
@@ -61,6 +61,10 @@ var ErrInvalidWorkerArtifact = errors.New("invalid worker artifact")
 // path was told the server broke. The API maps this to 400 and carries the
 // message, which names the path.
 var ErrRootPathInvalid = errors.New("invalid library root path")
+
+// ErrDiscoverInProgress marks a discovery request rejected at the in-process
+// scan boundary: callers must retry rather than queue another LAN-wide probe.
+var ErrDiscoverInProgress = errors.New("SMB discovery already in progress")
 
 // ErrWorkerArtifactLease is UploadWorkerArtifact's API-facing rename of
 // domain.ErrJobLeaseLost: writeWorkerArtifactResult (internal/api/server.go)
@@ -268,10 +272,12 @@ type Service struct {
 	// every method guards it.
 	searchV2 *search.Service
 
-	// discoverSMB performs the SMB network discovery behind DiscoverSMBHosts.
+	// discoverSMB performs the SMB network discovery behind DiscoverSMB.
 	// It is a field (not a direct call) so tests can substitute a fast fake
 	// and never trigger a real 15-second LAN scan in the API test suite.
-	discoverSMB func(ctx context.Context) ([]smbdiscover.Host, error)
+	discoverSMB      func(ctx context.Context) (smbdiscover.Result, error)
+	discoverMu       sync.Mutex
+	discoverInflight bool
 
 	pipelineMu             sync.Mutex
 	pipelineRunning        bool
@@ -400,7 +406,7 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 		scanFailures:    make(map[string]map[string]int),
 		scanRootLocks:   make(map[string]*sync.Mutex),
 		pipelineContext: context.Background(),
-		discoverSMB: func(ctx context.Context) ([]smbdiscover.Host, error) {
+		discoverSMB: func(ctx context.Context) (smbdiscover.Result, error) {
 			return smbdiscover.Discover(ctx, smbdiscover.DefaultOptions())
 		},
 	}
@@ -623,15 +629,29 @@ func (s *Service) AddLibraryRoot(ctx context.Context, path string) (domain.Libra
 	return s.repo.CreateLibraryRoot(ctx, absolute)
 }
 
-// DiscoverSMBHosts probes the local network for SMB servers and enumerates
-// their guest-accessible shares. It is the backend of the library-roots
-// "discover" step: an operator picks a discovered share instead of typing a
-// path they have to already know. Only anonymous/guest sessions are ever
-// attempted; hosts that need credentials are reported with NeedsAuth and left
-// to the mount wizard's credential flow.
-func (s *Service) DiscoverSMBHosts(ctx context.Context) ([]smbdiscover.Host, error) {
-	if s.discoverSMB != nil {
-		return s.discoverSMB(ctx)
+// DiscoverSMB probes the local network for SMB servers and enumerates their
+// guest-accessible shares. It is the backend of the library-roots "discover"
+// step: an operator picks a discovered share instead of typing a path they
+// have to already know. Only anonymous/guest sessions are ever attempted;
+// hosts that need credentials are reported with NeedsAuth and left to the
+// mount wizard's credential flow.
+func (s *Service) DiscoverSMB(ctx context.Context) (smbdiscover.Result, error) {
+	s.discoverMu.Lock()
+	if s.discoverInflight {
+		s.discoverMu.Unlock()
+		return smbdiscover.Result{}, ErrDiscoverInProgress
+	}
+	s.discoverInflight = true
+	discover := s.discoverSMB
+	s.discoverMu.Unlock()
+	defer func() {
+		s.discoverMu.Lock()
+		s.discoverInflight = false
+		s.discoverMu.Unlock()
+	}()
+
+	if discover != nil {
+		return discover(ctx)
 	}
 	return smbdiscover.Discover(ctx, smbdiscover.DefaultOptions())
 }
@@ -639,8 +659,10 @@ func (s *Service) DiscoverSMBHosts(ctx context.Context) ([]smbdiscover.Host, err
 // SetSMBDiscoverer overrides the discovery implementation. It exists so the
 // API test suite can inject a fast fake and never trigger a real 15-second
 // LAN scan; production wiring is done inside NewService.
-func (s *Service) SetSMBDiscoverer(discover func(ctx context.Context) ([]smbdiscover.Host, error)) {
+func (s *Service) SetSMBDiscoverer(discover func(ctx context.Context) (smbdiscover.Result, error)) {
+	s.discoverMu.Lock()
 	s.discoverSMB = discover
+	s.discoverMu.Unlock()
 }
 
 // RootWarningDetail is one fixed root-storage diagnostic with a stable code and
@@ -796,7 +818,7 @@ type MountGuidance struct {
 // MountGuideStep carries mount.Step's Key alongside the English Title so the
 // browser wizard (internal/api/library_roots_page.go) can look up a Chinese
 // translation by Key and fall back to Title — which stays the English
-// text — when the key is unrecognised. The CLI (nexusslate doctor) never sees
+// text — when the key is unrecognised. The CLI (nexusgate doctor) never sees
 // this type; it renders mount.Guide directly and is unaffected by Key.
 type MountGuideStep struct {
 	Key      string   `json:"key"`
@@ -968,7 +990,7 @@ func (s *Service) ListWorkers(ctx context.Context) ([]remote.Worker, error) {
 
 // RevokeWorker decommissions a Worker so its token stops authenticating and
 // its heartbeat stops registering it as online. It is the write that backs
-// the admin "revoke" endpoint and the `nexusslate worker revoke` CLI command;
+// the admin "revoke" endpoint and the `nexusgate worker revoke` CLI command;
 // an unknown id is reported as domain.ErrWorkerNotFound.
 func (s *Service) RevokeWorker(ctx context.Context, id string) error {
 	return s.repo.RevokeWorker(ctx, id)
@@ -1551,7 +1573,7 @@ const executorHeartbeat = 15 * time.Second
 // HealOnStartup so the startup sweep sees this process as alive and reclaims
 // only its dead predecessor's jobs; call the returned stop func on shutdown so
 // the next process does not wait for the heartbeat to age out. Every process
-// that runs the Hub-local queue (`serve`, `nexusslate pipeline run`) must call
+// that runs the Hub-local queue (`serve`, `nexusgate pipeline run`) must call
 // it; anything else is free to skip it.
 func (s *Service) StartExecutor(ctx context.Context) (stop func(), err error) {
 	owner := s.leaseOwner
@@ -1785,7 +1807,7 @@ func (s *Service) ListJobs(ctx context.Context, limit int) ([]domain.Job, error)
 }
 
 // ListJobsPage is the paged form of ListJobs: it reports whether another page
-// exists so the API can set X-NexusSlate-Has-More. ListJobs itself stays on
+// exists so the API can set X-NexusGate-Has-More. ListJobs itself stays on
 // the pipeline path unchanged.
 func (s *Service) ListJobsPage(ctx context.Context, limit, offset int) ([]domain.Job, bool, error) {
 	return s.repo.PagedJobs(ctx, limit, offset)
@@ -1838,7 +1860,7 @@ func (s *Service) AssetExists(ctx context.Context, assetID string) (bool, error)
 // timestamps come from — aligned word boundaries are the strongest timing
 // evidence the pipeline has, asr segments are sentence-level only. The word
 // stream stays contiguous across shot boundaries: consumers think in
-// sentences, and imposing nexusslate's shot atomicity would break their edit
+// sentences, and imposing nexusgate's shot atomicity would break their edit
 // model.
 type AssetTranscript struct {
 	AssetID  string                     `json:"asset_id"`

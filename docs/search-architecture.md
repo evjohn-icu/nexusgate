@@ -1,6 +1,6 @@
 # Search Architecture v2 — local-first footage retrieval and selection
 
-NexusSlate 的检索系统正在从"一个 hybrid 端点"长成一个真正的
+NexusGate 的检索系统正在从"一个 hybrid 端点"长成一个真正的
 **local-first footage retrieval and selection engine**：既独立承担素材检索，
 也成为 ChatCut 等上层创作/剪辑系统的素材 intelligence layer。
 
@@ -43,7 +43,7 @@ Search Result + Evidence
 description / objects / actions / tags / mood 与精确时间范围。所有检索
 表示（FTS 行、启发式语义向量、text embedding、未来 OCR 索引、rerank cache）
 都是 **derived、rebuildable、replaceable** 的：换 embedding 模型绝不能
-要求重新 VLM analyze 全部素材，只能重建 derived 层（`nexusslate search
+要求重新 VLM analyze 全部素材，只能重建 derived 层（`nexusgate search
 rebuild-embeddings`）。这正是
 `analysis_generation`（canonical 真值）与 `retrieval_generation`
 （FTS/embedding/alias/fusion 配置）分离的意义。
@@ -100,7 +100,7 @@ semantic；"给我找…" → creative；其余 fact。`mode: auto` 是默认；
   而 RRF 会给每个有排名的候选记分——不设阈值的话，近正交噪声的长尾会
   淹没稀疏通道的强 top rank。因此通道只保留相似度 ≥ 0.8 × 通道自身最高
   相似度的簇（`embeddingCutoffFraction`）。embedding 是检索信号，不是
-  证据；换 embedding 模型 = 对 derived 文本重建（`nexusslate search
+  证据；换 embedding 模型 = 对 derived 文本重建（`nexusgate search
   rebuild-embeddings`），绝不重跑 VLM analysis。
 
 未来通道（同一接口，不重写 SearchService）：VisualEmbedding / OCR。
@@ -171,7 +171,7 @@ shot 的评分与 evidence。
 gateway）与 Gemini `embedContent` 协议直接满足，零适配器代码。存储
 `shot_text_embeddings`（每 shot 一行，model 标记，float32 LE blob，
 source_text_hash 驱动增量重建）。生成时机：分析提交后自动增量
-（post-commit hook，只重嵌 derived 文本变化的 shot）+ `nexusslate search
+（post-commit hook，只重嵌 derived 文本变化的 shot）+ `nexusgate search
 rebuild-embeddings` 全量命令。future 可接 Qwen3-VL-Embedding / CLIP /
 SigLIP，核心 domain 不写死模型。
 

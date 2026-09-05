@@ -1,0 +1,34 @@
+[Unit]
+Description=NexusGate Hub
+Documentation=man:nexusgate  https://github.com/evjohn-icu/nexusgate
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=nexusgate
+Group=nexusgate
+StateDirectory=nexusgate
+WorkingDirectory=/var/lib/nexusgate
+Environment=NEXUSGATE_DATA_DIR=/var/lib/nexusgate
+Environment=NEXUSGATE_LISTEN_ADDRESS=127.0.0.1:8787
+EnvironmentFile=-/etc/nexusgate/nexusgate.env
+ExecStart=/usr/local/bin/nexusgate serve
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0077
+
+# The Hub may write only its own state. Media and TLS material are inputs.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/nexusgate
+# ReadOnlyPaths must match the directories passed to `nexusgate root add <path>`
+# and the TLS certificate location.  Change these when you move your media or
+# certificates, or the service will fail to start.
+ReadOnlyPaths=/srv/nexusgate/media /etc/nexusgate/tls
+
+[Install]
+WantedBy=multi-user.target

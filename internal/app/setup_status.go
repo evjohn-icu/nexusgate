@@ -5,9 +5,9 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/providerchannels"
-	"github.com/evjohn-icu/nexusslate/internal/providers"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/providerchannels"
+	"github.com/evjohn-icu/nexusgate/internal/providers"
 )
 
 // SetupNextStep* name the single most useful action for a fresh Hub, in the

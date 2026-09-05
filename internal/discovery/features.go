@@ -8,8 +8,8 @@ import (
 	"math"
 	"strings"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/textindex"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/textindex"
 )
 
 const VectorSize = 64

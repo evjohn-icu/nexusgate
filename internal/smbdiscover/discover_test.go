@@ -2,10 +2,13 @@ package smbdiscover
 
 import (
 	"context"
+	"errors"
 	"net"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/hirochachacha/go-smb2"
 )
 
 // TestDiscoverMergesMDNSAndPortScan verifies that a host found by both mDNS
@@ -13,21 +16,22 @@ import (
 // IP, and that sources union correctly.
 func TestDiscoverMergesMDNSAndPortScan(t *testing.T) {
 	ctx := context.Background()
-	got, err := discoverWith(ctx, DefaultOptions(),
-		func(context.Context) []Host {
+	result, err := discoverWith(ctx, DefaultOptions(),
+		func(context.Context) ([]Host, bool) {
 			return []Host{
 				{Name: "nas.local.", IP: "192.168.1.50", Source: "mdns"},
 				{Name: "other.local.", IP: "192.168.1.60", Source: "mdns"},
-			}
+			}, true
 		},
-		func(context.Context, time.Duration) []net.IP {
-			return []net.IP{net.ParseIP("192.168.1.50"), net.ParseIP("192.168.1.99")}
+		func(context.Context, time.Duration) ([]net.IP, []string, []string, bool) {
+			return []net.IP{net.ParseIP("192.168.1.50"), net.ParseIP("192.168.1.99")}, nil, nil, false
 		},
 		func(context.Context, time.Duration, map[string]*Host, []string) {},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	got := result.Hosts
 	if len(got) != 3 {
 		t.Fatalf("got %d hosts, want 3: %+v", len(got), got)
 	}
@@ -68,20 +72,21 @@ func TestDiscoverMergesMDNSAndPortScan(t *testing.T) {
 // TestDiscoverSortsResults verifies the output is sorted by name then IP.
 func TestDiscoverSortsResults(t *testing.T) {
 	ctx := context.Background()
-	got, err := discoverWith(ctx, DefaultOptions(),
-		func(context.Context) []Host {
+	result, err := discoverWith(ctx, DefaultOptions(),
+		func(context.Context) ([]Host, bool) {
 			return []Host{
 				{Name: "z.local.", IP: "192.168.1.2", Source: "mdns"},
 				{Name: "a.local.", IP: "192.168.1.1", Source: "mdns"},
 				{Name: "m.local.", IP: "192.168.1.3", Source: "mdns"},
-			}
+			}, true
 		},
-		func(context.Context, time.Duration) []net.IP { return nil },
+		func(context.Context, time.Duration) ([]net.IP, []string, []string, bool) { return nil, nil, nil, false },
 		func(context.Context, time.Duration, map[string]*Host, []string) {},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	got := result.Hosts
 	var names []string
 	for _, h := range got {
 		names = append(names, h.Name)
@@ -97,23 +102,26 @@ func TestDiscoverSortsResults(t *testing.T) {
 // that fail.
 func TestDiscoverShareEnumeration(t *testing.T) {
 	ctx := context.Background()
-	got, err := discoverWith(ctx, DefaultOptions(),
-		func(context.Context) []Host {
+	result, err := discoverWith(ctx, DefaultOptions(),
+		func(context.Context) ([]Host, bool) {
 			return []Host{
 				{Name: "nas.local.", IP: "192.168.1.50", Source: "mdns"},
 				{Name: "locked.local.", IP: "192.168.1.51", Source: "mdns"},
-			}
+			}, true
 		},
-		func(context.Context, time.Duration) []net.IP { return nil },
+		func(context.Context, time.Duration) ([]net.IP, []string, []string, bool) { return nil, nil, nil, false },
 		func(_ context.Context, _ time.Duration, byIP map[string]*Host, order []string) {
 			byIP["192.168.1.50"].Shares = []string{"video", "photos"}
+			byIP["192.168.1.50"].Probe = "ok"
 			byIP["192.168.1.50"].NeedsAuth = false
+			byIP["192.168.1.51"].Probe = "auth"
 			byIP["192.168.1.51"].NeedsAuth = true // enumeration failed
 		},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	got := result.Hosts
 	var nas, locked *Host
 	for i := range got {
 		switch got[i].IP {
@@ -139,19 +147,20 @@ func TestDiscoverPortScanDisabled(t *testing.T) {
 	opts := DefaultOptions()
 	opts.DisablePortScan = true
 	ctx := context.Background()
-	got, err := discoverWith(ctx, opts,
-		func(context.Context) []Host {
-			return []Host{{Name: "nas.local.", IP: "192.168.1.50", Source: "mdns"}}
+	result, err := discoverWith(ctx, opts,
+		func(context.Context) ([]Host, bool) {
+			return []Host{{Name: "nas.local.", IP: "192.168.1.50", Source: "mdns"}}, true
 		},
-		func(context.Context, time.Duration) []net.IP {
+		func(context.Context, time.Duration) ([]net.IP, []string, []string, bool) {
 			t.Fatal("port scan must not run when disabled")
-			return nil
+			return nil, nil, nil, false
 		},
 		func(context.Context, time.Duration, map[string]*Host, []string) {},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	got := result.Hosts
 	if len(got) != 1 || got[0].Name != "nas.local" {
 		t.Fatalf("got %+v, want just nas.local", got)
 	}
@@ -160,16 +169,17 @@ func TestDiscoverPortScanDisabled(t *testing.T) {
 // TestDiscoverNameTrimsTrailingDot verifies mDNS names lose the trailing dot.
 func TestDiscoverNameTrimsTrailingDot(t *testing.T) {
 	ctx := context.Background()
-	got, err := discoverWith(ctx, DefaultOptions(),
-		func(context.Context) []Host {
-			return []Host{{Name: "nas.local.", IP: "192.168.1.50", Source: "mdns"}}
+	result, err := discoverWith(ctx, DefaultOptions(),
+		func(context.Context) ([]Host, bool) {
+			return []Host{{Name: "nas.local.", IP: "192.168.1.50", Source: "mdns"}}, true
 		},
-		func(context.Context, time.Duration) []net.IP { return nil },
+		func(context.Context, time.Duration) ([]net.IP, []string, []string, bool) { return nil, nil, nil, false },
 		func(context.Context, time.Duration, map[string]*Host, []string) {},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	got := result.Hosts
 	if got[0].Name != "nas.local" {
 		t.Fatalf("name = %q, want nas.local (no trailing dot)", got[0].Name)
 	}
@@ -299,5 +309,120 @@ func TestIsPrivateIPv4(t *testing.T) {
 		if got := isPrivateIPv4(net.ParseIP(tc.ip)); got != tc.want {
 			t.Errorf("isPrivateIPv4(%s) = %v, want %v", tc.ip, got, tc.want)
 		}
+	}
+}
+
+// TestDiscoverLayerContextsRemainLiveAfterMDNSBudget ensures each layer gets a
+// fresh budget instead of inheriting an already-expired mDNS context.
+func TestDiscoverLayerContextsRemainLiveAfterMDNSBudget(t *testing.T) {
+	const ip = "192.0.2.10"
+	opts := DefaultOptions()
+	opts.ScanTimeout = 500 * time.Millisecond
+	var scanned bool
+	var enumerated bool
+	result, err := discoverWith(context.Background(), opts,
+		func(ctx context.Context) ([]Host, bool) {
+			<-ctx.Done()
+			return nil, true
+		},
+		func(ctx context.Context, _ time.Duration) ([]net.IP, []string, []string, bool) {
+			if ctx.Err() != nil {
+				t.Fatalf("port scan context = %v, want live context", ctx.Err())
+			}
+			scanned = true
+			return []net.IP{net.ParseIP(ip)}, nil, nil, false
+		},
+		func(ctx context.Context, _ time.Duration, byIP map[string]*Host, _ []string) {
+			if ctx.Err() != nil {
+				t.Fatalf("enumeration context = %v, want live context", ctx.Err())
+			}
+			enumerated = true
+			if _, ok := byIP[ip]; !ok {
+				t.Fatalf("enumeration did not receive port-scan IP %s", ip)
+			}
+			byIP[ip].Probe = "ok"
+			byIP[ip].Shares = []string{"guest"}
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !scanned || !enumerated {
+		t.Fatalf("layers ran: scan=%v enumerate=%v", scanned, enumerated)
+	}
+	if len(result.Hosts) != 1 || result.Hosts[0].IP != ip {
+		t.Fatalf("hosts = %+v, want host %s", result.Hosts, ip)
+	}
+}
+
+// TestDiscoverProbeClassification verifies the four probe outcomes without
+// relying on error text from a remote SMB implementation.
+func TestDiscoverProbeClassification(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "auth", err: &smb2.ResponseError{Code: 0xc000006d}, want: "auth"},
+		{name: "unusable", err: errors.New("mid-negotiation reset"), want: "unusable"},
+		{name: "timeout", err: context.DeadlineExceeded, want: "timeout"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyProbeError(ctx, tc.err); got != tc.want {
+				t.Fatalf("classification = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	result, err := discoverWith(ctx, DefaultOptions(),
+		func(context.Context) ([]Host, bool) {
+			return []Host{{Name: "ok.local", IP: "192.0.2.11", Source: "mdns"}}, true
+		},
+		func(context.Context, time.Duration) ([]net.IP, []string, []string, bool) {
+			return nil, nil, nil, false
+		},
+		func(_ context.Context, _ time.Duration, byIP map[string]*Host, _ []string) {
+			byIP["192.0.2.11"].Shares = []string{"guest"}
+			byIP["192.0.2.11"].Probe = "ok"
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Hosts) != 1 || result.Hosts[0].Probe != "ok" || result.Hosts[0].NeedsAuth {
+		t.Fatalf("successful probe = %+v, want ok without auth", result.Hosts)
+	}
+}
+
+// TestDiscoverReportsScannedAndSkippedNetworks verifies an empty diagnostic
+// cannot hide the fact that one network was swept and another was refused.
+func TestDiscoverReportsScannedAndSkippedNetworks(t *testing.T) {
+	opts := DefaultOptions()
+	opts.DisableShareEnum = true
+	result, err := discoverWith(context.Background(), opts,
+		func(context.Context) ([]Host, bool) { return nil, false },
+		func(context.Context, time.Duration) ([]net.IP, []string, []string, bool) {
+			return []net.IP{net.ParseIP("192.0.2.12")}, []string{"192.168.1.0/24"}, []string{"172.16.0.0/12"}, true
+		},
+		func(context.Context, time.Duration, map[string]*Host, []string) {
+			t.Fatal("share enumeration must be disabled")
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result.ScannedNetworks, []string{"192.168.1.0/24"}) {
+		t.Fatalf("scanned networks = %v", result.ScannedNetworks)
+	}
+	if !reflect.DeepEqual(result.SkippedNetworks, []string{"172.16.0.0/12"}) {
+		t.Fatalf("skipped networks = %v", result.SkippedNetworks)
+	}
+	if !result.Truncated {
+		t.Fatal("result must report a truncated port sweep")
+	}
+	if len(result.Hosts) != 1 || result.Hosts[0].IP != "192.0.2.12" {
+		t.Fatalf("positive scan control missing: %+v", result.Hosts)
 	}
 }

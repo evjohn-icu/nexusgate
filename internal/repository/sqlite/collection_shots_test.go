@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 // seedShotBasketFixture inserts a root, an asset, its primary location and a

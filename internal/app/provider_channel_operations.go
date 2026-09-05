@@ -15,10 +15,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/evjohn-icu/nexusslate/internal/credentials"
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/remote"
-	"github.com/evjohn-icu/nexusslate/internal/secretredact"
+	"github.com/evjohn-icu/nexusgate/internal/credentials"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/remote"
+	"github.com/evjohn-icu/nexusgate/internal/secretredact"
 )
 
 // ProviderChannelMemberUpdate is the write-only shape used by the admin API.

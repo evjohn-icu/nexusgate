@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/evjohn-icu/nexusslate/internal/curator"
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/curator"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 // RunTagEmbeddingClusters uses a real embedding provider only to discover

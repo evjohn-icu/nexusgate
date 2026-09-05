@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/evjohn-icu/nexusslate/internal/normalize"
+	"github.com/evjohn-icu/nexusgate/internal/normalize"
 )
 
 var libraryIndexHTML = enhanceLibraryPage(legacyLibraryIndexHTML)

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 )
 
 func TestAnalyzeNativeFixtureUsesRawGeminiKey(t *testing.T) {

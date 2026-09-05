@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 )
 
 // setupModelRunsTest creates a fresh repository with a library root, asset,
@@ -18,7 +18,7 @@ import (
 func setupModelRunsTest(t *testing.T) (*Repository, string) {
 	t.Helper()
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-test.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusgate-test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,7 +3,7 @@ package search
 import (
 	"context"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 // ShotEmbeddingRow is one persisted embedding: the owning shot (full row —

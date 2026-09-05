@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 // similarFakeStore is a scripted ShotStore for the similar-shots tests. It

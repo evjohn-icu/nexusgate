@@ -211,9 +211,9 @@ jobs:
         run: bash scripts/check-browser-fixture.sh
       - name: start browser fixture
         run: |
-          go build -tags playwrightfixture -o "$RUNNER_TEMP/nexusslate-playwright-fixture" ./cmd/nexusslate-playwright-fixture
-          NEXUSSLATE_PLAYWRIGHT_ADDR=127.0.0.1:4173 \
-            "$RUNNER_TEMP/nexusslate-playwright-fixture" > fixture.log 2>&1 &
+          go build -tags playwrightfixture -o "$RUNNER_TEMP/nexusgate-playwright-fixture" ./cmd/nexusgate-playwright-fixture
+          NEXUSGATE_PLAYWRIGHT_ADDR=127.0.0.1:4173 \
+            "$RUNNER_TEMP/nexusgate-playwright-fixture" > fixture.log 2>&1 &
           echo $! > fixture.pid
           for attempt in $(seq 1 30); do
             if curl --fail --silent --show-error --insecure https://127.0.0.1:4173/api/v1/health >/dev/null; then

@@ -12,10 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/app"
-	"github.com/evjohn-icu/nexusslate/internal/config"
-	"github.com/evjohn-icu/nexusslate/internal/media"
-	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/app"
+	"github.com/evjohn-icu/nexusgate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
 
 // cjkRE matches the CJK unified-ideograph and CJK-punctuation blocks. The page
@@ -296,7 +296,7 @@ func TestProgressPageI18nServedWithoutUnresolvedMarkers(t *testing.T) {
 		`/api/v1/jobs?limit=100`, `/api/v1/jobs/summary`, `/api/v1/issues`,
 		`/api/v1/pipeline/run`, `/api/v1/pipeline/retry-failed`, `/api/v1/pipeline/resume-deferred`,
 		`/api/v1/pipeline/supervisor`,
-		`admin-token`, `loginAdmin`, `X-CSRF-Token`, `__Host-nexusslate_csrf`,
+		`admin-token`, `loginAdmin`, `X-CSRF-Token`, `__Host-nexusgate_csrf`,
 		`tdApiErrorMessage`,
 	} {
 		if !strings.Contains(body, want) {

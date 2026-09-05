@@ -7,7 +7,7 @@ import (
 	"math"
 	"net/http"
 
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 )
 
 // Provider implements real remote embeddings. OpenAI-compatible endpoints

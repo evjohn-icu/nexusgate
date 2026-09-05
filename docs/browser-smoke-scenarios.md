@@ -30,10 +30,10 @@ Run the fixture over HTTPS on `127.0.0.1:4173` with the `playwrightfixture` buil
 
 ```bash
 bash scripts/check-browser-fixture.sh
-go build -tags playwrightfixture -o /tmp/nexusslate-playwright-fixture \
-  ./cmd/nexusslate-playwright-fixture
-NEXUSSLATE_PLAYWRIGHT_ADDR=127.0.0.1:4173 \
-  /tmp/nexusslate-playwright-fixture
+go build -tags playwrightfixture -o /tmp/nexusgate-playwright-fixture \
+  ./cmd/nexusgate-playwright-fixture
+NEXUSGATE_PLAYWRIGHT_ADDR=127.0.0.1:4173 \
+  /tmp/nexusgate-playwright-fixture
 ```
 
 In another shell, install the locked browser dependencies and run `npx --no-install playwright test` from `testdata/browser-smoke/`.

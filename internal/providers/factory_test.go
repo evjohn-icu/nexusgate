@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/config"
-	videoproviders "github.com/evjohn-icu/nexusslate/internal/providers/video"
+	"github.com/evjohn-icu/nexusgate/internal/config"
+	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
 )
 
 func TestVolcenginePlanRolesAreSeparated(t *testing.T) {

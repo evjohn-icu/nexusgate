@@ -127,7 +127,7 @@ func (m *Manager) Handler() http.Handler {
 		// answer 401.
 		username, password, ok := parseBasicAuth(r.Header.Get("Authorization"))
 		if !ok {
-			w.Header().Set("WWW-Authenticate", `Basic realm="nexusslate webdav"`)
+			w.Header().Set("WWW-Authenticate", `Basic realm="nexusgate webdav"`)
 			http.Error(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
@@ -150,7 +150,7 @@ func (m *Manager) Handler() http.Handler {
 		}
 		if err := Authenticate(r.Context(), m.accounts, username, password); err != nil {
 			m.recordLoginFailure(loginKey, time.Now())
-			w.Header().Set("WWW-Authenticate", `Basic realm="nexusslate webdav"`)
+			w.Header().Set("WWW-Authenticate", `Basic realm="nexusgate webdav"`)
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}
@@ -158,7 +158,7 @@ func (m *Manager) Handler() http.Handler {
 
 		space := m.Space(spaceID)
 		if space == nil {
-			w.Header().Set("WWW-Authenticate", `Basic realm="nexusslate webdav"`)
+			w.Header().Set("WWW-Authenticate", `Basic realm="nexusgate webdav"`)
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}

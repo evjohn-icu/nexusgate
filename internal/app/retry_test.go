@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 )
 
 func TestRetryPolicyRetriesTransientFailuresWithBoundedBackoff(t *testing.T) {

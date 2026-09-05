@@ -17,7 +17,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 // SearchIntent classifies what kind of answer a query wants. The user never

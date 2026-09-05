@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
 
 // approveRaceRepo wraps a real *sqlite.Repository and, on the first call to

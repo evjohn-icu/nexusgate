@@ -9,9 +9,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/search"
-	"github.com/evjohn-icu/nexusslate/internal/textindex"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/search"
+	"github.com/evjohn-icu/nexusgate/internal/textindex"
 )
 
 // This file implements the search.ShotStore contract (declared in

@@ -16,7 +16,7 @@ func (s *Server) collectionsPage(w http.ResponseWriter, r *http.Request) {
 // copy is localized: static HTML uses [[i18n:collections.*]] markers that
 // serveLocalizedPage resolves server-side, and dynamic JavaScript copy calls
 // the injected tdT/tdPlural/tdFormatDateTime/tdApiErrorMessage helpers.
-const collectionsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NexusSlate · [[i18n:collections.title]]</title><style>
+const collectionsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NexusGate · [[i18n:collections.title]]</title><style>
 
 .collections{display:grid;gap:12px;margin-top:20px}
 .collections .panel{margin-bottom:0}
@@ -55,7 +55,7 @@ const collectionsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="
 <section id="collections" class="collections"></section>
 </main><script>
 const shotCache={};
- function csrfToken(){const prefix='__Host-nexusslate_csrf=';const item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
+ function csrfToken(){const prefix='__Host-nexusgate_csrf=';const item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
  function authHeaders(base){const headers=new Headers(base||{});const csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function collSay(message,ok){const el=document.getElementById('collections-status');el.className='callout '+(ok?'callout--confirmed':'callout--contradicted');el.textContent=message}

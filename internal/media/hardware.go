@@ -224,7 +224,7 @@ func (r HardwareReport) SelectedBackends() []string {
 }
 
 // FormatHardwareReport renders the per-backend diagnosis table shared by
-// `nexusslate doctor` (Hub) and `nexusslate worker doctor`. The Worker is the
+// `nexusgate doctor` (Hub) and `nexusgate worker doctor`. The Worker is the
 // process that actually owns the GPU and runs the encode, so both need the
 // same table; keeping one implementation means a wording change cannot fix
 // one and forget the other.

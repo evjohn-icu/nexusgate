@@ -11,11 +11,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/config"
-	"github.com/evjohn-icu/nexusslate/internal/credentials"
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/remote"
-	"github.com/evjohn-icu/nexusslate/internal/secretstore"
+	"github.com/evjohn-icu/nexusgate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/credentials"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/remote"
+	"github.com/evjohn-icu/nexusgate/internal/secretstore"
 )
 
 // fakeUpsertOnlyRepo implements Repository by embedding the interface as a nil

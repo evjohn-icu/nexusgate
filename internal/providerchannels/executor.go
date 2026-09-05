@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/providerpool"
+	"github.com/evjohn-icu/nexusgate/internal/providerpool"
 )
 
 var (

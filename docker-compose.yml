@@ -1,15 +1,15 @@
-name: nexusslate
+name: nexusgate
 
 services:
   hub:
     build:
       context: .
       dockerfile: Dockerfile
-    image: nexusslate:v0.31.0-alpha
+    image: nexusgate:v0.31.0-alpha
     command: ["serve"]
     environment:
-      NEXUSSLATE_DATA_DIR: /var/lib/nexusslate
-      NEXUSSLATE_LISTEN_ADDRESS: ${NEXUSSLATE_LISTEN_ADDRESS:-0.0.0.0:8787}
+      NEXUSGATE_DATA_DIR: /var/lib/nexusgate
+      NEXUSGATE_LISTEN_ADDRESS: ${NEXUSGATE_LISTEN_ADDRESS:-0.0.0.0:8787}
       # Publishing a port puts Docker's NAT between the client and the Hub, and
       # the peer address the read guard sees becomes the bridge gateway -- an
       # RFC1918 address it trusts. Widening the binding below therefore hands
@@ -21,16 +21,16 @@ services:
       # being waived for the bridge gateway's RFC1918 address, which Docker
       # NAT makes indistinguishable from any other peer. An operator who
       # deliberately selects `trusted_network` must also name the real client
-      # CIDRs in NEXUSSLATE_HUB_ADMIN_AUTH_NETWORKS or startup fails closed.
-      NEXUSSLATE_HUB_ADMIN_AUTH: ${NEXUSSLATE_HUB_ADMIN_AUTH:-required}
-      NEXUSSLATE_HUB_ADMIN_AUTH_NETWORKS: ${NEXUSSLATE_HUB_ADMIN_AUTH_NETWORKS:-}
+      # CIDRs in NEXUSGATE_HUB_ADMIN_AUTH_NETWORKS or startup fails closed.
+      NEXUSGATE_HUB_ADMIN_AUTH: ${NEXUSGATE_HUB_ADMIN_AUTH:-required}
+      NEXUSGATE_HUB_ADMIN_AUTH_NETWORKS: ${NEXUSGATE_HUB_ADMIN_AUTH_NETWORKS:-}
       # `auto` generates a self-signed Hub certificate in the data volume.
       # Use `files` with the two paths below for a managed certificate, or `off`
       # only behind an HTTPS reverse proxy.
-      NEXUSSLATE_TLS_MODE: ${NEXUSSLATE_TLS_MODE:-auto}
-      NEXUSSLATE_TLS_CERT_FILE: ${NEXUSSLATE_TLS_CERT_FILE:-}
-      NEXUSSLATE_TLS_KEY_FILE: ${NEXUSSLATE_TLS_KEY_FILE:-}
-      NEXUSSLATE_PROVIDER_TIMEOUT: ${NEXUSSLATE_PROVIDER_TIMEOUT:-}
+      NEXUSGATE_TLS_MODE: ${NEXUSGATE_TLS_MODE:-auto}
+      NEXUSGATE_TLS_CERT_FILE: ${NEXUSGATE_TLS_CERT_FILE:-}
+      NEXUSGATE_TLS_KEY_FILE: ${NEXUSGATE_TLS_KEY_FILE:-}
+      NEXUSGATE_PROVIDER_TIMEOUT: ${NEXUSGATE_PROVIDER_TIMEOUT:-}
       STEP_API_KEY: ${STEP_API_KEY:-}
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -39,13 +39,13 @@ services:
       ARK_CODING_PLAN_API_KEY: ${ARK_CODING_PLAN_API_KEY:-}
     # Loopback only by default, so the browser UI works on the Docker host
     # without the NAT problem described above becoming an exposure. Override
-    # NEXUSSLATE_BIND to reach the Hub from the rest of the LAN.
+    # NEXUSGATE_BIND to reach the Hub from the rest of the LAN.
     ports:
-      - "${NEXUSSLATE_BIND:-127.0.0.1}:8787:8787"
+      - "${NEXUSGATE_BIND:-127.0.0.1}:8787:8787"
     volumes:
-      - nexusslate-data:/var/lib/nexusslate
+      - nexusgate-data:/var/lib/nexusgate
       # The path must be the same path recorded by root add/scan. It is never
-      # a writable destination for NexusSlate artifacts. Required rather than
+      # a writable destination for NexusGate artifacts. Required rather than
       # defaulted: a missing default would be created as an empty directory and
       # scan cleanly against nothing, which reads as a broken library rather
       # than as unset configuration.
@@ -57,7 +57,7 @@ services:
       # running shows up inside the container live, with no
       # `docker compose up -d` needed to pick it up.
       - type: bind
-        source: ${NEXUSSLATE_MEDIA_ROOT:?set NEXUSSLATE_MEDIA_ROOT to the footage directory to bind read-only}
+        source: ${NEXUSGATE_MEDIA_ROOT:?set NEXUSGATE_MEDIA_ROOT to the footage directory to bind read-only}
         target: /media/library
         read_only: true
         bind:
@@ -72,12 +72,12 @@ services:
           # erroring.
           propagation: rslave
       - type: bind
-        source: ${NEXUSSLATE_TLS_DIR:-./deploy/tls}
-        target: /run/nexusslate/tls
+        source: ${NEXUSGATE_TLS_DIR:-./deploy/tls}
+        target: /run/nexusgate/tls
         read_only: true
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "case \"$${NEXUSSLATE_TLS_MODE:-auto}\" in [oO][fF][fF]) curl -sf http://localhost:8787/api/v1/health ;; *) curl -ksf https://localhost:8787/api/v1/health ;; esac || exit 1"]
+      test: ["CMD-SHELL", "case \"$${NEXUSGATE_TLS_MODE:-auto}\" in [oO][fF][fF]) curl -sf http://localhost:8787/api/v1/health ;; *) curl -ksf https://localhost:8787/api/v1/health ;; esac || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -117,25 +117,25 @@ services:
     #           capabilities: [gpu]
 
   worker:
-    image: nexusslate:v0.31.0-alpha
+    image: nexusgate:v0.31.0-alpha
     # Not started by `docker compose up`: worker.json only exists after
     # `worker enroll` has run against a live Hub, and without it the container
     # exits immediately and restarts forever. Enroll first, then
     # `docker compose --profile worker up -d worker`.
     profiles: ["worker"]
-    command: ["worker", "run", "--config", "/var/lib/nexusslate-worker/worker.json"]
+    command: ["worker", "run", "--config", "/var/lib/nexusgate-worker/worker.json"]
     environment:
       # This is deliberately not the Hub data volume. A worker is an executor
       # and must not open, copy, or migrate the Hub SQLite database.
-      NEXUSSLATE_DATA_DIR: /var/lib/nexusslate-worker
+      NEXUSGATE_DATA_DIR: /var/lib/nexusgate-worker
     volumes:
-      - nexusslate-worker-cache:/var/lib/nexusslate-worker
+      - nexusgate-worker-cache:/var/lib/nexusgate-worker
       # See the matching comment on the hub service: point this at a parent
       # such as /mnt/remotes (Unraid) or /mnt (bare metal) so later-mounted
       # shares appear without recreating the container, and see rslave below
       # for why that only works with non-default bind propagation.
       - type: bind
-        source: ${NEXUSSLATE_MEDIA_ROOT:?set NEXUSSLATE_MEDIA_ROOT to the footage directory to bind read-only}
+        source: ${NEXUSGATE_MEDIA_ROOT:?set NEXUSGATE_MEDIA_ROOT to the footage directory to bind read-only}
         target: /media/library
         read_only: true
         bind:
@@ -146,7 +146,7 @@ services:
           # doesn't support bind propagation.
           propagation: rslave
     tmpfs:
-      - /run/nexusslate:rw,noexec,nosuid,nodev
+      - /run/nexusgate:rw,noexec,nosuid,nodev
       - /tmp:rw,noexec,nosuid,nodev
     read_only: true
     restart: unless-stopped
@@ -188,5 +188,5 @@ services:
     #           capabilities: [gpu]
 
 volumes:
-  nexusslate-data:
-  nexusslate-worker-cache:
+  nexusgate-data:
+  nexusgate-worker-cache:

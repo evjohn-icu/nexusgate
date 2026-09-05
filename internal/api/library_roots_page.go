@@ -16,7 +16,7 @@ func (s *Server) libraryRootsPage(w http.ResponseWriter, r *http.Request) {
 	s.serveLocalizedPage(w, r, "/library-roots", libraryRootsHTML)
 }
 
-const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NexusSlate · [[i18n:roots.title]]</title><style>
+const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NexusGate · [[i18n:roots.title]]</title><style>
 
 /* Both status spans are .callout, which paints a bordered box even with no
    text; hide them until something is written. The leading "+" this list once
@@ -112,7 +112,7 @@ const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset=
 const esc=function(v){return String(v??'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','>':'&gt;','<':'&lt;','"':'&quot;',"'":'&#39;'}[c]})};
 
 // internal/mount generates step titles and notes in English on purpose --
-// it is also what the English CLI (nexusslate doctor) renders -- and gives
+// it is also what the English CLI (nexusgate doctor) renders -- and gives
 // each one a stable Key (mount.Step.Key, mount.Note.Key) precisely so a
 // consumer that needs another language can translate by Key instead of by
 // matching English text. The catalog keys roots.guide.<key> are that
@@ -130,7 +130,7 @@ const esc=function(v){return String(v??'').replace(/[&<>"']/g,function(c){return
 var guideKeyPrefix='roots.guide.';
 function guideText(key,fallback){var msg=tdT(guideKeyPrefix+key);return msg===guideKeyPrefix+key?fallback:msg}
 
- function csrfToken(){var prefix='__Host-nexusslate_csrf=';var item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
+ function csrfToken(){var prefix='__Host-nexusgate_csrf=';var item=document.cookie.split('; ').find(function(x){return x.indexOf(prefix)===0});return item?decodeURIComponent(item.slice(prefix.length)):''}
  function authHeaders(base){var headers=new Headers(base||{});var csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);return headers}
 // The status code rides on the thrown Error: every catch on this page needs
 // to separate "you are not logged in" (recoverable here, on this page) from a
@@ -143,7 +143,7 @@ async function json(url,opt){opt=opt||{};var r=await fetch(url,{...opt,headers:a
 var authRetryPending=null;
 function authNotice(retry){authRetryPending=retry||null;return '<div class="callout callout--attention" role="alert"><span>'+esc(tdT('roots.authRequired'))+'</span><button type="button" class="btn btn--primary btn--sm" onclick="rootsOpenLogin(this)">'+esc(tdT('roots.authLogin'))+'</button></div>'}
 function rootsOpenLogin(opener){tdAdminLoginRequired(opener)}
-window.addEventListener('nexusslate:admin-auth-changed',function(ev){if(!ev.detail||!ev.detail.authenticated)return;var retry=authRetryPending;authRetryPending=null;loadRootHealth();if(typeof retry==='function')retry()});
+window.addEventListener('nexusgate:admin-auth-changed',function(ev){if(!ev.detail||!ev.detail.authenticated)return;var retry=authRetryPending;authRetryPending=null;loadRootHealth();if(typeof retry==='function')retry()});
 // aria-current is set on the one active marker and removed from the rest:
 // leaving it on every step (or on step 1 forever) tells a screen reader the
 // wizard never moved.
@@ -336,7 +336,7 @@ function renderComposeVolume(inspection){
     html+='<div class="guide-step"><div class="guide-step-title">'+esc(tdT('roots.composeStep2'))+'</div><div class="cmd"><code id="compose-service-code">'+esc(volume.service_yaml)+'</code><button type="button" class="btn" onclick="copyCmd(\'compose-service-code\')">'+esc(tdT('common.copy'))+'</button></div></div>';
   }
   if(volume.mount_path){
-    html+='<div class="guide-step"><div class="guide-step-title">'+esc(tdT('roots.composeStep3'))+'</div><div class="cmd"><code id="compose-root-code">nexusslate root add '+esc(volume.mount_path)+'</code><button type="button" class="btn" onclick="copyCmd(\'compose-root-code\')">'+esc(tdT('common.copy'))+'</button></div>';
+    html+='<div class="guide-step"><div class="guide-step-title">'+esc(tdT('roots.composeStep3'))+'</div><div class="cmd"><code id="compose-root-code">nexusgate root add '+esc(volume.mount_path)+'</code><button type="button" class="btn" onclick="copyCmd(\'compose-root-code\')">'+esc(tdT('common.copy'))+'</button></div>';
     html+='<p class="muted">'+esc(tdT('roots.composeVerifyNote',{path:volume.mount_path}))+'</p></div>';
   }
   container.innerHTML=html;

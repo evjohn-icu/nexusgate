@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 func TestGetAlignmentWordsReadsLatestSucceededRun(t *testing.T) {
 	ctx := context.Background()
-	repo, err := Open(filepath.Join(t.TempDir(), "nexusslate-align.db"))
+	repo, err := Open(filepath.Join(t.TempDir(), "nexusgate-align.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

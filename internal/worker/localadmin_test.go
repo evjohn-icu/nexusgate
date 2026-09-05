@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/remote"
+	"github.com/evjohn-icu/nexusgate/internal/remote"
 )
 
 func writeWorkerConfig(t *testing.T, config Config) string {

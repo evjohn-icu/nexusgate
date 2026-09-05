@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/timecode"
+	"github.com/evjohn-icu/nexusgate/internal/timecode"
 )
 
 // The types below mirror the FCPXML the exporter writes. They live in the test

@@ -17,7 +17,7 @@ func main() {
 	switch name {
 	case "ffprobe":
 		output := ffprobeJSON
-		if transfer := os.Getenv("NEXUSSLATE_FAKE_FFPROBE_COLOR_TRANSFER"); transfer != "" {
+		if transfer := os.Getenv("NEXUSGATE_FAKE_FFPROBE_COLOR_TRANSFER"); transfer != "" {
 			output = strings.Replace(output, `"pix_fmt":"yuv420p"`, `"pix_fmt":"yuv420p","color_transfer":"`+transfer+`"`, 1)
 		}
 		fmt.Print(output)
@@ -36,19 +36,19 @@ func main() {
 	case "align-empty":
 		fmt.Print(`{"words":[]}`)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown nexusslate test command %q", name)
+		fmt.Fprintf(os.Stderr, "unknown nexusgate test command %q", name)
 		os.Exit(2)
 	}
 }
 
 func fakeFFmpeg() {
-	failHardware := os.Getenv("NEXUSSLATE_FAKE_FFMPEG_FAIL_HARDWARE") == "1"
+	failHardware := os.Getenv("NEXUSGATE_FAKE_FFMPEG_FAIL_HARDWARE") == "1"
 	for i, arg := range os.Args[1:] {
 		if failHardware && (arg == "-hwaccel" || arg == "h264_nvenc" || strings.Contains(arg, "h264_nvenc")) {
 			os.Exit(1)
 		}
 		if arg == "-vf" && i+2 <= len(os.Args[1:]) {
-			if logPath := os.Getenv("NEXUSSLATE_FILTER_LOG"); logPath != "" {
+			if logPath := os.Getenv("NEXUSGATE_FILTER_LOG"); logPath != "" {
 				if err := os.WriteFile(logPath, []byte(os.Args[1:][i+1]), 0o600); err != nil {
 					fmt.Fprintf(os.Stderr, "write fake ffmpeg filter log: %v", err)
 					os.Exit(1)

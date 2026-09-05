@@ -13,13 +13,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/config"
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	videoanalysis "github.com/evjohn-icu/nexusslate/internal/domain/video_analysis"
-	"github.com/evjohn-icu/nexusslate/internal/providerchannels"
-	"github.com/evjohn-icu/nexusslate/internal/providers"
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
-	videoproviders "github.com/evjohn-icu/nexusslate/internal/providers/video"
+	"github.com/evjohn-icu/nexusgate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	videoanalysis "github.com/evjohn-icu/nexusgate/internal/domain/video_analysis"
+	"github.com/evjohn-icu/nexusgate/internal/providerchannels"
+	"github.com/evjohn-icu/nexusgate/internal/providers"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
+	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
 )
 
 type runtimeChannelRepo struct {

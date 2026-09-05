@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/hubtls"
-	"github.com/evjohn-icu/nexusslate/internal/remote"
+	"github.com/evjohn-icu/nexusgate/internal/hubtls"
+	"github.com/evjohn-icu/nexusgate/internal/remote"
 )
 
 // TestClientPinsTheBootstrapCertificateFingerprint ties the Worker runtime's

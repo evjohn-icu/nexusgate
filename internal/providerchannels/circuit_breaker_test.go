@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/providerpool"
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	"github.com/evjohn-icu/nexusgate/internal/providerpool"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 )
 
 // circuitClock is a controllable clock for making cooldown expiry

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "nexusgate": {
+      "type": "stdio",
+      "command": "nexusgate-mcp",
+      "args": [],
+      "env": {
+        "NEXUSGATE_BASE_URL": "https://127.0.0.1:8787",
+        "NEXUSGATE_AGENT_TOKEN": "put-your-agent-token-here",
+        "NEXUSGATE_HUB_FINGERPRINT": "put-64-hex-sha256-fingerprint-here"
+      }
+    }
+  }
+}

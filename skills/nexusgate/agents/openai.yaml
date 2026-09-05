@@ -1,0 +1,4 @@
+interface:
+  display_name: "NexusGate Asset Planner"
+  short_description: "Safely retrieve footage and draft repurpose plans."
+  default_prompt: "Use $nexusgate to find footage and draft a reviewable repurpose plan."

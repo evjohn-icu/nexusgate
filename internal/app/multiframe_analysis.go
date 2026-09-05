@@ -8,13 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/evjohn-icu/nexusslate/internal/cachecoord"
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	videoanalysis "github.com/evjohn-icu/nexusslate/internal/domain/video_analysis"
-	"github.com/evjohn-icu/nexusslate/internal/media"
-	"github.com/evjohn-icu/nexusslate/internal/normalize"
-	"github.com/evjohn-icu/nexusslate/internal/providers/shotdetect"
-	videoproviders "github.com/evjohn-icu/nexusslate/internal/providers/video"
+	"github.com/evjohn-icu/nexusgate/internal/cachecoord"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	videoanalysis "github.com/evjohn-icu/nexusgate/internal/domain/video_analysis"
+	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/normalize"
+	"github.com/evjohn-icu/nexusgate/internal/providers/shotdetect"
+	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
 )
 
 // multiframeRoute is the part of the video route the multiframe analysis
@@ -89,8 +89,8 @@ func (p *Pipeline) analyzeWithDetector(ctx context.Context, j *domain.Job, m *do
 		}
 		return err
 	}
-	// A boundary set that violates the nexusslate-owned rules is a verdict on
-	// bytes NexusSlate already holds: the same video and the same detector
+	// A boundary set that violates the nexusgate-owned rules is a verdict on
+	// bytes NexusGate already holds: the same video and the same detector
 	// would fail the same way again. Normalize's rejection is therefore
 	// permanent, exactly like a model answer that fails validation.
 	normalized, err := shotdetect.Normalize(bounds, m.DurationMS)

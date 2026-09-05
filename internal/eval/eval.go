@@ -1,5 +1,5 @@
 // Package eval is the offline benchmark harness for comparing video
-// understanding providers on NexusSlate's own workload: real clips through the
+// understanding providers on NexusGate's own workload: real clips through the
 // real pipeline into a real database, scored by the same hybrid retrieval the
 // product serves. It deliberately contains no provider-specific code — a run
 // is just a config plus a corpus — so comparing "Gemini Flash" against

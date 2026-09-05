@@ -137,7 +137,7 @@ func composeSMBVolume(share Share, name string) VolumeDefinition {
 // runs, spaces or arbitrary Unicode pasted from a NAS admin page — so this
 // cannot simply concatenate them into the YAML.
 func VolumeName(share Share) string {
-	return sanitizeVolumeName("nexusslate-" + share.Host + "-" + share.Name)
+	return sanitizeVolumeName("nexusgate-" + share.Host + "-" + share.Name)
 }
 
 // sanitizeVolumeName rewrites s into the character set Docker accepts for a

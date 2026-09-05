@@ -1,5 +1,5 @@
 #!/bin/sh
-# Prepare a machine to run a NexusSlate Hub or Worker.
+# Prepare a machine to run a NexusGate Hub or Worker.
 #
 # The setup script the Hub generates downloads the binary and enrols it; this
 # one covers what has to be true before that works. It is separate because it

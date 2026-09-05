@@ -81,13 +81,13 @@ func TestSMBGuidanceKeepsThePasswordOutOfCommandsAndFstab(t *testing.T) {
 	if !ok {
 		t.Fatal("share did not parse")
 	}
-	guide := Guidance(share, "/mnt/nexusslate/Video", Host{OS: "linux", UID: 1000, GID: 1000})
+	guide := Guidance(share, "/mnt/nexusgate/Video", Host{OS: "linux", UID: 1000, GID: 1000})
 	rendered := strings.Join(guide.Lines(), "\n")
 
-	if !strings.Contains(rendered, "credentials=/etc/nexusslate/192.0.2.10.cred") {
+	if !strings.Contains(rendered, "credentials=/etc/nexusgate/192.0.2.10.cred") {
 		t.Error("the mount must read credentials from a file")
 	}
-	if !strings.Contains(rendered, "chmod 600 /etc/nexusslate/192.0.2.10.cred") {
+	if !strings.Contains(rendered, "chmod 600 /etc/nexusgate/192.0.2.10.cred") {
 		t.Error("the credentials file must be restricted to its owner")
 	}
 	for _, line := range guide.Lines() {
@@ -112,6 +112,98 @@ func TestSMBGuidanceKeepsThePasswordOutOfCommandsAndFstab(t *testing.T) {
 	}
 	if !strings.Contains(fstab, "nofail") {
 		t.Error("without nofail an absent NAS stops the machine from booting")
+	}
+}
+
+func TestGuidanceStartsWithMachineLocationForEveryOS(t *testing.T) {
+	share, ok := ParseShare("//nas/Video")
+	if !ok {
+		t.Fatal("share did not parse")
+	}
+	wantTitle := "These commands run on the machine running NexusGate, not on the computer you are reading this page on. If you are sitting at that machine, open a terminal; otherwise SSH into it first."
+	for _, os := range []string{"linux", "darwin", "windows"} {
+		guide := Guidance(share, "/mnt/nexusgate/Video", Host{OS: os})
+		if len(guide.Steps) == 0 {
+			t.Fatalf("%s: guidance has no steps", os)
+		}
+		first := guide.Steps[0]
+		if first.Key != "run-on-hub-host" || first.Title != wantTitle || len(first.Commands) != 0 {
+			t.Errorf("%s: first step = %+v, want the empty Hub-host framing step", os, first)
+		}
+	}
+}
+
+func TestGuidanceClassifiesFstabLinesAndInstallsLinuxClients(t *testing.T) {
+	shareCases := []struct {
+		input       string
+		installKey  string
+		installLine []string
+		fstype      string
+	}{
+		{"//nas/Video", "install-smb-client", []string{"sudo apt-get install -y cifs-utils", "sudo dnf install -y cifs-utils"}, "cifs"},
+		{"nas:/export/Video", "install-nfs-client", []string{"sudo apt-get install -y nfs-common", "sudo dnf install -y nfs-utils"}, "nfs"},
+	}
+	for _, tc := range shareCases {
+		share, ok := ParseShare(tc.input)
+		if !ok {
+			t.Fatalf("ParseShare(%q) failed", tc.input)
+		}
+		guide := Guidance(share, "/mnt/nexusgate/Video", Host{OS: "linux", UID: 1000, GID: 1000})
+		if guide.Steps[1].Key != tc.installKey {
+			t.Fatalf("%s: first Linux step after host framing = %q, want %q", tc.input, guide.Steps[1].Key, tc.installKey)
+		}
+		if fmt.Sprint(guide.Steps[1].Commands) != fmt.Sprint(tc.installLine) {
+			t.Errorf("%s: install commands = %v, want %v", tc.input, guide.Steps[1].Commands, tc.installLine)
+		}
+		for _, step := range guide.Steps {
+			if step.Key == "fstab" {
+				if step.Kind != "file-line" || step.File != "/etc/fstab" {
+					t.Errorf("%s: fstab classification = kind %q, file %q", tc.input, step.Kind, step.File)
+				}
+				if len(step.Commands) != 1 || !strings.Contains(step.Commands[0], " "+tc.fstype+" ") {
+					t.Errorf("%s: fstab line = %v", tc.input, step.Commands)
+				}
+				continue
+			}
+			if step.Kind != "" || step.File != "" {
+				t.Errorf("%s: non-fstab step %q has kind %q and file %q", tc.input, step.Key, step.Kind, step.File)
+			}
+		}
+	}
+}
+
+func TestGuidanceSMBCredentialsUseOneQuotedHereDoc(t *testing.T) {
+	share, ok := ParseShare("smb://nas/Video")
+	if !ok {
+		t.Fatal("share did not parse")
+	}
+	guide := Guidance(share, "/mnt/nexusgate/Video", Host{OS: "linux", UID: 1000, GID: 1000})
+	var credentials Step
+	for _, step := range guide.Steps {
+		if step.Key == "smb-credentials-file" {
+			credentials = step
+			break
+		}
+	}
+	if len(credentials.Commands) != 3 {
+		t.Fatalf("credentials step has %d commands, want directory, here-doc, chmod", len(credentials.Commands))
+	}
+	command := credentials.Commands[1]
+	for _, want := range []string{
+		"sudo tee /etc/nexusgate/nas.cred >/dev/null <<'NEXUSGATE_CREDS'",
+		"username=YOUR_NAS_USERNAME",
+		"password=YOUR_NAS_PASSWORD",
+		"NEXUSGATE_CREDS",
+	} {
+		if !strings.Contains(command, want) {
+			t.Errorf("credentials here-doc missing %q: %s", want, command)
+		}
+	}
+	if strings.Count(command, "YOUR_NAS_PASSWORD") != 1 {
+		t.Errorf("password placeholder appears %d times in credentials content", strings.Count(command, "YOUR_NAS_PASSWORD"))
+	}
+	if strings.Contains(command, "printf") || len(strings.Split(command, "\n")) != 4 {
+		t.Errorf("credentials content is not one four-line here-doc command: %q", command)
 	}
 }
 
@@ -205,7 +297,7 @@ func TestGuidanceStepsAndNotesCarryStableKeys(t *testing.T) {
 
 const mountinfoFixture = `21 25 0:20 / /proc rw,relatime shared:5 - proc proc rw
 25 1 8:2 / / rw,relatime shared:1 - ext4 /dev/sda2 rw
-120 25 0:52 / /mnt/nexusslate/Video ro,relatime shared:66 - cifs //192.0.2.10/Video ro
+120 25 0:52 / /mnt/nexusgate/Video ro,relatime shared:66 - cifs //192.0.2.10/Video ro
 131 25 0:55 / /mnt/wsl/host ro,relatime shared:70 - drvfs C:\134 ro
 140 25 0:60 / /mnt/backup\040archive rw,relatime shared:80 - nfs4 nas:/export rw
 150 25 0:61 / /mnt/empty rw,relatime shared:90 - ext4 /dev/sdb1 rw
@@ -217,7 +309,7 @@ func TestFilesystemForIdentifiesNetworkRoots(t *testing.T) {
 		wantType    string
 		wantNetwork bool
 	}{
-		{"/mnt/nexusslate/Video/2024/clip.mp4", "cifs", true},
+		{"/mnt/nexusgate/Video/2024/clip.mp4", "cifs", true},
 		{"/mnt/wsl/host", "drvfs", true},
 		{"/mnt/backup archive", "nfs4", true},
 		{"/home/example/footage", "ext4", false},
@@ -240,11 +332,11 @@ func TestFilesystemForIdentifiesNetworkRoots(t *testing.T) {
 // The deeper mount describes the path. Taking the first match instead would
 // report every path as being on / and no root would ever look like a NAS.
 func TestFilesystemForPrefersTheDeepestMount(t *testing.T) {
-	got, ok := FilesystemFor("/mnt/nexusslate/Video", mountinfoFixture)
+	got, ok := FilesystemFor("/mnt/nexusgate/Video", mountinfoFixture)
 	if !ok {
 		t.Fatal("no filesystem resolved")
 	}
-	if got.Mountpoint != "/mnt/nexusslate/Video" {
+	if got.Mountpoint != "/mnt/nexusgate/Video" {
 		t.Errorf("got mountpoint %q, want the cifs mount itself", got.Mountpoint)
 	}
 	if !got.ReadOnly {
@@ -273,8 +365,11 @@ func TestContainerGuidanceDiffersFromHostGuidance(t *testing.T) {
 	hostGuide := Guidance(share, "", Host{OS: "linux", UID: 1000, GID: 1000})
 	containerGuide := Guidance(share, "", Host{OS: "linux", UID: 1000, GID: 1000, Container: true})
 
-	if containerGuide.Steps[0].Key != "container-run-on-host" {
-		t.Fatalf("container guidance must lead with an explicit Docker-host framing step, got first step key %q", containerGuide.Steps[0].Key)
+	if containerGuide.Steps[0].Key != "container-run-on-host" || len(containerGuide.Steps[0].Commands) != 0 {
+		t.Fatalf("container guidance must lead with an empty Docker-host framing step, got %+v", containerGuide.Steps[0])
+	}
+	if hostGuide.Steps[0].Key != "run-on-hub-host" || len(hostGuide.Steps[0].Commands) != 0 {
+		t.Fatalf("host guidance must lead with an empty Hub-host framing step, got %+v", hostGuide.Steps[0])
 	}
 	for _, step := range hostGuide.Steps {
 		if step.Key == "container-run-on-host" {

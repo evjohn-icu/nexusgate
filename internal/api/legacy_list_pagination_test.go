@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/app"
-	"github.com/evjohn-icu/nexusslate/internal/config"
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/media"
-	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/app"
+	"github.com/evjohn-icu/nexusgate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
 
 // newLegacyListService builds a migrated real-SQLite service for the paged
@@ -56,18 +56,18 @@ func getJSONList(handler http.Handler, target string) *httptest.ResponseRecorder
 	return response
 }
 
-// assertListPaginationHeaders pins the three X-NexusSlate-* response headers on
+// assertListPaginationHeaders pins the three X-NexusGate-* response headers on
 // a paged list response.
 func assertListPaginationHeaders(t *testing.T, response *httptest.ResponseRecorder, wantLimit, wantOffset int, wantHasMore bool) {
 	t.Helper()
-	if got := response.Header().Get("X-NexusSlate-Limit"); got != fmt.Sprintf("%d", wantLimit) {
-		t.Fatalf("X-NexusSlate-Limit=%q, want %d", got, wantLimit)
+	if got := response.Header().Get("X-NexusGate-Limit"); got != fmt.Sprintf("%d", wantLimit) {
+		t.Fatalf("X-NexusGate-Limit=%q, want %d", got, wantLimit)
 	}
-	if got := response.Header().Get("X-NexusSlate-Offset"); got != fmt.Sprintf("%d", wantOffset) {
-		t.Fatalf("X-NexusSlate-Offset=%q, want %d", got, wantOffset)
+	if got := response.Header().Get("X-NexusGate-Offset"); got != fmt.Sprintf("%d", wantOffset) {
+		t.Fatalf("X-NexusGate-Offset=%q, want %d", got, wantOffset)
 	}
-	if got := response.Header().Get("X-NexusSlate-Has-More"); got != fmt.Sprintf("%t", wantHasMore) {
-		t.Fatalf("X-NexusSlate-Has-More=%q, want %t", got, wantHasMore)
+	if got := response.Header().Get("X-NexusGate-Has-More"); got != fmt.Sprintf("%t", wantHasMore) {
+		t.Fatalf("X-NexusGate-Has-More=%q, want %t", got, wantHasMore)
 	}
 }
 

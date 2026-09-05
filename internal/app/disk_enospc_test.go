@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/media"
-	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
 
 // deriveWriteFailureRepo is the real repository with SaveArtifact forced to
@@ -91,7 +91,7 @@ func newQueuedDeriveWriteFailure(t *testing.T, cacheDir string, fail error) *der
 // accepts or the deadline passes. RunUntilIdle returns as soon as the next
 // job is not due yet — a retry backoff looks like that from the outside — so
 // a job meant to spend attempts is re-entered, exactly as re-running
-// `nexusslate pipeline run` does.
+// `nexusgate pipeline run` does.
 func settleDiskJob(t *testing.T, repo *deriveWriteFailureRepo, pipeline *Pipeline, settled func(domain.Job) bool) domain.Job {
 	t.Helper()
 	ctx := context.Background()

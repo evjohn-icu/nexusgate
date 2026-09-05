@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/webdavspace"
+	"github.com/evjohn-icu/nexusgate/internal/webdavspace"
 )
 
 func openWebDAVRepo(t *testing.T, name string) *Repository {

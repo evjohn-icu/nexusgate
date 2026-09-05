@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 )
 
 type Provider struct {

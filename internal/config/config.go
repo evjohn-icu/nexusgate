@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/evjohn-icu/nexusslate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/media"
 )
 
 type ProviderConfig struct {
@@ -121,13 +121,13 @@ const (
 )
 
 // SourceStagingConfig controls whether original source files are used in place
-// or copied into NexusSlate's local cache before media processing. Copy mode is
+// or copied into NexusGate's local cache before media processing. Copy mode is
 // intended for mounted NAS/network libraries; it never writes to the source.
 type SourceStagingConfig struct {
 	Mode string `json:"mode"`
 }
 
-// LibrarySupervisorConfig turns `nexusslate serve` into an unattended library:
+// LibrarySupervisorConfig turns `nexusgate serve` into an unattended library:
 // the Hub rescans every root on a timer and drains the queue itself, instead of
 // waiting for someone to run `root scan` and `pipeline run`.
 //
@@ -212,7 +212,7 @@ type HubSecurityConfig struct {
 	// The waiver is decided from RemoteAddr alone, exactly like the
 	// trusted-read guard, and inherits that guard's documented blind spot:
 	// behind a reverse proxy or a published Docker port every peer looks
-	// RFC1918. See network_guard.go and the container guard in cmd/nexusslate.
+	// RFC1918. See network_guard.go and the container guard in cmd/nexusgate.
 	AdminAuth string `json:"admin_auth,omitempty"`
 	// AdminAuthNetworks are the CIDR ranges whose peers skip the admin
 	// credential when AdminAuth is "trusted_network". Empty means the same
@@ -301,7 +301,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	cfg := Config{DataDir: dataDir, CacheDir: filepath.Join(dataDir, "cache"), DatabasePath: filepath.Join(dataDir, "nexusslate.db"), ListenAddress: "127.0.0.1:8787", Hardware: media.HardwareConfig{Mode: "auto", AllowFallback: true, ProxyBitrateKbps: 1800}, SourceStaging: SourceStagingConfig{Mode: "none"}, HubTLS: HubTLSConfig{Mode: "auto"}, LibrarySupervisor: LibrarySupervisorConfig{Enabled: false, ScanIntervalMinutes: 15}, Pipeline: PipelineConfig{ProviderRouteDeferralMinutes: defaultProviderRouteDeferralMinutes}, Providers: ProvidersConfig{
+	cfg := Config{DataDir: dataDir, CacheDir: filepath.Join(dataDir, "cache"), DatabasePath: filepath.Join(dataDir, "nexusgate.db"), ListenAddress: "127.0.0.1:8787", Hardware: media.HardwareConfig{Mode: "auto", AllowFallback: true, ProxyBitrateKbps: 1800}, SourceStaging: SourceStagingConfig{Mode: "none"}, HubTLS: HubTLSConfig{Mode: "auto"}, LibrarySupervisor: LibrarySupervisorConfig{Enabled: false, ScanIntervalMinutes: 15}, Pipeline: PipelineConfig{ProviderRouteDeferralMinutes: defaultProviderRouteDeferralMinutes}, Providers: ProvidersConfig{
 		ASRPrimary: "stepfun", ASRFallback: "qwen", VisionPrimary: "none", AlignmentPrimary: "external_command",
 		TagCuratorPrimary: "openai_chat", TagCuratorFallbackHeuristic: true,
 		EmbeddingPrimary: "none", RepurposePrimary: "none", RepurposeFallbackHeuristic: true,
@@ -318,8 +318,8 @@ func Load() (Config, error) {
 		VolcCodingPlan:          ProviderConfig{Enabled: false, Protocol: "openai_chat", BaseURL: "https://ark.cn-beijing.volces.com/api/coding/v3", Path: "chat/completions", APIKeyEnv: "ARK_CODING_PLAN_API_KEY", Model: "ark-code-latest", AuthHeader: "Authorization", AuthScheme: "Bearer", TimeoutSeconds: 120},
 		VolcAgentPlanEmbedding:  ProviderConfig{Enabled: false, Protocol: "openai_embeddings", BaseURL: "https://ark.cn-beijing.volces.com/api/plan/v3", Path: "embeddings", APIKeyEnv: "ARK_AGENT_PLAN_API_KEY", Model: "doubao-embedding-vision-251215", AuthHeader: "Authorization", AuthScheme: "Bearer", TimeoutSeconds: 120},
 		VolcCodingPlanEmbedding: ProviderConfig{Enabled: false, Protocol: "openai_embeddings", BaseURL: "https://ark.cn-beijing.volces.com/api/coding/v3", Path: "embeddings", APIKeyEnv: "ARK_CODING_PLAN_API_KEY", Model: "doubao-embedding-vision-251215", AuthHeader: "Authorization", AuthScheme: "Bearer", TimeoutSeconds: 120},
-		VolcASR:                 VolcASRConfig{Enabled: false, URL: "wss://openspeech.bytedance.com/api/v3/plan/sauc/bigmodel_nostream", APIKeyEnv: "ARK_AGENT_PLAN_API_KEY", ResourceID: "volc.seedasr.sauc.duration", RequestModel: "bigmodel", Model: "doubao-seed-asr-2.0", UID: "nexusslate", TimeoutSeconds: 300},
-		Alignment:               AlignmentConfig{Enabled: false, Command: "nexusslate-align", Model: "qwen3-forced-aligner"},
+		VolcASR:                 VolcASRConfig{Enabled: false, URL: "wss://openspeech.bytedance.com/api/v3/plan/sauc/bigmodel_nostream", APIKeyEnv: "ARK_AGENT_PLAN_API_KEY", ResourceID: "volc.seedasr.sauc.duration", RequestModel: "bigmodel", Model: "doubao-seed-asr-2.0", UID: "nexusgate", TimeoutSeconds: 300},
+		Alignment:               AlignmentConfig{Enabled: false, Command: "nexusgate-align", Model: "qwen3-forced-aligner"},
 		ShotDetection:           ShotDetectionConfig{Enabled: false, Mode: ShotDetectionModeExternalCommand},
 	}}
 	if err := os.MkdirAll(cfg.CacheDir, 0o700); err != nil {
@@ -338,60 +338,60 @@ func Load() (Config, error) {
 	} else if !os.IsNotExist(err) {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
-	if v := strings.TrimSpace(os.Getenv("NEXUSSLATE_SOURCE_STAGING_MODE")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_SOURCE_STAGING_MODE")); v != "" {
 		cfg.SourceStaging.Mode = v
 	}
-	if v := strings.TrimSpace(os.Getenv("NEXUSSLATE_LISTEN_ADDRESS")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_LISTEN_ADDRESS")); v != "" {
 		cfg.ListenAddress = v
 	}
-	if v := strings.TrimSpace(os.Getenv("NEXUSSLATE_TLS_MODE")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_TLS_MODE")); v != "" {
 		cfg.HubTLS.Mode = strings.ToLower(v)
 	}
-	if v := strings.TrimSpace(os.Getenv("NEXUSSLATE_TLS_CERT_FILE")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_TLS_CERT_FILE")); v != "" {
 		cfg.HubTLS.CertificateFile = v
 	}
-	if v := strings.TrimSpace(os.Getenv("NEXUSSLATE_TLS_KEY_FILE")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_TLS_KEY_FILE")); v != "" {
 		cfg.HubTLS.KeyFile = v
 	}
-	if v := strings.TrimSpace(os.Getenv("NEXUSSLATE_HUB_ADMIN_TOKEN")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_HUB_ADMIN_TOKEN")); v != "" {
 		cfg.HubSecurity.AdminToken = v
 	}
-	if v := strings.TrimSpace(os.Getenv("NEXUSSLATE_HUB_ADMIN_AUTH")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_HUB_ADMIN_AUTH")); v != "" {
 		cfg.HubSecurity.AdminAuth = v
 	}
 	cfg.HubSecurity.AdminAuth = strings.ToLower(strings.TrimSpace(cfg.HubSecurity.AdminAuth))
 	if cfg.HubSecurity.AdminAuth == "" {
 		cfg.HubSecurity.AdminAuth = "trusted_network"
 	}
-	if v := strings.TrimSpace(os.Getenv("NEXUSSLATE_HUB_ADMIN_AUTH_NETWORKS")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_HUB_ADMIN_AUTH_NETWORKS")); v != "" {
 		cfg.HubSecurity.AdminAuthNetworks = strings.Split(v, ",")
 	}
-	if v := strings.TrimSpace(os.Getenv("NEXUSSLATE_ALLOW_WORKER_PROVIDER_CREDENTIALS")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_ALLOW_WORKER_PROVIDER_CREDENTIALS")); v != "" {
 		if enabled, err := strconv.ParseBool(v); err == nil {
 			cfg.HubSecurity.AllowWorkerProviderCredentials = enabled
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("NEXUSSLATE_LIBRARY_SUPERVISOR")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_LIBRARY_SUPERVISOR")); v != "" {
 		if enabled, err := strconv.ParseBool(v); err == nil {
 			cfg.LibrarySupervisor.Enabled = enabled
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("NEXUSSLATE_LIBRARY_SUPERVISOR_INTERVAL_MINUTES")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_LIBRARY_SUPERVISOR_INTERVAL_MINUTES")); v != "" {
 		if minutes, err := strconv.Atoi(v); err == nil {
 			cfg.LibrarySupervisor.ScanIntervalMinutes = minutes
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("NEXUSSLATE_PIPELINE_PROVIDER_ROUTE_DEFERRAL_MINUTES")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_PIPELINE_PROVIDER_ROUTE_DEFERRAL_MINUTES")); v != "" {
 		if minutes, err := strconv.Atoi(v); err == nil {
 			cfg.Pipeline.ProviderRouteDeferralMinutes = minutes
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("NEXUSSLATE_MINIMUM_FREE_SPACE_BYTES")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_MINIMUM_FREE_SPACE_BYTES")); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			cfg.Pipeline.MinimumFreeSpaceBytes = n
 		}
 	}
-	if v := strings.TrimSpace(os.Getenv("NEXUSSLATE_TRUSTED_READ_NETWORKS")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_TRUSTED_READ_NETWORKS")); v != "" {
 		cfg.HubSecurity.TrustedReadNetworks = strings.Split(v, ",")
 	}
 	if _, err := cfg.HubSecurity.TrustedReadPrefixes(); err != nil {
@@ -404,10 +404,10 @@ func Load() (Config, error) {
 		if p.APIKey == "" && p.APIKeyEnv != "" {
 			p.APIKey = os.Getenv(p.APIKeyEnv)
 		}
-		if v := os.Getenv("NEXUSSLATE_" + strings.ToUpper(p.APIKeyEnv) + "_BASE_URL"); v != "" {
+		if v := os.Getenv("NEXUSGATE_" + strings.ToUpper(p.APIKeyEnv) + "_BASE_URL"); v != "" {
 			p.BaseURL = v
 		}
-		if v := os.Getenv("NEXUSSLATE_PROVIDER_TIMEOUT"); v != "" {
+		if v := os.Getenv("NEXUSGATE_PROVIDER_TIMEOUT"); v != "" {
 			if n, e := strconv.Atoi(v); e == nil {
 				p.TimeoutSeconds = n
 			}
@@ -429,10 +429,10 @@ func Load() (Config, error) {
 	if cfg.Providers.VolcASR.APIKey == "" && cfg.Providers.VolcASR.APIKeyEnv != "" {
 		cfg.Providers.VolcASR.APIKey = os.Getenv(cfg.Providers.VolcASR.APIKeyEnv)
 	}
-	if v := os.Getenv("NEXUSSLATE_VOLC_ASR_URL"); v != "" {
+	if v := os.Getenv("NEXUSGATE_VOLC_ASR_URL"); v != "" {
 		cfg.Providers.VolcASR.URL = v
 	}
-	if v := os.Getenv("NEXUSSLATE_PROVIDER_TIMEOUT"); v != "" {
+	if v := os.Getenv("NEXUSGATE_PROVIDER_TIMEOUT"); v != "" {
 		if n, e := strconv.Atoi(v); e == nil {
 			cfg.Providers.VolcASR.TimeoutSeconds = n
 		}
@@ -482,12 +482,12 @@ func explicitField(tree map[string]json.RawMessage, parent, field string) bool {
 	return ok
 }
 func defaultDataDir() (string, error) {
-	if value := os.Getenv("NEXUSSLATE_DATA_DIR"); value != "" {
+	if value := os.Getenv("NEXUSGATE_DATA_DIR"); value != "" {
 		return filepath.Abs(value)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	return filepath.Join(home, ".nexusslate"), nil
+	return filepath.Join(home, ".nexusgate"), nil
 }

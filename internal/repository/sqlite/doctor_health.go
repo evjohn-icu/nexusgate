@@ -8,10 +8,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
-// SearchIndexHealth is the read-only search-index view `nexusslate doctor`
+// SearchIndexHealth is the read-only search-index view `nexusgate doctor`
 // renders. It counts what the retrieval layer actually has — canonical shot
 // rows, text-embedding vectors and the distinct shots carrying one — and
 // reads the fts_index_state flag ensureCJKBigramFTS maintains. The FTS flag
@@ -42,7 +42,7 @@ func (r *Repository) SearchIndexHealth(ctx context.Context) (domain.SearchIndexH
 	return health, nil
 }
 
-// MigrationStatus is the schema_migrations view `nexusslate doctor` renders in
+// MigrationStatus is the schema_migrations view `nexusgate doctor` renders in
 // the DB section: the embedded migration count this binary ships, how many
 // the library has applied, and the newest applied filename — the schema
 // version an operator can compare against a release note. It mirrors

@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/app"
-	"github.com/evjohn-icu/nexusslate/internal/config"
-	"github.com/evjohn-icu/nexusslate/internal/media"
-	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/app"
+	"github.com/evjohn-icu/nexusgate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
 
 func newCollectionsPageTestService(t *testing.T, name string) *app.Service {
@@ -80,7 +80,7 @@ func TestCollectionsPageServesShellAndEmptyCopy(t *testing.T) {
 // tdFormatDateTime. A hardcoded CJK string here means the migration regressed.
 func TestCollectionsPageLocalizedCopy(t *testing.T) {
 	for _, marker := range []string{
-		`<title>NexusSlate · [[i18n:collections.title]]</title>`,
+		`<title>NexusGate · [[i18n:collections.title]]</title>`,
 		`<h1>[[i18n:collections.title]]</h1>`,
 		`<p class="muted">[[i18n:collections.intro]]</p>`,
 		`tdPlural('collections.shotCount'`,

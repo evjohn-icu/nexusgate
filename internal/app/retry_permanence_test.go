@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/normalize"
-	"github.com/evjohn-icu/nexusslate/internal/providerchannels"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/normalize"
+	"github.com/evjohn-icu/nexusgate/internal/providerchannels"
 )
 
 // TestModelOutputValidationIsNeverRetried is the assertion the phrase list

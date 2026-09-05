@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 )
 
 // The status probe is duck-typed, but the error every provider adapter actually

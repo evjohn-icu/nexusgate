@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 // leaseAndExpire leases id under owner with a lease so short it is already
@@ -87,7 +87,7 @@ func TestStaleLeaseHolderCannotWriteAJobReclaimedByAnotherOwner(t *testing.T) {
 	original := leaseAndExpire(t, ctx, repo, "owner-a")
 
 	// The reclaim: owner-b takes the same row through the exact path a paired
-	// Worker or a second `nexusslate serve`/`pipeline run` process would.
+	// Worker or a second `nexusgate serve`/`pipeline run` process would.
 	reclaimed, err := repo.LeaseNextJob(ctx, "owner-b", nil, domain.LeaseFilter{})
 	if err != nil || reclaimed == nil {
 		t.Fatalf("reclaim as owner-b: job=%+v err=%v", reclaimed, err)

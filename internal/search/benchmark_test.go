@@ -20,7 +20,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 // benchmarkStore is the scripted ShotStore. Every retrieval channel returns

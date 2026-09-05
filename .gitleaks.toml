@@ -1,4 +1,4 @@
-title = "Re:Footage nexusslate secret-scan config"
+title = "Re:Footage nexusgate secret-scan config"
 
 # [extend] keeps every default gitleaks rule; this file only adds an
 # allowlist. No default rule is disabled here.

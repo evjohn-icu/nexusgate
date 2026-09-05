@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/media"
-	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
 
 // newQueuedDeriveJob builds a Hub with one asset and one queued derive job.
@@ -66,7 +66,7 @@ func newQueuedDeriveJob(t *testing.T) *sqlite.Repository {
 // accepts or the deadline passes. RunUntilIdle returns as soon as the next
 // job is not due yet — which is what a retry backoff looks like from the
 // outside — so the caller must re-enter it, exactly as re-running
-// `nexusslate pipeline run` does.
+// `nexusgate pipeline run` does.
 func settleJob(t *testing.T, repo *sqlite.Repository, pipeline *Pipeline, settled func(domain.Job) bool) domain.Job {
 	t.Helper()
 	ctx := context.Background()

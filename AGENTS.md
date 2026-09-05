@@ -2,7 +2,7 @@
 
 ## Project Structure
 
-Go monorepo for Re:Footage / `nexusslate`.
+Go monorepo for Re:Footage / `nexusgate`.
 
 - `cmd/` contains the Hub CLI, MCP client, evaluation tools, and fixtures.
 - `internal/domain` holds pure domain types; `internal/app` contains use cases and the pipeline.
@@ -21,7 +21,7 @@ go test ./...
 go test -race ./internal/...
 ```
 
-Run focused tests with `go test ./internal/app -run TestName -v`. Media integration tests require `ffmpeg` and `ffprobe`; provider tests use offline `net/http/httptest` fixtures. Set `NEXUSSLATE_DATA_DIR` for local `doctor`, `root`, and `serve` commands.
+Run focused tests with `go test ./internal/app -run TestName -v`. Media integration tests require `ffmpeg` and `ffprobe`; provider tests use offline `net/http/httptest` fixtures. Set `NEXUSGATE_DATA_DIR` for local `doctor`, `root`, and `serve` commands.
 
 ## Coding Style and Naming
 

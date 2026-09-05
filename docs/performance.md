@@ -167,16 +167,16 @@ are opt-in so ordinary CI cannot accidentally materialize a large database:
 go test ./internal/repository/sqlite -run '^TestSQLiteScaleSanity$' -count=1
 
 # release measurements; keep one size/job serial on constrained machines
-NEXUSSLATE_SQLITE_SCALE_SIZES=10000 \
+NEXUSGATE_SQLITE_SCALE_SIZES=10000 \
   go test ./internal/repository/sqlite -run '^$' \
   -bench '^BenchmarkSQLiteScale' -benchmem -benchtime=1x -count=5 \
   -timeout=30m
 
 # required 100k run, and bounded manual 500k attempt
-NEXUSSLATE_SQLITE_SCALE_SIZES=100000 go test ./internal/repository/sqlite \
+NEXUSGATE_SQLITE_SCALE_SIZES=100000 go test ./internal/repository/sqlite \
   -run '^$' -bench '^BenchmarkSQLiteScale' -benchmem -benchtime=1x -count=5 \
   -timeout=30m
-NEXUSSLATE_SQLITE_SCALE_SIZES=500000 GOMAXPROCS=1 \
+NEXUSGATE_SQLITE_SCALE_SIZES=500000 GOMAXPROCS=1 \
   go test ./internal/repository/sqlite -run '^$' \
   -bench '^BenchmarkSQLiteScale' -benchmem -benchtime=1x -count=1 \
   -timeout=30m

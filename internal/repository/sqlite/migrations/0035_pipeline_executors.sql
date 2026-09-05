@@ -1,5 +1,5 @@
 -- pipeline_executors is the liveness registry for processes that run the
--- Hub-local pipeline (`serve`, and `nexusslate pipeline run`). Each process
+-- Hub-local pipeline (`serve`, and `nexusgate pipeline run`). Each process
 -- registers one row on startup (executor_id == its lease owner) and refreshes
 -- last_seen_at on a short heartbeat for as long as it is alive. HealStaleRunningJobs
 -- consults the registry to tell a live process's in-flight jobs (fresh row) from

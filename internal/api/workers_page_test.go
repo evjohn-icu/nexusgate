@@ -12,10 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/app"
-	"github.com/evjohn-icu/nexusslate/internal/config"
-	"github.com/evjohn-icu/nexusslate/internal/media"
-	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/app"
+	"github.com/evjohn-icu/nexusgate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
 
 // workersCJKRE matches the CJK unified-ideograph and CJK-punctuation blocks.
@@ -74,7 +74,7 @@ func TestWorkersPageI18nHasNoHardcodedChinese(t *testing.T) {
 // regressed.
 func TestWorkersPageLocalizedCopy(t *testing.T) {
 	for _, marker := range []string{
-		`<title>NexusSlate · [[i18n:workers.title]]</title>`,
+		`<title>NexusGate · [[i18n:workers.title]]</title>`,
 		`<div class="eyebrow">[[i18n:workers.title]]</div>`,
 		`<h1>[[i18n:workers.title]]</h1>`,
 		`<p class="muted">[[i18n:workers.subtitle]]</p>`,
@@ -339,7 +339,7 @@ func TestWorkersPageI18nServedWithoutUnresolvedMarkers(t *testing.T) {
 		`capabilities`, `compat.verdict`, `library_roots`, `hardware`,
 		`platform`, `status`, `job_type`, `state`, `attempt_count`, `max_attempts`,
 		`/worker-setup`,
-		`admin-token`, `loginAdmin`, `X-CSRF-Token`, `__Host-nexusslate_csrf`,
+		`admin-token`, `loginAdmin`, `X-CSRF-Token`, `__Host-nexusgate_csrf`,
 		`tdApiErrorMessage`,
 	} {
 		if !strings.Contains(body, want) {

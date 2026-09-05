@@ -12,14 +12,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/media"
-	"github.com/evjohn-icu/nexusslate/internal/mount"
-	"github.com/evjohn-icu/nexusslate/internal/providers"
-	"github.com/evjohn-icu/nexusslate/internal/remote"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/mount"
+	"github.com/evjohn-icu/nexusgate/internal/providers"
+	"github.com/evjohn-icu/nexusgate/internal/remote"
 )
 
-// DoctorReport collects every fact `nexusslate doctor` renders into one
+// DoctorReport collects every fact `nexusgate doctor` renders into one
 // JSON-safe, secret-free snapshot. It never fails on advisory checks: a
 // missing helper binary, an unreadable mount table or a vanished cache
 // subtree is recorded in the report itself (Present=false, empty,

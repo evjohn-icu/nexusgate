@@ -9,7 +9,7 @@ export default defineConfig({
   reporter: process.env.CI ? [['dot'], ['html', { outputFolder: 'playwright-report', open: 'never' }]] : 'list',
   outputDir: 'test-results',
   use: {
-    baseURL: process.env.NEXUSSLATE_PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1:4173',
+    baseURL: process.env.NEXUSGATE_PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1:4173',
     ignoreHTTPSErrors: true,
     // Use the system Google Chrome (v149, matching Playwright 1.61.1) instead
     // of the bundled Chromium download, which this offline host cannot fetch.

@@ -3,7 +3,7 @@
 //
 // It deliberately mounts nothing. Mounting needs root, and surviving a reboot
 // needs a line in /etc/fstab or a systemd unit — both of them state outside
-// $NEXUSSLATE_DATA_DIR, which is the one place this Hub is allowed to own. A
+// $NEXUSGATE_DATA_DIR, which is the one place this Hub is allowed to own. A
 // tool that quietly acquires root to write files it cannot later account for is
 // worse than one that prints an exact command and lets the operator run it.
 //
@@ -231,7 +231,7 @@ func shareBaseName(share Share) string {
 //
 // A containerised Hub cannot use that answer. Its footage arrives through a
 // bind mount of a host directory, and mount propagation only carries mounts
-// made *under* that bind's source — a share mounted at /mnt/nexusslate/<name>
+// made *under* that bind's source — a share mounted at /mnt/nexusgate/<name>
 // on the host is outside the bind entirely and stays invisible inside the
 // container no matter which propagation mode the bind has. So the default
 // moves under the bind's source, and ContainerPath below translates it into
@@ -247,7 +247,7 @@ func DefaultMountpoint(share Share, host Host) string {
 	if host.OS == "darwin" {
 		return "/Volumes/" + name
 	}
-	return "/mnt/nexusslate/" + name
+	return "/mnt/nexusgate/" + name
 }
 
 // ContainerPath translates a host-side mount point into the path the same
@@ -304,8 +304,13 @@ func relativeToDirectory(value, directory string) (string, bool) {
 // internal/api/library_roots_page_test.go exist to catch a key that was
 // renamed, or added, without the translation table being updated to match.
 type Step struct {
-	Key      string
-	Title    string
+	Key   string
+	Title string
+	// Kind is empty or "command" for a line to run in a shell, and "file-line"
+	// for a line to append to the file named by File. Keeping that distinction
+	// here prevents an fstab entry from being mistaken for an executable command.
+	Kind     string
+	File     string
 	Commands []string
 }
 
@@ -329,10 +334,10 @@ type Guide struct {
 	Notes   []Note
 }
 
-// Guidance produces the commands that mount share at mountpoint. Every command
-// is meant to be pasted as written: values are filled in from the host rather
-// than left as shell substitutions, because a command that has to be edited
-// before it runs is one more thing to get wrong.
+// Guidance produces the instructions that mount share at mountpoint. Values are
+// filled in from the host rather than left as shell substitutions, because a
+// line that has to be edited before it runs or is saved is one more thing to get
+// wrong.
 func Guidance(share Share, mountpoint string, host Host) Guide {
 	if mountpoint == "" {
 		mountpoint = DefaultMountpoint(share, host)
@@ -346,18 +351,20 @@ func Guidance(share Share, mountpoint string, host Host) Guide {
 	default:
 		guide.Steps = linuxSteps(share, mountpoint, host)
 	}
+	runOnHost := Step{
+		Key:   "run-on-hub-host",
+		Title: "These commands run on the machine running NexusGate, not on the computer you are reading this page on. If you are sitting at that machine, open a terminal; otherwise SSH into it first.",
+	}
 	if host.Container {
-		// The steps built above assume they run wherever this process is —
-		// true for every other host this package targets, false here. Rather
-		// than rewrite every OS branch's wording for a case that is always
-		// Linux in practice, one leading step states the exception once,
-		// before any command that would otherwise silently fail against a
-		// filesystem the container cannot mount.
-		guide.Steps = append([]Step{{
+		// A container has a separate mount namespace and no authority to mount;
+		// keep this boundary explicit before any command that would otherwise
+		// silently fail inside it.
+		runOnHost = Step{
 			Key:   "container-run-on-host",
 			Title: "Run the following on the machine hosting the Docker daemon — not inside this container",
-		}}, guide.Steps...)
+		}
 	}
+	guide.Steps = append([]Step{runOnHost}, guide.Steps...)
 	guide.Steps = append(guide.Steps, addRootStep(mountpoint, host))
 	guide.Notes = notes(share, host)
 	return guide
@@ -379,7 +386,7 @@ func addRootStep(mountpoint string, host Host) Step {
 		return Step{
 			Key:      "add-root",
 			Title:    "Add the mount point as a library root",
-			Commands: []string{"nexusslate root add " + mountpoint},
+			Commands: []string{"nexusgate root add " + mountpoint},
 		}
 	}
 	containerPath, ok := ContainerPath(mountpoint, host)
@@ -396,12 +403,12 @@ func addRootStep(mountpoint string, host Host) Step {
 		Title: fmt.Sprintf(
 			"Back inside the Hub container — %s on the host is %s in here, and that is the path to record",
 			mountpoint, containerPath),
-		Commands: []string{"nexusslate root add " + containerPath},
+		Commands: []string{"nexusgate root add " + containerPath},
 	}
 }
 
 func credentialsPath(share Share) string {
-	return "/etc/nexusslate/" + share.Host + ".cred"
+	return "/etc/nexusgate/" + share.Host + ".cred"
 }
 
 func linuxSteps(share Share, mountpoint string, host Host) []Step {
@@ -415,6 +422,7 @@ func linuxSteps(share Share, mountpoint string, host Host) []Step {
 	}
 	if share.Protocol == ProtocolNFS {
 		return []Step{
+			{Key: "install-nfs-client", Title: "Install the NFS client package the first time you need it (use the one for your distribution)", Commands: []string{"sudo apt-get install -y nfs-common", "sudo dnf install -y nfs-utils"}},
 			{Key: "create-mountpoint", Title: "Create the mount point", Commands: []string{"sudo mkdir -p " + mountpoint}},
 			{
 				Key:      "nfs-mount",
@@ -424,6 +432,8 @@ func linuxSteps(share Share, mountpoint string, host Host) []Step {
 			{
 				Key:      "fstab",
 				Title:    "Make it survive a reboot — append to /etc/fstab",
+				Kind:     "file-line",
+				File:     "/etc/fstab",
 				Commands: []string{fmt.Sprintf("%s %s nfs ro,_netdev,nofail 0 0", share, mountpoint)},
 			},
 		}
@@ -435,16 +445,17 @@ func linuxSteps(share Share, mountpoint string, host Host) []Step {
 	}
 	options := fmt.Sprintf("credentials=%s,ro,uid=%d,gid=%d,iocharset=utf8,_netdev", credentials, host.UID, host.GID)
 	return []Step{
+		{Key: "install-smb-client", Title: "Install the SMB client package the first time you need it (use the one for your distribution)", Commands: []string{"sudo apt-get install -y cifs-utils", "sudo dnf install -y cifs-utils"}},
 		{
 			// The password goes into a root-only file rather than into the mount
 			// command, where it would be readable by every user through the
 			// process list, and rather than into /etc/fstab, which is world
 			// readable by design.
 			Key:   "smb-credentials-file",
-			Title: "Put the credentials in a file only root can read",
+			Title: "Put the credentials in a file only root can read — replace YOUR_NAS_PASSWORD with your NAS password",
 			Commands: []string{
-				"sudo install -d -m 700 /etc/nexusslate",
-				fmt.Sprintf("printf 'username=%s\\npassword=%%s\\n' 'YOUR_NAS_PASSWORD' | sudo tee %s >/dev/null", user, credentials),
+				"sudo install -d -m 700 /etc/nexusgate",
+				fmt.Sprintf("sudo tee %s >/dev/null <<'NEXUSGATE_CREDS'\nusername=%s\npassword=YOUR_NAS_PASSWORD\nNEXUSGATE_CREDS", credentials, user),
 				"sudo chmod 600 " + credentials,
 			},
 		},
@@ -457,6 +468,8 @@ func linuxSteps(share Share, mountpoint string, host Host) []Step {
 		{
 			Key:      "fstab",
 			Title:    "Make it survive a reboot — append to /etc/fstab",
+			Kind:     "file-line",
+			File:     "/etc/fstab",
 			Commands: []string{fmt.Sprintf("%s %s cifs %s,nofail 0 0", share, mountpoint, options)},
 		},
 	}

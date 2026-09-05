@@ -1,26 +1,26 @@
 {
-  "name": "nexusslate",
+  "name": "nexusgate",
   "owner": {
-    "name": "NexusSlate",
-    "url": "https://github.com/evjohn-icu/nexusslate"
+    "name": "NexusGate",
+    "url": "https://github.com/evjohn-icu/nexusgate"
   },
   "metadata": {
-    "description": "NexusSlate plugins for Claude Code"
+    "description": "NexusGate plugins for Claude Code"
   },
   "plugins": [
     {
-      "name": "nexusslate",
+      "name": "nexusgate",
       "source": "./plugins/claude",
-      "description": "NexusSlate footage capability provider for Claude Code: inspect the local-first library, search shots with evidence, and read word-level transcripts through six read-only MCP tools.",
+      "description": "NexusGate footage capability provider for Claude Code: inspect the local-first library, search shots with evidence, and read word-level transcripts through six read-only MCP tools.",
       "category": "productivity",
-      "homepage": "https://github.com/evjohn-icu/nexusslate",
+      "homepage": "https://github.com/evjohn-icu/nexusgate",
       "author": {
-        "name": "NexusSlate",
-        "url": "https://github.com/evjohn-icu/nexusslate"
+        "name": "NexusGate",
+        "url": "https://github.com/evjohn-icu/nexusgate"
       },
       "license": "Apache-2.0",
       "keywords": [
-        "nexusslate",
+        "nexusgate",
         "footage",
         "video",
         "video-search",

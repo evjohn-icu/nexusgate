@@ -17,17 +17,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/app"
-	"github.com/evjohn-icu/nexusslate/internal/config"
-	"github.com/evjohn-icu/nexusslate/internal/hubtls"
-	"github.com/evjohn-icu/nexusslate/internal/media"
-	"github.com/evjohn-icu/nexusslate/internal/remote"
-	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/app"
+	"github.com/evjohn-icu/nexusgate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/hubtls"
+	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/remote"
+	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
 
 // TestWorkerBootstrapBinaryAuth is the pairing-token guard matrix for the
 // Worker binary download. The route admits a trusted source address, a Hub
-// admin/agent token, or a valid, unredeemed X-NexusSlate-Pairing-Token header —
+// admin/agent token, or a valid, unredeemed X-NexusGate-Pairing-Token header —
 // and nothing else. A valid token authorizes repeated downloads without being
 // consumed, while an expired, redeemed, or absent token is rejected; after
 // enrollment redeems the token, the same credential can no longer download.
@@ -47,7 +47,7 @@ func TestWorkerBootstrapBinaryAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	binaryContent := []byte("bootstrap-binary-content")
-	if err := os.WriteFile(filepath.Join(binDir, "nexusslate-linux-amd64"), binaryContent, 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(binDir, "nexusgate-linux-amd64"), binaryContent, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	service, err := app.NewService(repo, config.Config{DataDir: dataDir, Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}})
@@ -76,7 +76,7 @@ func TestWorkerBootstrapBinaryAuth(t *testing.T) {
 		request := httptest.NewRequest(http.MethodGet, "/api/v1/hub/worker-binaries/linux-amd64", nil)
 		request.RemoteAddr = "203.0.113.50:9999"
 		if header != "" {
-			request.Header.Set("X-NexusSlate-Pairing-Token", header)
+			request.Header.Set("X-NexusGate-Pairing-Token", header)
 		}
 		return request
 	}
@@ -159,7 +159,7 @@ func TestWorkerBootstrapBinaryAuth(t *testing.T) {
 func remoteRequestWithToken(target, token string) *http.Request {
 	request := httptest.NewRequest(http.MethodGet, target, nil)
 	request.RemoteAddr = "203.0.113.50:9999"
-	request.Header.Set("X-NexusSlate-Pairing-Token", token)
+	request.Header.Set("X-NexusGate-Pairing-Token", token)
 	return request
 }
 
@@ -230,20 +230,20 @@ func TestGeneratedWorkerScriptPinsAndVerifiesBinary(t *testing.T) {
 			}
 
 			// --fingerprint must precede --pairing, and the config path is the
-			// private .nexusslate-worker/worker.json, not the old top-level file.
+			// private .nexusgate-worker/worker.json, not the old top-level file.
 			if strings.Index(script, "--fingerprint") > strings.Index(script, "--pairing") {
 				t.Fatalf("--fingerprint must appear before --pairing:\n%s", script)
 			}
-			if !strings.Contains(script, "--config ./.nexusslate-worker/worker.json") {
+			if !strings.Contains(script, "--config ./.nexusgate-worker/worker.json") {
 				t.Fatalf("script does not use the private config path:\n%s", script)
 			}
-			if !strings.Contains(script, "worker run --config ./.nexusslate-worker/worker.json") || !strings.Contains(script, "worker doctor --config ./.nexusslate-worker/worker.json") {
+			if !strings.Contains(script, "worker run --config ./.nexusgate-worker/worker.json") || !strings.Contains(script, "worker doctor --config ./.nexusgate-worker/worker.json") {
 				t.Fatalf("run/doctor instructions must use the private config path:\n%s", script)
 			}
-			if strings.Contains(script, "nexusslate-worker.json") {
+			if strings.Contains(script, "nexusgate-worker.json") {
 				t.Fatalf("script still references the legacy top-level config path:\n%s", script)
 			}
-			if !strings.Contains(script, "X-NexusSlate-Pairing-Token") {
+			if !strings.Contains(script, "X-NexusGate-Pairing-Token") {
 				t.Fatalf("script must carry the pairing token in a request header:\n%s", script)
 			}
 
@@ -257,7 +257,7 @@ func TestGeneratedWorkerScriptPinsAndVerifiesBinary(t *testing.T) {
 					"rm -f \"$BINARY_TMP\"",
 					"mv \"$BINARY_TMP\" \"$BINARY_OUT\"",
 					"chmod 0755 \"$BINARY_OUT\"",
-					"nexusslate-linux-amd64.download",
+					"nexusgate-linux-amd64.download",
 				} {
 					if !strings.Contains(script, marker) {
 						t.Fatalf("POSIX script missing %q:\n%s", marker, script)
@@ -271,7 +271,7 @@ func TestGeneratedWorkerScriptPinsAndVerifiesBinary(t *testing.T) {
 					"Get-FileHash",
 					"Move-Item -Force",
 					"Remove-Item -Force -Path $binaryTmp",
-					"nexusslate-windows-amd64.exe.download",
+					"nexusgate-windows-amd64.exe.download",
 				} {
 					if !strings.Contains(script, marker) {
 						t.Fatalf("PowerShell script missing %q:\n%s", marker, script)
@@ -352,7 +352,7 @@ func TestWorkerSetupScriptGenerationRequiresBinaryAndTLS(t *testing.T) {
 		if err := os.MkdirAll(binDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(binDir, "nexusslate-linux-amd64"), []byte("binary"), 0o755); err != nil {
+		if err := os.WriteFile(filepath.Join(binDir, "nexusgate-linux-amd64"), []byte("binary"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		handler := NewServer("", service).Handler()
@@ -392,7 +392,7 @@ func TestWorkerSetupRetriesContextAfterLogin(t *testing.T) {
 	if !strings.Contains(body, "function init(){return loadContext()}") {
 		t.Fatal("page must route its initial load through loadContext()")
 	}
-	authChanged := `window.addEventListener('nexusslate:admin-auth-changed',function(event){if(event.detail&&event.detail.authenticated){loadContext()}else{ctx=ctx||{};ctx.library_roots=(ctx.library_roots||[]).map(function(root){return{id:root.id}});renderMounts()}});`
+	authChanged := `window.addEventListener('nexusgate:admin-auth-changed',function(event){if(event.detail&&event.detail.authenticated){loadContext()}else{ctx=ctx||{};ctx.library_roots=(ctx.library_roots||[]).map(function(root){return{id:root.id}});renderMounts()}});`
 	if !strings.Contains(body, authChanged) {
 		t.Fatal("a successful login must retry loadContext(); a logout must keep the redacted-root fallback")
 	}
@@ -475,23 +475,23 @@ func TestWorkerSetupContextExposesSPKIPin(t *testing.T) {
 }
 
 // TestGeneratedScriptEnrollsCompiledBinaryAgainstLocalTLSHub is the HTTPS
-// smoke for this bootstrap flow: it builds the real nexusslate binary, serves
+// smoke for this bootstrap flow: it builds the real nexusgate binary, serves
 // a real Hub handler over a self-signed TLS fixture, and runs
 // `worker enroll` with exactly the arguments the generated install scripts
 // produce (--hub, --fingerprint before --pairing, --config in a private
-// .nexusslate-worker directory). The pinned fingerprint must authenticate the
+// .nexusgate-worker directory). The pinned fingerprint must authenticate the
 // fixture, the config must persist with that same fingerprint, and the pairing
 // token must be redeemed exactly once.
 func TestGeneratedScriptEnrollsCompiledBinaryAgainstLocalTLSHub(t *testing.T) {
 	goTool, err := exec.LookPath("go")
 	if err != nil {
-		t.Skip("go toolchain unavailable to build the nexusslate binary")
+		t.Skip("go toolchain unavailable to build the nexusgate binary")
 	}
 	workDir := t.TempDir()
-	binPath := filepath.Join(workDir, "nexusslate-smoke")
-	build := exec.Command(goTool, "build", "-o", binPath, "github.com/evjohn-icu/nexusslate/cmd/nexusslate")
+	binPath := filepath.Join(workDir, "nexusgate-smoke")
+	build := exec.Command(goTool, "build", "-o", binPath, "github.com/evjohn-icu/nexusgate/cmd/nexusgate")
 	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("building nexusslate failed: %v\n%s", err, out)
+		t.Fatalf("building nexusgate failed: %v\n%s", err, out)
 	}
 
 	ctx := context.Background()
@@ -531,14 +531,14 @@ func TestGeneratedScriptEnrollsCompiledBinaryAgainstLocalTLSHub(t *testing.T) {
 	server.StartTLS()
 	defer server.Close()
 
-	configPath := filepath.Join(workDir, ".nexusslate-worker", "worker.json")
+	configPath := filepath.Join(workDir, ".nexusgate-worker", "worker.json")
 	enroll := exec.Command(binPath, "worker", "enroll",
 		"--hub", server.URL,
 		"--fingerprint", fingerprint,
 		"--pairing", pairing.Token,
 		"--config", configPath,
 	)
-	enroll.Env = append(os.Environ(), "NEXUSSLATE_WORKER_CONFIG="+configPath)
+	enroll.Env = append(os.Environ(), "NEXUSGATE_WORKER_CONFIG="+configPath)
 	if out, err := enroll.CombinedOutput(); err != nil {
 		t.Fatalf("worker enroll failed: %v\n%s", err, out)
 	}
@@ -568,7 +568,7 @@ func TestGeneratedScriptEnrollsCompiledBinaryAgainstLocalTLSHub(t *testing.T) {
 		"--hub", server.URL,
 		"--fingerprint", fingerprint,
 		"--pairing", pairing.Token,
-		"--config", filepath.Join(workDir, ".nexusslate-worker", "second.json"),
+		"--config", filepath.Join(workDir, ".nexusgate-worker", "second.json"),
 	)
 	if out, err := second.CombinedOutput(); err == nil {
 		t.Fatalf("reusing a redeemed pairing token should fail, got: %s", out)

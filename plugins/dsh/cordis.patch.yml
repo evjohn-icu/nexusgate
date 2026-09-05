@@ -1,0 +1,24 @@
+# nexus-dsh bundle patch: mount the local NexusGate MCP server so the dsh
+# agent gets the six read-only library tools (search_shots, get_timeline,
+# get_transcript, get_asset, get_shot, inspect_library) as native tools.
+#
+# The stdio child is the user-installed nexusgate-mcp binary. Hub URL, agent
+# token and certificate fingerprint are passed explicitly instead of relying on
+# inheritance, because the DSH MCP bridge scrubs credential-shaped ambient
+# names (anything matching /KEY|PASSWORD|SECRET|TOKEN/i, which would drop
+# NEXUSGATE_AGENT_TOKEN) and all DSH_* names from the child environment.
+#
+# Each variable defaults to an empty string so the profile always loads; the
+# MCP server treats an empty value as unset and applies its own safe defaults
+# (https://127.0.0.1:8787 + mandatory fingerprint pin).
+- insert:
+    - id: mcp-nexusgate
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: nexusgate
+        transport: stdio
+        command: nexusgate-mcp
+        env:
+          NEXUSGATE_BASE_URL: !!js 'process.env.NEXUSGATE_BASE_URL ?? ""'
+          NEXUSGATE_AGENT_TOKEN: !!js 'process.env.NEXUSGATE_AGENT_TOKEN ?? ""'
+          NEXUSGATE_HUB_FINGERPRINT: !!js 'process.env.NEXUSGATE_HUB_FINGERPRINT ?? ""'

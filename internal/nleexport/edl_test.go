@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/timecode"
+	"github.com/evjohn-icu/nexusgate/internal/timecode"
 )
 
 // reelOf pulls the 8-column reel field out of an event line. Event lines place

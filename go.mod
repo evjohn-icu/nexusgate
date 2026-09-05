@@ -1,4 +1,4 @@
-module github.com/evjohn-icu/nexusslate
+module github.com/evjohn-icu/nexusgate
 
 go 1.25.5
 

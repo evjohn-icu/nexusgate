@@ -8,9 +8,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/evjohn-icu/nexusslate/internal/curator"
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
+	"github.com/evjohn-icu/nexusgate/internal/curator"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 )
 
 // Provider asks a small OpenAI-compatible model to group unresolved tags.

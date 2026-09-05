@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 func NormalizeMetadata(probe FFProbeResult, exif map[string]any) domain.MediaMetadata {

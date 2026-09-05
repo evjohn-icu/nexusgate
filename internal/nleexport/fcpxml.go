@@ -16,7 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/evjohn-icu/nexusslate/internal/timecode"
+	"github.com/evjohn-icu/nexusgate/internal/timecode"
 )
 
 // Source describes where a clip's media actually lives. It is supplied by the

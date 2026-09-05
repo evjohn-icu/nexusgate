@@ -1,8 +1,8 @@
 package providers
 
 import (
-	"github.com/evjohn-icu/nexusslate/internal/providers/common"
-	videoproviders "github.com/evjohn-icu/nexusslate/internal/providers/video"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
+	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
 )
 
 type TranscribeRequest = common.TranscribeRequest

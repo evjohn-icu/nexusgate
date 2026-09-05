@@ -3,7 +3,7 @@ package mock
 import (
 	"testing"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 func TestAnalyze_AssetType(t *testing.T) {

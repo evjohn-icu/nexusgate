@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,15 +17,15 @@ import (
 // browseMDNS returns hosts advertising _smb._tcp.local over multicast DNS.
 // A network without multicast (a common VM/container situation) yields nothing;
 // that is a "no SMB servers announce themselves" fact, not an error.
-func browseMDNS(ctx context.Context) []Host {
+func browseMDNS(ctx context.Context) ([]Host, bool) {
 	resolver, err := zeroconf.NewResolver(nil)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	entries := make(chan *zeroconf.ServiceEntry)
 	err = resolver.Browse(ctx, "_smb._tcp", "local.", entries)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 
 	// Browse sends entries on the channel until ctx is cancelled and closes
@@ -59,7 +61,7 @@ func browseMDNS(ctx context.Context) []Host {
 
 	<-ctx.Done()
 	wg.Wait()
-	return collected
+	return collected, true
 }
 
 func firstIP(addrs []net.IP) string {
@@ -84,26 +86,38 @@ type localNet struct {
 	HostCount uint32
 }
 
-// scanPort returns the local-network IPs that answered on port 445. The local
-// network is derived from the host's own unicast interfaces, so a machine
-// with no LAN route scans nothing.
-func scanPort(ctx context.Context, dialTimeout time.Duration) []net.IP {
+// scanPort returns the local-network IPs that answered on port 445, together
+// with the networks selected, the networks rejected by the safety cap, and
+// whether the port budget stopped dispatch before every candidate was dialled.
+// The local network is derived from the host's own unicast interfaces, so a
+// machine with no LAN route scans nothing.
+func scanPort(ctx context.Context, dialTimeout time.Duration) ([]net.IP, []string, []string, bool) {
 	nets := localNetworks()
 	if len(nets) == 0 {
-		return nil
+		return nil, nil, nil, false
 	}
 	var candidates []net.IP
 	seen := map[string]bool{}
+	seenScanned := map[string]bool{}
+	var scannedNetworks []string
+	var skippedNetworks []string
 	for _, n := range nets {
-		// A subnet wider than the cap would mean scanning tens of thousands
-		// to millions of addresses; refuse rather than turn a library-root
-		// wizard click into a LAN-wide flood. /16 (65534 hosts) is the widest
-		// we will sweep.
+		cidr := n.CIDR()
+		// Keep the /16 hard cap as a flood-safety boundary. The normal eight
+		// second port budget can only attempt roughly 64*8/1s ≈ 512
+		// one-second dials, so larger allowed ranges are reported as
+		// truncated rather than pretending that the whole range was swept.
 		if n.HostCount > maxScanHosts {
+			if !containsString(skippedNetworks, cidr) {
+				skippedNetworks = append(skippedNetworks, cidr)
+			}
 			continue
 		}
-		addrs := n.Hosts()
-		for _, cand := range addrs {
+		if !seenScanned[cidr] {
+			seenScanned[cidr] = true
+			scannedNetworks = append(scannedNetworks, cidr)
+		}
+		for _, cand := range n.Hosts() {
 			key := cand.String()
 			if !seen[key] {
 				seen[key] = true
@@ -111,41 +125,65 @@ func scanPort(ctx context.Context, dialTimeout time.Duration) []net.IP {
 			}
 		}
 	}
+	sort.Strings(scannedNetworks)
+	sort.Strings(skippedNetworks)
 
 	var mu sync.Mutex
 	var hits []net.IP
 	sem := make(chan struct{}, 64)
 	var wg sync.WaitGroup
 	dialer := net.Dialer{Timeout: dialTimeout}
-	for _, cand := range candidates {
-		if ctx.Err() != nil {
-			break
-		}
-		sem <- struct{}{}
-		wg.Add(1)
-		go func(ip net.IP) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			// DialContext (not DialTimeout) so a cancelled discovery context
-			// aborts in-flight probes instead of waiting out each dial timeout.
-			conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(ip.String(), smbPortStr))
-			if err != nil {
-				return
+	launched := 0
+	truncated := false
+	for launched < len(candidates) {
+		select {
+		case <-ctx.Done():
+			truncated = true
+			launched = len(candidates)
+		case sem <- struct{}{}:
+			if ctx.Err() != nil {
+				<-sem
+				truncated = true
+				launched = len(candidates)
+				continue
 			}
-			conn.Close()
-			mu.Lock()
-			hits = append(hits, ip)
-			mu.Unlock()
-		}(cand)
+			ip := candidates[launched]
+			launched++
+			wg.Add(1)
+			go func(ip net.IP) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				// DialContext (not DialTimeout) so a cancelled discovery
+				// context aborts in-flight probes instead of waiting out each
+				// dial timeout.
+				conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(ip.String(), smbPortStr))
+				if err != nil {
+					return
+				}
+				conn.Close()
+				mu.Lock()
+				hits = append(hits, ip)
+				mu.Unlock()
+			}(ip)
+		}
 	}
 	wg.Wait()
-	return hits
+	return hits, scannedNetworks, skippedNetworks, truncated
 }
 
-// maxScanHosts caps how many addresses one discovery may sweep. A /16 is
-// 65534 usable hosts; anything wider is left to manual entry rather than
-// flooding the LAN. 64 concurrent dials at 1s each cover 65534 hosts in about
-// 17 minutes worst case, which is why the cap exists.
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+// maxScanHosts is a hard /16 safety cap. The port layer has an eight-second
+// budget, so at 64 concurrent one-second dials it can normally reach only
+// about 512 addresses; the cap remains a separate flood guard and Truncated
+// makes that partial sweep explicit.
 const maxScanHosts uint32 = 65534
 
 // localNetworks returns the machine's unicast IPv4 networks (RFC1918 or link
@@ -199,6 +237,11 @@ func localNetworks() []localNet {
 	return out
 }
 
+// CIDR returns the network notation used in discovery diagnostics.
+func (n localNet) CIDR() string {
+	return (&net.IPNet{IP: n.Base, Mask: net.CIDRMask(n.PrefixLen, 32)}).String()
+}
+
 // Hosts enumerates the usable host addresses in the network (excluding the
 // network and broadcast addresses).
 func (n localNet) Hosts() []net.IP {
@@ -238,38 +281,92 @@ func isPrivateIPv4(ip net.IP) bool {
 	return false
 }
 
-// enumerateShares fills Shares/NeedsAuth on each host in byIP using anonymous
+// enumerateShares fills Shares/Probe on each host in byIP using anonymous
 // guest SMB sessions, bounded per host by shareTimeout.
 func enumerateShares(ctx context.Context, shareTimeout time.Duration, byIP map[string]*Host, order []string) {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, maxConcurrentEnumeration)
-	for _, key := range order {
+scanLoop:
+	for i, key := range order {
 		host := byIP[key]
-		if ctx.Err() != nil {
-			break
+		select {
+		case <-ctx.Done():
+			for _, remaining := range order[i:] {
+				byIP[remaining].Probe = "timeout"
+				byIP[remaining].NeedsAuth = false
+			}
+			break scanLoop
+		case sem <- struct{}{}:
 		}
-		sem <- struct{}{}
+		if ctx.Err() != nil {
+			<-sem
+			for _, remaining := range order[i:] {
+				byIP[remaining].Probe = "timeout"
+				byIP[remaining].NeedsAuth = false
+			}
+			break scanLoop
+		}
 		wg.Add(1)
 		go func(h *Host) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			shares, err := guestShareNames(ctx, h.IP, shareTimeout)
 			if err != nil {
-				// Only a definitive guest-session refusal is "needs
-				// credentials". A timeout (slow or wedged host) or a
-				// cancelled overall scan says nothing about credentials, so
-				// leave NeedsAuth false rather than promising a password
-				// will help against a blackholed host.
-				if ctx.Err() == nil && !errors.Is(err, context.DeadlineExceeded) {
-					h.NeedsAuth = true
-				}
+				h.Probe = classifyProbeError(ctx, err)
+				h.NeedsAuth = h.Probe == "auth"
 				return
 			}
 			h.Shares = shares
+			h.Probe = "ok"
 			h.NeedsAuth = false
 		}(host)
 	}
 	wg.Wait()
+}
+
+// classifyProbeError uses only context state and structured errors. The
+// go-smb2 release in use has no exported authentication-specific error type or
+// status constants; its public ResponseError.Code and os.ErrPermission are the
+// available structured refusal signals. Unknown response codes remain
+// unusable, rather than making a password promise without a reliable basis.
+func classifyProbeError(ctx context.Context, err error) string {
+	if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	var smbContextErr *smb2.ContextError
+	if errors.As(err, &smbContextErr) && errors.Is(smbContextErr.Err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	if isAuthenticationError(err) {
+		return "auth"
+	}
+	return "unusable"
+}
+
+func isAuthenticationError(err error) bool {
+	if errors.Is(err, os.ErrPermission) {
+		return true
+	}
+	var responseErr *smb2.ResponseError
+	if !errors.As(err, &responseErr) {
+		return false
+	}
+	switch responseErr.Code {
+	case 0xc0000022, // STATUS_ACCESS_DENIED
+		0xc000006a, // STATUS_WRONG_PASSWORD
+		0xc000006d, // STATUS_LOGON_FAILURE
+		0xc000006e, // STATUS_ACCOUNT_RESTRICTION
+		0xc000006f, // STATUS_INVALID_LOGON_HOURS
+		0xc0000070, // STATUS_INVALID_WORKSTATION
+		0xc0000071, // STATUS_PASSWORD_EXPIRED
+		0xc0000072, // STATUS_ACCOUNT_DISABLED
+		0xc000015b, // STATUS_LOGON_TYPE_NOT_GRANTED
+		0xc0000193, // STATUS_ACCOUNT_EXPIRED
+		0xc0000234: // STATUS_ACCOUNT_LOCKED_OUT
+		return true
+	default:
+		return false
+	}
 }
 
 // maxConcurrentEnumeration bounds how many SMB guest sessions run at once.

@@ -132,7 +132,7 @@ func TestPreflightFreeSpaceError(t *testing.T) {
 	if err == nil {
 		t.Fatal("preflight accepted a 1-byte filesystem, want refusal")
 	}
-	for _, want := range []string{"free disk space", repo.dbPath, "NEXUSSLATE_DATA_DIR"} {
+	for _, want := range []string{"free disk space", repo.dbPath, "NEXUSGATE_DATA_DIR"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("preflight error %q does not mention %q", err, want)
 		}

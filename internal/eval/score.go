@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/evjohn-icu/nexusslate/internal/domain"
-	"github.com/evjohn-icu/nexusslate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
 
 // RunScore is the retrieval outcome of one run: Precision@5/@10, Recall@10
@@ -74,7 +74,7 @@ func Score(ctx context.Context, dataDir, label string, corpus *Corpus) (*RunScor
 	if err != nil {
 		return nil, err
 	}
-	repo, err := sqlite.Open(filepath.Join(dataDir, "nexusslate.db"))
+	repo, err := sqlite.Open(filepath.Join(dataDir, "nexusgate.db"))
 	if err != nil {
 		return nil, err
 	}

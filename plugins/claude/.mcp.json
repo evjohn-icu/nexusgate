@@ -1,13 +1,13 @@
 {
   "mcpServers": {
-    "nexusslate": {
+    "nexusgate": {
       "type": "stdio",
-      "command": "nexusslate-mcp",
+      "command": "nexusgate-mcp",
       "args": [],
       "env": {
-        "NEXUSSLATE_BASE_URL": "${NEXUSSLATE_BASE_URL}",
-        "NEXUSSLATE_AGENT_TOKEN": "${NEXUSSLATE_AGENT_TOKEN}",
-        "NEXUSSLATE_HUB_FINGERPRINT": "${NEXUSSLATE_HUB_FINGERPRINT}"
+        "NEXUSGATE_BASE_URL": "${NEXUSGATE_BASE_URL}",
+        "NEXUSGATE_AGENT_TOKEN": "${NEXUSGATE_AGENT_TOKEN}",
+        "NEXUSGATE_HUB_FINGERPRINT": "${NEXUSGATE_HUB_FINGERPRINT}"
       }
     }
   }

@@ -1,12 +1,12 @@
-# Compiled binary (go build -o nexusslate ./cmd/nexusslate)
-/nexusslate
+# Compiled binary (go build -o nexusgate ./cmd/nexusgate)
+/nexusgate
 
 # Local Hub data directory: SQLite, cache, admin-token, agent-token,
 # provider-secrets. Never commit — it holds the Hub credentials and the
-# encrypted provider keys. NEXUSSLATE_DATA_DIR can point anywhere, so the
+# encrypted provider keys. NEXUSGATE_DATA_DIR can point anywhere, so the
 # credential filenames are also matched on their own below.
-.nexusslate-dev/
-.nexusslate*/
+.nexusgate-dev/
+.nexusgate*/
 
 # Hub credentials by name, wherever a data directory ends up. These are
 # generated at first start and are the whole authorization boundary; the store
@@ -30,7 +30,7 @@ config.json
 !.env.example
 
 # Real MCP configuration carries agent/admin tokens. The tracked template is
-# skills/nexusslate/mcp/.mcp.json.example; a filled-in copy at the repo root or
+# skills/nexusgate/mcp/.mcp.json.example; a filled-in copy at the repo root or
 # anywhere else must never be committed.
 .mcp.json
 # The Claude Code plugin's declaration (plugins/claude/.mcp.json) is a
@@ -43,7 +43,7 @@ config.json
 *.bak
 *~
 
-# Worker configuration written by `nexusslate worker enroll` (node token).
+# Worker configuration written by `nexusgate worker enroll` (node token).
 worker.json
 
 *.db
@@ -63,18 +63,18 @@ coverage.out
 # macOS directory metadata.
 .DS_Store
 
-# Server logs from a hand-run `nexusslate serve` during testing.
+# Server logs from a hand-run `nexusgate serve` during testing.
 *.log
 *.tar.gz
 
 # Stray build artifacts from local packaging. The MCP server builds from
-# cmd/nexusslate-mcp; a committed binary only bloats history. Anchored with a
-# leading slash like /nexusslate above, and for the same reason: unanchored,
-# "nexusslate-mcp" matches the cmd/nexusslate-mcp *directory* too, which made
+# cmd/nexusgate-mcp; a committed binary only bloats history. Anchored with a
+# leading slash like /nexusgate above, and for the same reason: unanchored,
+# "nexusgate-mcp" matches the cmd/nexusgate-mcp *directory* too, which made
 # every new file added there invisible to git status and git add. Already
 # tracked files kept working, so the masking only ever bit new ones.
-/nexusslate-mcp
-/nexusslate-corpusgen
+/nexusgate-mcp
+/nexusgate-corpusgen
 /dist/
 
 # Playwright CLI session artifacts.
