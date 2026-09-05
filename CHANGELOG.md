@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **The Windows mount wizard contradicted itself in two consecutive steps.**
+  `windowsSteps` mapped a drive letter with `net use Z:`, and `DefaultMountpoint`
+  — which had no `windows` branch at all — then fell through to
+  `/mnt/nexusgate/<share>`, so `addRootStep` told the operator to record a
+  POSIX path on a machine that has none. Windows now resolves to the UNC path
+  in both places, which is also the form a service can use; the drive letter
+  survives as an explicitly optional convenience. `mount.Host` gains `Service`
+  for the distinction underneath: a drive letter mapped by `net use` and a
+  volume connected through Finder both belong to the login session that created
+  them, so neither exists for a Hub running under a service manager. The
+  existing `windows-service-drive-letter` note had said exactly this while the
+  steps went on recommending a letter anyway. `LocalHost` sets `Service` from
+  systemd's `INVOCATION_ID`, the one such signal this package can prove rather
+  than infer, and leaves it false elsewhere — an interactive answer given to a
+  service is redundant, where the reverse withholds a step that would have
+  worked.
+
 - **LAN SMB discovery ran only its first layer.** `smbdiscover.browseMDNS`
   ends with `<-ctx.Done()`, so it returned only once the whole `ScanTimeout`
   had elapsed — and `discoverWith` then handed that same, expired context to

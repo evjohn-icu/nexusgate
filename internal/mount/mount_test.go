@@ -713,3 +713,94 @@ func TestComposeVolumeCarriesBothHalves(t *testing.T) {
 		}
 	}
 }
+
+// The wizard used to contradict itself on Windows: windowsSteps mapped a drive
+// letter while DefaultMountpoint, having no windows branch at all, fell through
+// to /mnt/nexusgate/<share> — so addRootStep told the operator to record a path
+// that cannot exist on the machine the instructions were written for. The two
+// must name the same location.
+func TestWindowsGuidanceRecordsThePathItToldYouToOpen(t *testing.T) {
+	share, ok := ParseShare(`\\nas01\Video`)
+	if !ok {
+		t.Fatal(`\\nas01\Video should parse as a share`)
+	}
+	host := Host{OS: "windows"}
+	mountpoint := DefaultMountpoint(share, host)
+	if mountpoint != `\\nas01\Video` {
+		t.Fatalf("DefaultMountpoint = %q, want the UNC path", mountpoint)
+	}
+	guide := Guidance(share, mountpoint, host)
+	var recorded string
+	for _, step := range guide.Steps {
+		for _, command := range step.Commands {
+			if strings.HasPrefix(command, "nexusgate root add ") {
+				recorded = strings.TrimPrefix(command, "nexusgate root add ")
+			}
+		}
+	}
+	if recorded == "" {
+		t.Fatal("no root add command in the Windows guidance")
+	}
+	if recorded != mountpoint {
+		t.Fatalf("root add records %q but the operator was told to open %q", recorded, mountpoint)
+	}
+	if strings.Contains(recorded, "/mnt/") {
+		t.Fatalf("root add records a POSIX path on Windows: %q", recorded)
+	}
+}
+
+// A drive letter and a Finder volume both belong to the login session that
+// created them, so offering either to a Hub running as a service is advice that
+// cannot work. The interactive cases are asserted alongside as the positive
+// control: without them, a step list that lost net use entirely would pass.
+func TestServiceHostIsNotOfferedASessionScopedMount(t *testing.T) {
+	share, ok := ParseShare(`\\nas01\Video`)
+	if !ok {
+		t.Fatal("share should parse")
+	}
+	hasStep := func(guide Guide, key string) bool {
+		for _, step := range guide.Steps {
+			if step.Key == key {
+				return true
+			}
+		}
+		return false
+	}
+	hasNote := func(guide Guide, key string) bool {
+		for _, note := range guide.Notes {
+			if note.Key == key {
+				return true
+			}
+		}
+		return false
+	}
+
+	interactive := Guidance(share, DefaultMountpoint(share, Host{OS: "windows"}), Host{OS: "windows"})
+	if !hasStep(interactive, "windows-map") {
+		t.Error("an interactive Windows Hub should still be offered the drive-letter convenience")
+	}
+	if !hasStep(interactive, "windows-explorer-unc") {
+		t.Error("the Explorer UNC step must lead, for both interactive and service hosts")
+	}
+
+	service := Guidance(share, DefaultMountpoint(share, Host{OS: "windows", Service: true}), Host{OS: "windows", Service: true})
+	if hasStep(service, "windows-map") {
+		t.Error("a service does not inherit the operator's mapped drives, so net use must not be offered to one")
+	}
+	if !hasStep(service, "windows-explorer-unc") {
+		t.Error("the service host still needs the UNC step")
+	}
+	if !hasNote(service, "windows-service-account") {
+		t.Error("a service host must be told its logon account is what the NAS authenticates")
+	}
+
+	nfsShare := Share{Protocol: ProtocolSMB, Host: "nas01", Name: "Video"}
+	darwinService := Guidance(nfsShare, "/Volumes/Video", Host{OS: "darwin", Service: true})
+	if !hasNote(darwinService, "darwin-session-scope") {
+		t.Error("a macOS service host must be warned that a Finder mount is session-scoped")
+	}
+	darwinUser := Guidance(nfsShare, "/Volumes/Video", Host{OS: "darwin"})
+	if hasNote(darwinUser, "darwin-session-scope") {
+		t.Error("the session-scope warning is noise for a Hub running as the logged-in user")
+	}
+}

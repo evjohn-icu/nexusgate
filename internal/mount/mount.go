@@ -180,6 +180,15 @@ type Host struct {
 	// neither CAP_SYS_ADMIN nor root — see the container-cannot-mount note in
 	// notes() for why that is deliberate rather than a gap to work around.
 	Container bool
+	// Service is true when the Hub runs under a service manager rather than in
+	// the operator's own login session. It changes the answer rather than the
+	// wording: a drive letter mapped by `net use` and a volume mounted by
+	// Finder both belong to the login session that created them, and a service
+	// running as another account simply does not have them. False is the
+	// honest default — it yields the interactive answer, which is merely
+	// redundant for a service, where the reverse would be advice that cannot
+	// work.
+	Service bool
 	// MediaBind is the bind mount footage arrives through when Container is
 	// true, discovered by MediaBind() rather than assumed. It is carried on
 	// Host — a value — rather than looked up inside Guidance so that this
@@ -223,6 +232,14 @@ func LocalHost() Host {
 			host.WSL = strings.Contains(strings.ToLower(string(release)), "microsoft")
 		}
 	}
+	// systemd sets INVOCATION_ID for every unit it starts and for nothing else,
+	// which makes it the one service signal this package can prove rather than
+	// infer. There is no equivalent it can read for a Windows service or a
+	// macOS LaunchDaemon from inside a plain Go process, so those stay false:
+	// an interactive answer given to a service is redundant, while a service
+	// answer given to an interactive operator withholds the drive-letter step
+	// they can actually use.
+	_, host.Service = os.LookupEnv("INVOCATION_ID")
 	host.Container = runningInContainer()
 	if host.Container {
 		// Only meaningful inside a container, and only ever read here: a
@@ -280,7 +297,23 @@ func DefaultMountpoint(share Share, host Host) string {
 	if host.OS == "darwin" {
 		return "/Volumes/" + name
 	}
+	// Windows has no /mnt, and the drive letter the steps used to map belongs
+	// to one login session. Returning the UNC path makes the mount point the
+	// wizard verifies and the path addRootStep records the same string the
+	// operator was told to open — they used to disagree outright, mapping Z:
+	// and then recording /mnt/nexusgate/<share>, a path that cannot exist on
+	// the machine the instructions were written for.
+	if host.OS == "windows" {
+		return windowsUNC(share)
+	}
 	return "/mnt/nexusgate/" + name
+}
+
+// windowsUNC renders the share the way Explorer and a Windows service both
+// accept it. Unlike a mapped drive it names no session state, which is why it
+// is both the default mount point above and the first step windowsSteps gives.
+func windowsUNC(share Share) string {
+	return `\\` + share.Host + `\` + strings.ReplaceAll(share.Name, "/", `\`)
 }
 
 // ContainerPath translates a host-side mount point into the path the same
@@ -378,7 +411,7 @@ func Guidance(share Share, mountpoint string, host Host) Guide {
 	guide := Guide{Summary: fmt.Sprintf("%s is a network share, not a local path. Mount it, then add the mount point.", share)}
 	switch host.OS {
 	case "windows":
-		guide.Steps = windowsSteps(share, mountpoint)
+		guide.Steps = windowsSteps(share, mountpoint, host)
 	case "darwin":
 		guide.Steps = darwinSteps(share, mountpoint)
 	default:
@@ -531,15 +564,36 @@ func darwinSteps(share Share, mountpoint string) []Step {
 	}
 }
 
-func windowsSteps(share Share, mountpoint string) []Step {
-	unc := `\\` + share.Host + `\` + strings.ReplaceAll(share.Name, "/", `\`)
-	return []Step{
+func windowsSteps(share Share, mountpoint string, host Host) []Step {
+	unc := windowsUNC(share)
+	steps := []Step{
 		{
-			Key:      "windows-map",
-			Title:    "Map the share",
-			Commands: []string{fmt.Sprintf(`net use Z: %s /persistent:yes`, unc)},
+			// This is the Explorer path, and it leads because it is the one
+			// that works for both a desktop Hub and a service; a drive letter
+			// is a convenience layered on top of it, not the way in. The UNC
+			// address is a command rather than part of the title because the
+			// title is translated by Key through a lookup that substitutes
+			// nothing — a path interpolated into it survives only in English.
+			// Carrying it here also gives it the copy button, which is what
+			// the operator wants: this string is pasted, not typed.
+			Key:      "windows-explorer-unc",
+			Title:    "Paste this into File Explorer's address bar and sign in, so Windows holds the credentials for this share",
+			Commands: []string{unc},
 		},
 	}
+	if host.Service {
+		// A service does not inherit the operator's mapped drives, and the
+		// existing windows-service-drive-letter note said so while the steps
+		// went on recommending one anyway. Offering no drive letter here is
+		// the point: there is nothing for the operator to try that could work.
+		return steps
+	}
+	steps = append(steps, Step{
+		Key:      "windows-map",
+		Title:    "Optional, and only while the Hub runs as you rather than as a service: map the share to a drive letter",
+		Commands: []string{fmt.Sprintf(`net use Z: %s /persistent:yes`, unc)},
+	})
+	return steps
 }
 
 func notes(share Share, host Host) []Note {
@@ -562,6 +616,23 @@ func notes(share Share, host Host) []Note {
 	if host.OS == "windows" {
 		notes = append(notes,
 			Note{Key: "windows-service-drive-letter", Text: `A drive letter mapped in your own session does not exist for a service running as another account. If the Hub runs as a service, give it the UNC path (\\host\share\folder) instead of the letter.`})
+		if host.Service {
+			// Reaching the share by UNC removes the session-scoped drive
+			// letter, not the authentication: the account the service logs on
+			// as is the one the NAS sees, and LocalSystem or a local account
+			// with no NAS rights fails here while the operator's own Explorer
+			// window opens the same path without complaint.
+			notes = append(notes,
+				Note{Key: "windows-service-account", Text: `The UNC path removes the drive letter's session problem but not the credential one: the service's own logon account is what the NAS authenticates. LocalSystem and a local account without rights on the NAS will fail here even though your Explorer window opens the same path.`})
+		}
+	}
+	if host.OS == "darwin" && host.Service {
+		// Finder's "Connect to Server" is the obvious macOS answer and it is
+		// the wrong one here for the same reason net use is on Windows, which
+		// is worth saying explicitly: the operator can watch the volume appear
+		// in Finder and still have the Hub see nothing.
+		notes = append(notes,
+			Note{Key: "darwin-session-scope", Text: `A share connected through Finder is mounted for your login session, so /Volumes/<share> can be absent for a LaunchDaemon that started before you logged in, and can disappear when you log out. Make the mount from the service's own account — the mount_smbfs step above does that — rather than from Finder.`})
 	}
 	return notes
 }

@@ -85,6 +85,13 @@ agent-token/trusted-read contract as `skills/nexusgate/`; `nexusgate-eval` and
 - `internal/app` — `Service` (use cases, called by both CLI and API) and `Pipeline` (the job
   state machine). Repository interfaces are declared *here*, at the consumer, not in the
   sqlite package: `PipelineRepository` (narrow) and `Repository` (full, embeds it).
+  It also holds **hand-written projections** of other packages' types onto the wire —
+  `MountGuideStep`, `MountGuideNote`, `ComposeVolumeSuggestion` — so `internal/mount`'s types
+  never appear in a JSON response. A field added upstream and not copied into the projection
+  is a dead link that compiles, passes the upstream package's tests, and reaches nothing:
+  `mount.Step.Kind`/`File` were added to stop the browser rendering an `/etc/fstab` entry as a
+  runnable command, and stopped at this boundary with every Go-side test green.
+  `TestMountGuideStepProjectionCarriesKindAndFile` now counts upstream against projected.
 - `internal/api` — `net/http` `ServeMux` with Go 1.22 method+pattern routes; all routes are
   registered in `Handler()` in `server.go`.
 - `internal/providers/*` — one package per upstream adapter; `factory.go` maps config names
@@ -327,6 +334,14 @@ pages, so a branding anchor that goes stale on one page alone still passes. `pag
 `node --check` over the `<script>` block of every page route (skipped when node is absent).
 That last one exists because one misplaced character left `/worker-setup`'s script dead from
 v0.18 until v0.21 while the page kept serving.
+
+**UI copy lives in two files per language, and only one of them ships.** `i18n.go` embeds
+`//go:embed locales/*.json`, which does **not** match `locales/fragments/` — the runtime
+catalog is the top-level `locales/<lang>.json`, and `locales/fragments/<page>.json` is a
+separate, hand-synced authoring copy. Two different tests watch the two files, so editing one
+of them looks half-green: `TestLibraryRootsPageTranslatesEveryGuidanceKey` reads the fragment
+and passes, while `TestEveryPageMarkerAndRuntimeKeyResolves` reads the catalog and fails. A new
+key belongs in both, in all five languages, or the page renders the raw key name at runtime.
 
 ## Conventions
 
