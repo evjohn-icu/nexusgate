@@ -60,6 +60,13 @@ const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset=
 
 <nav class="steps" id="step-nav" aria-label="[[i18n:roots.wizardNavLabel]]"><span class="is-active" data-step="1" aria-current="step">1. [[i18n:roots.step1]]</span><span data-step="2">2. [[i18n:roots.step2]]</span><span data-step="3">3. [[i18n:roots.step3]]</span><span data-step="4">4. [[i18n:roots.step4]]</span></nav>
 
+<!-- The discover panel lives inside step 1 rather than beside it. As a sibling
+     it stayed on screen through steps 2-4, where clicking a share silently
+     reset the wizard to step 1 and discarded the mount point the operator had
+     just filled in; .step{display:none} now retires it with the rest of the
+     step. It is also the answer to "where do I start" that the numbered nav
+     promised and a floating second button contradicted. -->
+<div class="step active" id="step-1" role="group" aria-label="[[i18n:roots.step1]]">
 <div class="panel" id="discover-section">
 <h2>[[i18n:roots.discoverTitle]]</h2>
 <p class="muted">[[i18n:roots.discoverIntro]]</p>
@@ -70,8 +77,8 @@ const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset=
 <div id="discover-results" role="status" aria-live="polite"></div>
 </div>
 
-<div class="step active" id="step-1" role="group" aria-label="[[i18n:roots.step1]]">
 <div class="panel"><h2>[[i18n:roots.step1Title]]</h2>
+<p class="muted">[[i18n:roots.discoverOr]]</p>
 <p class="muted">[[i18n:roots.step1IntroBefore]]<code>//nas/Video</code>[[i18n:roots.step1Sep]]<code>smb://user@host/share</code>[[i18n:roots.step1Sep]]<code>host:/export</code>[[i18n:roots.step1IntroAfter]]</p>
 <div class="field"><label for="root-input">[[i18n:roots.pathOrShareLabel]]</label><input id="root-input" type="text" placeholder="[[i18n:roots.pathPlaceholder]]"></div>
 <div id="step1-status" class="callout" role="status" aria-live="polite"></div>
@@ -214,25 +221,43 @@ async function runDiscover(){
     var data=await json('/api/v1/roots/discover',{method:'POST',headers:authHeaders({'Content-Type':'application/json'})});
     var hosts=(data&&data.hosts)||[];
     if(!hosts.length){
-      wrap.innerHTML='<div class="callout">'+esc(tdT('roots.noHostsFound'))+'</div>';
+      wrap.innerHTML=discoverDiagnostics(data,hosts)||'<div class="callout">'+esc(tdT('roots.noHostsFound'))+'</div>';
       status.textContent='';return;
     }
     var rows=hosts.map(function(h){
       var name=esc(h.name||h.ip);
       var shares=(h.shares||[]);
+      // probe is the discovery layer's own verdict; needs_auth is kept as the
+      // fallback for a payload that predates it. "unusable" is not a softer
+      // "auth": it means the host answered on 445 but is not a usable SMB2/3
+      // target, and telling that operator a password will help blames them for
+      // something a password cannot fix.
+      var probe=h.probe||(shares.length?'ok':(h.needs_auth?'auth':'unusable'));
       var detail='';
       if(shares.length){
         detail='<div class="share-line">'+shares.map(function(s){
-          return '<button type="button" class="discover-share" onclick="useShare(\''+escAttr(h.ip)+'\',\''+escAttr(s)+'\')">'+esc(s)+'</button>';
-        }).join('')+'</div>';
-      }else if(h.needs_auth){
-        detail='<div class="callout">'+esc(tdT('roots.shareNeedsAuth'))+'</div>';
+          return '<button type="button" class="discover-share" data-share-host="'+escAttr(h.ip)+'" data-share-name="'+escAttr(s)+'">'+esc(s)+'</button>';
+        }).join('')+'</div><div class="muted">'+esc(tdT('roots.probe.ok.hint'))+'</div>';
+      }else if(probe==='auth'){
+        detail='<div class="callout callout--attention"><b>'+esc(tdT('roots.probe.auth.title'))+'</b><br>'+esc(tdT('roots.probe.auth.hint'))+'</div>';
+      }else if(probe==='timeout'){
+        detail='<div class="callout"><b>'+esc(tdT('roots.probe.timeout.title'))+'</b><br>'+esc(tdT('roots.probe.timeout.hint'))+'</div>';
       }else{
-        detail='<div class="callout">'+esc(tdT('roots.noReadableShares'))+'</div>';
+        detail='<div class="callout"><b>'+esc(tdT('roots.probe.unusable.title'))+'</b><br>'+esc(tdT('roots.probe.unusable.hint'))+'</div>';
       }
+      // Every state carries the manual entry, not only the ones that failed.
+      // Consumer NAS boxes ship with guest access disabled, so "auth" is the
+      // common answer rather than the edge case, and a card with nothing
+      // clickable on it is where discovery used to dead-end: the next wizard
+      // step needs a share name, which is exactly what enumeration could not
+      // get. The operator can read it off their NAS admin page.
+      detail+='<div class="field"><label for="manual-'+escAttr(h.ip)+'">'+esc(tdT('roots.manualShareLabel'))+'</label>'
+        +'<input id="manual-'+escAttr(h.ip)+'" type="text" class="discover-manual-share" data-share-host="'+escAttr(h.ip)+'" placeholder="'+escAttr(tdT('roots.manualSharePlaceholder'))+'">'
+        +'<button type="button" class="btn btn--primary discover-manual-go" data-share-host="'+escAttr(h.ip)+'">'+esc(tdT('roots.manualShareUse'))+'</button>'
+        +'<div class="muted" data-manual-error="'+escAttr(h.ip)+'"></div></div>';
       return '<div class="panel discover-host"><div class="discover-host-name">'+name+' <span class="muted">'+esc(h.ip)+'</span></div>'+detail+'</div>';
     }).join('');
-    wrap.innerHTML=rows;
+    wrap.innerHTML=rows+discoverDiagnostics(data,hosts);
     status.textContent=tdPlural('roots.hostsFound',hosts.length);
   }catch(e){
     if(tdAuthDenied(e)){status.className='callout callout--attention';status.innerHTML=authNotice(runDiscover)}
@@ -242,7 +267,69 @@ async function runDiscover(){
   }
 }
 
+// discoverDiagnostics explains the result from what the scan actually did,
+// rather than from the fact that the list came back short. "No device exposes
+// port 445" is one of at least four different situations, and three of them
+// are not the operator's LAN being empty: the Hub is in a bridge-networked
+// container and swept Docker's own subnet, there was no scannable network at
+// all, or a subnet was too wide to sweep and was skipped. Reporting the first
+// sentence for all four sends people looking for a fault that is not there.
+function discoverDiagnostics(data,hosts){
+  data=data||{};
+  var nets=(data.scanned_networks||[]).join(', ');
+  var skipped=(data.skipped_networks||[]).join(', ');
+  var lines=[];
+  var note=function(cls,text){lines.push('<div class="callout '+cls+'">'+esc(text)+'</div>')};
+  if(!hosts.length&&data.hub_containerised){
+    note('callout--attention',tdT('roots.diag.containerBridge',{nets:nets}));
+  }else if(!hosts.length&&!data.mdns_available&&!nets){
+    note('callout--attention',tdT('roots.diag.noNetworks'));
+  }else if(!hosts.length&&nets){
+    note('',tdT('roots.diag.noHosts',{nets:nets}));
+  }
+  if(skipped){note('callout--attention',tdT('roots.diag.skipped',{nets:skipped}))}
+  if(data.truncated){note('callout--attention',tdT('roots.diag.truncated'))}
+  // A host that answered 445 but is not a usable SMB2/3 target is not a host
+  // the operator can do anything with from here, so a list of them reads as
+  // success unless this says otherwise.
+  if(hosts.length&&!hosts.some(function(h){return (h.probe||(h.shares&&h.shares.length?'ok':''))==='ok'})){
+    note('callout--attention',tdT('roots.diag.allUnusable',{count:hosts.length}));
+  }
+  return lines.join('');
+}
+
 function escAttr(v){return String(v??'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','>':'&gt;','<':'&lt;','"':'&quot;',"'":'&#39;'}[c]})}
+
+// Share names come from whatever SMB server answered on the LAN, so they reach
+// the DOM as data-* attributes read back through this one delegated listener
+// and never as inline handler source. An onclick assembled by concatenation is
+// parsed twice: the HTML parser decodes character references in the attribute
+// value before the JS parser sees it, so escaping a quote as &#39; there
+// protects nothing — it arrives at the JS parser as a quote and ends the
+// string literal. escAttr is an HTML-attribute encoder and is only sound in
+// that position; there is no JS-string encoder on this page because no
+// external data belongs in JS source.
+document.getElementById('discover-results').addEventListener('click',function(event){
+  var share=event.target.closest('.discover-share');
+  if(share){useShare(share.dataset.shareHost,share.dataset.shareName);return}
+  var manual=event.target.closest('.discover-manual-go');
+  if(manual){useManualShare(manual.dataset.shareHost)}
+});
+
+// useManualShare is the path most operators actually take, for the reason the
+// card rendering explains: the anonymous probe usually returns a host with no
+// share list, and the name has to come from the person reading their NAS.
+function useManualShare(host){
+  var input=document.querySelector('.discover-manual-share[data-share-host="'+host+'"]');
+  var error=document.querySelector('[data-manual-error="'+host+'"]');
+  var value=input?input.value.trim():'';
+  if(!value){
+    if(error){error.className='callout callout--contradicted';error.textContent=tdT('roots.shareNameRequired')}
+    return;
+  }
+  if(error){error.className='muted';error.textContent=''}
+  useShare(host,value);
+}
 
 // useShare fills the path input with the SMB share address and starts the
 // mount inspection (the same flow as typing //host/share manually).
@@ -331,12 +418,12 @@ function renderComposeVolume(inspection){
   if(volume.warning){
     html+='<div class="callout callout--contradicted"><b>'+esc(tdT('roots.warningLabel'))+'</b>'+esc(guideText(volume.warning_key,volume.warning))+'</div>';
   }
-  html+='<div class="guide-step"><div class="guide-step-title">'+esc(tdT('roots.composeStep1'))+'</div><div class="cmd"><code id="compose-yaml-code">'+esc(volume.yaml)+'</code><button type="button" class="btn" onclick="copyCmd(\'compose-yaml-code\')">'+esc(tdT('common.copy'))+'</button></div></div>';
+  html+='<div class="guide-step"><div class="guide-step-title">'+esc(tdT('roots.composeStep1'))+'</div><div class="cmd"><code id="compose-yaml-code">'+esc(volume.yaml)+'</code><button type="button" class="btn" onclick="copyCmd(\'compose-yaml-code\',this)">'+esc(tdT('common.copy'))+'</button></div></div>';
   if(volume.service_yaml){
-    html+='<div class="guide-step"><div class="guide-step-title">'+esc(tdT('roots.composeStep2'))+'</div><div class="cmd"><code id="compose-service-code">'+esc(volume.service_yaml)+'</code><button type="button" class="btn" onclick="copyCmd(\'compose-service-code\')">'+esc(tdT('common.copy'))+'</button></div></div>';
+    html+='<div class="guide-step"><div class="guide-step-title">'+esc(tdT('roots.composeStep2'))+'</div><div class="cmd"><code id="compose-service-code">'+esc(volume.service_yaml)+'</code><button type="button" class="btn" onclick="copyCmd(\'compose-service-code\',this)">'+esc(tdT('common.copy'))+'</button></div></div>';
   }
   if(volume.mount_path){
-    html+='<div class="guide-step"><div class="guide-step-title">'+esc(tdT('roots.composeStep3'))+'</div><div class="cmd"><code id="compose-root-code">nexusgate root add '+esc(volume.mount_path)+'</code><button type="button" class="btn" onclick="copyCmd(\'compose-root-code\')">'+esc(tdT('common.copy'))+'</button></div>';
+    html+='<div class="guide-step"><div class="guide-step-title">'+esc(tdT('roots.composeStep3'))+'</div><div class="cmd"><code id="compose-root-code">nexusgate root add '+esc(volume.mount_path)+'</code><button type="button" class="btn" onclick="copyCmd(\'compose-root-code\',this)">'+esc(tdT('common.copy'))+'</button></div>';
     html+='<p class="muted">'+esc(tdT('roots.composeVerifyNote',{path:volume.mount_path}))+'</p></div>';
   }
   container.innerHTML=html;
@@ -348,9 +435,16 @@ function renderGuideBody(guidance){
   var html='';
   guidance.steps.forEach(function(step,i){
     html+='<div class="guide-step"><div class="guide-step-title">'+(i+1)+'. '+esc(guideText(step.key,step.title))+'</div>';
+    // A "file-line" step's commands are a line to append to step.file, not a
+    // line to run. Rendered identically to every other block — code plus a
+    // copy button — an /etc/fstab entry reads as a command, and pasting it
+    // into a terminal is what an operator following the wizard actually does.
+    if(step.kind==='file-line'){
+      html+='<div class="callout callout--attention">'+esc(tdT('roots.fileLineNote',{file:step.file||''}))+'</div>';
+    }
     (step.commands||[]).forEach(function(cmd,j){
       var id='cmd-'+i+'-'+j;
-      html+='<div class="cmd"><code id="'+id+'">'+esc(cmd)+'</code><button type="button" class="btn" onclick="copyCmd(\''+id+'\')">'+esc(tdT('common.copy'))+'</button></div>';
+      html+='<div class="cmd"><code id="'+id+'">'+esc(cmd)+'</code><button type="button" class="btn" onclick="copyCmd(\''+id+'\',this)">'+esc(tdT('common.copy'))+'</button></div>';
     });
     html+='</div>';
   });
@@ -456,15 +550,38 @@ async function startScan(){
   }
 }
 
-function copyCmd(id){
+// copyCmd reports what happened. The previous version swallowed every failure
+// in a bare catch and gave no feedback on success either, so an operator who
+// clicked and got nothing could not tell a copied command from a dead button —
+// and execCommand is deprecated, so "nothing happened" is a real outcome.
+function copyCmd(id,button){
   var el=document.getElementById(id);
   if(!el)return;
+  var done=function(ok){
+    if(!button)return;
+    var original=button.dataset.copyLabel||button.textContent;
+    button.dataset.copyLabel=original;
+    button.textContent=tdT(ok?'roots.copied':'roots.copyFailed');
+    setTimeout(function(){button.textContent=original},1500);
+  };
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(el.textContent).then(function(){done(true)},function(){done(legacyCopy(el))});
+    return;
+  }
+  done(legacyCopy(el));
+}
+
+// legacyCopy is the fallback for a browser without the async clipboard API, or
+// for a page served over plain HTTP where it is unavailable.
+function legacyCopy(el){
   var range=document.createRange();
   range.selectNode(el);
   var selection=window.getSelection();
   selection.removeAllRanges();
   selection.addRange(range);
-  try{document.execCommand('copy')}catch(e){}
+  var ok=false;
+  try{ok=document.execCommand('copy')}catch(e){ok=false}
   selection.removeAllRanges();
+  return ok;
 }
 </script></body></html>`

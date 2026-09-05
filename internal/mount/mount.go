@@ -62,8 +62,13 @@ func ParseShare(input string) (Share, bool) {
 		return Share{}, false
 	}
 	// Windows writes its own UNC paths with backslashes, and that is how a
-	// share is copied out of Explorer.
-	value = strings.ReplaceAll(value, `\`, "/")
+	// share is copied out of Explorer. Keep backslashes in URI userinfo: they
+	// are the domain separator in DOMAIN\\user and are valid username data.
+	if !strings.HasPrefix(strings.ToLower(value), "smb://") &&
+		!strings.HasPrefix(strings.ToLower(value), "cifs://") &&
+		!strings.HasPrefix(strings.ToLower(value), "nfs://") {
+		value = strings.ReplaceAll(value, `\`, "/")
+	}
 
 	switch {
 	case strings.HasPrefix(strings.ToLower(value), "smb://"):
@@ -84,7 +89,7 @@ func ParseShare(input string) (Share, bool) {
 
 func parseHostAndName(rest string, protocol Protocol) (Share, bool) {
 	user := ""
-	if at := strings.Index(rest, "@"); at >= 0 {
+	if at := strings.LastIndex(rest, "@"); at >= 0 {
 		user, rest = rest[:at], rest[at+1:]
 		// A pasted URL sometimes carries user:password@host, the form every
 		// browser address bar accepts. The password half is discarded here,
@@ -100,6 +105,15 @@ func parseHostAndName(rest string, protocol Protocol) (Share, bool) {
 	host, name, found := strings.Cut(strings.Trim(rest, "/"), "/")
 	if !found || !validHost(host) || name == "" {
 		return Share{}, false
+	}
+	// Share.User is copied into a shell here-document, a shell command line,
+	// and YAML. Those three syntaxes have different escaping rules, so the
+	// boundary is safest at the parser rather than as three separate output
+	// escaping schemes. Keep the share classification when userinfo is dirty:
+	// the host and share name still provide useful, correct network-share
+	// guidance, and the existing placeholder path can ask for the username.
+	if !validUser(user) {
+		user = ""
 	}
 	return Share{Protocol: protocol, Host: host, Name: strings.Trim(name, "/"), User: user}, true
 }
@@ -123,6 +137,25 @@ func validHost(host string) bool {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
 		case r == '.' || r == '-' || r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validUser is intentionally narrower than the username grammar any one SMB
+// implementation may accept. Internal spaces are not included: the available
+// SMB documentation does not establish a portable username rule for them, and
+// rejecting them avoids relying on three consumers' different escaping rules.
+func validUser(user string) bool {
+	if user == "" {
+		return false
+	}
+	for _, r := range user {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '-' || r == '_' || r == '\\' || r == '@':
 		default:
 			return false
 		}

@@ -641,9 +641,13 @@ func TestDiscoverRootsAuthorizedReturnsHostsArray(t *testing.T) {
 	service := newLibraryRootsTestService(t, "discover-ok.db", "required")
 	// Inject a fast fake via the exported setter so the test never triggers a
 	// real LAN scan.
-	service.SetSMBDiscoverer(func(context.Context) ([]smbdiscover.Host, error) {
-		return []smbdiscover.Host{
-			{Name: "nas.local", IP: "192.168.1.50", Shares: []string{"video", "photos"}, Source: "mdns"},
+	service.SetSMBDiscoverer(func(context.Context) (smbdiscover.Result, error) {
+		return smbdiscover.Result{
+			Hosts:           []smbdiscover.Host{{Name: "nas.local", IP: "192.168.1.50", Shares: []string{"video", "photos"}, Source: "mdns"}},
+			ScannedNetworks: []string{"192.168.1.0/24"},
+			SkippedNetworks: []string{"10.0.0.0/8"},
+			MDNSAvailable:   true,
+			Truncated:       true,
 		}, nil
 	})
 	handler := NewServer("", service).Handler()
@@ -655,7 +659,11 @@ func TestDiscoverRootsAuthorizedReturnsHostsArray(t *testing.T) {
 		t.Fatalf("status=%d body=%s, want 200", response.Code, response.Body.String())
 	}
 	var payload struct {
-		Hosts []smbdiscover.Host `json:"hosts"`
+		Hosts           []smbdiscover.Host `json:"hosts"`
+		ScannedNetworks []string           `json:"scanned_networks"`
+		SkippedNetworks []string           `json:"skipped_networks"`
+		MDNSAvailable   bool               `json:"mdns_available"`
+		Truncated       bool               `json:"truncated"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -665,6 +673,48 @@ func TestDiscoverRootsAuthorizedReturnsHostsArray(t *testing.T) {
 	}
 	if len(payload.Hosts) != 1 || payload.Hosts[0].Name != "nas.local" || len(payload.Hosts[0].Shares) != 2 {
 		t.Fatalf("hosts = %+v, want the injected nas.local with 2 shares", payload.Hosts)
+	}
+	if len(payload.ScannedNetworks) != 1 || len(payload.SkippedNetworks) != 1 || !payload.MDNSAvailable || !payload.Truncated {
+		t.Fatalf("diagnostics = %+v, want flattened discovery diagnostics", payload)
+	}
+}
+
+func TestDiscoverRootsReturnsConflictWhileScanning(t *testing.T) {
+	service := newLibraryRootsTestService(t, "discover-conflict.db", "required")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	service.SetSMBDiscoverer(func(context.Context) (smbdiscover.Result, error) {
+		close(started)
+		<-release
+		return smbdiscover.Result{}, nil
+	})
+	handler := NewServer("", service).Handler()
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, hubAdminRequest(service, http.MethodPost, "/api/v1/roots/discover", nil))
+		if response.Code != http.StatusOK {
+			t.Errorf("first request status=%d body=%s, want 200", response.Code, response.Body.String())
+		}
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first discovery did not start")
+	}
+
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, hubAdminRequest(service, http.MethodPost, "/api/v1/roots/discover", nil))
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second request status=%d body=%s, want 409", second.Code, second.Body.String())
+	}
+
+	close(release)
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("first discovery did not finish after release")
 	}
 }
 
@@ -748,5 +798,157 @@ func TestScanRootReportsSkippedFilesAndSupportedExtensions(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for service.PipelineRunning() && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Share names come from whatever SMB server answered on the LAN, so they must
+// never reach the page as inline handler source. An onclick built by string
+// concatenation is parsed twice — the HTML parser decodes character references
+// in the attribute value before the JS parser sees it — so escaping a quote as
+// &#39; there is not protection: it arrives at the JS parser as a quote and
+// ends the string literal. This guard exists because that is exactly what the
+// discover panel used to do.
+func TestLibraryRootsPageDiscoverCarriesNoInlineShareHandlers(t *testing.T) {
+	body := libraryRootsHTML
+	// Positive control: the region this test is about still exists, so an
+	// absent-substring assertion below cannot pass by searching a page that no
+	// longer renders share buttons at all.
+	if !strings.Contains(body, "discover-share") {
+		t.Fatal("discover-share is gone from the page — this guard is searching the wrong region")
+	}
+	for _, forbidden := range []string{`onclick="useShare(`, `onclick="useManualShare(`} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("page still builds an inline handler from discovery data: %s", forbidden)
+		}
+	}
+	for _, required := range []string{"data-share-host", "data-share-name", "addEventListener('click'"} {
+		if !strings.Contains(body, required) {
+			t.Errorf("page is missing %q — discovery data must travel as data-* read back by a delegated listener", required)
+		}
+	}
+}
+
+// The discover panel is a child of step 1, not a sibling of the step
+// container. As a sibling it stayed visible through steps 2-4, where a click
+// on a share silently reset the wizard to step 1 and discarded the mount point
+// the operator had just entered. .step{display:none} only retires it while it
+// is nested, so a future edit that lifts it back out is a silent regression.
+func TestLibraryRootsPageDiscoverSectionLivesInsideStepOne(t *testing.T) {
+	body := libraryRootsHTML
+	stepOne := strings.Index(body, `id="step-1"`)
+	discover := strings.Index(body, `id="discover-section"`)
+	stepTwo := strings.Index(body, `id="step-2"`)
+	if stepOne < 0 || discover < 0 || stepTwo < 0 {
+		t.Fatalf("anchors missing: step-1=%d discover-section=%d step-2=%d", stepOne, discover, stepTwo)
+	}
+	if !(stepOne < discover && discover < stepTwo) {
+		t.Fatalf("discover-section at %d must sit between step-1 (%d) and step-2 (%d)", discover, stepOne, stepTwo)
+	}
+}
+
+// Consumer NAS boxes ship with guest access disabled, so "auth" is the answer
+// the anonymous probe usually gets, not the edge case. Every probe state
+// therefore has to leave the operator something to act on: a card with no
+// share list and no input is a dead end, because the next wizard step needs a
+// share name and enumeration is what failed to produce one. "unusable" must
+// also stay distinct from "auth" — promising that a password helps against an
+// SMB1-only box blames the operator for something a password cannot fix.
+func TestLibraryRootsPageRendersEveryProbeState(t *testing.T) {
+	body := libraryRootsHTML
+	for _, key := range []string{
+		"roots.probe.ok.hint",
+		"roots.probe.auth.title", "roots.probe.auth.hint",
+		"roots.probe.unusable.title", "roots.probe.unusable.hint",
+		"roots.probe.timeout.title", "roots.probe.timeout.hint",
+		"roots.manualShareLabel", "roots.manualShareUse", "roots.shareNameRequired",
+	} {
+		if !strings.Contains(body, key) {
+			t.Errorf("page never renders %s", key)
+		}
+	}
+	// The manual share entry is appended for every state rather than inside
+	// one of the probe branches; if it moves into a branch this stops holding.
+	discoverFn := body[strings.Index(body, "async function runDiscover()"):]
+	discoverFn = discoverFn[:strings.Index(discoverFn, "\nfunction escAttr")]
+	branch := strings.Index(discoverFn, "probe==='auth'")
+	manual := strings.Index(discoverFn, "discover-manual-go")
+	if branch < 0 || manual < 0 {
+		t.Fatalf("runDiscover no longer contains the probe branch (%d) or the manual entry (%d)", branch, manual)
+	}
+	if manual < branch {
+		t.Fatal("the manual share entry must be appended after the probe branches, so every state carries it")
+	}
+}
+
+// A file-line step's commands are a line to append to a file, not a line to
+// run. Rendered identically to every other command block, an /etc/fstab entry
+// reads as a command, and pasting it into a terminal is what an operator
+// following the wizard actually does.
+func TestLibraryRootsPageSeparatesFileLinesFromCommands(t *testing.T) {
+	body := libraryRootsHTML
+	if !strings.Contains(body, "renderGuideBody") {
+		t.Fatal("renderGuideBody is gone — this guard is searching the wrong region")
+	}
+	if !strings.Contains(body, "step.kind==='file-line'") {
+		t.Error("renderGuideBody does not branch on step.kind, so an fstab line still renders as a runnable command")
+	}
+	if !strings.Contains(body, "roots.fileLineNote") {
+		t.Error("the file-line note is never rendered")
+	}
+}
+
+// An empty host list has at least four different causes and only one of them
+// is "your LAN has no SMB server". Reporting that one sentence for all four
+// sends operators looking for a fault that is not there — most importantly
+// when the Hub is a bridge-networked container that swept Docker's own subnet.
+func TestLibraryRootsPageDiagnosesEmptyDiscoveryResults(t *testing.T) {
+	body := libraryRootsHTML
+	if !strings.Contains(body, "function discoverDiagnostics") {
+		t.Fatal("discoverDiagnostics is missing")
+	}
+	for _, signal := range []string{
+		"hub_containerised", "mdns_available", "scanned_networks", "skipped_networks", "truncated",
+	} {
+		if !strings.Contains(body, signal) {
+			t.Errorf("discovery diagnostics ignore the %s signal the API now returns", signal)
+		}
+	}
+	for _, key := range []string{
+		"roots.diag.containerBridge", "roots.diag.noNetworks", "roots.diag.noHosts",
+		"roots.diag.skipped", "roots.diag.truncated", "roots.diag.allUnusable",
+	} {
+		if !strings.Contains(body, key) {
+			t.Errorf("page never renders %s", key)
+		}
+	}
+}
+
+// The copy button used to swallow every failure in a bare catch and say
+// nothing on success either, so a dead button and a copied command looked
+// identical — and execCommand is deprecated, which makes "nothing happened" a
+// real outcome rather than a hypothetical one.
+func TestLibraryRootsPageCopyButtonReportsOutcome(t *testing.T) {
+	body := libraryRootsHTML
+	if !strings.Contains(body, "navigator.clipboard") {
+		t.Error("copyCmd never tries the non-deprecated clipboard API")
+	}
+	for _, key := range []string{"roots.copied", "roots.copyFailed"} {
+		if !strings.Contains(body, key) {
+			t.Errorf("copyCmd never reports %s", key)
+		}
+	}
+	// Scoped to the copy helpers on purpose: addRoot's bare catch around a
+	// non-JSON error body is deliberate and falls back to statusText, so a
+	// page-wide search would fail on code that is already correct.
+	start := strings.Index(body, "function legacyCopy(")
+	if start < 0 {
+		t.Fatal("legacyCopy is missing — this guard is searching the wrong region")
+	}
+	legacy := body[start:]
+	if end := strings.Index(legacy, "\nfunction "); end > 0 {
+		legacy = legacy[:end]
+	}
+	if strings.Contains(legacy, "catch(e){}") {
+		t.Error("a bare catch is back in the copy path: a swallowed failure is indistinguishable from success")
 	}
 }

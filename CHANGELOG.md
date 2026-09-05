@@ -2,6 +2,76 @@
 
 ## Unreleased
 
+- **LAN SMB discovery ran only its first layer.** `smbdiscover.browseMDNS`
+  ends with `<-ctx.Done()`, so it returned only once the whole `ScanTimeout`
+  had elapsed — and `discoverWith` then handed that same, expired context to
+  the port scan and the guest share enumeration, both of which open with
+  `if ctx.Err() != nil { break }`. Two of the three layers therefore never
+  dialled anything in production: `Shares` was always empty, `NeedsAuth` was
+  never set, and the entire port-scan layer was unreachable code. The package's
+  own tests were green throughout because all three layers are injected as
+  fakes that return instantly, so nothing ever blocked on a context. Each layer
+  now gets its own budget carved from `ScanTimeout` (mDNS a fifth, the port
+  scan 8/15, enumeration the remainder), and `runCtx` is always created rather
+  than deferring to a caller's later deadline. The regression test fakes an
+  mDNS layer that really does wait for its context, which is the only shape
+  that could have caught this.
+
+- **A share name from the LAN could run script in the Hub admin's browser.**
+  The discover panel built `onclick="useShare('…','…')"` by concatenation and
+  escaped the arguments with an HTML-attribute encoder. That is the wrong
+  encoder for the position: the HTML parser decodes character references in an
+  attribute value before the JS parser ever sees it, so `&#39;` arrived as a
+  quote and closed the string literal. Share names come from whatever SMB
+  server answered on the network and were only trimmed of whitespace, and the
+  Hub sends no `Content-Security-Policy`, so an inline handler executes.
+  Discovery data now reaches the DOM as `data-*` attributes read back by one
+  delegated listener; no external value is placed in handler source. The bug
+  was unreachable in practice only because of the layer failure above — fixing
+  that alone would have armed it.
+
+- **`Share.User` was copied unescaped into a shell here-document, a shell
+  command line and YAML.** `ParseShare` validated `Host` against a strict
+  character allowlist and validated the username not at all, so a username
+  containing a line equal to the credentials here-doc's delimiter ended the
+  document early and turned everything after it into commands the wizard was
+  telling the operator to paste as root. The earlier `printf`-based form had
+  the same hole through a single quote. Three output syntaxes with three
+  escaping rules is the wrong place to fix this, so the boundary is now at the
+  parser: `validUser` mirrors `validHost`, and a username that fails it is
+  dropped while the host and share name are kept, which leaves the existing
+  `YOUR_NAS_USERNAME` placeholder to ask for it.
+
+- **The mount wizard never said which machine to run its commands on.** Only
+  the containerised branch carried that instruction; on bare metal the page
+  showed `sudo mount -t cifs …` to someone reading it in a browser on a
+  different computer. Every branch now leads with the location. Three further
+  gaps in the same guidance: the `/etc/fstab` step's payload is a line to
+  append to a file, but `mount.Step` had no way to say so and the browser
+  rendered it as a runnable command beside a copy button; neither the SMB nor
+  the NFS steps installed `cifs-utils`/`nfs-common`, so the first `mount` on a
+  stock Debian fails with `unknown filesystem type`; and the credentials
+  command placed `YOUR_NAS_PASSWORD` in `printf`'s argument list while the
+  file content it produced read `password=%s`, pointing the reader at the
+  wrong token. `Step.Kind`/`Step.File` now carry the first distinction through
+  `MountGuideStep` to the page, and the credentials step is a quoted here-doc
+  with the placeholder in the position it describes.
+
+- **Discovery no longer reports a host it cannot read as one that wants a
+  password.** Any non-timeout error from the guest session used to set
+  `NeedsAuth`, so an SMB1-only NAS, a non-SMB service on 445 and a reset
+  mid-negotiation were all reported as "credentials required" — advice a
+  password cannot satisfy. `Host.Probe` now distinguishes `ok`, `auth`,
+  `unusable` and `timeout`. Because consumer NAS boxes ship with guest access
+  disabled, `auth` is the common answer rather than the exception, and every
+  card now carries a share-name entry: the wizard's next step needs a share
+  name, which is exactly what enumeration failed to produce, so a card with
+  nothing on it was where discovery dead-ended. An empty result is likewise
+  explained from what the scan did — a bridge-networked container sweeping
+  Docker's own subnet is not the operator's LAN being empty — and
+  `POST /api/v1/roots/discover` is now single-flight, answering 409 rather
+  than letting one wizard click be multiplied into concurrent LAN sweeps.
+
 - **The public asset detail no longer hands out absolute disk paths** (audit
   F3-03). `GET /api/v1/assets/{id}` returned `thumbnail_path` and
   `proxy_path` verbatim — absolute locations under the Hub's data directory,

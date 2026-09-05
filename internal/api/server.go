@@ -1211,15 +1211,39 @@ func (s *Server) scanRoot(w http.ResponseWriter, r *http.Request) {
 // operation, so it is Hub-admin gated like every other root-mutating route;
 // an anonymous caller must not be able to trigger a LAN-wide scan.
 func (s *Server) discoverRoots(w http.ResponseWriter, r *http.Request) {
-	hosts, err := s.service.DiscoverSMBHosts(r.Context())
+	result, err := s.service.DiscoverSMB(r.Context())
 	if err != nil {
-		writeError(w, err)
+		if errors.Is(err, app.ErrDiscoverInProgress) {
+			// Keep this mapping in the shared error envelope path so this
+			// conflict follows the same response contract as other conflicts.
+			writeError(w, fmt.Errorf("%w: %w", err, domain.ErrJobNotAssignable))
+		} else {
+			writeError(w, err)
+		}
 		return
 	}
-	if hosts == nil {
-		hosts = []smbdiscover.Host{}
+	if result.Hosts == nil {
+		result.Hosts = []smbdiscover.Host{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"hosts": hosts})
+	writeJSON(w, http.StatusOK, struct {
+		Hosts           []smbdiscover.Host `json:"hosts"`
+		ScannedNetworks []string           `json:"scanned_networks,omitempty"`
+		SkippedNetworks []string           `json:"skipped_networks,omitempty"`
+		MDNSAvailable   bool               `json:"mdns_available"`
+		Truncated       bool               `json:"truncated"`
+		// HubContainerised lets the browser separate "nothing on your LAN
+		// answered" from "this Hub is in a bridge-networked container and swept
+		// Docker's own subnet". Both produce an empty host list; only one of
+		// them is the operator's network's fault.
+		HubContainerised bool `json:"hub_containerised"`
+	}{
+		Hosts:            result.Hosts,
+		ScannedNetworks:  result.ScannedNetworks,
+		SkippedNetworks:  result.SkippedNetworks,
+		MDNSAvailable:    result.MDNSAvailable,
+		Truncated:        result.Truncated,
+		HubContainerised: s.service.HubContainerised(),
+	})
 }
 
 func pipelineTriggerStatus(started bool) string {

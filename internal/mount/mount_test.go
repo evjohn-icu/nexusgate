@@ -53,6 +53,122 @@ func TestParseShareDropsPasswordFromUserinfo(t *testing.T) {
 	}
 }
 
+func TestParseShareRejectsUserThatCouldBreakOutOfGeneratedSyntax(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"newline", "smb://evil\n@nas/Video"},
+		{"here-doc delimiter collision", "smb://evil\nNEXUSGATE_CREDS\nid > /tmp/pwned\n@nas/Video"},
+		{"single quote", `smb://evil'user@nas/Video`},
+		{"double quote", "smb://evil\"user@nas/Video"},
+		{"backtick", "smb://evil`user@nas/Video"},
+		{"command substitution", `smb://evil$(id)@nas/Video`},
+		{"comma", `smb://evil,user@nas/Video`},
+		{"semicolon", `smb://evil;user@nas/Video`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			share, ok := ParseShare(tc.input)
+			if !ok {
+				t.Fatalf("ParseShare(%q) rejected a network share with dirty userinfo", tc.input)
+			}
+			if share.Host != "nas" || share.Name != "Video" {
+				t.Fatalf("ParseShare(%q) = %+v, want host nas and share Video preserved", tc.input, share)
+			}
+			if share.User != "" {
+				t.Fatalf("ParseShare(%q).User = %q, want dirty userinfo discarded", tc.input, share.User)
+			}
+		})
+	}
+}
+
+func TestParseShareAcceptsSafeSMBUsernames(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		user  string
+	}{
+		{`smb://DOMAIN\alice@nas/Video`, `DOMAIN\alice`},
+		{`smb://alice@nas/Video`, "alice"},
+		{`smb://alice.smith@nas/Video`, "alice.smith"},
+		{`smb://alice-01@nas/Video`, "alice-01"},
+		{`smb://alice@domain@nas/Video`, "alice@domain"},
+	} {
+		share, ok := ParseShare(tc.input)
+		if !ok {
+			t.Fatalf("ParseShare(%q) rejected a safe SMB username", tc.input)
+		}
+		if share.User != tc.user {
+			t.Errorf("ParseShare(%q).User = %q, want %q", tc.input, share.User, tc.user)
+		}
+	}
+}
+
+func TestGuidanceGeneratedCommandsSurviveHostileShareInput(t *testing.T) {
+	const input = "smb://evil\nNEXUSGATE_CREDS\nid > /tmp/pwned\n@nas/Video"
+	share, ok := ParseShare(input)
+	if !ok {
+		t.Fatal("hostile userinfo must not make the network share unrecognisable")
+	}
+
+	checkCommands := func(t *testing.T, guide Guide) {
+		t.Helper()
+		for _, step := range guide.Steps {
+			for _, command := range step.Commands {
+				lines := strings.Split(command, "\n")
+				delimiterLines := 0
+				for i, line := range lines {
+					if line == "NEXUSGATE_CREDS" {
+						delimiterLines++
+						if i != len(lines)-1 {
+							t.Errorf("step %q has a here-doc delimiter before the command's final line: %q", step.Key, command)
+						}
+					}
+				}
+				if delimiterLines > 0 &&
+					(!strings.Contains(command, "<<'NEXUSGATE_CREDS'") || delimiterLines != 1) {
+					t.Errorf("step %q has injected here-doc delimiter lines: %q", step.Key, command)
+				}
+				for _, payload := range []string{"evil", "id > /tmp/pwned", "$(id)"} {
+					if strings.Contains(command, payload) {
+						t.Errorf("step %q contains hostile userinfo %q: %q", step.Key, payload, command)
+					}
+				}
+			}
+		}
+	}
+
+	linux := Guidance(share, "/mnt/nexusgate/Video", Host{OS: "linux", UID: 1000, GID: 1000})
+	checkCommands(t, linux)
+
+	definition, ok := ComposeVolume(share, "nas-video")
+	if !ok {
+		t.Fatal("hostile userinfo must not prevent compose guidance")
+	}
+	for _, payload := range []string{"evil", "id > /tmp/pwned", "$(id)"} {
+		if strings.Contains(definition.YAML, payload) {
+			t.Errorf("compose YAML contains hostile userinfo %q: %q", payload, definition.YAML)
+		}
+	}
+
+	darwin := Guidance(share, "/Volumes/Video", Host{OS: "darwin"})
+	checkCommands(t, darwin)
+	foundMountCommand := false
+	for _, step := range darwin.Steps {
+		for _, command := range step.Commands {
+			if strings.Contains(command, "mount_smbfs") {
+				foundMountCommand = true
+				if strings.Contains(command, "\n") {
+					t.Errorf("mount_smbfs command contains an injected newline: %q", command)
+				}
+			}
+		}
+	}
+	if !foundMountCommand {
+		t.Fatal("darwin guidance did not produce a mount_smbfs command")
+	}
+}
+
 // Mistaking a local path for a share is the expensive error: the advice that
 // follows would be irrelevant and it would bury the real problem, which is
 // usually a typo in a directory name.

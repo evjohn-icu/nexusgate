@@ -318,6 +318,16 @@ type Service struct {
 	hostOverride *mount.Host
 }
 
+// HubContainerised reports whether this Hub is itself running inside a
+// container. Discovery needs it to explain an empty result truthfully: a
+// bridge-networked container has no route to the LAN's multicast and its own
+// unicast interface is Docker's 172.16/12 bridge, so the scan sweeps a network
+// that is not the operator's. Saying "no device exposes port 445" there blames
+// the LAN for a deployment fact the Hub already knows.
+func (s *Service) HubContainerised() bool {
+	return s.mountHost().Container
+}
+
 // mountHost is the mount.Host InspectRootPath generates advice for.
 func (s *Service) mountHost() mount.Host {
 	if s.hostOverride != nil {
@@ -824,6 +834,12 @@ type MountGuideStep struct {
 	Key      string   `json:"key"`
 	Title    string   `json:"title"`
 	Commands []string `json:"commands"`
+	// Kind and File carry mount.Step's distinction between a line to run and a
+	// line to append to a file. Dropping them here is not cosmetic: the browser
+	// renders every Commands entry identically, so an /etc/fstab entry arrives
+	// looking exactly like a runnable command and gets pasted into a terminal.
+	Kind string `json:"kind,omitempty"`
+	File string `json:"file,omitempty"`
 }
 
 // MountGuideNote is the same Key/English-fallback pairing as MountGuideStep,
@@ -898,7 +914,7 @@ func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string) 
 		guide := mount.Guidance(share, target, host)
 		steps := make([]MountGuideStep, 0, len(guide.Steps))
 		for _, step := range guide.Steps {
-			steps = append(steps, MountGuideStep{Key: step.Key, Title: step.Title, Commands: step.Commands})
+			steps = append(steps, MountGuideStep{Key: step.Key, Title: step.Title, Commands: step.Commands, Kind: step.Kind, File: step.File})
 		}
 		notes := make([]MountGuideNote, 0, len(guide.Notes))
 		for _, note := range guide.Notes {
