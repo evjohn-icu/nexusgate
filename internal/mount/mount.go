@@ -21,6 +21,7 @@ import (
 	"path"
 	"runtime"
 	"strings"
+	"unicode"
 )
 
 type Protocol string
@@ -161,28 +162,45 @@ func validHost(host string) bool {
 // without changing what that guidance means. Every command this package emits
 // interpolates with a bare %s into one of three syntaxes — a shell command
 // line, an fstab line, and a compose YAML scalar — and those three quote
-// differently (fstab writes a space as \040, not as a shell quote), so the
-// boundary is one character policy at the parser rather than three output
-// escaping schemes. That is the same argument validUser's comment makes; this
-// is the shared half of it, and Share.Name and the mount point are the other
-// two fields that reach those commands.
+// differently, so the boundary is one character policy at the parser rather
+// than three output escaping schemes. That is the same argument validUser's
+// comment makes; this is the shared half of it, and Share.Name and the mount
+// point are the other two fields that reach those commands.
 //
-// The rule is stated over ASCII alone, and that is the point rather than an
-// approximation: every shell metacharacter, every fstab field separator and
-// every YAML indicator is ASCII, so any rune at or above 0x80 cannot change a
-// command's parse and is passed through. A share literally named 素材库 or
-// 撮影素材 therefore still mounts, which a validUser-shaped allowlist of Latin
-// letters would have refused. A space is rejected for correctness before
-// safety: "sudo mount -t cifs //nas/My Share /mnt/x" is two arguments whatever
-// the operator meant by it.
+// A backslash is excluded because it is the escape introducer in all three and
+// each decodes it into something different. libmount reads \040 in an fstab
+// target as a space, so findmnt resolves /mnt/x\040y to /mnt/x y — a different
+// directory than the sudo mkdir -p line directly above it creates. The shell
+// strips it. And device: is a double-quoted YAML scalar, where gopkg.in/yaml.v3
+// decodes \040 to a NUL byte followed by "40". Three consumers, three
+// manglings, none of them the path the operator typed. Windows is the one place
+// a backslash is a path separator rather than an escape, which is why
+// ValidMountpoint takes the host: it can say so for a UNC mount point without
+// widening the rule for share names, which never legitimately carry one.
+//
+// At or above 0x80 the rule is printability rather than pass-through, and the
+// difference is not academic. Every shell metacharacter and every fstab field
+// separator is ASCII, but YAML's line breaks are not: yaml.v3 folds a U+0085 in
+// a device: scalar to a space, so a share name carrying one is silently not the
+// name Docker is handed. Rejecting the non-printable runes — the C1 controls,
+// the LS and PS separators, the non-breaking and zero-width spaces, the BOM —
+// covers that class without tracking any one parser's table of line breaks. The
+// CJK share names the old ASCII-only rule was written to protect stay valid,
+// which is the property a validUser-shaped allowlist of Latin letters would
+// have refused. A space is rejected for correctness before safety: "sudo mount
+// -t cifs //nas/My Share /mnt/x" is two arguments whatever the operator meant
+// by it.
 func safeForCommand(s string) bool {
 	for _, r := range s {
 		if r >= 0x80 {
+			if !unicode.IsPrint(r) {
+				return false
+			}
 			continue
 		}
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		case strings.ContainsRune(`.-_/\:@+=,`, r):
+		case strings.ContainsRune(`.-_/:@+=,`, r):
 		default:
 			return false
 		}
@@ -204,7 +222,20 @@ func validShareName(name string) bool {
 // one value in Guidance that arrives from outside this package — the wizard
 // posts an edited one back — and so is the only field a caller has to check
 // before it trusts what Guidance returns.
-func ValidMountpoint(mountpoint string) bool {
+//
+// It takes the host because the backslash is the one part of safeForCommand's
+// policy that is OS-dependent. On Windows the mount point is a UNC path —
+// DefaultMountpoint returns \\host\share so that the path the wizard verifies
+// and the path addRootStep records are the same string — and the commands it
+// reaches are net use and the recorded root, never an fstab line or a compose
+// scalar. Folding the separators to / and applying the shared policy to the
+// result checks every other character while letting a separator be a
+// separator. Everywhere else a backslash in a mount point is the escape that
+// makes the generated commands mean a different directory, and is refused.
+func ValidMountpoint(mountpoint string, host Host) bool {
+	if host.OS == "windows" {
+		return safeForCommand(strings.ReplaceAll(mountpoint, `\`, "/"))
+	}
 	return safeForCommand(mountpoint)
 }
 
@@ -507,7 +538,7 @@ func Guidance(share Share, mountpoint string, host Host) Guide {
 	// container branch's normal output.
 	if mountpoint == "" {
 		mountpoint = DefaultMountpoint(share, host)
-	} else if !ValidMountpoint(mountpoint) {
+	} else if !ValidMountpoint(mountpoint, host) {
 		return guide
 	}
 	if host.Platform == "unraid" {

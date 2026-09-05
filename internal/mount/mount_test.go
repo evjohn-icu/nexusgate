@@ -205,6 +205,19 @@ func TestGuidanceGeneratedCommandsSurviveHostileShareInput(t *testing.T) {
 		"smb://nas/My Share",
 		"nas:/export;id",
 		`\\nas\Video"; id; "`,
+		// The UNC and // forms fold a backslash to / at the top of ParseShare,
+		// so only the URI form carries one this far. It has to be rejected
+		// here: the name reaches an fstab target, where libmount reads \040 as
+		// a space, and a compose device: scalar, where yaml.v3 reads it as a
+		// NUL byte followed by "40".
+		`smb://nas/Video\040x`,
+		// Not every rune above 0x80 is inert in the generated syntaxes, which
+		// the ASCII-only rule assumed. yaml.v3 folds U+0085 in a device:
+		// scalar to a space; U+2028 and U+2029 are the same class of YAML line
+		// break in a 1.1 scanner.
+		"smb://nas/Video\u0085x",
+		"smb://nas/Video\u2028x",
+		"smb://nas/Video\u2029x",
 	} {
 		if share, ok := ParseShare(hostile); ok {
 			t.Errorf("%q parsed as the share %+v; a name carrying shell punctuation is not a share address", hostile, share)
@@ -221,6 +234,7 @@ func TestGuidanceGeneratedCommandsSurviveHostileShareInput(t *testing.T) {
 	}{
 		{"//nas/Video", "Video"},
 		{"//nas/素材库", "素材库"},
+		{"//nas/撮影素材", "撮影素材"},
 		{"//nas/My@Share", "My@Share"},
 		{`\\nas\Photos@2024`, "Photos@2024"},
 		{"//nas/Media+Archive", "Media+Archive"},
@@ -961,6 +975,56 @@ func TestWindowsGuidanceRecordsThePathItToldYouToOpen(t *testing.T) {
 // created them, so offering either to a Hub running as a service is advice that
 // cannot work. The interactive cases are asserted alongside as the positive
 // control: without them, a step list that lost net use entirely would pass.
+// A mount point carrying a backslash used to pass, because the generated fstab
+// line and the sudo mkdir -p line above it were assumed to name the same
+// directory. They do not: libmount decodes \040 in a target, so findmnt
+// resolves an fstab entry for /mnt/x\040y to /mnt/x y while mkdir creates
+// something else, and the operator mounts a directory neither of them read as
+// the one they typed. Windows is the exception the rule has to keep, not an
+// oversight — there a backslash is the separator DefaultMountpoint itself
+// returns.
+func TestValidMountpointRejectsEscapesExceptWhereTheyArePathSeparators(t *testing.T) {
+	linux := Host{OS: "linux"}
+	windows := Host{OS: "windows"}
+
+	for _, c := range []struct {
+		mountpoint string
+		host       Host
+		want       bool
+		why        string
+	}{
+		{`/mnt/x\040y`, linux, false, "fstab decodes \\040 to a space; mkdir does not"},
+		{`/mnt/nexusgate/Video\`, linux, false, "a trailing escape eats the next fstab field"},
+		{"/mnt/nexusgate/Video\u0085", linux, false, "not every rune above 0x80 is inert"},
+		{"/mnt/nexusgate/Video", linux, true, "the ordinary answer must keep working"},
+		{"/mnt/nexusgate/素材库", linux, true, "positive control: CJK names still mount"},
+		{`\\nas01\Video`, windows, true, "the UNC path DefaultMountpoint returns"},
+		{`Z:\Video`, windows, true, "a drive path is the other Windows shape"},
+		{`\\nas01\Video;id`, windows, false, "the separator exception is not a bypass"},
+	} {
+		if got := ValidMountpoint(c.mountpoint, c.host); got != c.want {
+			t.Errorf("ValidMountpoint(%q, %s) = %v, want %v — %s", c.mountpoint, c.host.OS, got, c.want, c.why)
+		}
+	}
+
+	// The fail-safe shape Guidance documents: a rejected mount point yields no
+	// commands at all rather than commands naming a directory the operator did
+	// not type.
+	share, ok := ParseShare("//nas01/Video")
+	if !ok {
+		t.Fatal("//nas01/Video should parse as a share")
+	}
+	if guide := Guidance(share, `/mnt/x\040y`, linux); len(guide.Steps) != 0 {
+		t.Errorf("Guidance emitted %d step(s) for a rejected mount point; want none", len(guide.Steps))
+	}
+
+	// The Windows round trip the split exists for: whatever DefaultMountpoint
+	// hands the wizard has to survive being posted back.
+	if mp := DefaultMountpoint(share, windows); !ValidMountpoint(mp, windows) {
+		t.Errorf("DefaultMountpoint returned %q, which ValidMountpoint then rejects", mp)
+	}
+}
+
 func TestServiceHostIsNotOfferedASessionScopedMount(t *testing.T) {
 	share, ok := ParseShare(`\\nas01\Video`)
 	if !ok {

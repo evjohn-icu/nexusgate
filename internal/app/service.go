@@ -944,7 +944,7 @@ func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string, 
 		// request carried: DefaultMountpoint's containerised answer is the
 		// <HOST_MEDIA_ROOT> placeholder, which is this Hub's own marker rather
 		// than something a caller sent.
-		mountpointRejected = target != "" && !mount.ValidMountpoint(target)
+		mountpointRejected = target != "" && !mount.ValidMountpoint(target, host)
 		if target == "" {
 			target = result.DefaultMountpoint
 		}
