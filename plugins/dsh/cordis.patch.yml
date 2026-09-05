@@ -17,7 +17,7 @@
       config:
         serverName: nexusgate
         transport: stdio
-        command: nexusgate-mcp
+        command: !!js 'process.env.NEXUSGATE_MCP_COMMAND ?? "nexusgate-mcp"'
         env:
           NEXUSGATE_BASE_URL: !!js 'process.env.NEXUSGATE_BASE_URL ?? ""'
           NEXUSGATE_AGENT_TOKEN: !!js 'process.env.NEXUSGATE_AGENT_TOKEN ?? ""'

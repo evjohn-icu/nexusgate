@@ -24,6 +24,7 @@ from its own install, so no extra npm packages are needed):
 ```bash
 dsh plugin --profile web add link:/path/to/nexusgate/plugins/dsh
 ```
+`nexusgate-mcp` on PATH must be `nexusgate-mcp.exe` on Windows, or set `NEXUSGATE_MCP_COMMAND` to the full path.
 
 Restart dsh. The server's tools appear under the stable names
 `mcp__nexusgate__<tool>` (for example `mcp__nexusgate__search_shots`), the
@@ -41,9 +42,14 @@ names from spawned children — without the explicit pass-through
 | `NEXUSGATE_BASE_URL` | Hub URL. The normal local Hub is `https://127.0.0.1:8787`; use `http://127.0.0.1:8787` only when `hub_tls.mode=off` is explicitly configured for local development. For a cross-machine Hub use `https://<hub-host>:8787`. |
 | `NEXUSGATE_AGENT_TOKEN` | The Hub agent token (from `<dataDir>/agent-token`). Needed for reads off the trusted LAN. |
 | `NEXUSGATE_HUB_FINGERPRINT` | The Hub's SHA-256 certificate fingerprint, printed by `nexusgate serve` at startup. **Required** when `NEXUSGATE_BASE_URL` is `https://` — the server refuses to start without it rather than accept an unpinned certificate. |
+| NEXUSGATE_MCP_COMMAND | Overrides the stdio child executable (default `nexusgate-mcp`). Set it to an absolute path for a non-PATH install, e.g. `C:\nexusgate\nexusgate-mcp.exe` on Windows or a portable `./nexusgate-mcp`. |
 
 Set them the same way you would for the Claude Code plugin, e.g. in the shell
 that launches dsh or in your service manager's environment.
+
+## Skill (workflow guidance)
+
+Operators can copy `plugins/dsh/skills/nexusgate/SKILL.md` to `$DSH_HOME/skills/nexusgate/SKILL.md` (default `~/.dsh/skills/nexusgate/SKILL.md`) or `<projectRoot>/.dsh/skills/nexusgate/SKILL.md` so DSH's built-in skill catalog teaches the agent the six `mcp__nexusgate__*` tools. The bundled MCP tools work without the skill; the skill only adds workflow guidance.
 
 ## Boundaries
 
