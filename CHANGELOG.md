@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+- **The share name and the mount point reached the generated commands
+  unvalidated; only the username had been fixed.** `Share.User` was hardened at
+  the parser last cycle because it is copied into a here-doc, a shell command
+  line and YAML, and those three quote differently. That argument was never
+  specific to the username: `Share.Name` was checked only for emptiness
+  (`//nas/Video;id > /tmp/pwned` parsed as a share, and the `;` reached
+  `sudo mount -t cifs`, the fstab line, and the compose `device:` scalar), and
+  the mount point arrives straight from the `/api/v1/roots/inspect` request
+  body, which `hub_security.admin_auth: trusted_network` waives the password
+  for on a LAN. Both are now refused by one shared character policy,
+  `mount.safeForCommand`, and the fix is stated where the value is produced
+  rather than at each of the fourteen interpolation sites, so a command added
+  later inherits it.
+
+  The policy is written over ASCII on purpose rather than as an approximation:
+  every shell metacharacter, fstab separator and YAML indicator is ASCII, so
+  any rune at or above 0x80 cannot change how a command parses and is passed
+  through. A share named 素材库 still mounts, which is the case a
+  `validUser`-shaped Latin allowlist would have broken. A space is refused for
+  correctness before safety — `sudo mount -t cifs //nas/My Share /mnt/x` is two
+  arguments whatever was meant by it, and fstab writes a space as `\040`.
+
+  The two halves refuse differently, because they fail differently. A share
+  name carrying shell punctuation is not a share that needs sanitising, so
+  `ParseShare` declines the whole parse and the address is classified as a
+  local path. A mount point is a path the operator chose, so
+  `InspectRootPath` keeps the inspection, withholds the guidance, and adds
+  `root.mountpoint_invalid` saying which characters are the problem — without
+  echoing the rejected text back into the page that asked for it. Silently
+  substituting `DefaultMountpoint` was the tempting alternative and is how
+  somebody ends up mounting a share somewhere they did not choose.
+  `mount.Guidance` also returns its summary with no steps when a caller passes
+  an unusable mount point, so a future caller that forgets to check shows
+  nothing to paste rather than something that runs. That check is scoped to
+  what the caller passed, before the default fills in, because
+  `DefaultMountpoint` deliberately returns the `<HOST_MEDIA_ROOT>` placeholder
+  on a containerised Hub — this package's own edit-this-line marker, not
+  untrusted input.
+
 - **The wizard now asks which platform owns mounts, instead of guessing or
   ignoring the question.** Unraid is the one common host where attaching a NAS
   share needs no terminal at all — Unassigned Devices does it from the web UI,

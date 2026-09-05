@@ -115,7 +115,8 @@ func parseHostAndName(rest string, protocol Protocol) (Share, bool) {
 		}
 	}
 	host, name, found := strings.Cut(strings.Trim(rest, "/"), "/")
-	if !found || !validHost(host) || name == "" {
+	name = strings.Trim(name, "/")
+	if !found || !validHost(host) || !validShareName(name) {
 		return Share{}, false
 	}
 	// Share.User is copied into a shell here-document, a shell command line,
@@ -127,7 +128,7 @@ func parseHostAndName(rest string, protocol Protocol) (Share, bool) {
 	if !validUser(user) {
 		user = ""
 	}
-	return Share{Protocol: protocol, Host: host, Name: strings.Trim(name, "/"), User: user}, true
+	return Share{Protocol: protocol, Host: host, Name: name, User: user}, true
 }
 
 // parseNFSHostPath handles the bare host:/export form. The guard against a
@@ -135,7 +136,7 @@ func parseHostAndName(rest string, protocol Protocol) (Share, bool) {
 // is a path, not an export.
 func parseNFSHostPath(value string) (Share, bool) {
 	host, export, found := strings.Cut(value, ":")
-	if !found || len(host) < 2 || !validHost(host) || !strings.HasPrefix(export, "/") {
+	if !found || len(host) < 2 || !validHost(host) || !strings.HasPrefix(export, "/") || !safeForCommand(export) {
 		return Share{}, false
 	}
 	return Share{Protocol: ProtocolNFS, Host: host, Name: export}, true
@@ -154,6 +155,57 @@ func validHost(host string) bool {
 		}
 	}
 	return true
+}
+
+// safeForCommand reports whether s can be interpolated into generated guidance
+// without changing what that guidance means. Every command this package emits
+// interpolates with a bare %s into one of three syntaxes — a shell command
+// line, an fstab line, and a compose YAML scalar — and those three quote
+// differently (fstab writes a space as \040, not as a shell quote), so the
+// boundary is one character policy at the parser rather than three output
+// escaping schemes. That is the same argument validUser's comment makes; this
+// is the shared half of it, and Share.Name and the mount point are the other
+// two fields that reach those commands.
+//
+// The rule is stated over ASCII alone, and that is the point rather than an
+// approximation: every shell metacharacter, every fstab field separator and
+// every YAML indicator is ASCII, so any rune at or above 0x80 cannot change a
+// command's parse and is passed through. A share literally named 素材库 or
+// 撮影素材 therefore still mounts, which a validUser-shaped allowlist of Latin
+// letters would have refused. A space is rejected for correctness before
+// safety: "sudo mount -t cifs //nas/My Share /mnt/x" is two arguments whatever
+// the operator meant by it.
+func safeForCommand(s string) bool {
+	for _, r := range s {
+		if r >= 0x80 {
+			continue
+		}
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune(`.-_/\:@+=,`, r):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validShareName rejects the whole parse rather than blanking the field the way
+// validUser does. A share name is not optional — with it removed there is no
+// share left to describe — and a name carrying a shell metacharacter is not a
+// real share that needs sanitising, it is input that was never a share address.
+// Answering "this is a local path" is then the honest classification.
+func validShareName(name string) bool {
+	return name != "" && safeForCommand(name)
+}
+
+// ValidMountpoint reports whether a caller-supplied mount point can be pasted
+// into the generated commands. It is exported because the mount point is the
+// one value in Guidance that arrives from outside this package — the wizard
+// posts an edited one back — and so is the only field a caller has to check
+// before it trusts what Guidance returns.
+func ValidMountpoint(mountpoint string) bool {
+	return safeForCommand(mountpoint)
 }
 
 // validUser is intentionally narrower than the username grammar any one SMB
@@ -364,7 +416,18 @@ func ContainerPath(hostPath string, host Host) (string, bool) {
 // relativeToDirectory returns the part of value below directory, and reports
 // false when value is not below (or equal to) it.
 func relativeToDirectory(value, directory string) (string, bool) {
-	directory = strings.TrimSuffix(directory, "/")
+	// Both sides are cleaned before the prefix test, because the test is a
+	// containment claim and a textual prefix is not one: /mnt/remotes/../etc
+	// starts with /mnt/remotes/ and is /etc. Uncleaned, it satisfied the check
+	// and translated to a path outside the bind target entirely, which
+	// ContainerPath's contract says must be reported as false — the operator is
+	// handed that result as the path to record with `root add`, so a confident
+	// wrong answer is worse here than no answer.
+	if value == "" || directory == "" {
+		return "", false
+	}
+	value = path.Clean(value)
+	directory = strings.TrimSuffix(path.Clean(directory), "/")
 	if directory == "" {
 		return "", false
 	}
@@ -427,10 +490,26 @@ type Guide struct {
 // line that has to be edited before it runs or is saved is one more thing to get
 // wrong.
 func Guidance(share Share, mountpoint string, host Host) Guide {
+	guide := Guide{Summary: fmt.Sprintf("%s is a network share, not a local path. Mount it, then add the mount point.", share)}
+	// Every branch below interpolates mountpoint unquoted into a shell line, an
+	// fstab line or a compose stanza, so a caller-supplied one that cannot
+	// survive that yields no steps at all rather than steps meaning something
+	// other than they read. Returning the summary without commands is the
+	// fail-safe shape: a caller that forgets to check ValidMountpoint first
+	// shows the operator nothing to paste, which is recoverable, instead of a
+	// command that runs. The caller that does check — app.InspectRootPath — is
+	// the one positioned to say why.
+	//
+	// The check is scoped to what the caller passed, before the default fills
+	// in, because DefaultMountpoint deliberately returns <HOST_MEDIA_ROOT> on a
+	// containerised Hub whose media bind is unknown. That placeholder is this
+	// package's own "edit this line" marker, not untrusted input, and it is the
+	// container branch's normal output.
 	if mountpoint == "" {
 		mountpoint = DefaultMountpoint(share, host)
+	} else if !ValidMountpoint(mountpoint) {
+		return guide
 	}
-	guide := Guide{Summary: fmt.Sprintf("%s is a network share, not a local path. Mount it, then add the mount point.", share)}
 	if host.Platform == "unraid" {
 		guide.Steps = unraidSteps(share, mountpoint, host)
 		guide.Notes = notes(share, host)

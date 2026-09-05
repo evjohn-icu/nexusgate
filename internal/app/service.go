@@ -913,6 +913,7 @@ type ComposeVolumeSuggestion struct {
 func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string, hint HostHint) RootInspection {
 	trimmed := strings.TrimSpace(path)
 	result := RootInspection{Path: trimmed}
+	mountpointRejected := false
 	registered := false
 	if s.repo != nil {
 		registered, _ = s.repo.IsLibraryRoot(ctx, trimmed)
@@ -939,9 +940,21 @@ func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string, 
 		}
 		result.DefaultMountpoint = mount.DefaultMountpoint(share, host)
 		target := strings.TrimSpace(mountpoint)
+		// Validated before the default fills in, and only against what the
+		// request carried: DefaultMountpoint's containerised answer is the
+		// <HOST_MEDIA_ROOT> placeholder, which is this Hub's own marker rather
+		// than something a caller sent.
+		mountpointRejected = target != "" && !mount.ValidMountpoint(target)
 		if target == "" {
 			target = result.DefaultMountpoint
 		}
+		// The mount point is the only value reaching mount.Guidance that came
+		// from the request body, and every command Guidance emits interpolates
+		// it unquoted. Refusing here rather than falling back to
+		// DefaultMountpoint is deliberate: the operator typed this path, and
+		// silently generating commands for a different one is how somebody
+		// mounts a share somewhere they did not choose. The share half of the
+		// same problem is refused earlier, by mount.ParseShare.
 		guide := mount.Guidance(share, target, host)
 		steps := make([]MountGuideStep, 0, len(guide.Steps))
 		for _, step := range guide.Steps {
@@ -951,7 +964,9 @@ func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string, 
 		for _, note := range guide.Notes {
 			notes = append(notes, MountGuideNote{Key: note.Key, Text: note.Text})
 		}
-		result.Guidance = &MountGuidance{Summary: guide.Summary, Steps: steps, Notes: notes}
+		if !mountpointRejected {
+			result.Guidance = &MountGuidance{Summary: guide.Summary, Steps: steps, Notes: notes}
+		}
 		if host.Container {
 			// See ComposeVolume's field doc: this is the one case where a
 			// docker-compose volume stanza is the actual next step rather
@@ -996,6 +1011,19 @@ func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string, 
 	}
 	result.Warnings = s.RootWarnings(trimmed, registered)
 	result.WarningDetails = s.RootWarningDetails(trimmed, registered)
+	if mountpointRejected {
+		// The rejected text is not echoed back. It is attacker-controlled in
+		// the case this guard exists for, and this response is rendered into
+		// the page that asked for it; naming the offending characters tells
+		// the operator what to change without putting their input back on the
+		// screen.
+		detail := RootWarningDetail{
+			Code:    "root.mountpoint_invalid",
+			Message: "The mount point cannot contain spaces or shell punctuation (; | & $ ` ' \" < > * ? # ~ ( ) and the like). Use a path made of letters, digits and . - _ / \\ : — the mount commands are generated unquoted, so a space would mount the share at the wrong path.",
+		}
+		result.WarningDetails = append(result.WarningDetails, detail)
+		result.Warnings = append(result.Warnings, detail.Message)
+	}
 	return result
 }
 

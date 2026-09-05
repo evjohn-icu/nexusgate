@@ -190,6 +190,96 @@ func TestGuidanceGeneratedCommandsSurviveHostileShareInput(t *testing.T) {
 	if !foundMountCommand {
 		t.Fatal("darwin guidance did not produce a mount_smbfs command")
 	}
+
+	// Share.User was the first of three request-controlled fields reaching
+	// these commands, not the only one. The share name and the mount point are
+	// interpolated by the same unquoted %s, so this test owns all three rather
+	// than leaving two of them to a reader noticing the asymmetry later.
+	for _, hostile := range []string{
+		"//nas/Video;id > /tmp/pwned",
+		"//nas/Video`id`",
+		"//nas/Video$(id)",
+		"//nas/Video|id",
+		"//nas/Video&id",
+		"//nas/Video\nid",
+		"smb://nas/My Share",
+		"nas:/export;id",
+		`\\nas\Video"; id; "`,
+	} {
+		if share, ok := ParseShare(hostile); ok {
+			t.Errorf("%q parsed as the share %+v; a name carrying shell punctuation is not a share address", hostile, share)
+		}
+	}
+
+	// Positive control for the block above. Without it a policy that rejected
+	// every name whatsoever would satisfy every assertion here, and the share
+	// names real operators have — Chinese, Japanese, an "@" in the name — are
+	// exactly what a validUser-shaped Latin allowlist would have broken.
+	for _, legitimate := range []struct {
+		input string
+		name  string
+	}{
+		{"//nas/Video", "Video"},
+		{"//nas/素材库", "素材库"},
+		{"//nas/My@Share", "My@Share"},
+		{`\\nas\Photos@2024`, "Photos@2024"},
+		{"//nas/Media+Archive", "Media+Archive"},
+		{"nas:/export/video", "/export/video"},
+	} {
+		share, ok := ParseShare(legitimate.input)
+		if !ok {
+			t.Errorf("%q must still parse as a share", legitimate.input)
+			continue
+		}
+		if share.Name != legitimate.name {
+			t.Errorf("ParseShare(%q).Name = %q, want %q", legitimate.input, share.Name, legitimate.name)
+		}
+	}
+
+	plain, ok := ParseShare("//nas/Video")
+	if !ok {
+		t.Fatal("the benign share must parse")
+	}
+	for _, hostile := range []string{
+		"/mnt/x;id > /tmp/pwned",
+		"/mnt/x`id`",
+		"/mnt/x$(id)",
+		"/mnt/x|id",
+		"/mnt/My Footage",
+		"/mnt/x\nid",
+	} {
+		for _, host := range []Host{
+			{OS: "linux", UID: 1000, GID: 1000},
+			{OS: "darwin"},
+			{OS: "windows"},
+			{OS: "linux", UID: 1000, GID: 1000, Container: true},
+		} {
+			guide := Guidance(plain, hostile, host)
+			for _, step := range guide.Steps {
+				for _, command := range step.Commands {
+					if strings.Contains(command, hostile) {
+						t.Errorf("mount point %q reached step %q on %s: %q", hostile, step.Key, host.OS, command)
+					}
+				}
+			}
+		}
+	}
+
+	// Positive control for the mount-point block: a usable one must still
+	// produce commands that carry it, or the assertions above pass because
+	// Guidance stopped emitting commands at all.
+	usable := Guidance(plain, "/mnt/nexusgate/Video", Host{OS: "linux", UID: 1000, GID: 1000})
+	carried := 0
+	for _, step := range usable.Steps {
+		for _, command := range step.Commands {
+			if strings.Contains(command, "/mnt/nexusgate/Video") {
+				carried++
+			}
+		}
+	}
+	if carried == 0 {
+		t.Fatal("a usable mount point must still be interpolated into the generated commands")
+	}
 }
 
 // Mistaking a local path for a share is the expensive error: the advice that
@@ -952,5 +1042,34 @@ func TestParseShareSplitsUserinfoOnlyBeforeTheHost(t *testing.T) {
 			t.Errorf("ParseShare(%q) = host %q name %q user %q, want host %q name %q user %q",
 				tc.in, share.Host, share.Name, share.User, tc.host, tc.name, tc.user)
 		}
+	}
+}
+
+// ContainerPath's contract is that it reports false rather than guessing when
+// the host path is not under the bind's source. A textual prefix test is not a
+// containment test: /mnt/remotes/../etc starts with /mnt/remotes/ and is /etc,
+// and it used to translate to /media/etc with ok=true — a path outside the bind
+// target that the wizard then hands the operator as the one to record with
+// `root add`.
+func TestContainerPathRefusesPathsThatOnlyLookContained(t *testing.T) {
+	host := Host{OS: "linux", Container: true, MediaBind: Bind{Target: "/media/library", Source: "/mnt/remotes"}}
+	// Positive control: a genuinely contained path still translates, so the
+	// refusals below are evidence and not a function that stopped working.
+	if got, ok := ContainerPath("/mnt/remotes/nas_Video", host); !ok || got != "/media/library/nas_Video" {
+		t.Fatalf("contained path translated to %q ok=%v, want /media/library/nas_Video true", got, ok)
+	}
+	for _, escape := range []string{
+		"/mnt/remotes/../etc",
+		"/mnt/remotes/a/../../etc/shadow",
+		"/mnt/remotes/./../..",
+	} {
+		got, ok := ContainerPath(escape, host)
+		if ok {
+			t.Errorf("ContainerPath(%q) = %q, true — it escapes the bind and must be refused", escape, got)
+		}
+	}
+	// A sibling directory sharing a name prefix was already refused; keep it so.
+	if _, ok := ContainerPath("/mnt/remotesEVIL/x", host); ok {
+		t.Error("a sibling directory with a shared name prefix must not count as contained")
 	}
 }
