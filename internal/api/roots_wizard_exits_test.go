@@ -62,3 +62,37 @@ func TestLibraryRootsWizardHasRecoveryExits(t *testing.T) {
 	// HTML is visible in a browser; PageScripts catches syntax and an end-to-end
 	// browser test would be needed for that behavior.
 }
+
+// A scan that outlives its request is only an improvement if the page stops
+// calling the dropped connection a failed scan. json() attaches .status solely
+// when an HTTP response arrived, so its absence is the discriminator: no
+// answer came back, and since scanRoot detaches the walk from the request's
+// context the scan is still running. The two branches must stay distinct —
+// collapsing them is what made the wizard report failure for work that
+// succeeds, on exactly the NAS libraries the wizard exists to set up.
+func TestLibraryRootsScanSeparatesADroppedConnectionFromAFailedScan(t *testing.T) {
+	page := libraryRootsHTML
+	for _, marker := range []string{
+		// The discriminator itself.
+		"e.status===undefined",
+		// The honest answer for a dropped connection...
+		"roots.scanStillRunning",
+		// ...and the real failure path, which must survive alongside it.
+		"roots.scanFailed",
+		// The wait is announced before the request, not after it returns.
+		"roots.scanLongHint",
+	} {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("scan feedback marker %q is missing; the page cannot tell a dropped connection from a failed scan without it", marker)
+		}
+	}
+	// roots.scanLongHint has to be rendered BEFORE the fetch is awaited, or it
+	// describes a wait the operator has already finished. Anchor on order
+	// rather than presence: a hint set in the result handler would satisfy a
+	// contains-check and show up only once there was nothing left to wait for.
+	hint := strings.Index(page, "roots.scanLongHint")
+	post := strings.Index(page, "/scan',{method:'POST'}")
+	if hint < 0 || post < 0 || hint > post {
+		t.Fatalf("roots.scanLongHint must be rendered before the scan POST is issued (hint=%d, post=%d)", hint, post)
+	}
+}

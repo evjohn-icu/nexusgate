@@ -241,6 +241,14 @@ async function runDiscover(){
     var data=await json('/api/v1/roots/discover',{method:'POST',headers:authHeaders({'Content-Type':'application/json'})});
     var hosts=(data&&data.hosts)||[];
     if(!hosts.length){
+      // The roots.noHostsFound fallback is unreachable today and is kept
+      // anyway. Every branch of discoverDiagnostics' empty-result ladder emits
+      // at least one note -- including the case where the payload carries no
+      // fields at all, which lands on noNetworks -- so the || never fires. It
+      // stays because the failure it guards is a blank panel: if that ladder
+      // ever gains a path that emits nothing, an operator who clicked a button
+      // must still be told something. Its text is therefore a plain fallback
+      // and not a second copy of the causes, which diag.* states better.
       wrap.innerHTML=discoverDiagnostics(data,hosts)||'<div class="callout">'+esc(tdT('roots.noHostsFound'))+'</div>';
       status.textContent='';return;
     }
@@ -621,6 +629,11 @@ async function startScan(){
   var btn=document.getElementById('scan-btn');
   btn.disabled=true;btn.textContent=tdT('roots.scanningRoot');
   var el=document.getElementById('scan-result');
+  // The first scan of a network library is minutes, not seconds: the
+  // fingerprint reads up to 12 MiB of every video, over the network. Until
+  // this line the only feedback for that whole wait was a disabled button,
+  // which reads as a hang rather than as work.
+  el.innerHTML='<div class="callout">'+esc(tdT('roots.scanLongHint'))+'</div>';
   try{
     var result=await json('/api/v1/roots/'+encodeURIComponent(addedRoot.id)+'/scan',{method:'POST'});
     var errors=(result.errors||[]);
@@ -634,7 +647,19 @@ async function startScan(){
     html+='<div class="muted" style="margin-top:8px"><a href="/progress">'+esc(tdT('roots.viewProgress'))+' →</a></div>';
     el.innerHTML=html;
   }catch(e){
-    el.innerHTML=tdAuthDenied(e)?authNotice(null):'<div class="callout callout--contradicted">'+esc(tdT('roots.scanFailed',{message:e.message}))+'</div>';
+    // json() attaches .status only when an HTTP response actually arrived, so
+    // its absence means the request never got an answer at all: a dropped
+    // connection, or the server's five-minute write timeout closing the
+    // stream out from under a long walk. The scan is not what failed -- since
+    // scanRoot detaches it from the request's context it is still running, and
+    // will finish. Calling that "scan failed" told the operator work had died
+    // that was in fact still going, which is the reason the wizard looked
+    // broken on exactly the NAS libraries it exists to set up.
+    if(e&&e.status===undefined&&!tdAuthDenied(e)){
+      el.innerHTML='<div class="callout callout--attention">'+esc(tdT('roots.scanStillRunning'))+'</div><div class="muted" style="margin-top:8px"><a href="/progress">'+esc(tdT('roots.viewProgress'))+' →</a></div>';
+    }else{
+      el.innerHTML=tdAuthDenied(e)?authNotice(null):'<div class="callout callout--contradicted">'+esc(tdT('roots.scanFailed',{message:e.message}))+'</div>';
+    }
   }finally{
     btn.disabled=false;btn.textContent=tdT('roots.startScan');
   }

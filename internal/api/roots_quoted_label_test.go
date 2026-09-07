@@ -30,6 +30,8 @@ var quotedLabels = []struct{ copyKey, labelKey string }{
 	{"roots.noTerminalHandoff", "roots.verifyDone"},
 	{"roots.mountpointManualHint", "roots.verifyDone"},
 	{"roots.mountFailedNext", "roots.recheck"},
+	{"roots.scanStillRunning", "roots.viewProgress"},
+	{"roots.shareNameUnsupportedAction", "roots.verifyDone"},
 }
 
 func TestRootsCopyQuotesTheLabelTheButtonActuallyCarries(t *testing.T) {

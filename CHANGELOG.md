@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+- **The network sweep reported facts the reader could not act on.** "Nothing has
+  port 445 open" is true and useless to the person the wizard exists for; it
+  names a number they have never heard of and no next step. Six discovery
+  strings are rewritten in all five languages around what the operator can
+  actually do, and the technical fact is kept — moved to the end, in
+  parentheses, so a reader who does not know what 445 is does not meet it first
+  and a reader who does can still find it. SMB1/SMB2/SMB3 stay named for the
+  same reason inverted: those are the words printed in a NAS's own settings
+  screen, so removing them would leave a capable reader unable to act. What was
+  missing there was not the jargon but the instruction to turn SMB2/3 on.
+
+  The most valuable of the six was not a jargon problem at all. A device that
+  answers but refuses anonymous browsing is the single most common outcome on a
+  healthy home network — it is how nearly every NAS ships — and the old copy
+  ("needs a username and password", "does not allow anonymous access") read as a
+  fault report for a working device. It now leads with having found the thing
+  and says outright that this is not a fault.
+
+  `roots.noHostsFound` turned out to be unreachable: every branch of
+  `discoverDiagnostics`' empty-result ladder emits at least one note, including
+  the case where the payload carries no fields at all. It is kept rather than
+  deleted, because what it guards is a blank panel after a button press, and it
+  is now a short fallback rather than a second, worse copy of the cause list the
+  `diag.*` strings state properly. The comment says all of this so the next
+  reader does not have to rediscover it.
+
+- **The scan wait now says what it is.** The first scan of a network library
+  took minutes behind a disabled button with no explanation, and a dropped
+  connection was reported as a failed scan. The page now says up front that a
+  first scan is slow and why — part of every video is read over the network to
+  fingerprint it — and that the scan survives the page being closed, which is
+  true as of the context change above and was not true before it. On a transport
+  failure it says the scan is still running and points at the progress page:
+  `json()` attaches a status only when an HTTP response actually arrived, so its
+  absence distinguishes "no answer came back" from "the API said no", and only
+  the second is a failed scan.
+
+  Two guards hold this. `TestLibraryRootsScanSeparatesADroppedConnectionFrom`
+  `AFailedScan` anchors on ORDER, not presence: the slow-scan hint has to be
+  rendered before the request is issued, since a hint set in the result handler
+  would satisfy a contains-check and appear only once there was nothing left to
+  wait for. `TestRootsCopyQuotesTheLabelTheButtonActuallyCarries` grew from
+  three pairs to five, so both new strings that name a button are held to naming
+  the one that language's catalog actually carries.
+
+- The English `compose-smb-cleartext` warning said the password goes "above"
+  while the other four languages named the `o:` parameter. The Go source was the
+  weaker one and is what changed, so the CLI's own output gains the same
+  specificity rather than only the browser's.
+
 - **`//nas/My Footage` was answered with a statement about a path the operator
   never typed.** A space made `ParseShare` refuse the address outright, so the
   wizard classified it as a local directory, folded the `//` to `/`, and
