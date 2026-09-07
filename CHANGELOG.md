@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **The status strip on every page rendered raw translation keys.** Opening the
+  wizard in an actual browser — the one check nobody had run — showed
+  `shell.status.failed` and `shell.status.online` printed literally in the
+  sidebar, in all five languages, on every page of the app. Eight keys were
+  affected. `tdPlural` derives `key.one`/`key.other` at runtime and fell through
+  to the key name when neither existed; the catalogs held only the bare key,
+  which is a complete `{count}` sentence and always was.
+
+  Chinese and Japanese have no plural distinction, so demanding `.one`/`.other`
+  would have meant five languages duplicating one sentence into two identical
+  entries. `tdPlural` now falls back to the bare key before giving up, which is
+  one line and can only turn a key name into real text.
+
+  Nothing went red because the failure is invisible to a source-level check: the
+  bare key IS in every catalog, and the key that actually failed to resolve was
+  assembled at runtime. `TestEveryPluralKeyResolvesInEveryCatalog` closes that by
+  assembling the same thing — it scans the page sources for `tdPlural` call
+  sites and requires each key to resolve, by any of its three forms, in all five
+  catalogs.
+
 - **The network sweep reported facts the reader could not act on.** "Nothing has
   port 445 open" is true and useless to the person the wizard exists for; it
   names a number they have never heard of and no next step. Six discovery
