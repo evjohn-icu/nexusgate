@@ -2,28 +2,13 @@
 
 ## Unreleased
 
-- **Two tests were permanently red for a reason with no bearing on the code.**
-  `TestScanUnreadableFileSkipsWithError` and
-  `TestDeviceOpenableDistinguishesPermissionFromAbsence` both build a mode-000
-  file and assert that opening it fails. Both had already guarded against
-  `os.Getuid() == 0` — and that is the wrong question: `CAP_DAC_OVERRIDE` can
-  sit in an ordinary process's *ambient* capability set, which is a common
-  container default and is what this repository's own dev shell hands to uid
-  1000. A uid-1000 process holding it opens a mode-000 file exactly as root
-  would, so the file the fixture built was readable and the refusal never came.
-
-  Both now probe the behaviour instead of inferring it from the uid: write a
-  mode-000 file, try to open it, and skip only if the open succeeded. Verified
-  in both directions — the tests skip in this shell, and running the same two
-  under `capsh --iab='!cap_dac_override,!cap_dac_read_search'` makes them
-  execute and pass, so the guard fires only where the assertion is impossible.
-
 - **Every scan re-read the whole library over the network.** The scanner called
   `QuickFingerprint` unconditionally on every video file it walked — three 4 MiB
   samples, so up to 12 MiB per file, every pass. A thousand-clip root therefore
   pulled up to 12 GB across the share to answer a question the database already
   held, and the unattended library supervisor (off by default, but the whole
-  point of turning it on) repeats that hourly.
+  point of turning it on) repeats that every 15 minutes — its default
+  `scan_interval_minutes`.
 
   `UpsertScannedFile` was already comparing `modified_ns` to decide whether the
   file changed — it just did so *after* paying for the read. The scanner now
@@ -54,6 +39,22 @@
   replaces a file's bytes while holding its size and mtime constant, then asks
   which identity reached the database. `internal/repository/sqlite` runs it
   against real SQLite and a real scanner, which is where the claim belongs.
+
+- **Two tests were permanently red for a reason with no bearing on the code.**
+  `TestScanUnreadableFileSkipsWithError` and
+  `TestDeviceOpenableDistinguishesPermissionFromAbsence` both build a mode-000
+  file and assert that opening it fails. Both had already guarded against
+  `os.Getuid() == 0` — and that is the wrong question: `CAP_DAC_OVERRIDE` can
+  sit in an ordinary process's *ambient* capability set, which is a common
+  container default and is what this repository's own dev shell hands to uid
+  1000. A uid-1000 process holding it opens a mode-000 file exactly as root
+  would, so the file the fixture built was readable and the refusal never came.
+
+  Both now probe the behaviour instead of inferring it from the uid: write a
+  mode-000 file, try to open it, and skip only if the open succeeded. Verified
+  in both directions — the tests skip in this shell, and running the same two
+  under `capsh --iab='!cap_dac_override,!cap_dac_read_search'` makes them
+  execute and pass, so the guard fires only where the assertion is impossible.
 
 - **The status strip on every page rendered raw translation keys.** Opening the
   wizard in an actual browser — the one check nobody had run — showed

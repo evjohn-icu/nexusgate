@@ -29,20 +29,35 @@ func assetFingerprint(t *testing.T, repo *Repository, assetID string) string {
 
 // rewriteInPlace replaces a file's contents with equally long, different bytes
 // and restores its mtime — the one change the cache is designed not to see.
-func rewriteInPlace(t *testing.T, path string, content []byte) {
+// The replacement is derived from what is already there, so no caller has to
+// count characters to keep the size fixed: one byte is inverted, which moves
+// the fingerprint and cannot move the length.
+func rewriteInPlace(t *testing.T, path string) {
 	t.Helper()
 	before, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if int64(len(content)) != before.Size() {
-		t.Fatalf("replacement is %d bytes, original is %d — the size must not change", len(content), before.Size())
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if len(content) == 0 {
+		t.Fatal("an empty file has no byte to change, so the fixture would rewrite it\nto the same fingerprint and prove nothing")
+	}
+	content[0] ^= 0xff
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chtimes(path, before.ModTime(), before.ModTime()); err != nil {
 		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() != before.Size() || after.ModTime() != before.ModTime() {
+		t.Fatalf("the rewrite moved the size or the mtime (%d/%v -> %d/%v), so the cache\nwould miss for a reason these fixtures are not about", before.Size(), before.ModTime(), after.Size(), after.ModTime())
 	}
 }
 
@@ -113,7 +128,7 @@ func TestRescanOfAnUntouchedFileDoesNotReadItAgain(t *testing.T) {
 	assetID := first.ChangedAssetIDs[0]
 	original := assetFingerprint(t, repo, assetID)
 
-	rewriteInPlace(t, path, []byte("other video byt"+"e"))
+	rewriteInPlace(t, path)
 
 	second := movedScan(t, repo, root)
 	if second.Discovered != 0 || second.Linked != 1 {
@@ -139,7 +154,7 @@ func TestDeepRescanReadsTheFileTheOrdinaryRescanTrusts(t *testing.T) {
 	first := movedScan(t, repo, root)
 	original := assetFingerprint(t, repo, first.ChangedAssetIDs[0])
 
-	rewriteInPlace(t, path, []byte("other video byt"+"e"))
+	rewriteInPlace(t, path)
 
 	result, err := ingest.NewScanner(repo).ScanDeep(ctx, root)
 	if err != nil {
@@ -196,7 +211,7 @@ func TestKnownFileStillAnswersForALocationMarkedMissing(t *testing.T) {
 		t.Fatal("KnownFile refused a location marked missing, so remounting a share\nre-reads every file in it")
 	}
 
-	rewriteInPlace(t, path, []byte("other video byt"+"e"))
+	rewriteInPlace(t, path)
 	original := assetFingerprint(t, repo, movedScanAssetID(t, repo))
 	movedScan(t, repo, root)
 	if got := assetFingerprint(t, repo, movedScanAssetID(t, repo)); got != original {

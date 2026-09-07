@@ -338,6 +338,16 @@ func TestRunSubcommandDispatch(t *testing.T) {
 		{name: "worker unknown subcommand", args: []string{"nexusgate", "worker", "bogus"}, wantErr: "usage: nexusgate worker enroll|run|doctor"},
 		{name: "root without subcommand", args: []string{"nexusgate", "root"}, wantErr: "usage: nexusgate root add|list|scan"},
 		{name: "root unknown subcommand", args: []string{"nexusgate", "root", "bogus"}, wantErr: "usage: nexusgate root add|list|scan"},
+		{name: "root scan without a root id", args: []string{"nexusgate", "root", "scan"}, wantErr: "usage: nexusgate root scan <root-id> [--deep]"},
+		// --deep is recognised only in the trailing position. Accepting it
+		// before the id would mean parsing the id out of an unknown offset,
+		// and a mistyped flag would then be scanned as a root id.
+		{name: "root scan with the flag before the id", args: []string{"nexusgate", "root", "scan", "--deep", "root-1"}, wantErr: "usage: nexusgate root scan <root-id> [--deep]"},
+		{name: "root scan with an unknown trailing flag", args: []string{"nexusgate", "root", "scan", "root-1", "--shallow"}, wantErr: "usage: nexusgate root scan <root-id> [--deep]"},
+		// The flag is consumed, not treated as a second positional: this
+		// reaches the lookup and fails on the root id, which is the proof that
+		// --deep parsed.
+		{name: "root scan --deep reaches the root lookup", args: []string{"nexusgate", "root", "scan", "no-such-root", "--deep"}, wantErr: "library root not found: no-such-root"},
 		{name: "pipeline without subcommand", args: []string{"nexusgate", "pipeline"}, wantErr: "usage: nexusgate pipeline run|retry-failed"},
 		{name: "pipeline unknown subcommand", args: []string{"nexusgate", "pipeline", "bogus"}, wantErr: "usage: nexusgate pipeline run|retry-failed"},
 		{name: "secrets without subcommand", args: []string{"nexusgate", "secrets"}, wantErr: "usage: nexusgate secrets rekey"},
