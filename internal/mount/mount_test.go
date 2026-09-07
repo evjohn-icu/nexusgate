@@ -66,6 +66,15 @@ func TestParseShareRejectsUserThatCouldBreakOutOfGeneratedSyntax(t *testing.T) {
 		{"command substitution", `smb://evil$(id)@nas/Video`},
 		{"comma", `smb://evil,user@nas/Video`},
 		{"semicolon", `smb://evil;user@nas/Video`},
+		// The domain separator used to be allowed here as valid username data.
+		// It is not data that survives: the compose o: scalar is double-quoted
+		// YAML, so yaml.v3 reads DOMAIN\alice as DOMAIN, 0x07, "lice", and the
+		// darwin mount_smbfs line is an unquoted shell argument that drops the
+		// backslash outright. A dropped username shows the placeholder; a kept
+		// one mounts as something the operator never typed.
+		{"domain separator", `smb://DOMAIN\alice@nas/Video`},
+		{"domain separator with an octal escape", `smb://DOMAIN\040alice@nas/Video`},
+		{"backslash-n", `smb://CORP\nina@nas/Video`},
 	}
 	parsed := 0
 	for _, tc := range cases {
@@ -103,7 +112,6 @@ func TestParseShareAcceptsSafeSMBUsernames(t *testing.T) {
 		input string
 		user  string
 	}{
-		{`smb://DOMAIN\alice@nas/Video`, `DOMAIN\alice`},
 		{`smb://alice@nas/Video`, "alice"},
 		{`smb://alice.smith@nas/Video`, "alice.smith"},
 		{`smb://alice-01@nas/Video`, "alice-01"},
@@ -855,6 +863,49 @@ func TestComposeVolumeSMBFormWarnsAboutCleartextCredentials(t *testing.T) {
 
 // A local path is not a network share and has nothing for driver_opts to
 // say; the caller wants a plain bind mount instead.
+// The sink that made the domain separator indefensible. driver_opts o: and
+// device: are double-quoted YAML scalars, so every backslash reaching them is
+// an escape introducer to the parser that reads the file, not a character in
+// the value. This asserts the property at the generated text rather than at the
+// validator, because the validator is one of two things that could regress and
+// the parser will not tell anyone when it does.
+func TestComposeVolumeEmitsNoBackslashIntoADoubleQuotedScalar(t *testing.T) {
+	for _, input := range []string{
+		`smb://DOMAIN\alice@nas/Video`,
+		`smb://DOMAIN\040alice@nas/Video`,
+		`smb://CORP\nina@nas/Video`,
+		`smb://alice@nas/Video`,
+		"//nas/素材库",
+		"nas:/export/video",
+	} {
+		share, ok := ParseShare(input)
+		if !ok {
+			continue // rejected outright is safe; this test owns what survives
+		}
+		volume, ok := ComposeVolume(share, VolumeName(share))
+		if !ok {
+			continue
+		}
+		if strings.Contains(volume.YAML, `\`) {
+			t.Errorf("ParseShare(%q) produced compose YAML carrying a backslash, which the\nYAML parser reads as an escape rather than as data:\n%s", input, volume.YAML)
+		}
+	}
+
+	// Positive control: without it a ComposeVolume that returned an empty string
+	// would satisfy every assertion above.
+	share, ok := ParseShare(`smb://alice@nas/Video`)
+	if !ok {
+		t.Fatal("smb://alice@nas/Video must parse")
+	}
+	volume, ok := ComposeVolume(share, VolumeName(share))
+	if !ok {
+		t.Fatal("an SMB share must produce a compose volume")
+	}
+	if !strings.Contains(volume.YAML, "username=alice,") {
+		t.Errorf("compose YAML lost the clean username:\n%s", volume.YAML)
+	}
+}
+
 func TestComposeVolumeRejectsNonNetworkShare(t *testing.T) {
 	if _, ok := ComposeVolume(Share{}, "whatever"); ok {
 		t.Error("a zero-value Share carries no recognised protocol and must not produce a volume definition")

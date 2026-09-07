@@ -63,8 +63,11 @@ func ParseShare(input string) (Share, bool) {
 		return Share{}, false
 	}
 	// Windows writes its own UNC paths with backslashes, and that is how a
-	// share is copied out of Explorer. Keep backslashes in URI userinfo: they
-	// are the domain separator in DOMAIN\\user and are valid username data.
+	// share is copied out of Explorer. The rewrite is still skipped for the URI
+	// forms, but no longer because a backslash there is data worth keeping —
+	// validUser now refuses it. It is skipped so that validUser can SEE it:
+	// folding DOMAIN\alice to DOMAIN/alice would pass every check and hand the
+	// operator a confident, wrong username instead of the placeholder.
 	if !strings.HasPrefix(strings.ToLower(value), "smb://") &&
 		!strings.HasPrefix(strings.ToLower(value), "cifs://") &&
 		!strings.HasPrefix(strings.ToLower(value), "nfs://") {
@@ -243,6 +246,30 @@ func ValidMountpoint(mountpoint string, host Host) bool {
 // implementation may accept. Internal spaces are not included: the available
 // SMB documentation does not establish a portable username rule for them, and
 // rejecting them avoids relying on three consumers' different escaping rules.
+//
+// The backslash was the exception to that, kept because DOMAIN\user is the
+// domain separator and reads like valid username data. It is not data that
+// survives. Measured against the three sinks Share.User actually reaches: the
+// credentials here-doc is quoted, so the backslash arrives intact; the darwin
+// mount_smbfs line is an unquoted shell argument, where the backslash is the
+// shell's own escape character and never reaches the program (sh, dash, bash and
+// zsh all hand //DOMAIN\alice@nas/Video to it as //DOMAINalice@nas/Video); and
+// the compose o: scalar is double-quoted YAML, where gopkg.in/yaml.v3 reads the
+// escape — DOMAIN\alice decodes to DOMAIN, 0x07, "lice", WORK\bob to a
+// backspace, NT\ted to a tab, and CORP\nina injects a raw newline into the
+// scalar. \040 becomes a NUL. Every domain-qualified username this rule was
+// written to preserve was already arriving corrupted at two sinks out of three.
+//
+// So the backslash is refused, and the field's existing failure shape does the
+// rest: a dirty username is dropped rather than failing the parse, the share
+// still classifies, and the guidance shows its YOUR_NAS_USERNAME placeholder.
+// The operator types the domain form into a compose file they own, where they
+// can escape it correctly, instead of pasting one that looks right and mounts
+// as DOMAIN<BEL>lice. Escaping per sink was the alternative and is the "three
+// output escaping schemes" safeForCommand's comment exists to refuse.
+//
+// If you re-verify this, print bytes and not %q: Go renders 0x07 as \a and a
+// tab as \t, so a corrupted username and a literal backslash look identical.
 func validUser(user string) bool {
 	if user == "" {
 		return false
@@ -250,7 +277,7 @@ func validUser(user string) bool {
 	for _, r := range user {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		case r == '.' || r == '-' || r == '_' || r == '\\' || r == '@':
+		case r == '.' || r == '-' || r == '_' || r == '@':
 		default:
 			return false
 		}
