@@ -741,6 +741,7 @@
  "roots.viewProgress": "查看处理进度",
  "roots.warning.root.empty_unmounted": "{path} 是空的，而且它本身不是接入点——共享可能没真正接上。如需在此挂载，请先完成接入再扫描：对未接入目录的扫描会把其中所有素材标成缺失。",
  "roots.warning.root.mount_writable": "挂载是可写的。本程序不会写原始素材；但把共享设为只读挂载，能让这一点对每个进程都成立。",
+ "roots.warning.root.mountpoint_invalid": "挂载点不能包含空格或 Shell 标点（; | & $ ` ' \" < > * ? # ~ ( ) 等）。请使用仅由字母、数字以及 . - _ / \\ : 组成的路径——挂载命令会以未加引号的形式生成，因此空格会导致共享被挂载到错误的路径。",
  "roots.warning.root.network_mount": "{path} 位于 {label} 挂载（{type}）上。",
  "roots.warning.root.staging_copy_disabled": "请在 config.json 中设置 \"source_staging\": {\"mode\": \"copy\"}。每次生成衍生文件都要让 FFmpeg 通过网络重读源文件，网络素材库会慢到无法忍受；copy 模式会先把源文件缓存到本地，之后不再重复经过网络读取。",
  "roots.warningLabel": "警告：",

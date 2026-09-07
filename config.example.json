@@ -1,5 +1,6 @@
 {
   "listen_address": "127.0.0.1:8787",
+  "host_platform": "",
   "hardware": {
     "mode": "auto",
     "device": "/dev/dri/renderD128",

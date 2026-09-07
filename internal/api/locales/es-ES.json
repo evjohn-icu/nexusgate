@@ -741,6 +741,7 @@
  "roots.viewProgress": "Ver el progreso del procesamiento",
  "roots.warning.root.empty_unmounted": "{path} está vacío y no es en sí un punto de montaje: es posible que el recurso compartido no esté realmente montado. Si debe montarse aquí, móntalo antes de escanear: un escaneo de un directorio no montado marca todo su material como faltante.",
  "roots.warning.root.mount_writable": "El montaje es de escritura. Nada aquí escribe en el material fuente, pero montar el recurso compartido como solo lectura hace que eso también sea cierto para cualquier otro proceso.",
+ "roots.warning.root.mountpoint_invalid": "El punto de montaje no puede contener espacios ni signos de puntuación del shell (; | & $ ` ' \" < > * ? # ~ ( ) y similares). Usa una ruta formada por letras, dígitos y . - _ / \\ : — los comandos de montaje se generan sin comillas, por lo que un espacio montaría el recurso compartido en una ruta incorrecta.",
  "roots.warning.root.network_mount": "{path} está en un montaje {label} ({type}).",
  "roots.warning.root.staging_copy_disabled": "Configura \"source_staging\": {\"mode\": \"copy\"} en config.json. Cada etapa de derivación vuelve a leer la fuente, y hacerlo a través de la red es lo que hace que una biblioteca NAS tarde días en vez de horas.",
  "roots.warningLabel": "Aviso:",

@@ -741,6 +741,7 @@
  "roots.viewProgress": "View processing progress",
  "roots.warning.root.empty_unmounted": "{path} is empty and is not itself a mount point — the share may not actually be mounted. If it should be mounted here, mount it before scanning: a scan of an unmounted directory marks every asset in it as missing.",
  "roots.warning.root.mount_writable": "The mount is writable. Nothing here writes to source footage, but mounting the share read-only makes that true of every other process too.",
+ "roots.warning.root.mountpoint_invalid": "The mount point cannot contain spaces or shell punctuation (; | & $ ` ' \" < > * ? # ~ ( ) and the like). Use a path made of letters, digits and . - _ / \\ : — the mount commands are generated unquoted, so a space would mount the share at the wrong path.",
  "roots.warning.root.network_mount": "{path} is on a {label} mount ({type}).",
  "roots.warning.root.staging_copy_disabled": "Set \"source_staging\": {\"mode\": \"copy\"} in config.json. Every derive stage re-reads the source, and doing that over the network is what makes a NAS library take days rather than hours.",
  "roots.warningLabel": "Warning:",

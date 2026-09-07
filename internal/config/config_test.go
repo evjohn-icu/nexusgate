@@ -105,3 +105,27 @@ func TestTrustedReadPrefixesParsesConfiguredRanges(t *testing.T) {
 		t.Fatalf("prefixes=%v", prefixes)
 	}
 }
+
+func TestLoadReadsHostPlatformFromEnvironment(t *testing.T) {
+	t.Setenv("NEXUSGATE_DATA_DIR", t.TempDir())
+	t.Setenv("NEXUSGATE_HOST_PLATFORM", "  unraid  ")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HostPlatform != "unraid" {
+		t.Fatalf("host platform=%q want unraid", cfg.HostPlatform)
+	}
+}
+
+func TestLoadEmptyHostPlatformEnvironmentPreservesDefault(t *testing.T) {
+	t.Setenv("NEXUSGATE_DATA_DIR", t.TempDir())
+	t.Setenv("NEXUSGATE_HOST_PLATFORM", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HostPlatform != "" {
+		t.Fatalf("empty host platform environment changed default to %q", cfg.HostPlatform)
+	}
+}

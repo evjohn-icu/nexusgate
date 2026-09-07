@@ -311,10 +311,11 @@ type Service struct {
 	// exists only so tests can exercise the mount.Host.Container branch (the
 	// compose-volume suggestion below) without this test binary actually
 	// running inside a container — mount.LocalHost() detects that from
-	// /.dockerenv, which a test cannot fake by construction. Left unexported
-	// and nil in every real Service: nothing outside this package's own tests
-	// can reach it, so production InspectRootPath always reports the real
-	// host.
+	// /.dockerenv, which a test cannot fake by construction. The configured
+	// platform hint is layered on top, just as it is on the locally detected
+	// host. Left unexported and nil in every real Service: nothing outside this
+	// package's own tests can reach it, so production InspectRootPath always
+	// reports the real host.
 	hostOverride *mount.Host
 }
 
@@ -359,12 +360,21 @@ func (h HostHint) apply(host mount.Host) mount.Host {
 	return host
 }
 
-// mountHost is the mount.Host InspectRootPath generates advice for.
+// mountHost is the mount.Host InspectRootPath generates advice for. The
+// configured platform is applied here, before a request hint is layered on in
+// InspectRootPath, so deployment configuration supplies the default without
+// gaining authority over locally proven host facts.
 func (s *Service) mountHost() mount.Host {
+	var host mount.Host
 	if s.hostOverride != nil {
-		return *s.hostOverride
+		host = *s.hostOverride
+	} else {
+		host = mount.LocalHost()
 	}
-	return mount.LocalHost()
+	if knownPlatforms[s.cfg.HostPlatform] {
+		host.Platform = s.cfg.HostPlatform
+	}
+	return host
 }
 
 func NewService(repo Repository, cfg config.Config) (*Service, error) {

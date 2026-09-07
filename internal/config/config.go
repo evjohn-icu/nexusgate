@@ -287,6 +287,7 @@ type Config struct {
 	CacheDir          string                  `json:"cache_dir"`
 	DatabasePath      string                  `json:"database_path"`
 	ListenAddress     string                  `json:"listen_address"`
+	HostPlatform      string                  `json:"host_platform"`
 	Providers         ProvidersConfig         `json:"providers"`
 	Hardware          media.HardwareConfig    `json:"hardware"`
 	SourceStaging     SourceStagingConfig     `json:"source_staging"`
@@ -343,6 +344,12 @@ func Load() (Config, error) {
 	}
 	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_LISTEN_ADDRESS")); v != "" {
 		cfg.ListenAddress = v
+	}
+	// This is a deployment hint rather than a fact LocalHost can prove: the
+	// process can detect its container, but only the operator knows which host
+	// platform owns remote-share mounts outside it.
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_HOST_PLATFORM")); v != "" {
+		cfg.HostPlatform = v
 	}
 	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_TLS_MODE")); v != "" {
 		cfg.HubTLS.Mode = strings.ToLower(v)

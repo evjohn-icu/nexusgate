@@ -202,16 +202,17 @@ async function loadRootHealth(){
   wrap.innerHTML='<div class="table-scroll"><table class="table"><tr><th>'+esc(tdT('roots.colPath'))+'</th><th>'+esc(tdT('roots.colState'))+'</th><th>'+esc(tdT('roots.colLastHealthy'))+'</th><th>'+esc(tdT('roots.colLastScan'))+'</th><th>'+esc(tdT('roots.colTips'))+'</th></tr>'+rows+'</table></div>'+warns.join('');
 }
 var rootWarningKeyPrefix='roots.warning.';
-function rootWarningsHTML(h){
-  var details=(h.warning_details||[]);
+function rootWarningsHTML(source,calloutClass){
+  calloutClass=calloutClass||'callout callout--attention';
+  var details=(source.warning_details||[]);
   if(details.length){
     return details.map(function(d){
       var msg=tdT(rootWarningKeyPrefix+d.code,d.params||{});
       if(msg===rootWarningKeyPrefix+d.code)msg=d.message;
-      return '<div class="callout callout--attention"><span>⚠ '+esc(msg)+'</span></div>';
+      return '<div class="'+calloutClass+'"><span>⚠ '+esc(msg)+'</span></div>';
     }).join('');
   }
-  return (h.warnings||[]).map(function(w){return '<div class="callout callout--attention"><span>⚠ '+esc(w)+'</span></div>'}).join('');
+  return (source.warnings||[]).map(function(w){return '<div class="'+calloutClass+'"><span>⚠ '+esc(w)+'</span></div>'}).join('');
 }
 loadRootHealth();
 
@@ -538,7 +539,8 @@ async function verifyMount(){
       lines.push('<div class="callout callout--contradicted">'+esc(tdT('roots.existsNotDir',{path:checked}))+'</div>');
     }
     if(inspection.looks_unmounted){lines.push('<div class="callout callout--contradicted">'+esc(tdT('roots.looksUnmounted'))+'</div>')}
-    (inspection.warnings||[]).forEach(function(w){lines.push('<div class="callout">'+esc(w)+'</div>')});
+    var warningHTML=rootWarningsHTML(inspection,'callout');
+    if(warningHTML)lines.push(warningHTML);
     el.innerHTML=lines.join('');
   }catch(e){
     el.innerHTML=tdAuthDenied(e)?authNotice(null):'<div class="callout callout--contradicted">'+esc(tdT('roots.checkFailed',{message:e.message}))+'</div>';

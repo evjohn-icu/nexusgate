@@ -741,6 +741,7 @@
  "roots.viewProgress": "Voir la progression du traitement",
  "roots.warning.root.empty_unmounted": "{path} est vide et n’est pas lui-même un point de montage — le partage n’est peut-être pas réellement monté. S’il doit l’être ici, montez-le avant de scanner : un scan d’un dossier non monté marque chaque média comme manquant.",
  "roots.warning.root.mount_writable": "Le montage est en écriture. Rien ici n’écrit dans les rushes sources, mais monter le partage en lecture seule rend cela vrai pour tout autre processus aussi.",
+ "roots.warning.root.mountpoint_invalid": "Le point de montage ne peut pas contenir d’espaces ni de caractères spéciaux du shell (; | & $ ` ' \" < > * ? # ~ ( ) et autres). Utilisez un chemin composé de lettres, de chiffres et de . - _ / \\ : — les commandes de montage sont générées sans guillemets : un espace monterait le partage au mauvais chemin.",
  "roots.warning.root.network_mount": "{path} se trouve sur un montage {label} ({type}).",
  "roots.warning.root.staging_copy_disabled": "Définissez \"source_staging\": {\"mode\": \"copy\"} dans config.json. Chaque étape de dérivation relit la source, et le faire via le réseau est ce qui fait passer une médiathèque NAS de quelques heures à plusieurs jours.",
  "roots.warningLabel": "Attention :",

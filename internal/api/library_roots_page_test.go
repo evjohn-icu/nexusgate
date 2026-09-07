@@ -197,6 +197,12 @@ func TestLibraryRootsPageShowsRootHealthSection(t *testing.T) {
 // one line each. warning_details (code/params/message) is rendered through
 // the roots.warning.* catalog keys; warnings remains the fallback for older
 // payloads, and an unknown code falls back to the English message.
+//
+// rootWarningsHTML now takes the object rather than closing over a health
+// row, because the mount wizard renders the same two shapes and had drifted
+// into printing the API's raw English. So the marker below is source.warnings
+// rather than h.warnings: what needs pinning is that the flat-array fallback
+// branch still exists, and the parameter name is the only thing that moved.
 func TestLibraryRootsPageRootHealthRendersWarnings(t *testing.T) {
 	body := libraryRootsHTML
 	for _, marker := range []string{
@@ -204,7 +210,7 @@ func TestLibraryRootsPageRootHealthRendersWarnings(t *testing.T) {
 		`warning_details`,
 		`rootWarningKeyPrefix`,
 		`d.message`,
-		`h.warnings`,
+		`(source.warnings||[])`,
 		`callout--attention`,
 		`health-tips`,
 		`esc(w)`,
