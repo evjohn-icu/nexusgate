@@ -506,8 +506,8 @@ func TestUnraidGuidanceIssuesNoShellCommands(t *testing.T) {
 		t.Fatal("share did not parse")
 	}
 	unraid := Guidance(share, "", Host{OS: "linux", Platform: "unraid", Container: true})
-	if len(unraid.Steps) != 6 {
-		t.Fatalf("Unraid guidance has %d steps, want 6", len(unraid.Steps))
+	if len(unraid.Steps) != 7 {
+		t.Fatalf("Unraid guidance has %d steps, want 7", len(unraid.Steps))
 	}
 	for _, step := range unraid.Steps {
 		if len(step.Commands) != 0 {
@@ -528,6 +528,58 @@ func TestUnraidGuidanceIssuesNoShellCommands(t *testing.T) {
 	}
 	if !hasCommand {
 		t.Fatal("positive control for the plain platform produced no commands")
+	}
+}
+
+// Unraid's mount flow is deliberately a web-UI sequence: Auto Mount must be
+// saved before the explicit Mount action, or a later array restart loses the
+// share even though the initial setup appeared to work.
+func TestUnraidGuidancePlacesAutoMountBeforeMount(t *testing.T) {
+	share := Share{Protocol: ProtocolSMB, Host: "nas", Name: "Video"}
+	guide := Guidance(share, "", Host{OS: "linux", Platform: "unraid", Container: true})
+	index := func(key string) int {
+		for i, step := range guide.Steps {
+			if step.Key == key {
+				return i
+			}
+		}
+		return -1
+	}
+	add, auto, mount := index("unraid-add-remote-smb"), index("unraid-auto-mount"), index("unraid-mount-remote")
+	if add < 0 || auto < 0 || mount < 0 {
+		t.Fatalf("Unraid guidance keys missing: add=%d auto=%d mount=%d", add, auto, mount)
+	}
+	if auto != add+1 || mount != auto+1 {
+		t.Fatalf("Unraid step order = add %d, auto %d, mount %d; Auto Mount must be between add and Mount", add, auto, mount)
+	}
+	if guide.Steps[auto].Title != "Save the share and tick Auto Mount, so it returns when the array restarts" {
+		t.Fatalf("Auto Mount step title = %q", guide.Steps[auto].Title)
+	}
+}
+
+// Unraid's web UI owns the mount lifecycle, so its container note must not send
+// an operator toward Compose, which Unraid does not run natively.
+func TestUnraidContainerGuidanceUsesUnraidContainerNote(t *testing.T) {
+	share := Share{Protocol: ProtocolSMB, Host: "nas", Name: "Video"}
+	guide := Guidance(share, "", Host{OS: "linux", Platform: "unraid", Container: true})
+	want := "This container cannot mount the share for itself, and that is deliberate — it runs unprivileged without CAP_SYS_ADMIN. Unassigned Devices does the mounting. If you mounted the share after this container started, open Docker, edit nexusgate-hub, apply the change to recreate the container, and the mount becomes visible in here."
+	found := false
+	for _, note := range guide.Notes {
+		if note.Key == "unraid-container-note" {
+			found = true
+			if note.Text != want {
+				t.Errorf("Unraid container note text = %q, want exact operator guidance", note.Text)
+			}
+		}
+		if note.Key == "container-cannot-mount" {
+			t.Error("Unraid guidance must not emit the generic Compose container note")
+		}
+		if strings.Contains(note.Text, "docker-compose.yml") || strings.Contains(note.Text, "docker compose up -d") {
+			t.Errorf("Unraid note contains non-native Compose instructions: %q", note.Text)
+		}
+	}
+	if !found {
+		t.Fatal("Unraid container guidance must emit unraid-container-note (catalog key roots.guide.unraid-container-note)")
 	}
 }
 

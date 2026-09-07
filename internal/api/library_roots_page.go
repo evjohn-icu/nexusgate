@@ -103,7 +103,7 @@ const libraryRootsHTML = `<!doctype html><html lang="zh-CN"><head><meta charset=
 <label class="muted"><input id="host-service" type="checkbox" onchange="regenerateGuidance()"> [[i18n:roots.hostServiceLabel]]</label>
 <p class="muted">[[i18n:roots.hostHintNote]]</p>
 </div>
-<div class="field"><label for="mountpoint">[[i18n:roots.mountpointLabel]]</label><input id="mountpoint" type="text" onchange="regenerateGuidance()"></div>
+<div class="field"><label for="mountpoint">[[i18n:roots.mountpointLabel]]</label><input id="mountpoint" type="text" oninput="updateMountpointHint()" onchange="regenerateGuidance()"><div id="mountpoint-hint" class="callout callout--attention" style="display:none" role="note"></div></div>
 <div id="guide-body"></div>
 </div>
 <div class="panel" id="compose-section" style="display:none"></div>
@@ -217,6 +217,12 @@ function rootWarningsHTML(source,calloutClass){
 loadRootHealth();
 
 var lastInput='';
+// verifyMount inspects the MOUNT POINT, which is a local path — is_share on
+// that response is therefore always false, and gating the add button on it
+// would never fire. What the wizard actually knows is which flow it is in:
+// renderGuidance runs only when step 1 classified the operator's input as a
+// share. That is the fact worth remembering, so remember it here.
+var mountingShare=false;
 var lastVerifyPath='';
 var addedRoot=null;
 
@@ -437,8 +443,10 @@ function renderGuidance(inspection){
   // it is derived from inspection.path (already the parsed share address,
   // see RootInspection.Path in internal/app/service.go) rather than given a
   // Key of its own the way steps and notes are.
+  mountingShare=true;
   document.getElementById('guide-summary').textContent=tdT('roots.summary.networkShare',{path:(inspection&&inspection.path)||''});
   document.getElementById('mountpoint').value=inspection.default_mountpoint||'';
+  updateMountpointHint();
   renderGuideBody(inspection.guidance);
   renderComposeVolume(inspection);
 }
@@ -474,9 +482,19 @@ function renderComposeVolume(inspection){
   container.innerHTML=html;
 }
 
+function updateMountpointHint(){
+  var hint=document.getElementById('mountpoint-hint');
+  var input=document.getElementById('mountpoint');
+  var platform=document.getElementById('host-platform');
+  if(!hint||!input||!platform)return;
+  var show=platform.value==='unraid'&&!input.value.trim();
+  hint.style.display=show?'':'none';
+  if(show)hint.textContent=tdT('roots.mountpointManualHint');
+}
+
 function renderGuideBody(guidance){
   var container=document.getElementById('guide-body');
-  if(!guidance||!guidance.steps){container.innerHTML='<div class="muted">'+esc(tdT('roots.noGuidance'))+'</div>';return}
+  if(!guidance||!guidance.steps||!guidance.steps.length){container.innerHTML='<div class="muted">'+esc(tdT('roots.noGuidance'))+'</div><div class="callout callout--attention">'+esc(tdT('roots.noGuidanceAction'))+'</div>';return}
   var html='';
   guidance.steps.forEach(function(step,i){
     html+='<div class="guide-step"><div class="guide-step-title">'+(i+1)+'. '+esc(guideText(step.key,step.title))+'</div>';
@@ -496,6 +514,12 @@ function renderGuideBody(guidance){
   if(guidance.notes&&guidance.notes.length){
     html+='<div class="notes"><b>'+esc(tdT('roots.notesLabel'))+'</b><ul>'+guidance.notes.map(function(n){return '<li>'+esc(guideText(n.key,n.text))+'</li>'}).join('')+'</ul></div>';
   }
+  // Only where there is something to hand over. Unraid's guidance is a
+  // sequence of clicks in its own web UI and carries no commands at all;
+  // offering to pass them to someone with a terminal would invent a step.
+  if(guidance.steps.some(function(s){return s.commands&&s.commands.length})){
+    html+='<div class="callout callout--attention">'+esc(tdT('roots.noTerminalHandoff'))+'</div>';
+  }
   container.innerHTML=html;
 }
 
@@ -506,6 +530,7 @@ async function regenerateGuidance(){
   try{
     var inspection=await json('/api/v1/roots/inspect',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify(Object.assign({path:lastInput,mountpoint:mp},hostHint()))});
     renderGuideBody(inspection.guidance);
+    updateMountpointHint();
     renderComposeVolume(inspection);
   }catch(e){
     container.innerHTML='<div class="callout callout--contradicted">'+esc(tdT('roots.regenerateFailed',{message:e.message}))+'</div>';
@@ -532,7 +557,15 @@ async function verifyMount(){
     if(inspection.exists&&inspection.is_dir){
       lines.push('<div class="callout callout--confirmed">'+esc(tdT('roots.existsIsDir',{path:checked}))+'</div>');
       if(inspection.network){lines.push('<div class="muted">'+esc(tdT('roots.filesystem',{label:inspection.network_label||inspection.filesystem_type,type:inspection.filesystem_type}))+'</div>')}
-      document.getElementById('verify-add-btn').style.display='';
+      // An empty LOCAL directory is still addable — root.empty_unmounted says
+      // the share "may not" be mounted and is deliberately warn-but-allow. What
+      // must be blocked is a mount the operator was just walked through that did
+      // not take: registering it succeeds and then reports every asset missing.
+      if(mountingShare&&inspection.looks_unmounted){
+        lines.push('<div class="callout callout--contradicted">'+esc(tdT('roots.mountFailedNext'))+'</div>');
+      }else{
+        document.getElementById('verify-add-btn').style.display='';
+      }
     }else if(!inspection.exists){
       lines.push('<div class="callout callout--contradicted">'+esc(tdT('roots.notExists',{path:checked}))+'</div>');
     }else{

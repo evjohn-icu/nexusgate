@@ -107,14 +107,18 @@ func TestTrustedReadPrefixesParsesConfiguredRanges(t *testing.T) {
 }
 
 func TestLoadReadsHostPlatformFromEnvironment(t *testing.T) {
-	t.Setenv("NEXUSGATE_DATA_DIR", t.TempDir())
-	t.Setenv("NEXUSGATE_HOST_PLATFORM", "  unraid  ")
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.HostPlatform != "unraid" {
-		t.Fatalf("host platform=%q want unraid", cfg.HostPlatform)
+	for _, raw := range []string{"  unraid  ", "Unraid", "UNRAID", "  Unraid  "} {
+		t.Run(raw, func(t *testing.T) {
+			t.Setenv("NEXUSGATE_DATA_DIR", t.TempDir())
+			t.Setenv("NEXUSGATE_HOST_PLATFORM", raw)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.HostPlatform != "unraid" {
+				t.Fatalf("host platform=%q want unraid", cfg.HostPlatform)
+			}
+		})
 	}
 }
 
@@ -127,5 +131,16 @@ func TestLoadEmptyHostPlatformEnvironmentPreservesDefault(t *testing.T) {
 	}
 	if cfg.HostPlatform != "" {
 		t.Fatalf("empty host platform environment changed default to %q", cfg.HostPlatform)
+	}
+
+	if err := os.Unsetenv("NEXUSGATE_HOST_PLATFORM"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HostPlatform != "" {
+		t.Fatalf("unset host platform environment changed default to %q", cfg.HostPlatform)
 	}
 }

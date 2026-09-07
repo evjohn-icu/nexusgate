@@ -58,14 +58,14 @@ on **Read Only slave** — see
 [Mounting remote (SMB/NFS) shares](#mounting-remote-smbnfs-shares-with-live-remount)
 below for why that mode is not optional.
 
-Set the Hub template's **宿主平台 NEXUSGATE_HOST_PLATFORM** variable to
-`unraid` before starting the container. This is a browser-wizard hint, not a
-mounting command: when the library-root wizard needs a remote-share setup, it
-shows Unassigned Devices instructions instead of asking you to choose a
-platform. The wizard still does not mount the share for you; mount it with
-Unassigned Devices and point the media path at `/mnt/remotes` as described
-below. Leave the variable empty (or use another value) only when you want the
-wizard to ask for the platform interactively.
+The Hub template already ships with **宿主平台 NEXUSGATE_HOST_PLATFORM** set
+to `unraid`. This is a browser-wizard hint, not a mounting command: when the
+library-root wizard needs a remote-share setup, it shows Unassigned Devices
+instructions instead of asking you to choose a platform. The wizard still does
+not mount the share for you; mount it with Unassigned Devices and point the
+media path at `/mnt/remotes` as described below. Clear the variable only when
+the Hub container is somehow not running on Unraid and you want the wizard to
+ask for the platform interactively.
 
 **Admin auth is already set, and you should leave it alone.** The Hub template
 ships `管理鉴权模式 NEXUSGATE_HUB_ADMIN_AUTH` with a default of `required`, so a

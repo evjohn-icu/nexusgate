@@ -615,7 +615,7 @@ func addRootStep(mountpoint string, host Host) Step {
 	if host.Platform == "unraid" {
 		return Step{
 			Key:      "add-root",
-			Title:    "Add the mount point confirmed by Unassigned Devices as a library root",
+			Title:    "Open NexusGate's library-roots page and add /media/library/<the subdirectory under /mnt/remotes that Unassigned Devices reported>; never add the host /mnt/remotes/... path, and add /media/library itself when the mount root is /mnt/remotes",
 			Commands: []string{},
 		}
 	}
@@ -651,10 +651,11 @@ func credentialsPath(share Share) string {
 func unraidSteps(share Share, mountpoint string, host Host) []Step {
 	return []Step{
 		{Key: "unraid-install-unassigned-devices", Title: "In Apps, search for Unassigned Devices and install the plugin", Commands: []string{}},
-		{Key: "unraid-add-remote-smb", Title: "On the Main page, find the Unassigned Devices area, choose the option to add a remote SMB share, and enter the NAS address, share name, username, and password", Commands: []string{}},
+		{Key: "unraid-add-remote-smb", Title: "On the Main page, find the Unassigned Devices area, choose the option to add a remote SMB or NFS share, and enter the NAS address, the share name for SMB or export path for NFS, username, and password", Commands: []string{}},
+		{Key: "unraid-auto-mount", Title: "Save the share and tick Auto Mount, so it returns when the array restarts", Commands: []string{}},
 		{Key: "unraid-mount-remote", Title: "Use the Mount action for the remote share", Commands: []string{}},
 		{Key: "unraid-confirm-mountpoint", Title: "Confirm the Mount Point shown by the Unassigned Devices plugin; use the path it actually reports", Commands: []string{}},
-		{Key: "unraid-readonly-slave", Title: "On the Docker page, edit the container so the media path points to the /mnt/remotes parent directory, and confirm Access Mode is Read Only slave", Commands: []string{}},
+		{Key: "unraid-readonly-slave", Title: "On the Docker page, edit nexusgate-hub so host /mnt/remotes maps to /media/library in the container, set Access Mode to Read Only slave, click Apply to recreate the container, and confirm it is running before continuing", Commands: []string{}},
 		addRootStep(mountpoint, host),
 	}
 }
@@ -784,7 +785,16 @@ func notes(share Share, host Host) []Note {
 		{Key: "staging-copy", Text: `Set "source_staging": {"mode": "copy"} in config.json for a network root. FFmpeg reading a 4K source over SMB for every derive is what makes a NAS library crawl; copy mode stages the file into cache/sources/ once instead.`},
 		{Key: "worker-same-path", Text: "A Worker needs the same footage at the same path, or an explicit --mount root-id=/its/own/path when it enrols."},
 	}
-	if host.Container {
+	// Unraid guidance is a sequence of clicks in a web UI. The generic
+	// container note recommends Compose commands the operator cannot run on
+	// Unraid, so keep that boundary explicit with the platform-specific action
+	// instead of emitting an unusable command.
+	if host.Platform == "unraid" {
+		notes = append(notes, Note{
+			Key:  "unraid-container-note",
+			Text: "This container cannot mount the share for itself, and that is deliberate — it runs unprivileged without CAP_SYS_ADMIN. Unassigned Devices does the mounting. If you mounted the share after this container started, open Docker, edit nexusgate-hub, apply the change to recreate the container, and the mount becomes visible in here.",
+		})
+	} else if host.Container {
 		notes = append(notes, Note{
 			Key:  "container-cannot-mount",
 			Text: "This container cannot mount the share for itself, and that is deliberate: it runs as a fixed unprivileged user with no CAP_SYS_ADMIN, and either that capability or a bind-mounted docker.sock would let it acquire the host mount authority it is specifically denied — docker.sock is the worse of the two, since it is unrestricted root on the Docker host, not merely on this container. That is why the steps above run on the Docker host instead of in here. If the share is mounted on the host after this container already started, it stays invisible inside the container unless the media bind carries \"bind.propagation: rslave\" in docker-compose.yml; without that, recreate the container (docker compose up -d) once the host mount exists.",

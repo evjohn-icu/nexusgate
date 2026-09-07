@@ -2,6 +2,78 @@
 
 ## Unreleased
 
+- **The mount wizard printed the API's raw English in every language, while the
+  root-health table on the same page had been translating the same warnings for
+  releases.** A Japanese operator got a localised health row and, from the very
+  same inspection, an English refusal. The wizard now goes through the renderer
+  the table already used: prefer the structured `warning_details`, look each code
+  up as `roots.warning.<code>`, fall back to the API's English when a catalog has
+  no entry, and still read the flat array older payloads send. One renderer, both
+  call sites — two copies of that logic is how the two drifted apart.
+
+  `root.mountpoint_invalid`, the newest of the five codes, had no entry anywhere:
+  not in the five shipped catalogs, not in the authoring fragment. So the warning
+  most likely to be new to an operator was the one guaranteed to arrive in
+  English. Two guards now hold the shape rather than anyone's memory.
+  `TestRootWarningCodesHaveCatalogEntries` derives the code set by scanning
+  `internal/app` for `Code: "root.*"`, so a sixth code trips it without being
+  added to a list. `TestRootsFragmentMatchesRuntimeCatalog` compares the two files
+  for equality, not merely for presence, because the failure that motivated it was
+  a translation that had drifted from its source. The split is real and easy to
+  miss: `//go:embed locales/*.json` does not match `locales/fragments/`, so
+  editing one of the pair looks half-green — two different tests read the two
+  files.
+
+  The refusal text itself had drifted the same way. It advertised the backslash
+  for as long as `mount.safeForCommand` accepted it, and kept advertising it after
+  the escape character was removed from the policy meant to exclude escapes — an
+  operator following the advice would have had the next attempt refused by the
+  very rule the sentence was quoting. Nothing went red, because the message is a
+  string literal in `internal/app` and the policy is a switch statement in
+  `internal/mount`. The advertised set is now a named constant the message is
+  built from, and the test walks every character in it through
+  `mount.ValidMountpoint` while requiring the prose to quote the constant
+  verbatim, so rewording the sentence alone cannot silently change what is
+  asserted.
+
+- **A deployment can now declare which platform owns mounts, and the wizard
+  stopped being a dead end when its instructions do not work.** `Host.Platform`
+  could previously be set only from the request body, so an Unraid container asked
+  the operator a question its own template already knew the answer to.
+  `NEXUSGATE_HOST_PLATFORM` is read in `config.Load` with every other
+  `NEXUSGATE_*` variable rather than in `mount.LocalHost()`, because `LocalHost`
+  fills only facts it can prove — `INVOCATION_ID` proves systemd, `/.dockerenv`
+  proves a container — and a deployment's self-declaration is a hint, which is
+  what `HostHint`'s own comment says. Validation stays in `app.knownPlatforms`, so
+  there is still one closed set, and a request hint still layers on top. The value
+  is case-folded on the way in, following `NEXUSGATE_TLS_MODE`: a variable typed
+  by hand into a container template should not have to be spelled exactly, and
+  `Unraid` used to be dropped in silence. The Unraid Hub template ships it already
+  set. The worker template deliberately does not carry it at all — it runs derive
+  work and never serves the wizard, and a variable that does nothing is worse than
+  an absent one, because the operator will set it and believe it did something.
+
+  The Unraid guidance itself was incomplete in ways that only show up on the day
+  the array restarts. It named SMB where this package supports NFS too; it never
+  said to tick Auto Mount, so the share did not come back; it named the host side
+  of the bind but not the container side, nor the Apply that recreates the
+  container; its final step handed over the host path, which does not exist inside
+  the container; and it emitted the generic container note recommending
+  `docker compose up -d`, which Unraid does not run natively — instructions the
+  operator cannot follow are worse than none, so Unraid gets its own note about
+  the Docker page instead.
+
+  Three exits were added for the operator the wizard used to abandon. Guidance
+  that produces no steps now says what to change rather than only that there is
+  nothing; a share that was just walked through and still looks unmounted no
+  longer offers an add button, because registering it succeeds and then reports
+  every asset missing — an empty *local* directory is still addable, since
+  `root.empty_unmounted` was deliberately designed as warn-but-allow; and where
+  the guidance carries commands at all, there is a standing note for the operator
+  who has no terminal and needs to hand them to someone who does. That last one is
+  withheld on Unraid, whose guidance is a sequence of clicks and carries no
+  commands to hand over.
+
 - **The share name and the mount point reached the generated commands
   unvalidated; only the username had been fixed.** `Share.User` was hardened at
   the parser last cycle because it is copied into a here-doc, a shell command

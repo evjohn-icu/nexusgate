@@ -348,8 +348,10 @@ func Load() (Config, error) {
 	// This is a deployment hint rather than a fact LocalHost can prove: the
 	// process can detect its container, but only the operator knows which host
 	// platform owns remote-share mounts outside it.
+	// Fold the value because a variable typed by hand into a container template
+	// is not something anyone should have to spell exactly.
 	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_HOST_PLATFORM")); v != "" {
-		cfg.HostPlatform = v
+		cfg.HostPlatform = strings.ToLower(v)
 	}
 	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_TLS_MODE")); v != "" {
 		cfg.HubTLS.Mode = strings.ToLower(v)
