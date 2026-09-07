@@ -2,6 +2,66 @@
 
 ## Unreleased
 
+- **`//nas/My Footage` was answered with a statement about a path the operator
+  never typed.** A space made `ParseShare` refuse the address outright, so the
+  wizard classified it as a local directory, folded the `//` to `/`, and
+  reported `cannot read /nas/My Footage`. Every part of that reply was wrong
+  except the verb: the share was never mentioned, and the path named was one
+  the operator had not written.
+
+  A space is a legal SMB share name. What it is not is something that can be
+  pasted unquoted into a shell line, an `/etc/fstab` entry and a Compose
+  `device:` scalar, which quote it three different ways. Those turn out to be
+  two separate questions — *is this a share address?* and *can this reach a
+  command line?* — and one predicate was answering both. It is now two:
+  `parseLegalShareName` classifies, `safeForCommand` guards the sinks, and the
+  gap between them is exactly one character. `TestPolicySplitIsExactlyOneCharacterWide`
+  pins that width, because the copy shown to the operator names the space
+  specifically in five languages; widening the parser without rewriting them
+  would have the Hub reporting a space in a name that has none.
+
+  Escaping per sink was the alternative and is still refused. Three sinks with
+  three quoting rules is the thing `safeForCommand`'s comment exists to reject,
+  and reversing that for one character would buy one share name at the price of
+  the argument. So the share classifies, `mount.Guidance` returns its summary
+  with no steps, `mount.ComposeVolume` reports false, and
+  `app.InspectRootPath` says why with a new `root.share_name_unsupported` — the
+  same shape `root.mountpoint_invalid` already had, because it is the same
+  situation. The operator is told the two things they can actually do: rename
+  the share, or mount it themselves and come back to the verify step.
+
+  One trap came with the widening and is closed in the same change.
+  `DefaultMountpoint` derives its suggestion from the share name, so a spaced
+  share would have had the Hub prefill `/mnt/nexusgate/My Footage` into the
+  wizard's box and then refuse it — blaming the operator for a value the Hub
+  supplied. The suggestion is sanitised now, CJK names keeping CJK directories,
+  and `TestDefaultMountpointIsOneThisPackageWillAccept` asserts the Hub never
+  proposes a mount point its own `ValidMountpoint` rejects. Windows is the
+  deliberate exception, asserted rather than skipped: there the mount point is
+  the share's UNC address, and renaming it would name a share that does not
+  exist.
+
+- **A library scan died with the browser tab that started it.** `scanRoot`
+  handed the request's context straight to a synchronous walk of the whole
+  tree, and `internal/ingest`'s walk honours cancellation. Measured on go1.27.1:
+  under HTTP/2 — which is what a browser negotiates against `serve`, since
+  nothing in the tree sets `TLSNextProto` — the server's five-minute
+  `WriteTimeout` cancels `r.Context()` at exactly 5:00. A first scan of a NAS
+  library takes longer than that routinely: the fingerprint reads up to 12 MiB
+  of every video, over the network. So the walk was cut off partway, the
+  browser was told the scan failed, and the library supervisor quietly finished
+  the job on its next pass — the worst available shape, since the operator is
+  shown a failure for work that succeeds later without them.
+
+  The scan now runs on a context derived from the request's values but not its
+  cancellation, bounded explicitly at 30 minutes. The bound is a liveness
+  limit, not a performance target: without one, a hung NFS mount would hold the
+  per-root lock forever, which is worse than the truncation being fixed. The
+  library supervisor already scanned on a context that was not a request's;
+  this makes the two agree. Nothing about reconciliation changed, and it did
+  not need to — a cancelled walk returns before the gate, so a truncated
+  `SeenRelativePaths` could never have marked assets missing.
+
 - **The mount wizard printed the API's raw English in every language, while the
   root-health table on the same page had been translating the same warnings for
   releases.** A Japanese operator got a localised health row and, from the very
@@ -92,9 +152,11 @@
   every shell metacharacter, fstab separator and YAML indicator is ASCII, so
   any rune at or above 0x80 cannot change how a command parses and is passed
   through. A share named 素材库 still mounts, which is the case a
-  `validUser`-shaped Latin allowlist would have broken. A space is refused for
-  correctness before safety — `sudo mount -t cifs //nas/My Share /mnt/x` is two
-  arguments whatever was meant by it, and fstab writes a space as `\040`.
+  `validUser`-shaped Latin allowlist would have broken. A space is refused *at
+  the sink* for correctness before safety — `sudo mount -t cifs //nas/My Share
+  /mnt/x` is two arguments whatever was meant by it, and fstab writes a space as
+  `\040`. It is no longer refused at the parser; see the entry above for why
+  those turned out to be two different questions.
 
   The two halves refuse differently, because they fail differently. A share
   name carrying shell punctuation is not a share that needs sanitising, so

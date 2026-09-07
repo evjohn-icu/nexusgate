@@ -210,7 +210,6 @@ func TestGuidanceGeneratedCommandsSurviveHostileShareInput(t *testing.T) {
 		"//nas/Video|id",
 		"//nas/Video&id",
 		"//nas/Video\nid",
-		"smb://nas/My Share",
 		"nas:/export;id",
 		`\\nas\Video"; id; "`,
 		// The UNC and // forms fold a backslash to / at the top of ParseShare,
@@ -256,6 +255,54 @@ func TestGuidanceGeneratedCommandsSurviveHostileShareInput(t *testing.T) {
 		if share.Name != legitimate.name {
 			t.Errorf("ParseShare(%q).Name = %q, want %q", legitimate.input, share.Name, legitimate.name)
 		}
+	}
+
+	// The third table: input that MUST classify as a share and MUST still yield
+	// no commands. "smb://nas/My Share" moved here out of the hostile table
+	// above, and that move is deliberate rather than a weakening. A space is a
+	// legal SMB share name, so refusing the parse made the wizard answer
+	// "cannot read /nas/My Footage" — a path the operator never typed, with
+	// their share absent from the reply. Classifying it and withholding the
+	// commands is what lets the caller say the true thing. See
+	// parseLegalShareName.
+	for _, spaced := range []struct {
+		input string
+		name  string
+	}{
+		{"smb://nas/My Share", "My Share"},
+		{"//nas/My Footage", "My Footage"},
+		{"//nas/ Video", " Video"},
+		{"nas:/export/My Footage", "/export/My Footage"},
+	} {
+		share, ok := ParseShare(spaced.input)
+		if !ok {
+			t.Errorf("%q must classify as a share: a space is a legal share name", spaced.input)
+			continue
+		}
+		if share.Name != spaced.name {
+			t.Errorf("ParseShare(%q).Name = %q, want %q", spaced.input, share.Name, spaced.name)
+		}
+		if CommandSafeShare(share) {
+			t.Errorf("%q must not be command-safe: its name cannot be interpolated unquoted", spaced.input)
+		}
+		for _, host := range []Host{{OS: "linux", UID: 1000, GID: 1000}, {OS: "darwin"}, {OS: "windows"}, {OS: "linux", Container: true}} {
+			guide := Guidance(share, "", host)
+			for _, step := range guide.Steps {
+				if len(step.Commands) > 0 {
+					t.Errorf("%q produced command %q on %s; a name that cannot be quoted must yield no commands", spaced.input, step.Commands[0], host.OS)
+				}
+			}
+		}
+		if _, ok := ComposeVolume(share, "v"); ok {
+			t.Errorf("%q must not render a compose volume: the device: scalar would carry the raw name", spaced.input)
+		}
+	}
+
+	// The outer TrimSpace in ParseShare already removes a leading or trailing
+	// space on the WHOLE input, so this is a clean name rather than a spaced
+	// one — asserted so nobody "fixes" the case above by trimming the name too.
+	if share, ok := ParseShare("  //nas/Video  "); !ok || share.Name != "Video" {
+		t.Errorf(`ParseShare("  //nas/Video  ") = %+v, %v; want the name Video with the input trimmed`, share, ok)
 	}
 
 	plain, ok := ParseShare("//nas/Video")
@@ -1238,5 +1285,96 @@ func TestContainerPathRefusesPathsThatOnlyLookContained(t *testing.T) {
 	// A sibling directory sharing a name prefix was already refused; keep it so.
 	if _, ok := ContainerPath("/mnt/remotesEVIL/x", host); ok {
 		t.Error("a sibling directory with a shared name prefix must not count as contained")
+	}
+}
+
+// TestPolicySplitIsExactlyOneCharacterWide pins the gap between the parse
+// policy and the sink policy at a single character. It matters because the
+// user-facing copy names that character specifically -- internal/app's
+// shareNameUnsupportedMessage and the five locale catalogs all say "contains a
+// space" -- so widening parseLegalShareName without rewriting five languages
+// would leave the Hub telling an operator their share name has a space in it
+// when it does not.
+func TestPolicySplitIsExactlyOneCharacterWide(t *testing.T) {
+	candidates := make([]rune, 0, 128)
+	for r := rune(0x20); r <= 0x7E; r++ {
+		candidates = append(candidates, r)
+	}
+	// Runes above 0x7F the sink policy has opinions about: the YAML line breaks
+	// and invisible spaces safeForCommand rejects, plus CJK it must accept.
+	candidates = append(candidates, '\u0085', '\u00a0', '\u2028', '\u2029', '\u3000', '\ufeff', '\u7d20', '\u6750', '\u3042')
+
+	gap := make([]rune, 0, 2)
+	for _, r := range candidates {
+		s := string(r)
+		if parseLegalShareName(s) && !safeForCommand(s) {
+			gap = append(gap, r)
+		}
+		if !parseLegalShareName(s) && safeForCommand(s) {
+			t.Errorf("%q is command-safe but not parse-legal; the parse policy must never be the narrower of the two", r)
+		}
+	}
+	if len(gap) != 1 || gap[0] != ' ' {
+		t.Fatalf("parse-legal-but-not-command-safe = %q, want exactly [space]; the user-facing copy names the space by itself", gap)
+	}
+
+	// Positive control. Without it a parseLegalShareName returning false for
+	// everything would satisfy the assertion above with an empty gap, and one
+	// accepting everything would satisfy it too.
+	if !parseLegalShareName("Video") || !safeForCommand("Video") {
+		t.Fatal("an ordinary share name must satisfy both halves of the policy")
+	}
+	if parseLegalShareName("Video;id") {
+		t.Fatal("shell punctuation must still fail classification, not merely the sink")
+	}
+}
+
+// TestDefaultMountpointIsOneThisPackageWillAccept closes a trap the parse
+// widening opened: DefaultMountpoint's answer is prefilled into the wizard's
+// mount-point box, so a share name carrying a space would have had the Hub
+// propose /mnt/nexusgate/My Footage and then refuse it -- blaming the operator
+// for a value the Hub itself supplied.
+func TestDefaultMountpointIsOneThisPackageWillAccept(t *testing.T) {
+	for _, input := range []string{"//nas/Video", "//nas/\u7d20\u6750\u5e93", "//nas/My Footage", "//nas/\u6211\u7684 \u7d20\u6750", "nas:/export/My Footage"} {
+		share, ok := ParseShare(input)
+		if !ok {
+			t.Fatalf("%q must parse", input)
+		}
+		for _, host := range []Host{
+			{OS: "linux", UID: 1000, GID: 1000},
+			{OS: "darwin"},
+			{OS: "linux", UID: 1000, GID: 1000, Container: true, MediaBind: Bind{Source: "/srv/media", Target: "/media/library"}},
+		} {
+			mountpoint := DefaultMountpoint(share, host)
+			if mountpoint == "" {
+				t.Errorf("DefaultMountpoint(%q, %s) is empty", input, host.OS)
+				continue
+			}
+			if !ValidMountpoint(mountpoint, host) {
+				t.Errorf("DefaultMountpoint(%q, %s) = %q, which this package's own ValidMountpoint refuses", input, host.OS, mountpoint)
+			}
+		}
+	}
+
+	// Windows is the deliberate carve-out, asserted rather than skipped. There
+	// the mount point IS the share address -- DefaultMountpoint returns the UNC
+	// path -- so sanitising it would name a share that does not exist. The
+	// spaced share is refused wholesale by CommandSafeShare instead, so no
+	// unusable UNC is ever handed to a generated command.
+	spaced, ok := ParseShare("//nas/My Footage")
+	if !ok {
+		t.Fatal("the spaced share must parse")
+	}
+	if got := DefaultMountpoint(spaced, Host{OS: "windows"}); got != `\\nas\My Footage` {
+		t.Errorf("DefaultMountpoint on windows = %q, want the share's real UNC path unmodified", got)
+	}
+	if CommandSafeShare(spaced) {
+		t.Fatal("the windows carve-out is only safe while CommandSafeShare refuses the share outright")
+	}
+
+	// Positive control: an ordinary share still yields the documented path.
+	plain, _ := ParseShare("//nas/Video")
+	if got := DefaultMountpoint(plain, Host{OS: "linux"}); got != "/mnt/nexusgate/Video" {
+		t.Errorf("DefaultMountpoint = %q, want /mnt/nexusgate/Video", got)
 	}
 }

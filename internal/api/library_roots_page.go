@@ -447,7 +447,7 @@ function renderGuidance(inspection){
   document.getElementById('guide-summary').textContent=tdT('roots.summary.networkShare',{path:(inspection&&inspection.path)||''});
   document.getElementById('mountpoint').value=inspection.default_mountpoint||'';
   updateMountpointHint();
-  renderGuideBody(inspection.guidance);
+  renderGuideBody(inspection.guidance, guideActionKey(inspection));
   renderComposeVolume(inspection);
 }
 
@@ -492,9 +492,20 @@ function updateMountpointHint(){
   if(show)hint.textContent=tdT('roots.mountpointManualHint');
 }
 
-function renderGuideBody(guidance){
+function guideActionKey(inspection){
+  var details=(inspection&&inspection.warning_details)||[];
+  for(var i=0;i<details.length;i++){
+    if(details[i]&&details[i].code==='root.share_name_unsupported')return 'roots.shareNameUnsupportedAction';
+  }
+  // Keep unknown warning codes on the mount-point advice rather than a generic
+  // string: the wizard does not know which of the two inputs was refused, and
+  // the mount point is the one the operator can actually edit here.
+  return 'roots.noGuidanceAction';
+}
+
+function renderGuideBody(guidance,actionKey){
   var container=document.getElementById('guide-body');
-  if(!guidance||!guidance.steps||!guidance.steps.length){container.innerHTML='<div class="muted">'+esc(tdT('roots.noGuidance'))+'</div><div class="callout callout--attention">'+esc(tdT('roots.noGuidanceAction'))+'</div>';return}
+  if(!guidance||!guidance.steps||!guidance.steps.length){container.innerHTML='<div class="muted">'+esc(tdT('roots.noGuidance'))+'</div><div class="callout callout--attention">'+esc(tdT(actionKey||'roots.noGuidanceAction'))+'</div>';return}
   var html='';
   guidance.steps.forEach(function(step,i){
     html+='<div class="guide-step"><div class="guide-step-title">'+(i+1)+'. '+esc(guideText(step.key,step.title))+'</div>';
@@ -529,7 +540,7 @@ async function regenerateGuidance(){
   var container=document.getElementById('guide-body');
   try{
     var inspection=await json('/api/v1/roots/inspect',{method:'POST',headers:authHeaders({'Content-Type':'application/json'}),body:JSON.stringify(Object.assign({path:lastInput,mountpoint:mp},hostHint()))});
-    renderGuideBody(inspection.guidance);
+    renderGuideBody(inspection.guidance, guideActionKey(inspection));
     updateMountpointHint();
     renderComposeVolume(inspection);
   }catch(e){

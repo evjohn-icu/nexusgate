@@ -20,8 +20,12 @@ func TestLibraryRootsWizardHasRecoveryExits(t *testing.T) {
 			marker: `hint.textContent=tdT('roots.mountpointManualHint');`,
 		},
 		{
-			name:   "missing guidance recovery",
-			marker: `esc(tdT('roots.noGuidanceAction'))`,
+			name: "missing guidance recovery",
+			// The empty-guidance exit still renders roots.noGuidanceAction; it is
+			// now reached through a variable so a share-name refusal can
+			// substitute its own text (see guideActionKey). Only the indirection
+			// moved — the exit itself, and its fallback, are unchanged.
+			marker: `esc(tdT(actionKey||'roots.noGuidanceAction'))`,
 		},
 		{
 			name:   "no terminal handoff",

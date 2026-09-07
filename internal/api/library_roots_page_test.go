@@ -190,6 +190,23 @@ func TestLibraryRootsPageShowsRootHealthSection(t *testing.T) {
 	}
 }
 
+func TestLibraryRootsPageUsesShareNameGuidanceAction(t *testing.T) {
+	body := libraryRootsHTML
+	for _, marker := range []string{
+		"function guideActionKey(inspection)",
+		"details[i].code==='root.share_name_unsupported'",
+		"return 'roots.shareNameUnsupportedAction'",
+		"tdT(actionKey||'roots.noGuidanceAction')",
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("library roots page missing share-name guidance marker %q", marker)
+		}
+	}
+	if got := strings.Count(body, "renderGuideBody(inspection.guidance, guideActionKey(inspection))"); got != 2 {
+		t.Fatalf("renderGuideBody must receive the inspection action key at both call sites, got %d", got)
+	}
+}
+
 // The root health table carries a 提示 column fed by the same warnings the
 // CLI doctor prints — network-mount notice, staging-copy recommendation,
 // writable-mount note — so an operator sees the advice for an already-added

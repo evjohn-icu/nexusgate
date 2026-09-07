@@ -140,7 +140,11 @@ func parseHostAndName(rest string, protocol Protocol) (Share, bool) {
 // is a path, not an export.
 func parseNFSHostPath(value string) (Share, bool) {
 	host, export, found := strings.Cut(value, ":")
-	if !found || len(host) < 2 || !validHost(host) || !strings.HasPrefix(export, "/") || !safeForCommand(export) {
+	// The same classification rule as the SMB form, so nas:/export/My Footage
+	// and //nas/My Footage get the same answer to the same question. Letting
+	// the two forms disagree would mean an operator's address was a share or a
+	// local path depending on which syntax they pasted it in.
+	if !found || len(host) < 2 || !validHost(host) || !strings.HasPrefix(export, "/") || !parseLegalShareName(export) {
 		return Share{}, false
 	}
 	return Share{Protocol: ProtocolNFS, Host: host, Name: export}, true
@@ -190,25 +194,79 @@ func validHost(host string) bool {
 // covers that class without tracking any one parser's table of line breaks. The
 // CJK share names the old ASCII-only rule was written to protect stay valid,
 // which is the property a validUser-shaped allowlist of Latin letters would
-// have refused. A space is rejected for correctness before safety: "sudo mount
-// -t cifs //nas/My Share /mnt/x" is two arguments whatever the operator meant
-// by it.
+// have refused. A space is rejected here for correctness before safety: "sudo
+// mount -t cifs //nas/My Share /mnt/x" is two arguments whatever the operator
+// meant by it.
+//
+// That last sentence is now scoped to this rule alone, and the scoping is the
+// point. A space is the one character this rule and parseLegalShareName
+// disagree about: it is a legal SMB share name, so it classifies as a share
+// and then fails here. CommandSafeShare is what a caller asks to tell those
+// two answers apart.
 func safeForCommand(s string) bool {
 	for _, r := range s {
-		if r >= 0x80 {
-			if !unicode.IsPrint(r) {
-				return false
-			}
-			continue
-		}
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		case strings.ContainsRune(`.-_/:@+=,`, r):
-		default:
+		if !safeCommandRune(r) {
 			return false
 		}
 	}
 	return true
+}
+
+// safeCommandRune is safeForCommand's per-rune half, split out so the parse
+// policy can express itself as "this rule, plus a space" rather than as a
+// second copy of the table.
+func safeCommandRune(r rune) bool {
+	if r >= 0x80 {
+		return unicode.IsPrint(r)
+	}
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	case strings.ContainsRune(`.-_/:@+=,`, r):
+		return true
+	}
+	return false
+}
+
+// parseLegalShareName is the CLASSIFICATION half of a policy that
+// safeForCommand is the SINK half of. They were one rule until a space proved
+// they answer two different questions: "is this string a share address?" and
+// "can this string be pasted into a generated command?".
+//
+// A space makes the second answer no. It does not make the first answer no —
+// it is an ordinary, legal SMB share name character — and treating it as if it
+// did was a real defect: //nas/My Footage failed to parse, was classified a
+// local path, and the operator was told "cannot read /nas/My Footage". That
+// names a path they never typed, silently folds their "//" to "/", and does
+// not mention the share at all. Classifying it and then withholding the
+// commands lets the caller say the true thing instead.
+//
+// The widening is exactly one character, and the narrowness is deliberate:
+// //nas/Video;id is not a real share name in need of sanitising, it is a
+// string that was never a share address, and "this is a local path" stays the
+// honest answer for it. TestPolicySplitIsExactlyOneCharacterWide pins the
+// width, because the user-facing copy names the space specifically.
+func parseLegalShareName(s string) bool {
+	for _, r := range s {
+		if r != ' ' && !safeCommandRune(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// CommandSafeShare reports whether share can be interpolated into the commands
+// Guidance and ComposeVolume generate. It is exported because the gap it names
+// is something callers now have to see: a successful ParseShare no longer
+// promises that any command exists.
+//
+// Only Name is examined, and that is a statement about the other two fields
+// rather than an omission. Host passed validHost, which is narrower than this
+// rule in every direction. User passed validUser, which is narrower still, and
+// is blanked rather than carried when it does not. If either ever widens, this
+// function is the one place that has to learn about it.
+func CommandSafeShare(share Share) bool {
+	return safeForCommand(share.Name)
 }
 
 // validShareName rejects the whole parse rather than blanking the field the way
@@ -216,8 +274,13 @@ func safeForCommand(s string) bool {
 // share left to describe — and a name carrying a shell metacharacter is not a
 // real share that needs sanitising, it is input that was never a share address.
 // Answering "this is a local path" is then the honest classification.
+//
+// It asks parseLegalShareName rather than safeForCommand, so that a name which
+// is a real share but cannot reach a command line — one with a space in it —
+// classifies correctly and is refused later, by the caller, with an
+// explanation. See parseLegalShareName for why that is the better failure.
 func validShareName(name string) bool {
-	return name != "" && safeForCommand(name)
+	return name != "" && parseLegalShareName(name)
 }
 
 // ValidMountpoint reports whether a caller-supplied mount point can be pasted
@@ -400,6 +463,30 @@ func shareBaseName(share Share) string {
 	return name
 }
 
+// sanitizeMountpointName rewrites a share's base name into something that can
+// be a directory inside a generated command. It exists because
+// DefaultMountpoint's answer is prefilled into the wizard's mount-point box,
+// and once ParseShare began classifying space-named shares that answer could
+// be a path this package's own ValidMountpoint refuses — the Hub proposing a
+// value it then rejects, and blaming the operator for typing it.
+//
+// Printable runes at or above 0x80 survive, so a CJK share name keeps a CJK
+// directory name; only what safeForCommand refuses becomes "-". The Windows
+// branch of DefaultMountpoint deliberately does not use this: there the mount
+// point IS the share address, and a renamed UNC path names a share that does
+// not exist.
+func sanitizeMountpointName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if safeCommandRune(r) {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteRune('-')
+	}
+	return strings.Trim(b.String(), "-")
+}
+
 // DefaultMountpoint is the *host-side* path a share is mounted at when the
 // operator did not say. On a bare-metal host it is under a directory of our
 // own rather than directly in /mnt, so that a second library does not have to
@@ -413,7 +500,14 @@ func shareBaseName(share Share) string {
 // moves under the bind's source, and ContainerPath below translates it into
 // the path the Hub will actually be able to open.
 func DefaultMountpoint(share Share, host Host) string {
-	name := shareBaseName(share)
+	name := sanitizeMountpointName(shareBaseName(share))
+	if name == "" {
+		// Every character in the base name was one safeForCommand refuses — a
+		// share named " ", say, which parseLegalShareName now classifies. The
+		// host is the same fallback shareBaseName reaches for, and it always
+		// passes: validHost is narrower than this rule.
+		name = sanitizeMountpointName(share.Host)
+	}
 	// Unassigned Devices decides the final directory name, including its
 	// handling of collisions and unusual characters; returning no default is
 	// safer than presenting a path the Hub may never see.
@@ -563,6 +657,15 @@ func Guidance(share Share, mountpoint string, host Host) Guide {
 	// containerised Hub whose media bind is unknown. That placeholder is this
 	// package's own "edit this line" marker, not untrusted input, and it is the
 	// container branch's normal output.
+	// A share name that cannot survive interpolation withholds the commands for
+	// the same reason an unusable mount point does, and in the same shape: the
+	// summary, no steps. This branch exists because ParseShare now classifies
+	// //nas/My Footage as the share it is rather than refusing it — see
+	// parseLegalShareName — so a legal-but-unquotable name reaches here, and
+	// this is what keeps it out of a generated command line.
+	if !CommandSafeShare(share) {
+		return guide
+	}
 	if mountpoint == "" {
 		mountpoint = DefaultMountpoint(share, host)
 	} else if !ValidMountpoint(mountpoint, host) {

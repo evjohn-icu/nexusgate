@@ -49,7 +49,10 @@ type VolumeDefinition struct {
 // ComposeVolume renders share as a Docker Compose named volume called name,
 // using the built-in "local" driver's NFS or CIFS support. It reports false
 // for anything that is not a network share: a local directory needs a bind
-// mount, which has no driver_opts and nothing here to generate.
+// mount, which has no driver_opts and nothing here to generate. It also
+// reports false for a share whose name cannot be interpolated into the
+// generated YAML — see CommandSafeShare — which is a different fact about the
+// input and is why the caller cannot read a false here as "not a share".
 //
 // The two protocols are not equally good options and the difference is not
 // cosmetic. Docker's local driver forwards driver_opts straight to the
@@ -62,6 +65,16 @@ type VolumeDefinition struct {
 // has no such trade — it carries no credentials at all — which is why it is
 // the path this function's doc, and Warning, steer an operator toward.
 func ComposeVolume(share Share, name string) (VolumeDefinition, bool) {
+	// Two reasons to report false, and they are different facts about the
+	// input. A protocol this driver has no form for is the one below. This one
+	// is a share whose own name cannot be interpolated into the device: scalar
+	// — ParseShare now classifies such a share instead of refusing it, so it
+	// reaches here. Neither case gets a partial stanza: a compose file with a
+	// mangled device: is worse than no compose file, because it mounts, and
+	// mounts something other than what was asked for.
+	if !CommandSafeShare(share) {
+		return VolumeDefinition{}, false
+	}
 	switch share.Protocol {
 	case ProtocolNFS:
 		return composeNFSVolume(share, name), true

@@ -48,6 +48,10 @@ type Server struct {
 	trustedProxyNetworks []netip.Prefix
 }
 
+// scanRootLivenessBound is a liveness bound, not a performance target; the
+// library supervisor retries scans after this limit.
+const scanRootLivenessBound = 30 * time.Minute
+
 // SetTrustedProxyNetworks configures the set of reverse-proxy addresses the
 // Hub sits behind. When set, the immediate TCP peer must fall inside one of
 // these prefixes before adminLoginKey will key on the client address carried
@@ -1179,7 +1183,12 @@ type shareNotMountedResponse struct {
 }
 
 func (s *Server) scanRoot(w http.ResponseWriter, r *http.Request) {
-	result, err := s.service.ScanLibraryRoot(r.Context(), r.PathValue("id"))
+	// This handler deliberately outlives its request so a closed tab or an HTTP
+	// write timeout cannot truncate useful work; the library supervisor is the
+	// precedent for scans running on a context that is not a request's.
+	scanCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), scanRootLivenessBound)
+	defer cancel()
+	result, err := s.service.ScanLibraryRoot(scanCtx, r.PathValue("id"))
 	if err != nil {
 		// Scan reconciliation can fail after changed assets have already been
 		// queued. Do not strand that work merely because the scan response is an

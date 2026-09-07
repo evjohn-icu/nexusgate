@@ -746,6 +746,12 @@ const advertisedMountpointChars = `. - _ / : @ + = ,`
 const mountpointInvalidMessage = "That mount point cannot be used. Keep it to letters, digits and " + advertisedMountpointChars +
 	" — letters from any language are fine, so a Chinese or Japanese directory name works. A space or shell punctuation such as ; | & $ ` ' \" < > * ? # ~ ( ) is refused: the mount commands on the next screen are generated unquoted, so a space would mount the share at a different path than the one you typed."
 
+// shareNameUnsupportedMessage is the English fallback for
+// root.share_name_unsupported. It exists because a recognised share can still
+// be unsafe to interpolate into the shell, fstab, and Compose forms that mount.Guidance
+// generates, and the operator needs an actionable explanation instead of empty guidance.
+const shareNameUnsupportedMessage = "%s is a network share, and its name contains a space. The mount commands are not generated for it: the same share name is pasted into a shell command line, an /etc/fstab entry and a Docker Compose file, and those three quote a space differently, so a command that reads correctly would mount something other than what you typed. Two ways forward — rename the share on the NAS so its name has no space, or mount it yourself and come back to the verify step with the mount point you used."
+
 type RootWarningDetail struct {
 	Code    string            `json:"code"`
 	Params  map[string]string `json:"params,omitempty"`
@@ -948,6 +954,13 @@ func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string, 
 	trimmed := strings.TrimSpace(path)
 	result := RootInspection{Path: trimmed}
 	mountpointRejected := false
+	shareNameRejected := false
+	// The refusal below is appended after the filesystem checks, outside the
+	// block that scopes the parsed share, so the address it names is carried
+	// forward here rather than reconstructed from result.Share — that
+	// projection is a wire shape with no String() of its own, and giving it
+	// one would put a second spelling of a share address in the tree.
+	shareAddress := ""
 	registered := false
 	if s.repo != nil {
 		registered, _ = s.repo.IsLibraryRoot(ctx, trimmed)
@@ -979,6 +992,8 @@ func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string, 
 		// <HOST_MEDIA_ROOT> placeholder, which is this Hub's own marker rather
 		// than something a caller sent.
 		mountpointRejected = target != "" && !mount.ValidMountpoint(target, host)
+		shareNameRejected = !mount.CommandSafeShare(share)
+		shareAddress = share.String()
 		if target == "" {
 			target = result.DefaultMountpoint
 		}
@@ -998,13 +1013,25 @@ func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string, 
 		for _, note := range guide.Notes {
 			notes = append(notes, MountGuideNote{Key: note.Key, Text: note.Text})
 		}
-		if !mountpointRejected {
+		// This caller must withhold the unsafe share's empty result and explain it;
+		// see mount.Guidance's comment for why that package does not.
+		if !mountpointRejected && !shareNameRejected {
 			result.Guidance = &MountGuidance{Summary: guide.Summary, Steps: steps, Notes: notes}
 		}
-		if host.Container {
+		if host.Container && !shareNameRejected {
 			// See ComposeVolume's field doc: this is the one case where a
 			// docker-compose volume stanza is the actual next step rather
 			// than noise alongside the host mount commands above.
+			//
+			// The !shareNameRejected half is deliberately redundant and is
+			// recorded as such so nobody later finds it, calls it dead and
+			// removes the wrong one of the two. mount.ComposeVolume refuses
+			// the same share on its own — that refusal is the load-bearing
+			// one and is what the mount package's tests pin — so deleting
+			// this clause changes no behaviour today. It is kept because the
+			// condition it guards is a *silent* one: a compose stanza whose
+			// device: scalar carries an unquoted share name mounts, and
+			// mounts the wrong thing, rather than failing visibly.
 			if volume, ok := mount.ComposeVolume(share, mount.VolumeName(share)); ok {
 				result.ComposeVolume = &ComposeVolumeSuggestion{
 					Name:        volume.Name,
@@ -1049,6 +1076,15 @@ func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string, 
 		detail := RootWarningDetail{
 			Code:    "root.mountpoint_invalid",
 			Message: mountpointInvalidMessage,
+		}
+		result.WarningDetails = append(result.WarningDetails, detail)
+		result.Warnings = append(result.Warnings, detail.Message)
+	}
+	if shareNameRejected {
+		detail := RootWarningDetail{
+			Code:    "root.share_name_unsupported",
+			Params:  map[string]string{"path": shareAddress},
+			Message: fmt.Sprintf(shareNameUnsupportedMessage, shareAddress),
 		}
 		result.WarningDetails = append(result.WarningDetails, detail)
 		result.Warnings = append(result.Warnings, detail.Message)
