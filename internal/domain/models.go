@@ -106,6 +106,22 @@ type ScanResult struct {
 	RootReachable   bool     `json:"-"`
 }
 
+// KnownFile is what a previous scan already recorded for one path in one
+// library root: the identity it computed, and the two facts that identity was
+// computed from. It exists so a re-scan can decide whether the file on disk is
+// still the file behind that identity without opening it — QuickFingerprint
+// reads up to 12 MiB per file, which over a NAS is the whole cost of a scan.
+//
+// Size and ModifiedNS are the comparison; Fingerprint is what may be reused
+// when both still match. Nothing here is authoritative — it is a cache of the
+// scanner's own previous work, and a miss costs only the read it would have
+// done anyway.
+type KnownFile struct {
+	Fingerprint string
+	Size        int64
+	ModifiedNS  int64
+}
+
 // ScannedFile reports what one scanned file did to the catalog, so the scanner
 // can tell a no-op revisit from a change the pipeline needs to re-derive.
 type ScannedFile struct {

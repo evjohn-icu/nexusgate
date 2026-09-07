@@ -22,10 +22,29 @@ type stubScanRepo struct {
 	upsertFn func(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error)
 	// record of calls for assertions.
 	upsertCalls []string // relative paths seen
+	// known is the fingerprint cache the scanner consults before reading a
+	// file, keyed by relative path. Empty by default, so every existing test
+	// in this file still exercises the full read.
+	known map[string]domain.KnownFile
+	// knownCalls counts cache lookups so a test can tell "the cache said no"
+	// from "the cache was never asked".
+	knownCalls   int
+	knownErr     error
+	fingerprints []string // the fingerprint handed to each UpsertScannedFile call
+}
+
+func (s *stubScanRepo) KnownFile(ctx context.Context, rootID, relativePath string) (domain.KnownFile, bool, error) {
+	s.knownCalls++
+	if s.knownErr != nil {
+		return domain.KnownFile{}, false, s.knownErr
+	}
+	known, ok := s.known[relativePath]
+	return known, ok, nil
 }
 
 func (s *stubScanRepo) UpsertScannedFile(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error) {
 	s.upsertCalls = append(s.upsertCalls, relativePath)
+	s.fingerprints = append(s.fingerprints, fingerprint)
 	if s.upsertFn != nil {
 		return s.upsertFn(ctx, root, relativePath, absolutePath, info, fingerprint)
 	}

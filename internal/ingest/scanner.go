@@ -12,6 +12,11 @@ import (
 
 type ScanRepository interface {
 	UpsertScannedFile(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error)
+	// KnownFile returns what the previous scan recorded for this path, and
+	// whether there was one. It is declared here, at the consumer, for the
+	// same reason PipelineRepository is declared in internal/app: the scanner
+	// names the one question it asks, and the sqlite package answers it.
+	KnownFile(ctx context.Context, rootID, relativePath string) (domain.KnownFile, bool, error)
 }
 
 type Scanner struct {
@@ -28,6 +33,23 @@ func NewScanner(repo ScanRepository) *Scanner {
 // is handed back, never applied: reconciliation waits for the app-layer
 // root-health gate.
 func (s *Scanner) Scan(ctx context.Context, root domain.LibraryRoot) (domain.ScanResult, error) {
+	return s.scan(ctx, root, false)
+}
+
+// ScanDeep is Scan with the fingerprint cache turned off: every file is read
+// and re-fingerprinted even when its size and mtime are unchanged. It exists
+// because the cache trusts mtime, and there is exactly one situation mtime
+// cannot describe — content rewritten in place with the timestamp restored,
+// which a restore-from-backup or an rsync --times can produce. That is rare
+// enough not to pay 12 MiB per file per scan for, and real enough to need a
+// way out. There is deliberately no browser control and no config setting: it
+// is an operator recovery action (`nexusgate root scan <id> --deep`), not a
+// mode a library can be left in.
+func (s *Scanner) ScanDeep(ctx context.Context, root domain.LibraryRoot) (domain.ScanResult, error) {
+	return s.scan(ctx, root, true)
+}
+
+func (s *Scanner) scan(ctx context.Context, root domain.LibraryRoot, deep bool) (domain.ScanResult, error) {
 	result := domain.ScanResult{}
 	result.SupportedExtensions = supportedVideoExtensions
 	seen := make([]string, 0, 1024)
@@ -80,10 +102,17 @@ func (s *Scanner) Scan(ctx context.Context, root domain.LibraryRoot) (domain.Sca
 			return nil
 		}
 		relative = filepath.ToSlash(relative)
-		fingerprint, err := QuickFingerprint(path, info.Size())
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("fingerprint file: %s: %v", path, err))
-			return nil
+		var fingerprint string
+		cached := false
+		if !deep {
+			fingerprint, cached = s.cachedFingerprint(ctx, root.ID, relative, info)
+		}
+		if !cached {
+			fingerprint, err = QuickFingerprint(path, info.Size())
+			if err != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("fingerprint file: %s: %v", path, err))
+				return nil
+			}
 		}
 
 		scanned, err := s.repo.UpsertScannedFile(ctx, root, relative, path, info, fingerprint)
@@ -119,6 +148,47 @@ func (s *Scanner) Scan(ctx context.Context, root domain.LibraryRoot) (domain.Sca
 	result.SkippedOther = skipped.otherTypes
 	result.Complete = result.RootReachable && len(result.Errors) == 0
 	return result, nil
+}
+
+// cachedFingerprint returns the identity a previous scan computed for this
+// path, and whether it may be used: true only when the file on disk is still,
+// by size and mtime, the file that identity was computed from. Every other
+// answer — no row, a stored identity that is empty, a lookup that failed — is
+// false, and false costs only the read it would have cost anyway.
+//
+// The hit is reported separately rather than by returning "" because the empty
+// string is a value the cache can legitimately hold (an assets row written
+// before this cache existed, or a corrupted one), and handing it on as an
+// identity would collapse every such file onto a single asset row.
+//
+// Both facts must match. Size alone is far too weak for footage, where a
+// re-render of the same timeline is routinely byte-identical in length; mtime
+// alone would trust a filesystem that reports it with second granularity over
+// a copy that finished within the same second.
+//
+// A location marked exists_now=0 is still trusted. A file that went missing
+// and came back with the same size and the same mtime is the same bytes: the
+// mtime is the filesystem's own statement that nothing wrote to it, and the
+// disappearance was the mount, not the file.
+//
+// A lookup error is swallowed on purpose rather than recorded in
+// result.Errors. This is a cache read, and a cache read that fails must not
+// be able to mark a scan incomplete — which is what an entry in result.Errors
+// does, since it blocks the reconciliation gate in internal/app. If the
+// database is genuinely broken, the UpsertScannedFile call a few lines below
+// fails too and reports itself.
+func (s *Scanner) cachedFingerprint(ctx context.Context, rootID, relativePath string, info fs.FileInfo) (string, bool) {
+	known, ok, err := s.repo.KnownFile(ctx, rootID, relativePath)
+	if err != nil || !ok {
+		return "", false
+	}
+	if known.Fingerprint == "" {
+		return "", false
+	}
+	if known.Size != info.Size() || known.ModifiedNS != info.ModTime().UnixNano() {
+		return "", false
+	}
+	return known.Fingerprint, true
 }
 
 // supportedVideoExtensions is the single declaration-ordered list of source

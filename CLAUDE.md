@@ -48,6 +48,7 @@ export NEXUSGATE_DATA_DIR="$PWD/.nexusgate-dev"
 ./nexusgate doctor
 ./nexusgate root add /path/to/footage && ./nexusgate root list
 ./nexusgate root scan <root-id>     # scans, enqueues, and synchronously drains the Pipeline
+./nexusgate root scan <root-id> --deep  # same, but re-reads every file instead of trusting size+mtime
 ./nexusgate pipeline run            # leases and runs jobs until the queue is idle
 ./nexusgate search rebuild          # rebuilds the asset search index
 ./nexusgate search rebuild-embeddings

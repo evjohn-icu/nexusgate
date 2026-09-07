@@ -1364,6 +1364,18 @@ func workerArtifactExtension(artifactType, contentType string) string {
 }
 
 func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.ScanResult, error) {
+	return s.scanLibraryRoot(ctx, rootID, false)
+}
+
+// ScanLibraryRootDeep re-reads and re-fingerprints every file instead of
+// reusing the identity a previous scan computed for an unchanged path. See
+// ingest.Scanner.ScanDeep for what that buys and what it costs; it is reached
+// only from `nexusgate root scan <id> --deep`, and deliberately has no route.
+func (s *Service) ScanLibraryRootDeep(ctx context.Context, rootID string) (domain.ScanResult, error) {
+	return s.scanLibraryRoot(ctx, rootID, true)
+}
+
+func (s *Service) scanLibraryRoot(ctx context.Context, rootID string, deep bool) (domain.ScanResult, error) {
 	s.scanRootLocksMu.Lock()
 	if s.scanRootLocks == nil {
 		s.scanRootLocks = make(map[string]*sync.Mutex)
@@ -1390,7 +1402,11 @@ func (s *Service) ScanLibraryRoot(ctx context.Context, rootID string) (domain.Sc
 	if err := s.repo.MarkRootScanStarted(ctx, rootID, now); err != nil {
 		slog.Warn("scan: failed to record scan start", "root_id", rootID, "error", err)
 	}
-	result, err := s.scanner.Scan(ctx, root)
+	scan := s.scanner.Scan
+	if deep {
+		scan = s.scanner.ScanDeep
+	}
+	result, err := scan(ctx, root)
 	if err != nil {
 		return result, err
 	}

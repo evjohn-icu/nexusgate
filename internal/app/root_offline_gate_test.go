@@ -67,6 +67,15 @@ func (r *scanGateRepo) UpsertScannedFile(_ context.Context, _ domain.LibraryRoot
 	return domain.ScannedFile{AssetID: "asset-" + relativePath, Created: true}, nil
 }
 
+// KnownFile always misses, so every fixture in this file exercises the full
+// read path the gate has always been tested against. The fingerprint cache is
+// covered where it can actually be observed — internal/ingest and
+// internal/repository/sqlite — not through a fake that would agree with
+// whatever it was asked.
+func (r *scanGateRepo) KnownFile(context.Context, string, string) (domain.KnownFile, bool, error) {
+	return domain.KnownFile{}, false, nil
+}
+
 func (r *scanGateRepo) AssetsWithoutProbeJob(context.Context, string, int) ([]string, error) {
 	return nil, nil
 }

@@ -437,10 +437,24 @@ func runRootCommand(ctx context.Context, service *app.Service, args []string) er
 		}
 		return nil
 	case "scan":
-		if len(args) != 2 {
-			return errors.New("usage: nexusgate root scan <root-id>")
+		// --deep turns off the fingerprint cache for this one run. It is a
+		// recovery action for content rewritten in place with its mtime
+		// restored — the one change a scan cannot otherwise see — and costs a
+		// full read of every file in the root, so it is a flag typed on
+		// purpose rather than a setting a library can be left in.
+		deep := false
+		if len(args) == 3 && args[2] == "--deep" {
+			deep = true
+			args = args[:2]
 		}
-		result, err := service.ScanLibraryRoot(ctx, args[1])
+		if len(args) != 2 {
+			return errors.New("usage: nexusgate root scan <root-id> [--deep]")
+		}
+		scan := service.ScanLibraryRoot
+		if deep {
+			scan = service.ScanLibraryRootDeep
+		}
+		result, err := scan(ctx, args[1])
 		if err != nil {
 			// Reconciliation may fail after this scan has queued changed assets.
 			// Keep the scan error, but do not leave the queue idle.
@@ -488,7 +502,7 @@ Usage:
   nexusgate serve [-addr 127.0.0.1:8787]
   nexusgate root add <path>
   nexusgate root list
-  nexusgate root scan <root-id>
+  nexusgate root scan <root-id> [--deep]
   nexusgate pipeline run
   nexusgate pipeline retry-failed
   nexusgate reanalyze [-asset <asset-id> | -root <root-id> | -all] [-reason <text>]

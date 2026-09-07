@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+- **Every scan re-read the whole library over the network.** The scanner called
+  `QuickFingerprint` unconditionally on every video file it walked — three 4 MiB
+  samples, so up to 12 MiB per file, every pass. A thousand-clip root therefore
+  pulled up to 12 GB across the share to answer a question the database already
+  held, and the unattended library supervisor (off by default, but the whole
+  point of turning it on) repeats that hourly.
+
+  `UpsertScannedFile` was already comparing `modified_ns` to decide whether the
+  file changed — it just did so *after* paying for the read. The scanner now
+  asks first: `ScanRepository.KnownFile` returns what the previous scan recorded
+  for that path, and the stored identity is reused when the file's size **and**
+  mtime both still match. Neither fact alone is enough — a re-render of the same
+  timeline is routinely the same length, and a filesystem reporting mtime in
+  whole seconds cannot see a copy that finished inside one — so both must hold.
+  A miss of any kind, including a failed lookup, costs only the read it would
+  have cost anyway; a failed lookup is deliberately *not* recorded as a scan
+  error, because that would mark the scan incomplete and block reconciliation
+  for the entire root over a cache miss.
+
+  What this trades away is content rewritten in place with its mtime restored —
+  a restore-from-backup, an `rsync --times`. That is the one change mtime cannot
+  describe, and `nexusgate root scan <root-id> --deep` is the way out: it reads
+  and re-fingerprints everything. There is deliberately no browser control and
+  no config setting for it. It is an operator recovery action, not a mode a
+  library can be left in.
+
+  A location marked `exists_now=0` still answers, on purpose. A share that comes
+  back with its files untouched is the most common event in a NAS library, and
+  filtering on `exists_now` would make every remount re-read everything —
+  `TestKnownFileStillAnswersForALocationMarkedMissing` pins that.
+
+  The tests all turn on one trick, because nothing else can tell "reused the
+  stored identity" from "read the file and got the same answer": the fixture
+  replaces a file's bytes while holding its size and mtime constant, then asks
+  which identity reached the database. `internal/repository/sqlite` runs it
+  against real SQLite and a real scanner, which is where the claim belongs.
+
 - **The status strip on every page rendered raw translation keys.** Opening the
   wizard in an actual browser — the one check nobody had run — showed
   `shell.status.failed` and `shell.status.online` printed literally in the

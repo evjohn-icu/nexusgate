@@ -686,6 +686,28 @@ func (r *Repository) GetLibraryRoot(ctx context.Context, id string) (domain.Libr
 	return root, nil
 }
 
+// KnownFile answers the scanner's cache question in one indexed round trip:
+// UNIQUE(root_id, relative_path) on asset_locations makes the WHERE an index
+// seek, and the join is a primary-key lookup. The size comes from the asset
+// and the mtime from the location because that is where each is authoritative
+// — assets are deduplicated by (quick_fingerprint, file_size), so every
+// location of one asset shares its size, while modified_ns is per path.
+//
+// exists_now is deliberately not in the WHERE clause; see cachedFingerprint
+// in internal/ingest for why a location that went missing is still trusted.
+func (r *Repository) KnownFile(ctx context.Context, rootID, relativePath string) (domain.KnownFile, bool, error) {
+	var known domain.KnownFile
+	err := r.db.QueryRowContext(ctx, `SELECT a.quick_fingerprint, a.file_size, l.modified_ns FROM asset_locations l JOIN assets a ON a.id = l.asset_id WHERE l.root_id = ? AND l.relative_path = ?`, rootID, relativePath).
+		Scan(&known.Fingerprint, &known.Size, &known.ModifiedNS)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.KnownFile{}, false, nil
+	}
+	if err != nil {
+		return domain.KnownFile{}, false, err
+	}
+	return known, true, nil
+}
+
 func (r *Repository) UpsertScannedFile(ctx context.Context, root domain.LibraryRoot, relativePath, absolutePath string, info fs.FileInfo, fingerprint string) (domain.ScannedFile, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
