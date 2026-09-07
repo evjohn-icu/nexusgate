@@ -67,8 +67,9 @@ type GCResult struct {
 }
 
 // GC walks cacheDir and deletes exactly what GCOptions selects. The walk
-// never descends into cache/sources/ (copy-mode staging is canonical until
-// eviction), and every other entry is classified by the same patterns
+// never descends into cache/sources/ — that tree is reclaimed by
+// internal/staging's own cap-driven eviction, which runs inside Stage where
+// the entry about to be used is known — and every other entry is classified by the same patterns
 // Inspect uses, so a dry run's accounting is what a real run frees.
 func GC(cacheDir string, opts GCOptions) (GCResult, error) {
 	var result GCResult
@@ -113,8 +114,11 @@ func GC(cacheDir string, opts GCOptions) (GCResult, error) {
 		if d.IsDir() {
 			name := d.Name()
 			if name == "sources" {
-				// Copy-mode staging is canonical until eviction; the walk
-				// must not even count it as deletable.
+				// Copy-mode staging has its own evictor (internal/staging,
+				// inside Stage, bounded by source_staging.max_bytes). This
+				// walk must not even count it as deletable: two deleters on
+				// one tree is how a file vanishes between the stage that
+				// copied it and the ffmpeg that was about to open it.
 				return filepath.SkipDir
 			}
 			if IsScratchDirName(name) && opts.RemoveScratch {

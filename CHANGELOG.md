@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+- **`cache/sources` had no ceiling and no way to reclaim it.** Five comments
+  across `internal/cache` and `internal/app` said copy-mode staging was
+  canonical "until eviction". There was no evictor. The whole subsystem was
+  written against a component nobody had built: `cache gc` skips the tree on
+  purpose, `internal/staging` had only `New` and `Stage`, and CLAUDE.md tells
+  NAS users to turn copy mode on.
+
+  `source_staging.max_bytes` (0 = unbounded, the previous behaviour) caps the
+  tree, and `Stage` now makes room before it copies. It evicts
+  least-recently-used, and the "recently used" is real rather than inferred:
+  `Stage` rewrites the staged file's mtime on every cache hit, so the timestamp
+  means "last handed to a job" instead of "copied at". There is no tracking
+  table, because a table cannot work where it is needed most — the Worker
+  stages too, with `ModeCopy` hardcoded, and has no database at all.
+
+  Trigger and target are deliberately different numbers: eviction starts when
+  the cap would be exceeded and runs until 90% of it. One number would have
+  meant deleting a file on every single stage near the line, and would have
+  silently redefined the operator's cap as 90% of what they typed.
+
+  Two rules keep it from being worse than the problem. A file in flight —
+  `.<version>-*.partial`, mid-copy in another process, since two Hub processes
+  may share one data dir — is neither counted nor deleted; deleting one makes
+  that process's `os.Rename` fail. And a source larger than the whole cap still
+  stages: it reclaims what it can, logs why, and proceeds. A 100 GB clip cannot
+  become unprocessable because the cache budget is 50 GB.
+
+  There is no live-job check, and that is a decision rather than an omission.
+  The argument is not that the race window is small — one derive runs several
+  ffmpeg invocations minutes apart over the same staged path. It is that
+  touching mtime on use makes the file currently in use the *newest* in the
+  cache, so it is evicted last; and that an ENOENT on a staged source is
+  retryable here (nothing marks it `domain.Permanent`), so the losing job
+  re-stages instead of dying. Both are written into the code.
+
+  Eviction never fails a stage. A cache walk that errors, a delete another
+  process wins — each is logged and dropped. Everything under `sources` can be
+  re-copied from the original; turning a reclaim problem into a failed job
+  would be strictly worse than running one file over budget.
+
+  `cache inspect` now prints the cap next to the total, because eviction
+  happens inside `Stage` where nothing else reports, and "38 GiB" alone cannot
+  be read as either healthy or over the line.
+
 - **Every scan re-read the whole library over the network.** The scanner called
   `QuickFingerprint` unconditionally on every video file it walked — three 4 MiB
   samples, so up to 12 MiB per file, every pass. A thousand-clip root therefore

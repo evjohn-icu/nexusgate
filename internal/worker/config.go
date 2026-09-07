@@ -13,12 +13,17 @@ import (
 // Config intentionally contains only the Hub-issued node token. Provider
 // credentials are never persisted on a Worker.
 type Config struct {
-	HubURL                 string                    `json:"hub_url"`
-	CertificateFingerprint string                    `json:"certificate_fingerprint"`
-	Token                  string                    `json:"token"`
-	CacheDir               string                    `json:"cache_dir,omitempty"`
-	Mounts                 map[string]string         `json:"mounts,omitempty"`
-	Registration           remote.WorkerRegistration `json:"registration"`
+	HubURL                 string `json:"hub_url"`
+	CertificateFingerprint string `json:"certificate_fingerprint"`
+	Token                  string `json:"token"`
+	CacheDir               string `json:"cache_dir,omitempty"`
+	// SourceCacheMaxBytes caps cache/sources on this node. Zero is unbounded,
+	// which is what every Worker has done so far — this side stages in copy
+	// mode unconditionally (see runtime.go), so unlike the Hub nobody ever
+	// opted into it and nobody was ever asked how large it may grow.
+	SourceCacheMaxBytes int64                     `json:"source_cache_max_bytes,omitempty"`
+	Mounts              map[string]string         `json:"mounts,omitempty"`
+	Registration        remote.WorkerRegistration `json:"registration"`
 }
 
 func SaveConfig(path string, config Config) error {

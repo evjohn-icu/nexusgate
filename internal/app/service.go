@@ -410,7 +410,7 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("initialize repurpose planner: %w", err)
 	}
-	sourceStager, err := staging.New(cfg.SourceStaging.Mode, cfg.CacheDir)
+	sourceStager, err := staging.NewCapped(cfg.SourceStaging.Mode, cfg.CacheDir, cfg.SourceStaging.MaxBytes)
 	if err != nil {
 		return nil, fmt.Errorf("initialize source staging: %w", err)
 	}

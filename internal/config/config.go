@@ -125,6 +125,17 @@ const (
 // intended for mounted NAS/network libraries; it never writes to the source.
 type SourceStagingConfig struct {
 	Mode string `json:"mode"`
+	// MaxBytes caps the total size of cache/sources. Zero is unbounded, which
+	// is what every version before this one did — an upgrade must not start
+	// deleting cached copies because a field appeared.
+	//
+	// It lives beside Mode rather than in the settings table that holds
+	// PipelineThrottle's free-space floor, because copy mode itself is
+	// config-file-only: an operator who can turn staging on can set its size.
+	// The two numbers are not the same control and are not meant to be. This
+	// one is a budget for one directory; the floor is a brake on the whole
+	// volume, and it fires whether or not this cap was ever set.
+	MaxBytes int64 `json:"max_bytes"`
 }
 
 // LibrarySupervisorConfig turns `nexusgate serve` into an unattended library:
@@ -342,6 +353,13 @@ func Load() (Config, error) {
 	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_SOURCE_STAGING_MODE")); v != "" {
 		cfg.SourceStaging.Mode = v
 	}
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_SOURCE_STAGING_MAX_BYTES")); v != "" {
+		parsed, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return Config{}, fmt.Errorf("NEXUSGATE_SOURCE_STAGING_MAX_BYTES: %w", err)
+		}
+		cfg.SourceStaging.MaxBytes = parsed
+	}
 	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_LISTEN_ADDRESS")); v != "" {
 		cfg.ListenAddress = v
 	}
@@ -460,6 +478,9 @@ func validate(cfg Config, explicit map[string]json.RawMessage) error {
 	case "auto", "files", "off":
 	default:
 		return fmt.Errorf("hub_tls.mode: unsupported value %q (want auto, files, or off)", cfg.HubTLS.Mode)
+	}
+	if cfg.SourceStaging.MaxBytes < 0 {
+		return fmt.Errorf("source_staging.max_bytes: must not be negative")
 	}
 	if cfg.LibrarySupervisor.Enabled && cfg.LibrarySupervisor.ScanIntervalMinutes <= 0 {
 		return fmt.Errorf("library_supervisor.scan_interval_minutes: must be greater than zero when supervisor is enabled")

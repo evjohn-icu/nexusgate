@@ -3,8 +3,11 @@
 // proxies, audio extracts, analysis scratch, and per-asset directories. It
 // never holds canonical data — the database, provider secrets and original
 // media live outside it, and cache/sources/ (copy-mode NAS staging) is
-// excluded from every deletion path here because until it is evicted it is
-// the local copy a derive reads from.
+// excluded from every deletion path here because it is the local copy a derive
+// reads from. Its own reclaim lives elsewhere and always has: internal/staging
+// evicts it inside Stage, under the configured byte cap, before it copies. The
+// two must not both delete from that tree — this package's job is to be able
+// to say "nothing here touched sources".
 package cache
 
 import (
@@ -73,8 +76,11 @@ func IsRebuildableArtifactName(name string) bool {
 
 // IsSourceStagingPath reports whether rel (a slash-separated path relative to
 // the cache dir) lies under cache/sources/. Copy-mode staging mirrors NAS
-// originals so derives do not re-read them over the network; until eviction
-// the copy is what derives read, so no deletion path may touch it.
+// originals so derives do not re-read them over the network, and the copy is
+// what a derive actually opens, so no deletion path in this package may touch
+// it. Reclaiming that tree belongs to the one component that knows which entry
+// is in use: internal/staging, which evicts least-recently-used entries inside
+// Stage when the configured cap would be exceeded.
 func IsSourceStagingPath(rel string) bool {
 	return rel == "sources" || strings.HasPrefix(rel, "sources/")
 }

@@ -278,7 +278,13 @@ These invariants are the point of several packages — preserve them when editin
   longitude into it. It is therefore *not* a coarsened view of the coordinates, and calling it
   one would promise a privacy transform that does not exist.
 - Original media is read-only. Nothing is ever written next to source files; NAS mode
-  (`source_staging.mode: copy`) copies into `cache/sources/` first.
+  (`source_staging.mode: copy`) copies into `cache/sources/` first. That tree has exactly
+  one deleter — `internal/staging` evicts least-recently-used entries inside `Stage`,
+  bounded by `source_staging.max_bytes` (0 = unbounded) — and `internal/cache`'s `gc`
+  and `inspect` deliberately never touch it. Two deleters on one tree is how a staged
+  file vanishes between the copy and the ffmpeg about to open it. The LRU signal is the
+  staged file's own mtime, which `Stage` rewrites on every cache hit; there is no table,
+  because the Worker stages too (`ModeCopy` is hardcoded there) and has no database.
 
 ### Database migrations
 

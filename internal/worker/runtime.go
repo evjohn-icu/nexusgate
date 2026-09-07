@@ -180,7 +180,7 @@ func (r *Runtime) process(ctx context.Context, job remote.WorkerJob) error {
 		return err
 	}
 	cacheDir := r.config.CachePath()
-	stager, err := staging.New(string(staging.ModeCopy), cacheDir)
+	stager, err := staging.NewCapped(string(staging.ModeCopy), cacheDir, r.config.SourceCacheMaxBytes)
 	if err != nil {
 		return err
 	}

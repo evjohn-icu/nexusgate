@@ -46,7 +46,9 @@ type StorageOverview struct {
 	FreeDiskBytes int64 `json:"free_disk_bytes"`
 	// RebuildableBytes is what the operator can safely release: derived
 	// artifacts and scratch, which a pipeline re-run regenerates. Sources are
-	// excluded because staging copies are what derives read until eviction.
+	// excluded because staging copies are what derives read, and because they
+	// are not the operator's to release here — internal/staging reclaims them
+	// itself against source_staging.max_bytes.
 	RebuildableBytes int64 `json:"rebuildable_bytes"`
 }
 

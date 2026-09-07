@@ -153,7 +153,17 @@ func runCacheInspect(ctx context.Context, repo *sqliterepo.Repository, cfg confi
 	fmt.Printf("%-14s %-8s %6s\n", "thumbnails", countLabel(stats.ThumbnailCount, "files"), humanBytes(stats.ThumbnailBytes))
 	fmt.Printf("%-14s %-8s %6s\n", "proxies", countLabel(stats.ProxyCount, "files"), humanBytes(stats.ProxyBytes))
 	fmt.Printf("%-14s %-8s %6s\n", "audio", countLabel(stats.AudioCount, "files"), humanBytes(stats.AudioBytes))
-	fmt.Printf("%-14s %-8s %6s\n", "source staging", countLabel(stats.SourceStagingCount, "files"), humanBytes(stats.SourceStagingBytes))
+	// Source staging is the one row with a budget, so it is the one row that
+	// says what its budget is. Without the cap printed here an operator has no
+	// way to tell "this is large" from "this is over the line and being
+	// evicted", and eviction happens inside Stage where nothing else reports.
+	stagingLabel := humanBytes(stats.SourceStagingBytes)
+	if cfg.SourceStaging.MaxBytes > 0 {
+		stagingLabel += " / " + humanBytes(cfg.SourceStaging.MaxBytes)
+	} else {
+		stagingLabel += " / unbounded"
+	}
+	fmt.Printf("%-14s %-8s %6s\n", "source staging", countLabel(stats.SourceStagingCount, "files"), stagingLabel)
 	fmt.Printf("%-14s %-8s %6s\n", "scratch", countLabel(stats.ScratchCount, "files"), humanBytes(stats.ScratchBytes))
 	fmt.Printf("%-14s %-8s %6s\n", "orphans", countLabel(len(orphans), "dirs"), humanBytes(orphanBytes))
 	fmt.Printf("%-14s %-8s %6s\n", "database", "-", humanBytes(dbBytes))

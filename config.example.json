@@ -8,7 +8,8 @@
     "proxy_bitrate_kbps": 1800
   },
   "source_staging": {
-    "mode": "none"
+    "mode": "none",
+    "max_bytes": 0
   },
   "hub_tls": {
     "mode": "auto"
