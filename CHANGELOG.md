@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Two tests were permanently red for a reason with no bearing on the code.**
+  `TestScanUnreadableFileSkipsWithError` and
+  `TestDeviceOpenableDistinguishesPermissionFromAbsence` both build a mode-000
+  file and assert that opening it fails. Both had already guarded against
+  `os.Getuid() == 0` — and that is the wrong question: `CAP_DAC_OVERRIDE` can
+  sit in an ordinary process's *ambient* capability set, which is a common
+  container default and is what this repository's own dev shell hands to uid
+  1000. A uid-1000 process holding it opens a mode-000 file exactly as root
+  would, so the file the fixture built was readable and the refusal never came.
+
+  Both now probe the behaviour instead of inferring it from the uid: write a
+  mode-000 file, try to open it, and skip only if the open succeeded. Verified
+  in both directions — the tests skip in this shell, and running the same two
+  under `capsh --iab='!cap_dac_override,!cap_dac_read_search'` makes them
+  execute and pass, so the guard fires only where the assertion is impossible.
+
 - **Every scan re-read the whole library over the network.** The scanner called
   `QuickFingerprint` unconditionally on every video file it walked — three 4 MiB
   samples, so up to 12 MiB per file, every pass. A thousand-clip root therefore

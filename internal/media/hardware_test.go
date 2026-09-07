@@ -216,12 +216,36 @@ func TestRemedyForDistinguishesFourStatesAndEmptyMeansWorkingOrUntested(t *testi
 // without the matching render/video group. deviceOpenable exists to catch
 // that before a single frame is encoded, so it has to fail where os.Stat
 // would have quietly passed.
+// permissionsAreEnforced reports whether this process is genuinely refused a
+// file it holds no read bit for. It is a behavioural probe rather than an
+// os.Getuid() == 0 check because those are different questions:
+// CAP_DAC_OVERRIDE can sit in an ordinary process's *ambient* capability set
+// — a common container default, and what this repository's dev shell hands to
+// uid 1000 — and a process holding it opens a mode-000 file exactly as root
+// would. A test that builds an unreadable file in order to assert a refusal
+// has nothing left to assert there, and asserting it anyway makes the suite
+// permanently red for an environment reason with no bearing on the code.
+func permissionsAreEnforced(t *testing.T) bool {
+	t.Helper()
+	probe := filepath.Join(t.TempDir(), "permission-probe")
+	if err := os.WriteFile(probe, []byte("x"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(probe, 0o644) })
+	f, err := os.Open(probe)
+	if err != nil {
+		return true
+	}
+	_ = f.Close()
+	return false
+}
+
 func TestDeviceOpenableDistinguishesPermissionFromAbsence(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("deviceOpenable mirrors deviceAvailable's always-present behavior on windows; there is no /dev node or permission state to probe there")
 	}
-	if os.Getuid() == 0 {
-		t.Skip("root bypasses file permission bits, so this process could open any node regardless of its mode")
+	if !permissionsAreEnforced(t) {
+		t.Skip("this process bypasses file permission bits (root, or CAP_DAC_OVERRIDE in the ambient set), so a node it cannot open cannot be built here")
 	}
 
 	missing := filepath.Join(t.TempDir(), "renderD128")
