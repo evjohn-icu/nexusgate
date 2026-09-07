@@ -234,7 +234,13 @@ func TestCappedSkipsPartialFiles(t *testing.T) {
 	}
 }
 
-func TestCappedAllowsIncomingLargerThanCap(t *testing.T) {
+// TestCappedStagesIntoAFreshCacheDirectory pins the first stage into a cache
+// that does not exist yet: the walk gets ENOENT and eviction returns before it
+// decides anything. It is deliberately NOT the oversized-source test even
+// though the source here is larger than the cap — the give-up path is never
+// reached, because there is nothing to walk. That case is
+// TestCappedStagesASourceLargerThanTheWholeCap, which seeds the cache first.
+func TestCappedStagesIntoAFreshCacheDirectory(t *testing.T) {
 	cacheDir := t.TempDir()
 	stager, err := NewCapped("copy", cacheDir, 5)
 	if err != nil {

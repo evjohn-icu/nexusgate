@@ -77,6 +77,17 @@ func (s *SourceStager) Stage(ctx context.Context, sourcePath, assetID, inputVers
 			return "", fmt.Errorf("refusing symlink source cache destination: %s", destination)
 		}
 		if cached.Mode().IsRegular() {
+			// This is the whole LRU signal. Rewriting the mtime here turns it
+			// from "when this was copied" into "when a job last asked for it",
+			// which is what evictForIncoming sorts on — and it is why the file
+			// a long derive is working through is the newest in the cache, and
+			// so the last one evicted.
+			//
+			// The error is discarded rather than handled, and there is no seam
+			// to test that with, because there is no branch: a stage must never
+			// fail over a timestamp. The cost of a failed touch is that this
+			// entry looks older than it is and gets evicted early, which costs
+			// exactly one re-copy of a file that was always re-copyable.
 			now := time.Now()
 			_ = os.Chtimes(destination, now, now)
 			return destination, nil
@@ -213,7 +224,7 @@ func (s *SourceStager) evictForIncoming(incoming int64, keepAsset string) {
 		_ = remove(filepath.Dir(entry.path))
 	}
 	if cacheUsageExceeds(total, incoming, s.maxBytes) {
-		slog.Warn("source cache remains over capacity; incoming source will proceed", "incoming_bytes", incoming, "max_bytes", s.maxBytes)
+		slog.Warn("source cache remains over capacity; incoming source will proceed", "asset_id", keepAsset, "incoming_bytes", incoming, "max_bytes", s.maxBytes)
 	}
 }
 
