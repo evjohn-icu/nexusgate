@@ -792,7 +792,7 @@ func notes(share Share, host Host) []Note {
 	if host.Platform == "unraid" {
 		notes = append(notes, Note{
 			Key:  "unraid-container-note",
-			Text: "This container cannot mount the share for itself, and that is deliberate — it runs unprivileged without CAP_SYS_ADMIN. Unassigned Devices does the mounting. If you mounted the share after this container started, open Docker, edit nexusgate-hub, apply the change to recreate the container, and the mount becomes visible in here.",
+			Text: "This container cannot mount the share for itself, and that is deliberate — it runs unprivileged without CAP_SYS_ADMIN. Unassigned Devices does the mounting. If you mounted the share after this container started, open Docker, edit nexusgate-hub, click Apply to recreate the container, and the mount becomes visible in here.",
 		})
 	} else if host.Container {
 		notes = append(notes, Note{

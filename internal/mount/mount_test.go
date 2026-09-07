@@ -562,7 +562,7 @@ func TestUnraidGuidancePlacesAutoMountBeforeMount(t *testing.T) {
 func TestUnraidContainerGuidanceUsesUnraidContainerNote(t *testing.T) {
 	share := Share{Protocol: ProtocolSMB, Host: "nas", Name: "Video"}
 	guide := Guidance(share, "", Host{OS: "linux", Platform: "unraid", Container: true})
-	want := "This container cannot mount the share for itself, and that is deliberate — it runs unprivileged without CAP_SYS_ADMIN. Unassigned Devices does the mounting. If you mounted the share after this container started, open Docker, edit nexusgate-hub, apply the change to recreate the container, and the mount becomes visible in here."
+	want := "This container cannot mount the share for itself, and that is deliberate — it runs unprivileged without CAP_SYS_ADMIN. Unassigned Devices does the mounting. If you mounted the share after this container started, open Docker, edit nexusgate-hub, click Apply to recreate the container, and the mount becomes visible in here."
 	found := false
 	for _, note := range guide.Notes {
 		if note.Key == "unraid-container-note" {
