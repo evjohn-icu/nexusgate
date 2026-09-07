@@ -712,6 +712,30 @@ func (s *Service) SetSMBDiscoverer(discover func(ctx context.Context) (smbdiscov
 // falls back to Message for an unknown future code; CLI, MCP, Agent and Worker
 // consumers keep using the English Message via RootWarnings, so this additive
 // shape changes nothing they see.
+// advertisedMountpointChars is the character set the refusal message tells the
+// operator to keep to. It is written here rather than parsed out of the prose
+// so that editing the sentence cannot silently change what is asserted, and
+// TestMountpointInvalidMessageAdvertisesOnlyAcceptedCharacters then requires
+// the prose to contain it verbatim and every character in it to actually pass
+// mount.ValidMountpoint.
+//
+// This constant exists because the two drifted apart once already: the message
+// advertised the backslash for as long as mount.safeForCommand accepted it, and
+// kept advertising it after the escape character was removed from the policy
+// meant to exclude escapes. Nothing went red. An operator following the advice
+// would have had their mount point refused by the very rule the sentence was
+// quoting.
+const advertisedMountpointChars = `. - _ / : @ + = ,`
+
+// mountpointInvalidMessage is the English fallback for root.mountpoint_invalid;
+// the browser renders the catalog entry for that code instead whenever it has
+// one. The rejected text is deliberately not echoed back: it is
+// attacker-controlled in the case this guard exists for, and this response is
+// rendered into the page that asked for it. Naming the character classes tells
+// the operator what to change without putting their input back on the screen.
+const mountpointInvalidMessage = "That mount point cannot be used. Keep it to letters, digits and " + advertisedMountpointChars +
+	" — letters from any language are fine, so a Chinese or Japanese directory name works. A space or shell punctuation such as ; | & $ ` ' \" < > * ? # ~ ( ) is refused: the mount commands on the next screen are generated unquoted, so a space would mount the share at a different path than the one you typed."
+
 type RootWarningDetail struct {
 	Code    string            `json:"code"`
 	Params  map[string]string `json:"params,omitempty"`
@@ -1012,14 +1036,9 @@ func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string, 
 	result.Warnings = s.RootWarnings(trimmed, registered)
 	result.WarningDetails = s.RootWarningDetails(trimmed, registered)
 	if mountpointRejected {
-		// The rejected text is not echoed back. It is attacker-controlled in
-		// the case this guard exists for, and this response is rendered into
-		// the page that asked for it; naming the offending characters tells
-		// the operator what to change without putting their input back on the
-		// screen.
 		detail := RootWarningDetail{
 			Code:    "root.mountpoint_invalid",
-			Message: "The mount point cannot contain spaces or shell punctuation (; | & $ ` ' \" < > * ? # ~ ( ) and the like). Use a path made of letters, digits and . - _ / \\ : — the mount commands are generated unquoted, so a space would mount the share at the wrong path.",
+			Message: mountpointInvalidMessage,
 		}
 		result.WarningDetails = append(result.WarningDetails, detail)
 		result.Warnings = append(result.Warnings, detail.Message)
