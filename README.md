@@ -491,7 +491,9 @@ mounted folder as a normal library root, and enable copy staging:
 { "source_staging": { "mode": "copy", "max_bytes": 0 } }
 ```
 
-`max_bytes` caps the local staging cache in bytes; `0` means unbounded (the default).
+`max_bytes` caps the local staging cache in bytes; `0` means unbounded, which is
+the Hub default so upgrading changes no behaviour. A Worker's copy of that cache
+defaults to 256 GiB instead — see `worker enroll --source-cache-max-bytes` below.
 The source is opened read-only and copied once into
 `$NEXUSGATE_DATA_DIR/cache/sources/` before jobs that decode or transform the
 source. The NAS receives no derived files, sidecars or metadata writes, and a
@@ -820,6 +822,11 @@ nexusgate worker enroll --hub https://nas:8787 --fingerprint <fingerprint> \
   --mount <library-root-id>=D:\\NAS\\Footage
 nexusgate worker run
 ```
+
+`--source-cache-max-bytes` caps `cache/sources` on that node. Omitting it takes
+the 256 GiB default and `0` means unbounded. A Worker stages every source in copy
+mode and executes one derive job at a time, so that directory is transit rather
+than a working set: it only has to hold the largest single clip, not the library.
 
 `provider_operations` is enrollment-time trust; heartbeats cannot grant provider
 access. Re-enroll to change it.
