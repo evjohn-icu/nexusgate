@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+- **Apple Log previews could never render, because the LUT the renderer
+  requires had no way to reach it.** `media.PreviewRenderer` documents the LUT
+  as "per-install configuration" and `ResolvePlan` refuses an Apple Log plan
+  without one — but all five construction sites passed `""`, and no config key,
+  environment variable or flag existed to fill it, so "Apple Log preview needs
+  LUT; no proxy was generated" was the terminal state of every Apple Log clip
+  on every install. On a real NAS the cost was the whole asset: no thumbnail,
+  no proxy, no audio, and because derive failed terminally `speech_gate` was
+  never enqueued — the file survived as a name. The renderer half was always
+  complete (it validates the LUT is readable, escapes it into the `lut3d`
+  filter, and refuses cleanly when it is absent); only the wiring was missing.
+
+  `config.json`'s `preview_lut_path` and `NEXUSGATE_PREVIEW_LUT_PATH` now
+  supply it, and `worker enroll --preview-lut` writes it into `worker.json`.
+  The default stays empty, and empty still means what it meant yesterday: no
+  LUT, no render, the same explicit refusal. Existence is deliberately not
+  checked at load time — an `os.Stat` in `Load` would refuse to start the Hub
+  over a share that is merely not mounted yet, while `ResolvePlan` already
+  names the unreadable path per job.
+
+  No LUT ships with this. The setting is a pointer to the operator's own copy
+  and nothing more; without that copy, Apple Log rendering is exactly as
+  unsupported as it was.
+
+- **A truncated MOV was indistinguishable from a missing `ffprobe`, so it
+  landed in an untagged bucket.** `internal/media.ErrProbeRejected` now marks
+  the one outcome that means `ffprobe` ran to completion and ruled on the
+  file: it wraps `*exec.ExitError` and nothing else. A missing binary
+  (`*exec.Error`) and a context timeout are deliberately not wrapped, because
+  those are the cases where retrying is the right answer.
+  `classifyJobFailure` maps the sentinel to
+  `domain.JobFailureCategoryMediaDecode`, an identity declared in
+  `internal/domain/pipeline.go` whose comment has said "No sentinel produces
+  it yet" since it was written.
+
+  The file that proved it: `drone/DJI_0019.MOV`, 142606336 bytes,
+  which `ffprobe` rejects with `moov atom not found` — MOV writes its index
+  atom at the end of the file, so a recording that was interrupted has no index
+  at all. It used to be recorded as `last_error_code=unknown`, a label-less
+  bucket on `/api/v1/issues`. `ffprobe`'s stderr now reaches the error message
+  (bounded), so `/progress` shows `moov atom not found` instead of
+  `exit status 1`.
+
+  It is deliberately **not** `domain.Permanent`. An `exit status 1` can also
+  mean the file is being copied in right now, which the repo's default says to
+  retry, and the failure happens before any bytes are read, so a retry costs
+  almost nothing. Retry policy is unchanged: the category labels the failure
+  once the attempts are spent, and does not stop the attempts.
+
 - **One unreadable file stopped a whole library from ever being processed, and
   the scan reported success.** Found by scanning a real 4792-file NAS share:
   `discovered=4339 ... errors=1`, `pipeline=started`, exit code 0 — and zero

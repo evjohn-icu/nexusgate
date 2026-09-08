@@ -252,10 +252,26 @@ func validateArtifact(artifact ArtifactUpload) error {
 
 type FFmpegDeriver struct {
 	Plan media.HardwarePlan
+
+	// previewLUTPath is the per-install preview LUT supplied via worker.json;
+	// see WithPreviewLUT for why it is set through a chained setter instead of
+	// the constructor.
+	previewLUTPath string
 }
 
 func NewFFmpegDeriver(plan media.HardwarePlan) *FFmpegDeriver {
 	return &FFmpegDeriver{Plan: plan}
+}
+
+// WithPreviewLUT carries the per-install preview LUT path into every preview
+// render this deriver performs. It is a chained setter rather than a
+// NewFFmpegDeriver parameter because the LUT is per-install configuration
+// provided through worker.json, while HardwarePlan is what startup probing
+// discovered; folding it into the constructor would force every existing call
+// site to name a value that is empty in the common, LUT-less install.
+func (d *FFmpegDeriver) WithPreviewLUT(path string) *FFmpegDeriver {
+	d.previewLUTPath = path
+	return d
 }
 
 func (d *FFmpegDeriver) Derive(ctx context.Context, job remote.WorkerJob, sourcePath, outputDir string) ([]ArtifactUpload, error) {
@@ -272,7 +288,7 @@ func (d *FFmpegDeriver) Derive(ctx context.Context, job remote.WorkerJob, source
 	probe, probeErr := media.Probe(ctx, sourcePath)
 	previewPlan := media.PreviewPlanForProbeResult(probe, probeErr, sourcePath)
 
-	renderer := media.NewPreviewRenderer("").WithReadRate(job.ReadRate)
+	renderer := media.NewPreviewRenderer(d.previewLUTPath).WithReadRate(job.ReadRate)
 	thumbnailPlan, err := renderer.RenderThumbnail(ctx, sourcePath, thumbnailStage, d.Plan, previewPlan)
 	if err != nil {
 		return nil, err

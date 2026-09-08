@@ -306,6 +306,7 @@ type Config struct {
 	HubSecurity       HubSecurityConfig       `json:"hub_security"`
 	LibrarySupervisor LibrarySupervisorConfig `json:"library_supervisor"`
 	Pipeline          PipelineConfig          `json:"pipeline"`
+	PreviewLUTPath    string                  `json:"preview_lut_path,omitempty"`
 }
 
 func Load() (Config, error) {
@@ -362,6 +363,16 @@ func Load() (Config, error) {
 	}
 	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_LISTEN_ADDRESS")); v != "" {
 		cfg.ListenAddress = v
+	}
+	// The LUT is per-install: the operator points at their own copy, and an
+	// empty value keeps Apple Log previews unrendered (the renderer reports the
+	// reason) instead of guessing a path we did not ship. Existence is
+	// deliberately not checked here: media.ResolvePlan already fails each job
+	// with "needs readable LUT %q" plus the path, whereas an os.Stat at load
+	// time would refuse to start the Hub over a share that is merely not
+	// mounted yet.
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_PREVIEW_LUT_PATH")); v != "" {
+		cfg.PreviewLUTPath = v
 	}
 	// This is a deployment hint rather than a fact LocalHost can prove: the
 	// process can detect its container, but only the operator knows which host

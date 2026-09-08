@@ -24,9 +24,15 @@ type Config struct {
 	// one answer a Worker must not default to — this side stages in copy mode
 	// unconditionally (see runtime.go), so unlike the Hub nobody ever opted
 	// into it and nobody was ever asked how large it may grow.
-	SourceCacheMaxBytes *int64                    `json:"source_cache_max_bytes,omitempty"`
-	Mounts              map[string]string         `json:"mounts,omitempty"`
-	Registration        remote.WorkerRegistration `json:"registration"`
+	SourceCacheMaxBytes *int64            `json:"source_cache_max_bytes,omitempty"`
+	Mounts              map[string]string `json:"mounts,omitempty"`
+	// PreviewLUTPath is resolved on this Worker's filesystem, not the Hub's, so
+	// it must live in worker.json instead of being pushed down: Workers render
+	// proxy clips too and need the LUT to grade Log footage into a safe SDR
+	// preview. A missing file is not an error here — media.ResolvePlan reports
+	// "needs readable LUT" per job with the path. Not a credential.
+	PreviewLUTPath string                    `json:"preview_lut_path,omitempty"`
+	Registration   remote.WorkerRegistration `json:"registration"`
 }
 
 // DefaultSourceCacheMaxBytes is the cap a Worker gets when its config does not

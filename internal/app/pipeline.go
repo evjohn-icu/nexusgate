@@ -115,6 +115,15 @@ type Pipeline struct {
 	// construction from configuration, like routeDeferral, so RunUntilIdle
 	// never reads config itself.
 	minFreeBytes int64
+	// previewLUTPath is the per-install preview LUT handed to
+	// media.PreviewRenderer by the derive stage. It is per-install
+	// configuration, unlike the read rate (per-job policy chosen from the
+	// throttle), because a LUT is a property of the colour pipeline the
+	// operator set up, not of the asset being rendered. The Pipeline must
+	// carry it because the Hub's derive stage renders previews inside
+	// RunUntilIdle; without it an Apple Log asset can never resolve a render
+	// plan and every derive fails terminally.
+	previewLUTPath string
 	// onShotsCommitted is the optional post-commit hook (set by NewService
 	// via SetAfterShotsCommitted): it runs after shot rows become canonical,
 	// synchronously inside the job, so "the process exited" still means "no
@@ -179,6 +188,19 @@ func (p *Pipeline) SetAfterShotsCommitted(hook func(ctx context.Context, assetID
 // keeps recordCostEstimate a no-op.
 func (p *Pipeline) SetCostEstimator(hook func(ctx context.Context, capability, provider, model, assetID string, durationMS int64)) {
 	p.costEstimator = hook
+}
+
+// WithPreviewLUT carries the per-install preview LUT path into every preview
+// render the derive stage performs. It is a chained setter rather than a
+// NewPipeline parameter because NewPipeline already takes eleven arguments
+// and has thirty-one call sites, nearly all of which would have to name a
+// value that is empty in the common, LUT-less install. This is the inverse of
+// media.PreviewRenderer's split — there WithReadRate is the chained, per-job
+// option and the LUT is the constructor argument — because the constructor
+// here is shared by every stage, not just the preview path.
+func (p *Pipeline) WithPreviewLUT(path string) *Pipeline {
+	p.previewLUTPath = path
+	return p
 }
 
 // afterShotsCommitted fires the post-commit hook when one is attached.
@@ -650,11 +672,18 @@ func classifyJobFailure(err error) domain.JobFailureCategory {
 	if errors.As(err, &networkError) {
 		return domain.JobFailureCategoryProviderUnavailable
 	}
-	// Media decode failures (ffprobe/ffmpeg) are plain errors today —
-	// internal/media defines no decode/unsupported/no-audio sentinel — so they
-	// land in Unknown here. The registry is extensible: the day a stage marks
-	// one, this function maps it to JobFailureCategoryMediaDecode or
-	// JobFailureCategoryUnsupportedMedia without touching the issues view.
+	// The decode half of this family now has a producer: media.ErrProbeRejected
+	// is wrapped only around an *exec.ExitError, so it means ffprobe ran to
+	// completion and judged the file undecodable — a verdict, not a missing
+	// binary or a timeout (those stay retryable and fall through to Unknown).
+	// Deliberately not domain.Permanent: exit 1 cannot rule out a file still
+	// being copied in, and the failure happens before any read, so a retry is
+	// nearly free. JobFailureCategoryUnsupportedMedia still has no producer in
+	// internal/media; the registry stays extensible, so the day one appears it
+	// maps here without touching the issues view.
+	if errors.Is(err, media.ErrProbeRejected) {
+		return domain.JobFailureCategoryMediaDecode
+	}
 	return domain.JobFailureCategoryUnknown
 }
 
@@ -799,7 +828,7 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 			if err != nil {
 				return err
 			}
-			renderer := media.NewPreviewRenderer("").WithReadRate(readRate)
+			renderer := media.NewPreviewRenderer(p.previewLUTPath).WithReadRate(readRate)
 			if needThumb {
 				staged := filepath.Join(base, ".derive-thumbnail.tmp.jpg")
 				actual, err := renderer.RenderThumbnail(ctx, sourcePath, staged, p.hardware, previewPlan)

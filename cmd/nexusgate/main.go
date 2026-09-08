@@ -540,6 +540,12 @@ func runWorkerCommand(cfg config.Config) error {
 		fs.Var(&providerOperations, "provider-operation", "declared direct/proxy Provider operation: video_analysis or asr; repeatable")
 		cacheDir := fs.String("cache", "", "Worker-local cache directory")
 		sourceCacheMax := fs.Int64("source-cache-max-bytes", worker.DefaultSourceCacheMaxBytes, "maximum source-cache bytes (0 means unbounded)")
+		// No os.Stat on the LUT here on purpose: the path is resolved on the
+		// Worker's own filesystem, and enroll is commonly run on another
+		// machine, so a missing file at enrollment time proves nothing.
+		// media.PreviewRenderer.ResolvePlan reports "needs readable LUT %q"
+		// on every job that actually needs it.
+		previewLUT := fs.String("preview-lut", "", "path to a 3D LUT used to render Log sources into SDR previews (empty: Log sources get no preview)")
 		configPath := fs.String("config", defaultWorkerConfigPath(), "worker config path")
 		if err := fs.Parse(os.Args[3:]); err != nil {
 			return err
@@ -600,7 +606,7 @@ func runWorkerCommand(cfg config.Config) error {
 		// directory is the one nobody opted into: the Worker stages in copy
 		// mode unconditionally, so the number has to be visible where they
 		// will look for it.
-		if err := worker.SaveConfig(*configPath, worker.Config{HubURL: *hub, CertificateFingerprint: *fingerprint, Token: enrollment.Token, CacheDir: *cacheDir, SourceCacheMaxBytes: &sourceCacheMaxValue, Mounts: mounts, Registration: registration}); err != nil {
+		if err := worker.SaveConfig(*configPath, worker.Config{HubURL: *hub, CertificateFingerprint: *fingerprint, Token: enrollment.Token, CacheDir: *cacheDir, SourceCacheMaxBytes: &sourceCacheMaxValue, PreviewLUTPath: strings.TrimSpace(*previewLUT), Mounts: mounts, Registration: registration}); err != nil {
 			return err
 		}
 		fmt.Printf("enrolled worker %s; configuration saved to %s\n", enrollment.Worker.ID, *configPath)
@@ -627,7 +633,7 @@ func runWorkerCommand(cfg config.Config) error {
 		// a running process.
 		hardwareReport, plan := media.DetectHardware(ctx, media.HardwareConfig{Mode: "auto", AllowFallback: true})
 		capabilities := worker.MergeDetectedCapabilities(config.Registration.Capabilities, hardwareReport)
-		deriver := worker.NewFFmpegDeriver(plan)
+		deriver := worker.NewFFmpegDeriver(plan).WithPreviewLUT(config.PreviewLUTPath)
 		runtime := worker.NewRuntime(client, config, deriver, capabilities)
 		if !*tray {
 			return runtime.Run(ctx, worker.RunOptions{})

@@ -444,7 +444,7 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 	// process so the executor registry (pipeline_executors) can attribute
 	// in-flight jobs to this process; HealOnStartup then reclaims only the
 	// jobs whose owning process is gone.
-	pipeline := NewPipeline(repo, cfg.CacheDir, channelRuntime.asr(), channelRuntime.asrFallback(), pipelineVideoProvider, alignment, shotDetector, plan, sourceStager, time.Duration(cfg.Pipeline.ProviderRouteDeferralMinutes)*time.Minute, cfg.Pipeline.MinimumFreeSpaceBytes)
+	pipeline := NewPipeline(repo, cfg.CacheDir, channelRuntime.asr(), channelRuntime.asrFallback(), pipelineVideoProvider, alignment, shotDetector, plan, sourceStager, time.Duration(cfg.Pipeline.ProviderRouteDeferralMinutes)*time.Minute, cfg.Pipeline.MinimumFreeSpaceBytes).WithPreviewLUT(cfg.PreviewLUTPath)
 	leaseOwner := "local-" + idgen.New()
 	pipeline.SetLeaseOwner(leaseOwner)
 	service := &Service{
