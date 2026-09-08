@@ -463,8 +463,8 @@ func runRootCommand(ctx context.Context, service *app.Service, args []string) er
 			}
 			return err
 		}
-		fmt.Printf("discovered=%d linked=%d missing=%d skipped=%d errors=%d supported=%s\n",
-			result.Discovered, result.Linked, result.Missing, result.SkippedFiles, len(result.Errors),
+		fmt.Printf("discovered=%d linked=%d missing=%d skipped=%d errors=%d queued=%d supported=%s\n",
+			result.Discovered, result.Linked, result.Missing, result.SkippedFiles, len(result.Errors), result.Queued,
 			strings.Join(result.SupportedExtensions, ","))
 		if result.SkippedFiles > 0 {
 			exts := strings.Join(result.SkippedExtensions, ", ")

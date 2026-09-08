@@ -1452,15 +1452,23 @@ func (s *Service) scanLibraryRoot(ctx context.Context, rootID string, deep bool)
 	// weaken the gate (the gate never reads the persisted verdict). A failure
 	// to write the reconciliation itself stays fatal, as it was when the
 	// scanner owned it.
-	if s.rootHealthyAfterScan(root, result) {
+	if s.rootReachableAfterScan(root, result) {
 		if err := s.repo.MarkRootHealthy(ctx, rootID, now); err != nil {
 			slog.Warn("scan: failed to record root healthy", "root_id", rootID, "error", err)
 		}
-		missing, err := s.repo.MarkUnseenLocationsMissing(ctx, root.ID, result.SeenRelativePaths)
-		if err != nil {
-			return result, err
+		// Reconciliation is gated on Complete, health is not: a walk that
+		// errored may have a short SeenRelativePaths, and marking every unseen
+		// location missing from a partial list would erase the library's memory
+		// of files that are still on disk. Recording the root as present is
+		// still right, and it is what keeps this pass's own enqueue — and the
+		// next scan — from being refused by a verdict this walk poisoned.
+		if result.Complete {
+			missing, err := s.repo.MarkUnseenLocationsMissing(ctx, root.ID, result.SeenRelativePaths)
+			if err != nil {
+				return result, err
+			}
+			result.Missing = missing
 		}
-		result.Missing = missing
 	} else {
 		if err := s.repo.MarkRootUnavailable(ctx, rootID, now); err != nil {
 			slog.Warn("scan: failed to record root unavailable", "root_id", rootID, "error", err)
@@ -1515,6 +1523,7 @@ func (s *Service) scanLibraryRoot(ctx context.Context, rootID string, deep bool)
 			}
 		} else {
 			delete(rootFailures, assetID)
+			result.Queued++
 		}
 	}
 	// Catch up on assets that never got a probe job at all — nothing in the
@@ -1542,6 +1551,7 @@ func (s *Service) scanLibraryRoot(ctx context.Context, rootID string, deep bool)
 			}
 		} else {
 			delete(rootFailures, assetID)
+			result.Queued++
 		}
 	}
 	// Merge scan-local failure counts back into the shared map.  Only assets
@@ -1572,28 +1582,35 @@ func (s *Service) scanLibraryRoot(ctx context.Context, rootID string, deep bool)
 	return result, nil
 }
 
-// rootHealthyAfterScan is the reconciliation gate: whether this scan's walk
-// result may be used to mark previously-seen files missing.
+// rootReachableAfterScan answers exactly one question: is this root's path
+// actually there? It is deliberately not a verdict on the walk.
 //
 // The boundary it protects: an unmounted NAS root walks exactly like an empty
-// directory, and marking every asset missing from that walk is the data loss
-// this gate exists to prevent. The rules therefore err on the side of NOT
-// reconciling —
+// directory, and a scan that reconciles against that walk marks every asset
+// in the root missing. Reachability is therefore decided from the filesystem
+// itself, not from the walk's own bookkeeping, and the rules err on the side
+// of calling the root not reachable —
 //
-//   - the root directory no longer exists (os.Stat fails) → not healthy
+//   - the root directory no longer exists (os.Stat fails) → not reachable
 //   - mount.LooksUnmounted: the directory is empty and the mount table says
 //     it resolves to a different filesystem (the state of a mount whose share
-//     did not come back after a reboot) → not healthy
+//     did not come back after a reboot) → not reachable
 //   - the directory is empty: a genuinely empty root cannot be distinguished
 //     from an unmounted one, and the alternative — scanning it and recording
 //     every asset as missing — is worse than saying so, so an empty directory
-//     is never proof of health and the walk does not reconcile
+//     is never proof of reachability and the walk does not reconcile
 //
-// Errors about files or subdirectories inside the root do not fail the gate:
-// one unreadable clip must not stop the library from reconciling files that
-// were genuinely deleted.
-func (s *Service) rootHealthyAfterScan(root domain.LibraryRoot, result domain.ScanResult) bool {
-	if !result.Complete || !result.RootReachable {
+// result.Complete is ignored on purpose. A walk that hit one unreadable file
+// is still a walk of a root that is present and mounted; fusing "the walk was
+// perfect" with "the path is there" is what cost a real 4792-file library its
+// entire ingest — the partial walk marked the root unavailable and the enqueue
+// in that same pass was refused because of it. Whether a walk's seen list is
+// complete enough to reconcile is a separate question, asked by the caller.
+//
+// Errors about files or subdirectories inside the root do not fail this check:
+// one unreadable clip must not make the root look gone.
+func (s *Service) rootReachableAfterScan(root domain.LibraryRoot, result domain.ScanResult) bool {
+	if !result.RootReachable {
 		return false
 	}
 	// The walk can also complete without errors while the root is gone if the

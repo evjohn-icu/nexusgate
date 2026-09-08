@@ -104,6 +104,12 @@ type ScanResult struct {
 	ChangedAssetIDs []string `json:"-"`
 	Complete        bool     `json:"-"`
 	RootReachable   bool     `json:"-"`
+	// Queued counts how many assets this scan actually enqueued for ingest.
+	// Hidden from JSON: ScanResult is the response body of
+	// POST /library-roots/{id}/scan and must keep its documented shape. A
+	// scan can discover thousands of assets and enqueue none — a silent
+	// total-ingest failure this counter lets the CLI surface.
+	Queued int `json:"-"`
 }
 
 // KnownFile is what a previous scan already recorded for one path in one

@@ -182,15 +182,43 @@ func TestIncompleteScanNeverReconcilesEvenWhenRootWasHealthy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Complete || repo.reconcileCalled || !repo.unavailable || repo.healthy {
-		t.Fatalf("incomplete scan verdict: complete=%v reconcile=%v unavailable=%v healthy=%v", result.Complete, repo.reconcileCalled, repo.unavailable, repo.healthy)
+	// A reachable-but-incomplete walk splits the verdict in two. The root
+	// stays healthy: its path is demonstrably mounted and populated, and
+	// condemning it would make GetPrimaryLocation hide the root and silently
+	// refuse every enqueue for the whole library. Reconciliation still does
+	// not run: an incomplete walk's seen list is partial, and marking unseen
+	// locations missing from it would erase the memory of files still on disk.
+	if result.Complete {
+		t.Error("result.Complete = true, want false: the persist failure makes this walk incomplete")
+	}
+	if repo.reconcileCalled {
+		t.Errorf("MarkUnseenLocationsMissing was called for an incomplete walk (seen=%v): a partial seen list must never reconcile", repo.reconcileSeen)
+	}
+	if repo.unavailable {
+		t.Error("MarkRootUnavailable was called for a reachable, populated root: an incomplete walk must not condemn the root")
+	}
+	if !repo.healthy {
+		t.Error("MarkRootHealthy was not called for a reachable, populated root: reachability, not walk completeness, decides health")
 	}
 }
 
-func TestRootHealthyAfterScanDoesNotTrustPriorHealth(t *testing.T) {
+func TestRootReachableAfterScanIgnoresCompletenessAndPriorHealth(t *testing.T) {
 	service := &Service{}
-	root := domain.LibraryRoot{Path: t.TempDir(), HealthState: domain.RootHealthHealthy}
-	if service.rootHealthyAfterScan(root, domain.ScanResult{Complete: false, RootReachable: true}) {
-		t.Fatal("prior healthy state authorized an incomplete scan")
+
+	// An empty directory is the unmounted-share shape: no prior health state
+	// and no "the walk was complete" flag can override what the filesystem
+	// itself says, which is that there is nothing here.
+	emptyRoot := domain.LibraryRoot{Path: t.TempDir(), HealthState: domain.RootHealthHealthy}
+	if service.rootReachableAfterScan(emptyRoot, domain.ScanResult{Complete: true, RootReachable: true}) {
+		t.Error("empty dir, Complete=true: rootReachableAfterScan returned true; an empty directory must read as unreachable regardless of prior health or walk completeness")
+	}
+
+	// The regression: a populated root whose walk was incomplete is still
+	// reachable. One unreadable file among thousands must not make a root
+	// that is plainly there read as gone.
+	populatedRoot := domain.LibraryRoot{Path: t.TempDir(), HealthState: domain.RootHealthHealthy}
+	scanWriteVideoFile(t, filepath.Join(populatedRoot.Path, "clip.mp4"))
+	if !service.rootReachableAfterScan(populatedRoot, domain.ScanResult{Complete: false, RootReachable: true}) {
+		t.Error("populated dir, Complete=false: rootReachableAfterScan returned false; an incomplete walk must not condemn a present, populated root")
 	}
 }

@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- **One unreadable file stopped a whole library from ever being processed, and
+  the scan reported success.** Found by scanning a real 4792-file NAS share:
+  `discovered=4339 ... errors=1`, `pipeline=started`, exit code 0 — and zero
+  jobs, zero derived artifacts. The chain was entirely self-inflicted and closed
+  in one pass. `ScanResult.Complete` is `RootReachable && len(Errors) == 0`, so
+  a single file that failed to fingerprint made the walk incomplete;
+  `rootHealthyAfterScan` treated incomplete as unreachable and marked the root
+  `unavailable`; `GetPrimaryLocation` ends with `lr.health_state<>'unavailable'`
+  and so returned no rows for every asset in that root; and the enqueue loop
+  three lines later therefore failed all 4339 times with `sql: no rows in
+  result set`, logged at WARN and swallowed. The scan's own health verdict
+  poisoned its own enqueue.
+
+  It never healed: the same file errored on every later scan, and the library
+  supervisor skips roots marked `unavailable` except every Nth pass — a
+  throttle whose comment correctly says an unhealthy root "flips back to
+  healthy on its next attempt", which is true for a share that remounted and
+  false for a file that is still unreadable.
+
+  The gate is now split. `rootReachableAfterScan` answers one question — is the
+  path there — from `RootReachable`, `os.Stat`, `mount.LooksUnmounted` and a
+  non-empty `ReadDir`, and ignores `Complete` entirely. `Complete` now gates
+  only `MarkUnseenLocationsMissing`, which is the decision it was always about:
+  a partial walk's seen list must never be used to mark files missing. The old
+  doc comment already promised this — "one unreadable clip must not stop the
+  library" — while the line under it did the opposite.
+
+  `root scan` also prints `queued=N` next to `discovered=N` now. The failure was
+  invisible for as long as it was because nothing in the output said how much
+  work the scan had actually created.
+
 - **Discovery offered `IPC$`, and clicking it said "cannot read /192.0.2.10/IPC$".**
   Found by running the flow against a real NAS. Every SMB server returns `IPC$`
   from an enumeration — it is the named-pipe endpoint, not a filesystem — and

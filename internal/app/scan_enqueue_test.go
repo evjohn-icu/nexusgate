@@ -363,3 +363,51 @@ func TestScanLibraryRootConcurrentSameRoot(t *testing.T) {
 		t.Fatal("overlapping same-root scans left all locations missing")
 	}
 }
+
+// The catch-up loop is the only thing standing between an asset whose enqueue
+// failed once and starving forever: a later scan sees nothing changed on disk,
+// so the asset is in no changed set and only AssetsWithoutProbeJob can rescue
+// it. This pins that the loop runs, enqueues, and counts — the ChangedAssetIDs
+// loop cannot cover the second result.Queued++ site, because an asset in the
+// changed set is skipped there by `counted`.
+func TestScanLibraryRootCatchUpEnqueuesAssetsThatLostTheirProbeJob(t *testing.T) {
+	ctx := context.Background()
+	service, repo, rootDir := newSupervisedLibrary(t, config.LibrarySupervisorConfig{})
+	for _, name := range []string{"a.mp4", "b.mp4", "c.mp4"} {
+		scanWriteVideoFile(t, filepath.Join(rootDir, name))
+	}
+	rootID := scanRootID(t, service)
+
+	first, err := service.ScanLibraryRoot(ctx, rootID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Queued != 3 {
+		t.Fatalf("first scan Queued=%d, want 3", first.Queued)
+	}
+
+	// Drop the probe jobs the first scan wrote. The assets stay live and
+	// untouched, so the next scan's changed set is empty and the catch-up
+	// query is the only path that can enqueue them again.
+	if _, err := repo.DB().ExecContext(ctx, "DELETE FROM jobs"); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := service.ScanLibraryRoot(ctx, rootID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.ChangedAssetIDs) != 0 {
+		t.Fatalf("second scan changed=%v, want none: nothing on disk changed", second.ChangedAssetIDs)
+	}
+	if second.Queued != 3 {
+		t.Fatalf("second scan Queued=%d, want 3: the catch-up loop must re-enqueue and count assets whose probe job vanished", second.Queued)
+	}
+	var jobs int
+	if err := repo.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM jobs").Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 3 {
+		t.Fatalf("jobs=%d, want 3: the catch-up loop must actually write the probe jobs it counted", jobs)
+	}
+}
