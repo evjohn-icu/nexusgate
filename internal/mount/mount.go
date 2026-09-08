@@ -273,6 +273,12 @@ func safeCommandRune(r rune) bool {
 // a legal-but-unquotable name now classifies as the share it is and is refused
 // later, by the caller, with an explanation naming the character.
 //
+// A share name is not trimmed here because ParseShare trims the whole address
+// before splitting it, so "//nas/Video " arrives as "Video". A LEADING space
+// survives that and is left alone deliberately: it is legal in an SMB name, it
+// is not command-safe, and refusing it as unparseable would put it back in the
+// local-path branch this whole rule exists to keep names out of.
+//
 // unicode.IsPrint is doing more work here than "no control characters". Its
 // only spacing character is ASCII space, so U+00A0, U+2028, U+2029 and the BOM
 // are refused — the runes that a shell, libmount and yaml.v3 each fold to
