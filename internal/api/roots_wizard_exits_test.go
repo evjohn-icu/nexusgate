@@ -25,7 +25,16 @@ func TestLibraryRootsWizardHasRecoveryExits(t *testing.T) {
 			// now reached through a variable so a share-name refusal can
 			// substitute its own text (see guideActionKey). Only the indirection
 			// moved — the exit itself, and its fallback, are unchanged.
-			marker: `esc(tdT(actionKey||'roots.noGuidanceAction'))`,
+			marker: `esc(tdT(action.key,action.vars))`,
+		},
+		{
+			// Pinned separately from the line above, because the indirection is
+			// exactly what could lose the fallback without anything failing: a
+			// guideActionKey that returned undefined for an unknown code would
+			// render the empty string into the callout, and the wizard's last
+			// exit would silently become a blank box.
+			name:   "missing guidance fallback text",
+			marker: "  return {key:'roots.noGuidanceAction'};\n}",
 		},
 		{
 			name:   "no terminal handoff",

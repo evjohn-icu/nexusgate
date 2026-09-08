@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+- **Discovery offered `IPC$`, and clicking it said "cannot read /192.0.2.10/IPC$".**
+  Found by running the flow against a real NAS. Every SMB server returns `IPC$`
+  from an enumeration — it is the named-pipe endpoint, not a filesystem — and
+  the page renders each enumerated name as a clickable button with no filter.
+  `IPC$` did not parse as a share, so the wizard fell through to its local-path
+  branch and reported a path the operator never typed, with their `//` folded
+  to `/` and no mention of the share at all. That is the same lie a share name
+  with a space told before v0.31 fixed it; discovery was a second door into it.
+
+  Both halves are closed. `guestShareNames` drops `IPC$` and nothing else — a
+  share called `Media$` is a hidden but real share somebody created, and
+  filtering it would make their own share vanish from the picker. And share
+  name classification now uses the SMB-legal set (printable, minus
+  `\ / : * ? " < > |`) instead of "the command-safe set plus a space", so
+  `Video (2024)` and `Photos & Video` classify as the shares they are. The
+  command sink did not widen by one character: `CommandSafeShare` is unchanged,
+  every generated command is still withheld, and the refusal now names the
+  character that caused it.
+
+  The earlier rule was argued from `//nas/Video;id` being an injection attempt
+  rather than a share name. That argument only ever covered names the operator
+  typed. Enumeration returns names the server chose, and `IPC$` is in every one
+  of them.
+
+- **The wizard told `IPC$` it contained a space.** The share-name refusal is the
+  only text that screen shows — `warning_details` is rendered by the roots
+  health table, not by the wizard — so a message naming the wrong problem is
+  the whole of what the operator gets. There are now two codes,
+  `root.share_name_unsupported` for a space and
+  `root.share_name_unsupported_character` for a character that can be shown,
+  in all five languages, and `guideActionKey` carries the character through to
+  the page. `mount.UnsafeShareRune` picks which one: a visible character beats
+  a space whenever a name has both, because telling someone to rename
+  `Video (2024)` without its space sends them back to a NAS to produce
+  `Video(2024)`, which is refused again for a reason nobody mentioned.
+
+  A new guard, `TestShareNameWarningCodesReachTheShareNameAction`, scans
+  `service.go` for `root.*share_name*` codes and fails if one is not routed by
+  `guideActionKey`. An unrouted code renders no error — it falls through to the
+  advice about the mount point, blaming a field the operator cannot fix for a
+  value the page itself proposed.
+
+- **`DefaultMountpoint` proposes nothing on Windows rather than a plausible
+  wrong UNC.** Widening classification meant names the command sink refuses now
+  reach it, and the Windows branch returns the share address itself, where the
+  POSIX branch returns an arbitrary local directory it is free to rename.
+  Sanitising there would prefill `\\nas\Video-2024-` — a share that does not
+  exist on the server — into an input the operator is invited to accept. The
+  invariant is now "propose nothing, or propose something `ValidMountpoint`
+  accepts".
+
 - **`worker enroll` can now set the source-cache cap, and writes it out.** The
   field is `omitempty`, so an unset cap is simply absent from `worker.json` —
   and an operator cannot edit a setting they cannot see. `--source-cache-max-bytes`

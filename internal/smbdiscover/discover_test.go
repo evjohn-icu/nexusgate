@@ -242,6 +242,19 @@ func TestGuestShareNamesHangsBoundedByTimeout(t *testing.T) {
 	}
 }
 
+func TestGuestShareNamesFiltersIPC(t *testing.T) {
+	// " IPC$ " and "   " are the two cases that depend on trimming happening
+	// before anything else looks at the name: the first is IPC$ wearing
+	// whitespace, and the second becomes the empty string only after the trim,
+	// which is why the emptiness test cannot run first. An empty name reaching
+	// the caller renders as a share button with no label on it.
+	got := filterGuestShareNames([]string{" Video ", "IPC$", "ipc$", "Ipc$", " IPC$ ", "   ", "Media$", "Media$ "})
+	want := []string{"Video", "Media$", "Media$"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("filtered shares = %v, want %v", got, want)
+	}
+}
+
 // TestLocalNetHostsEnumeratesUsableAddresses verifies Hosts() produces the
 // full usable range for a /24, excluding network and broadcast addresses.
 func TestLocalNetHostsEnumeratesUsableAddresses(t *testing.T) {

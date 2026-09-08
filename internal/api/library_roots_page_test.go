@@ -194,9 +194,10 @@ func TestLibraryRootsPageUsesShareNameGuidanceAction(t *testing.T) {
 	body := libraryRootsHTML
 	for _, marker := range []string{
 		"function guideActionKey(inspection)",
-		"details[i].code==='root.share_name_unsupported'",
-		"return 'roots.shareNameUnsupportedAction'",
-		"tdT(actionKey||'roots.noGuidanceAction')",
+		"code==='root.share_name_unsupported'",
+		"return {key:'roots.shareNameUnsupportedAction'}",
+		"{key:'roots.shareNameUnsupportedCharacterAction',vars:detail.params||{}}",
+		"tdT(action.key,action.vars)",
 	} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("library roots page missing share-name guidance marker %q", marker)

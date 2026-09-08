@@ -750,7 +750,21 @@ const mountpointInvalidMessage = "That mount point cannot be used. Keep it to le
 // root.share_name_unsupported. It exists because a recognised share can still
 // be unsafe to interpolate into the shell, fstab, and Compose forms that mount.Guidance
 // generates, and the operator needs an actionable explanation instead of empty guidance.
+//
+// There are two of these, and the split is about one word being invisible. The
+// space is the common case and reads best named — "its name contains a space" —
+// but a space rendered into a {character} slot is a blank in the middle of a
+// sentence, which reads as a typo rather than as the answer. Every other
+// refused character can be shown, and showing it is strictly more useful than
+// a category noun, so shareNameUnsupportedCharacterMessage names it. Which one
+// a share gets is decided by mount.UnsafeShareRune, not by scanning the
+// name twice with different rules.
 const shareNameUnsupportedMessage = "%s is a network share, and its name contains a space. The mount commands are not generated for it: the same share name is pasted into a shell command line, an /etc/fstab entry and a Docker Compose file, and those three quote a space differently, so a command that reads correctly would mount something other than what you typed. Two ways forward — rename the share on the NAS so its name has no space, or mount it yourself and come back to the verify step with the mount point you used."
+
+// shareNameUnsupportedCharacterMessage is the English fallback for
+// root.share_name_unsupported_character: the same refusal as above, for a
+// character that can be shown rather than named.
+const shareNameUnsupportedCharacterMessage = "%s is a network share, but its name contains the character %s, which cannot be put into the mount commands. None are generated for it: the same share name is pasted into a shell command line, an /etc/fstab entry and a Docker Compose file, and those three read that character differently, so a command that looks correct would mount something other than what you typed. Two ways forward — rename the share on the NAS without that character, or mount it yourself and come back to the verify step with the mount point you used."
 
 type RootWarningDetail struct {
 	Code    string            `json:"code"`
@@ -955,6 +969,10 @@ func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string, 
 	result := RootInspection{Path: trimmed}
 	mountpointRejected := false
 	shareNameRejected := false
+	// Carried out of the share branch because the warnings are assembled after
+	// it closes, and naming the offending character needs the parsed name
+	// rather than the address string it was reconstructed into.
+	rejectedShare := mount.Share{}
 	// The refusal below is appended after the filesystem checks, outside the
 	// block that scopes the parsed share, so the address it names is carried
 	// forward here rather than reconstructed from result.Share — that
@@ -993,6 +1011,7 @@ func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string, 
 		// than something a caller sent.
 		mountpointRejected = target != "" && !mount.ValidMountpoint(target, host)
 		shareNameRejected = !mount.CommandSafeShare(share)
+		rejectedShare = share
 		shareAddress = share.String()
 		if target == "" {
 			target = result.DefaultMountpoint
@@ -1085,6 +1104,19 @@ func (s *Service) InspectRootPath(ctx context.Context, path, mountpoint string, 
 			Code:    "root.share_name_unsupported",
 			Params:  map[string]string{"path": shareAddress},
 			Message: fmt.Sprintf(shareNameUnsupportedMessage, shareAddress),
+		}
+		// The offending character is named whenever it can be seen. Discovery
+		// is why this stopped being a space-only message: every SMB server
+		// returns IPC$, real shares are called "Video (2024)", and those names
+		// now classify as the shares they are rather than as local paths — so
+		// the warning they land on has to say what is actually wrong with them.
+		if r, ok := mount.UnsafeShareRune(rejectedShare); ok && r != ' ' {
+			character := string(r)
+			detail = RootWarningDetail{
+				Code:    "root.share_name_unsupported_character",
+				Params:  map[string]string{"path": shareAddress, "character": character},
+				Message: fmt.Sprintf(shareNameUnsupportedCharacterMessage, shareAddress, character),
+			}
 		}
 		result.WarningDetails = append(result.WarningDetails, detail)
 		result.Warnings = append(result.Warnings, detail.Message)

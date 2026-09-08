@@ -502,18 +502,26 @@ function updateMountpointHint(){
 
 function guideActionKey(inspection){
   var details=(inspection&&inspection.warning_details)||[];
+  // This line is the ONLY text this screen shows for a refused share name --
+  // the detailed warning_details message is rendered by the roots health
+  // table, not here -- so whatever the operator is going to learn, they learn
+  // from this string. That is why the character-naming code carries its params
+  // through: a page that says "the share name contains a space" about IPC$ is
+  // wrong on the screen where the person is actually stuck.
   for(var i=0;i<details.length;i++){
-    if(details[i]&&details[i].code==='root.share_name_unsupported')return 'roots.shareNameUnsupportedAction';
+    var detail=details[i]||{};
+    if(detail.code==='root.share_name_unsupported')return {key:'roots.shareNameUnsupportedAction'};
+    if(detail.code==='root.share_name_unsupported_character')return {key:'roots.shareNameUnsupportedCharacterAction',vars:detail.params||{}};
   }
   // Keep unknown warning codes on the mount-point advice rather than a generic
   // string: the wizard does not know which of the two inputs was refused, and
   // the mount point is the one the operator can actually edit here.
-  return 'roots.noGuidanceAction';
+  return {key:'roots.noGuidanceAction'};
 }
 
 function renderGuideBody(guidance,actionKey){
   var container=document.getElementById('guide-body');
-  if(!guidance||!guidance.steps||!guidance.steps.length){container.innerHTML='<div class="muted">'+esc(tdT('roots.noGuidance'))+'</div><div class="callout callout--attention">'+esc(tdT(actionKey||'roots.noGuidanceAction'))+'</div>';return}
+  if(!guidance||!guidance.steps||!guidance.steps.length){var action=actionKey||{key:'roots.noGuidanceAction'};container.innerHTML='<div class="muted">'+esc(tdT('roots.noGuidance'))+'</div><div class="callout callout--attention">'+esc(tdT(action.key,action.vars))+'</div>';return}
   var html='';
   guidance.steps.forEach(function(step,i){
     html+='<div class="guide-step"><div class="guide-step-title">'+(i+1)+'. '+esc(guideText(step.key,step.title))+'</div>';

@@ -377,6 +377,28 @@ const maxConcurrentEnumeration = 8
 // root to bind 445.
 var smbPortStr = "445"
 
+func filterGuestShareNames(names []string) []string {
+	var out []string
+	for _, n := range names {
+		// Trimmed before the emptiness test, not after: a name of nothing but
+		// spaces used to survive the test and reach the caller as "", which the
+		// page would then render as a share button with no label.
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		if len(n) == 4 &&
+			(n[0] == 'i' || n[0] == 'I') &&
+			(n[1] == 'p' || n[1] == 'P') &&
+			(n[2] == 'c' || n[2] == 'C') && n[3] == '$' {
+			// IPC$ is the named-pipe/RPC endpoint, not a filesystem.
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
 // guestShareNames opens an anonymous/guest SMB session to host and lists the
 // share names. The guest session is the one credential-free probe SMB allows;
 // anything that needs a real user/password returns an error here.
@@ -414,12 +436,5 @@ func guestShareNames(ctx context.Context, host string, timeout time.Duration) ([
 	if err != nil {
 		return nil, err
 	}
-	var out []string
-	for _, n := range names {
-		if n == "" {
-			continue
-		}
-		out = append(out, strings.TrimSpace(n))
-	}
-	return out, nil
+	return filterGuestShareNames(names), nil
 }
