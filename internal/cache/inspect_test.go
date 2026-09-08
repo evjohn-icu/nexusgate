@@ -136,3 +136,38 @@ func TestInspectMissingCacheDirIsEmpty(t *testing.T) {
 		t.Fatalf("missing cache dir = %d files, %d bytes; want empty", stats.TotalFiles, stats.TotalBytes)
 	}
 }
+
+// TestInspectSeparatesFinishedStagingFromCopiesInFlight pins the number an
+// operator compares against source_staging.max_bytes to the number eviction
+// compares. They were the same field once, and they disagreed: Inspect counted
+// every file under sources/ while eviction skips copies in flight, so
+// `cache inspect` could print a ratio nothing enforced — 48 GiB of which a
+// third was orphan temp files the cap will never reclaim.
+func TestInspectSeparatesFinishedStagingFromCopiesInFlight(t *testing.T) {
+	cacheDir := t.TempDir()
+	writeFile(t, filepath.Join(cacheDir, "sources", "asset-1", "v1.mov"), 100)
+	writeFile(t, filepath.Join(cacheDir, "sources", "asset-2", "v1.mov"), 200)
+	// Exactly the shape staging.Stage creates: os.CreateTemp with a
+	// "."+inputVersion+"-*.partial" pattern.
+	writeFile(t, filepath.Join(cacheDir, "sources", "asset-3", ".v1-3854021.partial"), 400)
+	// Half-matches must stay on the finished side, or a real entry would be
+	// invisible to both the cap and this row.
+	writeFile(t, filepath.Join(cacheDir, "sources", "asset-4", ".v1.mov"), 8)
+	writeFile(t, filepath.Join(cacheDir, "sources", "asset-5", "v1.partial"), 16)
+
+	stats, err := Inspect(cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.SourceStagingBytes != 324 || stats.SourceStagingCount != 4 {
+		t.Fatalf("finished staging = %d bytes in %d files, want 324 in 4 — this is the\nnumber printed against the cap, so it must count what eviction counts", stats.SourceStagingBytes, stats.SourceStagingCount)
+	}
+	if stats.SourceStagingTemporaryBytes != 400 || stats.SourceStagingTemporaryCount != 1 {
+		t.Fatalf("in-flight staging = %d bytes in %d files, want 400 in 1", stats.SourceStagingTemporaryBytes, stats.SourceStagingTemporaryCount)
+	}
+	// Nothing may fall out of the walk: the two buckets still have to add up
+	// to every byte under sources/.
+	if total := stats.SourceStagingBytes + stats.SourceStagingTemporaryBytes; total != 724 {
+		t.Fatalf("the two staging buckets total %d bytes, want 724 — a file under\nsources/ was counted twice or not at all", total)
+	}
+}

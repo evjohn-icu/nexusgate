@@ -44,7 +44,29 @@
 
   `cache inspect` now prints the cap next to the total, because eviction
   happens inside `Stage` where nothing else reports, and "38 GiB" alone cannot
-  be read as either healthy or over the line.
+  be read as either healthy or over the line. The figure it prints against the
+  cap counts finished entries only — the same set eviction counts. Those were
+  two different sets at first: `Inspect` totalled everything under `sources/`
+  while eviction skips copies in flight, so the ratio shown was one nothing
+  enforced. `staging.IsTemporaryStageName` is now the single definition both
+  read, and copies in flight get their own line, which is also the only place
+  a crashed copy's leftovers are visible at all.
+
+  Four rules were sharpened after the first implementation, each because it was
+  wider or narrower than the thing it described. The temp-file skip is an AND,
+  not an OR: `Stage`'s temp always carries both the leading dot and the
+  `.partial` suffix, while either half alone can match a *finished* entry — an
+  `inputVersion` may begin with a dot, and the destination's extension comes
+  from the source file — which would have made that entry permanently
+  unreclaimable. A regular file sitting directly under `sources/` now belongs
+  to no asset: taking the first path segment as its id handed it whatever name
+  it carried, so a stray named after the asset being staged inherited that
+  asset's protection, left the cache over cap, and then blocked the `MkdirAll`
+  that needed the name. And both size comparisons divide before they multiply:
+  `cap*9/10` wraps above roughly one exabyte, and a wrapped target is not
+  slightly wrong but about a tenth of the cap, which would empty a cache asked
+  to trim by a tenth. Both are covered by tests against the arithmetic itself,
+  because no fixture can put exabytes in a temp directory.
 
 - **Every scan re-read the whole library over the network.** The scanner called
   `QuickFingerprint` unconditionally on every video file it walked — three 4 MiB

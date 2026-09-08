@@ -157,6 +157,9 @@ func runCacheInspect(ctx context.Context, repo *sqliterepo.Repository, cfg confi
 	// says what its budget is. Without the cap printed here an operator has no
 	// way to tell "this is large" from "this is over the line and being
 	// evicted", and eviction happens inside Stage where nothing else reports.
+	// The used figure counts finished entries only, because that is what the
+	// cap is measured against — printing a total that included copies in
+	// flight would show a ratio nothing enforces.
 	stagingLabel := humanBytes(stats.SourceStagingBytes)
 	if cfg.SourceStaging.MaxBytes > 0 {
 		stagingLabel += " / " + humanBytes(cfg.SourceStaging.MaxBytes)
@@ -164,6 +167,13 @@ func runCacheInspect(ctx context.Context, repo *sqliterepo.Repository, cfg confi
 		stagingLabel += " / unbounded"
 	}
 	fmt.Printf("%-14s %-8s %6s\n", "source staging", countLabel(stats.SourceStagingCount, "files"), stagingLabel)
+	// Only when there are any. A copy in flight is normal and transient; a
+	// count that persists across runs is a crashed copy's leftovers, which
+	// nothing reclaims — eviction skips this shape by name and cache gc skips
+	// the whole tree. Saying so here is the only place an operator can find it.
+	if stats.SourceStagingTemporaryCount > 0 {
+		fmt.Printf("%-14s %-8s %6s\n", "  in flight", countLabel(stats.SourceStagingTemporaryCount, "files"), humanBytes(stats.SourceStagingTemporaryBytes))
+	}
 	fmt.Printf("%-14s %-8s %6s\n", "scratch", countLabel(stats.ScratchCount, "files"), humanBytes(stats.ScratchBytes))
 	fmt.Printf("%-14s %-8s %6s\n", "orphans", countLabel(len(orphans), "dirs"), humanBytes(orphanBytes))
 	fmt.Printf("%-14s %-8s %6s\n", "database", "-", humanBytes(dbBytes))

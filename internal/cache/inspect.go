@@ -16,6 +16,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/evjohn-icu/nexusgate/internal/staging"
 )
 
 // CacheStats is the result of Inspect: one count and byte total per
@@ -32,8 +34,20 @@ type CacheStats struct {
 	AudioCount     int
 	AudioBytes     int64
 
+	// SourceStagingCount/Bytes are the FINISHED staged copies — the ones the
+	// cap in source_staging.max_bytes is measured against. Copies in flight,
+	// and the orphans a crashed copy leaves behind, are counted separately
+	// below so the two numbers an operator compares are the same number
+	// eviction compares.
 	SourceStagingCount int
 	SourceStagingBytes int64
+	// SourceStagingTemporaryCount/Bytes are files matching
+	// staging.IsTemporaryStageName. Eviction never counts or deletes them and
+	// cache gc skips the whole tree, so a non-zero total here that does not
+	// shrink is disk nothing will reclaim — worth showing rather than folding
+	// into a figure that reads as "under the cap".
+	SourceStagingTemporaryCount int
+	SourceStagingTemporaryBytes int64
 
 	ScratchCount int
 	ScratchBytes int64
@@ -133,6 +147,11 @@ func Inspect(cacheDir string) (CacheStats, error) {
 		stats.TotalBytes += size
 		switch {
 		case IsSourceStagingPath(rel):
+			if staging.IsTemporaryStageName(name) {
+				stats.SourceStagingTemporaryCount++
+				stats.SourceStagingTemporaryBytes += size
+				break
+			}
 			stats.SourceStagingCount++
 			stats.SourceStagingBytes += size
 		case isScratchPath(rel):

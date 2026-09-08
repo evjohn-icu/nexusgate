@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -433,5 +435,143 @@ func TestCappedWalkFailureDoesNotFailStage(t *testing.T) {
 	}
 	if _, err := os.Stat(existing); err != nil {
 		t.Fatalf("nothing may be evicted when the walk never produced a list: %v", err)
+	}
+}
+
+// TestCappedEvictsAStrayFileWhereAnAssetDirectoryBelongs is the case that
+// turns a bookkeeping slip into a failed stage. sources/<name> is only ever a
+// directory when Stage wrote it, so a regular file there belongs to no asset —
+// but the asset id used to be read as the first path segment, which handed
+// this stray the name of whatever asset was being staged and protected it.
+// Nothing was then evicted, and Stage could not create the directory it needed.
+func TestCappedEvictsAStrayFileWhereAnAssetDirectoryBelongs(t *testing.T) {
+	cacheDir := t.TempDir()
+	sources := filepath.Join(cacheDir, "sources")
+	if err := os.MkdirAll(sources, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stray := filepath.Join(sources, "asset-keep")
+	if err := os.WriteFile(stray, bytes.Repeat([]byte{'s'}, 80), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setMTime(t, stray, time.Unix(10, 0))
+	stager, err := NewCapped("copy", cacheDir, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	staged, err := stager.Stage(context.Background(), writeSource(t, 50), "asset-keep", "input-v1")
+	if err != nil {
+		t.Fatalf("a stray file named after the asset being staged blocked the stage: %v", err)
+	}
+	// The stray is gone, and the proof is what stands in its place: Stage could
+	// not have created this directory while a regular file held the name.
+	if info, err := os.Stat(stray); err != nil || !info.IsDir() {
+		t.Fatalf("sources/asset-keep is not the asset directory: info=%v err=%v", info, err)
+	}
+	if _, err := os.Stat(staged); err != nil {
+		t.Fatal(err)
+	}
+	// Pruning the emptied parent must never walk up into sources/ itself —
+	// Stage is about to write into it.
+	if info, err := os.Stat(sources); err != nil || !info.IsDir() {
+		t.Fatalf("sources/ was removed while pruning: %v", err)
+	}
+}
+
+// TestCappedEvictsEntriesThatOnlyHalfLookLikeTemporaries pins the skip rule as
+// an AND. Stage's temp is always ".<version>-<random>.partial", so requiring
+// both halves describes exactly that file. Either-half was wider than the
+// thing it names, and a completed entry caught by it would be a cache entry no
+// cap could ever reclaim.
+func TestCappedEvictsEntriesThatOnlyHalfLookLikeTemporaries(t *testing.T) {
+	for _, name := range []string{".leading-dot-only.mov", "trailing-only.partial"} {
+		t.Run(name, func(t *testing.T) {
+			cacheDir := t.TempDir()
+			path := filepath.Join(cacheDir, "sources", "asset-old", name)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, bytes.Repeat([]byte{'c'}, 80), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			setMTime(t, path, time.Unix(10, 0))
+			stager, err := NewCapped("copy", cacheDir, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := stager.Stage(context.Background(), writeSource(t, 50), "asset-new", "input-v1"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("%q survived eviction: it matches only one half of the temp-file\nname, so it is a real entry, and skipping it makes it unreclaimable forever", name)
+			}
+		})
+	}
+}
+
+// TestEvictionTargetDoesNotWrap covers the one rule Stage cannot reach: the
+// trigger only fires when the cache is over the cap, and a cap large enough to
+// wrap the target arithmetic would need a fixture holding exabytes. The naive
+// `cap*9/10` is compared against directly so the test says what it is guarding.
+func TestEvictionTargetDoesNotWrap(t *testing.T) {
+	for _, capBytes := range []int64{0, 1, 9, 10, 95, 100, 1 << 30, 1 << 40, 1 << 62, math.MaxInt64} {
+		got := evictionTarget(capBytes)
+		if got < 0 {
+			t.Fatalf("evictionTarget(%d) = %d: a negative target evicts everything", capBytes, got)
+		}
+		if got > capBytes {
+			t.Fatalf("evictionTarget(%d) = %d, above the cap itself — the target must be\nthe stricter of the two numbers or there is no hysteresis at all", capBytes, got)
+		}
+		// Within one byte of true 90%, computed in a width that cannot wrap.
+		want := new(big.Int).Div(new(big.Int).Mul(big.NewInt(capBytes), big.NewInt(9)), big.NewInt(10))
+		if diff := new(big.Int).Sub(want, big.NewInt(got)); diff.CmpAbs(big.NewInt(1)) > 0 {
+			t.Fatalf("evictionTarget(%d) = %d, want %s (within 1)", capBytes, got, want)
+		}
+	}
+
+	// The mistake this replaced, stated outright: for a cap this size the naive
+	// form wraps to about a tenth, and eviction would empty the cache. The
+	// multiplication has to go through a variable — as a constant expression
+	// the compiler refuses it outright, which is itself the point.
+	huge := int64(1) << 62
+	nine := int64(9)
+	if naive := huge * nine / 10; naive >= evictionTarget(huge) {
+		t.Fatalf("cap*9/10 = %d did not wrap at %d, so this test no longer guards anything", naive, huge)
+	}
+}
+
+// TestCacheUsageExceedsDoesNotWrap is the companion to TestEvictionTargetDoesNotWrap
+// and exists for the same reason: no fixture can put exabytes in a temp dir, so
+// the comparison is checked directly. The naive `total+incoming > limit` reads
+// a wrapped sum as "under the cap" and returns with the cache unbounded, which
+// is the one outcome eviction exists to prevent.
+func TestCacheUsageExceedsDoesNotWrap(t *testing.T) {
+	half := int64(1) << 62
+	cases := []struct {
+		name                   string
+		total, incoming, limit int64
+		want                   bool
+	}{
+		{"ordinary under", 40, 10, 100, false},
+		{"ordinary exactly at the limit", 90, 10, 100, false},
+		{"ordinary over", 91, 10, 100, true},
+		{"incoming alone exceeds the limit", 0, 200, 100, true},
+		{"empty cache under the limit", 0, 10, 100, false},
+		{"sum wraps int64", half, half, math.MaxInt64, true},
+		{"sum wraps far past int64", math.MaxInt64, math.MaxInt64, math.MaxInt64, true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cacheUsageExceeds(tt.total, tt.incoming, tt.limit); got != tt.want {
+				t.Fatalf("cacheUsageExceeds(%d, %d, %d) = %v, want %v", tt.total, tt.incoming, tt.limit, got, tt.want)
+			}
+		})
+	}
+
+	// State the mistake outright, so the rows above cannot quietly stop
+	// guarding anything if someone rewrites the comparison.
+	if naive := half + half; naive > math.MaxInt64-1 {
+		t.Fatalf("2^62 + 2^62 = %d did not wrap; this test no longer guards the case it names", naive)
 	}
 }

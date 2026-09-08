@@ -150,6 +150,11 @@ func (s *SourceStager) evictForIncoming(incoming int64, keepAsset string) {
 	sourcesDir := filepath.Join(s.cacheDir, "sources")
 	entries := make([]sourceCacheEntry, 0)
 	var total int64
+	// This is the only code that reclaims completed entries under sources/ —
+	// internal/cache's gc and inspect skip the tree entirely. Stage's own
+	// deferred os.Remove also deletes there, but only the temp file it just
+	// created, which is a different job from reclaiming.
+	//
 	// There is deliberately no live-job check: a derive can run for minutes
 	// across several ffmpeg invocations, while every cache hit refreshes mtime
 	// and makes its staged source newest, so it is evicted last. If that source
@@ -167,18 +172,43 @@ func (s *SourceStager) evictForIncoming(incoming int64, keepAsset string) {
 			return nil
 		}
 		base := filepath.Base(path)
+		// See IsTemporaryStageName. Both conditions, not either: Stage's temp file is created as
+		// os.CreateTemp(dir, "."+inputVersion+"-*.partial"), so it always
+		// carries the dot AND the suffix; requiring both is exactly that name
+		// and nothing else. Either-condition was wider than the thing it
+		// describes: validateSegment permits an inputVersion beginning with a
+		// dot, and the destination's extension comes from the source file, so
+		// a real completed entry could match one half and become permanently
+		// invisible to eviction — a cache entry no cap can ever reclaim.
+		//
 		// This leaves a known gap: an orphan .partial from a crashed copy can
 		// never be reclaimed, because this walk skips it and cache gc skips the
 		// whole sources tree. Do not "fix" this by deleting partial files here.
-		if strings.HasPrefix(base, ".") || strings.HasSuffix(base, ".partial") {
+		if IsTemporaryStageName(base) {
 			return nil
 		}
 		relative, relErr := filepath.Rel(sourcesDir, path)
 		if relErr != nil {
 			return relErr
 		}
-		assetID := strings.Split(relative, string(filepath.Separator))[0]
+		// A regular file sitting directly under sources/ belongs to no asset:
+		// Stage only ever writes sources/<assetID>/<file>. Taking the first
+		// path segment as its asset id would hand it whatever name it happens
+		// to carry, and a stray literally named after the asset being staged
+		// would inherit that asset's protection — leaving the cache over cap
+		// and, worse, leaving a file where Stage needs to create a directory.
+		// An empty id matches no keepAsset, so it is always evictable.
+		assetID := ""
+		if segments := strings.Split(relative, string(filepath.Separator)); len(segments) > 1 {
+			assetID = segments[0]
+		}
 		entries = append(entries, sourceCacheEntry{path: path, assetID: assetID, size: info.Size(), modtime: info.ModTime()})
+		// Summed as int64, so a tree whose files REPORT more than 8 EiB
+		// between them would wrap and read as under the cap. That is stated
+		// rather than coded around: Stage copies byte for byte, so an entry it
+		// wrote is exactly as large as its source, and reaching the wrap needs
+		// sparse files placed here by something other than Stage — which is
+		// already write access to a directory it could simply empty instead.
 		total += info.Size()
 		return nil
 	})
@@ -199,7 +229,7 @@ func (s *SourceStager) evictForIncoming(incoming int64, keepAsset string) {
 	// The trigger and target intentionally use different numbers: the cap
 	// decides when to evict, while the 90% target provides hysteresis so one
 	// file is not evicted on every Stage near the configured limit.
-	target := s.maxBytes * 9 / 10
+	target := evictionTarget(s.maxBytes)
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].modtime.Equal(entries[j].modtime) {
 			return entries[i].path < entries[j].path
@@ -221,6 +251,13 @@ func (s *SourceStager) evictForIncoming(incoming int64, keepAsset string) {
 			continue
 		}
 		total -= entry.size
+		// Prune the asset directory once its last entry is gone. No emptiness
+		// check is needed: os.Remove declines a non-empty directory. Nor is a
+		// guard against aiming this at sources/ itself, which a stray file
+		// directly beneath it does — sources/ can only be removed when it is
+		// already empty, and the MkdirAll a few lines later in Stage recreates
+		// it. Checked rather than assumed: a guard here provably cannot change
+		// any outcome, so it would be a line nobody could ever test.
 		_ = remove(filepath.Dir(entry.path))
 	}
 	if cacheUsageExceeds(total, incoming, s.maxBytes) {
@@ -235,11 +272,51 @@ type sourceCacheEntry struct {
 	modtime time.Time
 }
 
-// cacheUsageExceeds is the one comparison this file makes, written once so
-// the trigger and the target cannot drift apart: they differ only in `limit`.
-// int64 is not at risk here — overflowing it would take an exabyte of cache.
+// IsTemporaryStageName reports whether a base file name under cache/sources is
+// a copy in flight rather than a finished cache entry. It is exported because
+// two packages have to agree on it and disagreeing is a bug that shows as a
+// number: internal/cache's inspect counts these toward the source-staging
+// total, while eviction does not, so an operator reading "48 GiB / 50 GiB"
+// would be looking at a total the cap is not measured against.
+//
+// The shape is exactly what Stage creates —
+// os.CreateTemp(dir, "."+inputVersion+"-*.partial") — so both halves are
+// required. Either half alone is wider than the thing it names: an
+// inputVersion may begin with a dot and a destination's extension comes from
+// the source file, so a finished entry could match one half and become a cache
+// entry no cap could ever reclaim.
+func IsTemporaryStageName(base string) bool {
+	return strings.HasPrefix(base, ".") && strings.HasSuffix(base, ".partial")
+}
+
+// evictionTarget is 90% of cap, and exists as a named function because it
+// cannot be tested through Stage: tripping the trigger at a cap large enough
+// to expose the bug would need a fixture holding exabytes.
+//
+// The arithmetic looks roundabout because `cap * 9 / 10` wraps for a cap above
+// roughly one exabyte, and a wrapped target is not slightly wrong — at 2^62 it
+// comes out around a tenth of the cap, so eviction would empty a cache it was
+// asked to trim by a tenth. Dividing first cannot wrap; the remainder term is
+// the precision dividing first would otherwise round away.
+func evictionTarget(cap int64) int64 {
+	return cap/10*9 + (cap%10)*9/10
+}
+
+// cacheUsageExceeds is the one comparison this file makes, written once so the
+// trigger and the target cannot drift apart: they differ only in `limit`.
+//
+// It is deliberately not the obvious `total+incoming > limit`. `total` is a
+// sum of sizes read off the filesystem, and a sparse file reports a size it
+// does not occupy, so the sum is attacker-influenced in a way a cap typed by
+// an operator is not. Adding first can wrap to a negative and read as "under
+// the cap" — eviction would then return with the cache unbounded, which is the
+// one outcome this function exists to prevent. Subtracting cannot underflow
+// once incoming <= limit, and the branch above covers the rest.
 func cacheUsageExceeds(total, incoming, limit int64) bool {
-	return total+incoming > limit
+	if incoming > limit {
+		return true
+	}
+	return total > limit-incoming
 }
 
 func validateSegment(label, value string) error {
