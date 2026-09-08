@@ -244,9 +244,19 @@ body{padding-left:var(--rail-w)}
 .shell-actions{margin-top:auto;display:flex;flex-direction:column;gap:var(--s4);padding:0 var(--s5)}
 /* 状态：仪表读数，四行定宽，永不换行 */
 .status-strip{display:flex;flex-direction:column;border-top:1px solid var(--rule);padding-top:var(--s3)}
-.status-cell{display:flex;align-items:center;gap:var(--s2);padding:5px 0;font-family:var(--font-data);font-size:12px;color:var(--text-faint);white-space:nowrap}
-.status-cell .k{letter-spacing:.1em;text-transform:uppercase;font-size:var(--fs-label)}
-.status-cell b{margin-left:auto;font-weight:500;color:var(--text-muted);font-variant-numeric:tabular-nums}
+.status-cell{display:flex;align-items:center;gap:var(--s2);padding:5px 0;font-family:var(--font-data);font-size:12px;color:var(--text-faint)}
+.status-cell .k{letter-spacing:.1em;text-transform:uppercase;font-size:var(--fs-label);white-space:nowrap}
+/* The value wraps rather than being clipped or ellipsised, because the longest
+   value in the strip is the one that must not be abbreviated: ACCESS answers
+   whether this Hub is asking for a password, and "Trusted network, no
+   password" truncated after "Trusted network, no p" reads as the opposite of
+   what it says. Measured in a 240px sidebar, the value overflowed its 215px
+   cell in four of the five shipped locales — en-US to 295px, es-ES to 324px,
+   fr-FR to 359px, ja-JP marginally — and only zh-CN fitted, which is why the
+   Chinese product screenshots never showed it. min-width:0 is what lets a flex
+   item shrink below its content width at all; without it the other properties
+   are inert. */
+.status-cell b{margin-left:auto;min-width:0;text-align:right;overflow-wrap:anywhere;font-weight:500;color:var(--text-muted);font-variant-numeric:tabular-nums}
 .status-cell:hover b{color:var(--text)}
 .dot{width:6px;height:6px;border-radius:50%;background:var(--ev-unknown);flex:none}
 .dot.ok{background:var(--ev-confirmed)}
