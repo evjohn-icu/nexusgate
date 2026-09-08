@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.31.0-alpha — 2026-09-09（NAS 发现与挂载向导、界面多语言、检索分页、Provider 一键配置）
 
 - **Apple Log previews could never render, because the LUT the renderer
   requires had no way to reach it.** `media.PreviewRenderer` documents the LUT
