@@ -488,9 +488,10 @@ NexusGate runs on a machine with CPU/GPU, not on the NAS. Mount the share, add t
 mounted folder as a normal library root, and enable copy staging:
 
 ```json
-{ "source_staging": { "mode": "copy" } }
+{ "source_staging": { "mode": "copy", "max_bytes": 0 } }
 ```
 
+`max_bytes` caps the local staging cache in bytes; `0` means unbounded (the default).
 The source is opened read-only and copied once into
 `$NEXUSGATE_DATA_DIR/cache/sources/` before jobs that decode or transform the
 source. The NAS receives no derived files, sidecars or metadata writes, and a

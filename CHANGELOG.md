@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **`worker enroll` can now set the source-cache cap, and writes it out.** The
+  field is `omitempty`, so an unset cap is simply absent from `worker.json` —
+  and an operator cannot edit a setting they cannot see. `--source-cache-max-bytes`
+  defaults to the 256 GiB the Worker would take anyway, and the value is
+  persisted even when it matches, because this is the one cache directory
+  nobody opted into.
+
+  Nothing in the suite touched `worker enroll` at all, so the flag could have
+  been renamed or dropped with every test still green. Two rows in the
+  subcommand dispatch table now reach real validation without a Hub: a negative
+  cap is refused, and a valid one gets as far as the fingerprint check — which
+  is the proof it parsed, since an unknown flag fails earlier with a different
+  message.
+
+- **`docs/v0.31-deployment.md` said probe skips source staging. It does not.**
+  `Pipeline.execute` calls `sourcePath` *before* the job-type switch, so probe,
+  derive, speech_gate, transcribe and analyze all read one staged copy — which
+  is the whole point of copy mode, and the reason the Hub's cap defaults to
+  unbounded. The paragraph also named a function, `sourcePathForJob`, that does
+  not exist anywhere in the tree; it described a design that had already been
+  replaced. Corrected, with both caps and their opposite defaults explained
+  where an operator configuring a NAS will meet them.
+
 - **`cache/sources` had no ceiling and no way to reclaim it.** Five comments
   across `internal/cache` and `internal/app` said copy-mode staging was
   canonical "until eviction". There was no evictor. The whole subsystem was

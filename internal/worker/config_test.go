@@ -1,12 +1,99 @@
 package worker
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/evjohn-icu/nexusgate/internal/remote"
 )
+
+func TestConfigSourceCacheCapDefaultsWhenUnset(t *testing.T) {
+	config := Config{}
+	if got := config.SourceCacheCap(); got != DefaultSourceCacheMaxBytes {
+		t.Fatalf("unset source cache cap=%d want default %d", got, DefaultSourceCacheMaxBytes)
+	}
+}
+
+func TestConfigSourceCacheCapKeepsExplicitZero(t *testing.T) {
+	zero := int64(0)
+	config := Config{SourceCacheMaxBytes: &zero}
+	if got := config.SourceCacheCap(); got != 0 {
+		t.Fatalf("explicit zero source cache cap=%d; collapsing nil and explicit 0 is the whole point of the pointer, and the wrong answer silently leaves a Worker unbounded", got)
+	}
+}
+
+func TestConfigSourceCacheCapKeepsExplicitValue(t *testing.T) {
+	want := int64(123456789)
+	config := Config{SourceCacheMaxBytes: &want}
+	if got := config.SourceCacheCap(); got != want {
+		t.Fatalf("explicit source cache cap=%d want %d", got, want)
+	}
+}
+
+func TestConfigSourceCacheCapRoundTrip(t *testing.T) {
+	zero := int64(0)
+	number := int64(123456789)
+	cases := []struct {
+		name string
+		cap  *int64
+	}{
+		{name: "nil", cap: nil},
+		{name: "zero", cap: &zero},
+		{name: "number", cap: &number},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path, want := sourceCacheConfigFixture(t, tc.cap)
+			before := want.SourceCacheCap()
+			if err := SaveConfig(path, want); err != nil {
+				t.Fatal(err)
+			}
+			got, err := LoadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.SourceCacheCap() != before {
+				t.Fatalf("round-trip source cache cap=%d want %d", got.SourceCacheCap(), before)
+			}
+		})
+	}
+}
+
+func TestConfigSourceCacheCapJSONPresence(t *testing.T) {
+	zero := int64(0)
+	cases := []struct {
+		name    string
+		cap     *int64
+		present bool
+	}{
+		{name: "nil absent", cap: nil, present: false},
+		{name: "zero present", cap: &zero, present: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path, config := sourceCacheConfigFixture(t, tc.cap)
+			if err := SaveConfig(path, config); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document map[string]any
+			if err := json.Unmarshal(raw, &document); err != nil {
+				t.Fatal(err)
+			}
+			_, present := document["source_cache_max_bytes"]
+			if present != tc.present {
+				t.Fatalf("source_cache_max_bytes present=%t want %t in %s", present, tc.present, raw)
+			}
+		})
+	}
+}
 
 func TestConfigRoundTripKeepsNodeTokenButNotProviderSecrets(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "config")
@@ -24,6 +111,19 @@ func TestConfigRoundTripKeepsNodeTokenButNotProviderSecrets(t *testing.T) {
 	}
 	if got.Token != want.Token || got.HubURL != want.HubURL || got.Registration.Platform != "linux-arm64" || got.CacheDir != want.CacheDir || got.Mounts["nas-main"] != want.Mounts["nas-main"] {
 		t.Fatalf("config=%+v", got)
+	}
+}
+
+func sourceCacheConfigFixture(t *testing.T, cap *int64) (string, Config) {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "config")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(dir, "worker.json"), Config{
+		HubURL:              "https://worker",
+		Token:               "node-token",
+		SourceCacheMaxBytes: cap,
 	}
 }
 

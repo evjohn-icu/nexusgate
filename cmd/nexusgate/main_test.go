@@ -354,6 +354,14 @@ func TestRunSubcommandDispatch(t *testing.T) {
 		{name: "secrets unknown subcommand", args: []string{"nexusgate", "secrets", "bogus"}, wantErr: "usage: nexusgate secrets rekey"},
 		{name: "serve invalid flag", args: []string{"nexusgate", "serve", "-bogus"}, wantErr: "flag provided but not defined"},
 		{name: "worker enroll invalid flag", args: []string{"nexusgate", "worker", "enroll", "-bogus"}, wantErr: "flag provided but not defined"},
+		// These two reach real validation without a Hub: enroll checks --hub
+		// and --pairing first, then the cap, then the fingerprint. Nothing
+		// else in the suite touches enroll at all, so without them the flag
+		// could be renamed or dropped and every test would stay green.
+		{name: "worker enroll rejects a negative source cache cap", args: []string{"nexusgate", "worker", "enroll", "--hub", "https://hub.example", "--pairing", "p", "--source-cache-max-bytes", "-1"}, wantErr: "--source-cache-max-bytes must be non-negative"},
+		// Reaching the fingerprint check is the proof the flag parsed: an
+		// unknown flag would have failed at fs.Parse with a different message.
+		{name: "worker enroll accepts a source cache cap", args: []string{"nexusgate", "worker", "enroll", "--hub", "https://hub.example", "--pairing", "p", "--source-cache-max-bytes", "1"}, wantErr: "--fingerprint is required"},
 		{name: "worker run invalid flag", args: []string{"nexusgate", "worker", "run", "-bogus"}, wantErr: "flag provided but not defined"},
 		{name: "worker doctor invalid flag", args: []string{"nexusgate", "worker", "doctor", "-bogus"}, wantErr: "flag provided but not defined"},
 		{name: "doctor", args: []string{"nexusgate", "doctor"}},

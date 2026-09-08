@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -76,6 +77,106 @@ func TestLoadReadsSourceStagingModeFromEnvironment(t *testing.T) {
 	}
 	if cfg.SourceStaging.Mode != "copy" {
 		t.Fatalf("source staging mode=%q want copy", cfg.SourceStaging.Mode)
+	}
+}
+
+func TestLoadReadsSourceStagingMaxBytesFromConfigFile(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("NEXUSGATE_DATA_DIR", dataDir)
+	t.Setenv("NEXUSGATE_SOURCE_STAGING_MODE", "")
+	t.Setenv("NEXUSGATE_SOURCE_STAGING_MAX_BYTES", "")
+	if err := os.WriteFile(filepath.Join(dataDir, "config.json"), []byte(`{"source_staging":{"mode":"copy","max_bytes":123456}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SourceStaging.MaxBytes != 123456 {
+		t.Fatalf("source staging max bytes=%d want 123456", cfg.SourceStaging.MaxBytes)
+	}
+}
+
+func TestLoadSourceStagingMaxBytesEnvironmentOverridesConfigFile(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("NEXUSGATE_DATA_DIR", dataDir)
+	t.Setenv("NEXUSGATE_SOURCE_STAGING_MODE", "")
+	t.Setenv("NEXUSGATE_SOURCE_STAGING_MAX_BYTES", "654321")
+	if err := os.WriteFile(filepath.Join(dataDir, "config.json"), []byte(`{"source_staging":{"mode":"copy","max_bytes":123456}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SourceStaging.MaxBytes != 654321 {
+		t.Fatalf("source staging max bytes=%d want environment value 654321", cfg.SourceStaging.MaxBytes)
+	}
+}
+
+func TestLoadRejectsNonNumericSourceStagingMaxBytesEnvironment(t *testing.T) {
+	t.Setenv("NEXUSGATE_DATA_DIR", t.TempDir())
+	t.Setenv("NEXUSGATE_SOURCE_STAGING_MAX_BYTES", "not-a-number")
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected non-numeric source staging max bytes to be rejected")
+	}
+	if !strings.Contains(err.Error(), "NEXUSGATE_SOURCE_STAGING_MAX_BYTES") {
+		t.Fatalf("error=%q does not name NEXUSGATE_SOURCE_STAGING_MAX_BYTES", err)
+	}
+}
+
+func TestLoadRejectsNegativeSourceStagingMaxBytes(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("NEXUSGATE_DATA_DIR", dataDir)
+	t.Setenv("NEXUSGATE_SOURCE_STAGING_MODE", "")
+	t.Setenv("NEXUSGATE_SOURCE_STAGING_MAX_BYTES", "")
+	if err := os.WriteFile(filepath.Join(dataDir, "config.json"), []byte(`{"source_staging":{"mode":"copy","max_bytes":-1}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected negative source staging max bytes to be rejected")
+	}
+	if !strings.Contains(err.Error(), "source_staging.max_bytes") {
+		t.Fatalf("error=%q does not name source_staging.max_bytes", err)
+	}
+}
+
+func TestLoadAcceptsExplicitZeroSourceStagingMaxBytes(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("NEXUSGATE_DATA_DIR", dataDir)
+	t.Setenv("NEXUSGATE_SOURCE_STAGING_MODE", "")
+	t.Setenv("NEXUSGATE_SOURCE_STAGING_MAX_BYTES", "")
+	if err := os.WriteFile(filepath.Join(dataDir, "config.json"), []byte(`{"source_staging":{"mode":"copy","max_bytes":0}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SourceStaging.MaxBytes != 0 {
+		t.Fatalf("source staging max bytes=%d; explicit 0 means unbounded and must not be turned into a default", cfg.SourceStaging.MaxBytes)
+	}
+}
+
+func TestLoadMissingSourceStagingMaxBytesDefaultsToZero(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("NEXUSGATE_DATA_DIR", dataDir)
+	t.Setenv("NEXUSGATE_SOURCE_STAGING_MODE", "")
+	t.Setenv("NEXUSGATE_SOURCE_STAGING_MAX_BYTES", "")
+	if err := os.WriteFile(filepath.Join(dataDir, "config.json"), []byte(`{"source_staging":{"mode":"copy"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SourceStaging.Mode != "copy" {
+		t.Fatalf("source staging mode=%q want copy", cfg.SourceStaging.Mode)
+	}
+	if cfg.SourceStaging.MaxBytes != 0 {
+		t.Fatalf("missing source staging max bytes=%d want 0", cfg.SourceStaging.MaxBytes)
 	}
 }
 

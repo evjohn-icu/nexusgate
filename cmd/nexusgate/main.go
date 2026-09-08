@@ -539,12 +539,16 @@ func runWorkerCommand(cfg config.Config) error {
 		var providerOperations repeatedFlag
 		fs.Var(&providerOperations, "provider-operation", "declared direct/proxy Provider operation: video_analysis or asr; repeatable")
 		cacheDir := fs.String("cache", "", "Worker-local cache directory")
+		sourceCacheMax := fs.Int64("source-cache-max-bytes", worker.DefaultSourceCacheMaxBytes, "maximum source-cache bytes (0 means unbounded)")
 		configPath := fs.String("config", defaultWorkerConfigPath(), "worker config path")
 		if err := fs.Parse(os.Args[3:]); err != nil {
 			return err
 		}
 		if *hub == "" || *pairing == "" {
 			return errors.New("--hub and --pairing are required")
+		}
+		if *sourceCacheMax < 0 {
+			return errors.New("--source-cache-max-bytes must be non-negative (0 means unbounded)")
 		}
 		if !worker.ValidFingerprint(*fingerprint) {
 			return errors.New("--fingerprint is required and must be a SHA-256 hex fingerprint")
@@ -589,7 +593,14 @@ func runWorkerCommand(cfg config.Config) error {
 		if strings.TrimSpace(*cacheDir) == "" {
 			*cacheDir = filepath.Join(filepath.Dir(*configPath), "cache")
 		}
-		if err := worker.SaveConfig(*configPath, worker.Config{HubURL: *hub, CertificateFingerprint: *fingerprint, Token: enrollment.Token, CacheDir: *cacheDir, Mounts: mounts, Registration: registration}); err != nil {
+		sourceCacheMaxValue := *sourceCacheMax
+		// Written out even when it equals the default. The field is
+		// omitempty, so leaving it unset means it is absent from worker.json
+		// — and an operator cannot edit a setting they cannot see. This
+		// directory is the one nobody opted into: the Worker stages in copy
+		// mode unconditionally, so the number has to be visible where they
+		// will look for it.
+		if err := worker.SaveConfig(*configPath, worker.Config{HubURL: *hub, CertificateFingerprint: *fingerprint, Token: enrollment.Token, CacheDir: *cacheDir, SourceCacheMaxBytes: &sourceCacheMaxValue, Mounts: mounts, Registration: registration}); err != nil {
 			return err
 		}
 		fmt.Printf("enrolled worker %s; configuration saved to %s\n", enrollment.Worker.ID, *configPath)
