@@ -231,3 +231,99 @@ func movedScanAssetID(t *testing.T, repo *Repository) string {
 	}
 	return id
 }
+
+// TestKnownFileDescribesThePathNotJustTheAsset is the case the size field
+// invites: assets.file_size is per ASSET while asset_locations.modified_ns is
+// per PATH, and one asset can be reached through several paths. Reading a size
+// off a row shared by two files looks like it could describe the wrong one.
+//
+// It cannot, and the reason sits lower than the dedup key: QuickFingerprint
+// hashes the size into the digest before it reads a single byte
+// (internal/ingest/fingerprint.go:22), so two files of different sizes can
+// never share a fingerprint, and an asset row can never describe two different
+// sizes. The `AND file_size = ?` in the dedup lookup is belt-and-braces over
+// that, not the thing that makes it true.
+func TestKnownFileDescribesThePathNotJustTheAsset(t *testing.T) {
+	ctx := context.Background()
+	repo, root, rootDir := newScanRepo(t)
+	first := filepath.Join(rootDir, "take-a.mp4")
+	second := filepath.Join(rootDir, "take-b.mp4")
+	scanWriteVideo(t, first)
+	scanWriteVideo(t, second)
+
+	scan := movedScan(t, repo, root)
+	if got := countAssets(t, repo); got != 1 {
+		t.Fatalf("two byte-identical files produced %d assets, want 1 — this fixture is\nnot testing what it says", got)
+	}
+	assetID := scan.ChangedAssetIDs[0]
+	original := assetFingerprint(t, repo, assetID)
+
+	// take-b now holds different bytes of a different length. take-a is
+	// untouched. If KnownFile handed take-b the shared row's size and that
+	// size still matched, the changed file would keep the old identity.
+	if err := os.WriteFile(second, []byte("a longer set of video bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	known, ok, err := repo.KnownFile(ctx, root.ID, "take-b.mp4")
+	if err != nil || !ok {
+		t.Fatalf("KnownFile(take-b) ok=%v err=%v", ok, err)
+	}
+	info, err := os.Stat(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if known.Size == info.Size() {
+		t.Fatalf("the stored size (%d) still matches the rewritten file, so the cache\nwould hand back take-a's identity for take-b's bytes", known.Size)
+	}
+
+	second2 := movedScan(t, repo, root)
+	if got := countAssets(t, repo); got != 2 {
+		t.Fatalf("after rewriting one of the two copies there are %d assets, want 2", got)
+	}
+	if got := assetFingerprint(t, repo, assetID); got != original {
+		t.Fatalf("the untouched file's asset changed identity: %q -> %q", original, got)
+	}
+	if len(second2.ChangedAssetIDs) != 1 {
+		t.Fatalf("rescan reported %d changed assets, want exactly the rewritten one", len(second2.ChangedAssetIDs))
+	}
+	// take-a must still resolve, and to the identity it always had.
+	stillA, ok, err := repo.KnownFile(ctx, root.ID, "take-a.mp4")
+	if err != nil || !ok {
+		t.Fatalf("KnownFile(take-a) ok=%v err=%v", ok, err)
+	}
+	if stillA.Fingerprint != original {
+		t.Fatalf("take-a's cached identity became %q, want %q", stillA.Fingerprint, original)
+	}
+
+	// The invariant the whole cache leans on, checked against the real
+	// database rather than argued: for every live location, the asset row's
+	// file_size is the size of the file at that path. That is what lets
+	// KnownFile hand a per-asset size to a per-path question.
+	rows, err := repo.db.Query(`SELECT l.absolute_path, a.file_size FROM asset_locations l JOIN assets a ON a.id=l.asset_id WHERE l.exists_now=1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	checked := 0
+	for rows.Next() {
+		var path string
+		var stored int64
+		if err := rows.Scan(&path, &stored); err != nil {
+			t.Fatal(err)
+		}
+		onDisk, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored != onDisk.Size() {
+			t.Fatalf("%s: asset row says %d bytes, the file is %d", path, stored, onDisk.Size())
+		}
+		checked++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if checked != 2 {
+		t.Fatalf("checked %d live locations, want 2 — a passing result above would not\nmean the invariant was tested", checked)
+	}
+}
