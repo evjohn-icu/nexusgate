@@ -962,7 +962,7 @@
   existing entries are only reachable under a non-linux build.
 
 - **Documentation corrected against the code it describes** (2026-08-29 audit,
-  `docs/v0.31-audit-2026-08-29.md` §5). Fifteen claims that had drifted away
+  §5 of an internal report not published with this repository). Fifteen claims that had drifted away
   from the implementation were re-verified and rewritten. The ones that changed
   meaning rather than a number:
   - `SECURITY.md` no longer describes `region_label` as a coarsened view of the
@@ -976,7 +976,7 @@
     peer *before* reading the header, so an agent on the Hub's own LAN would
     succeed. The Skill states the boundary as a rule of its own conduct and
     names the setting that enforces it.
-  - `openspec/specs/search-retrieval` described asset-level search as unscored
+  - The internal retrieval specification described asset-level search as unscored
     after change 0024 had already added `ORDER BY bm25(asset_search)` to the
     FTS branch. A stale "single source of truth" is worse than a stale README;
     the requirement now describes both branches and what is still missing
@@ -1011,7 +1011,7 @@
 
   No behavior changed. The common cause is that `scripts/check-doc-refs.sh`
   validates `file:line` bounds under `docs/` only — nothing reads `CLAUDE.md`,
-  `README.md`, `SECURITY.md`, `skills/`, `plugins/` or `openspec/specs/`, and
+  `README.md`, `SECURITY.md`, `skills/` or `plugins/`, and
   nothing anywhere checks a semantic claim.
 
 - **Clean container startup by default**: the shipped Docker Compose and Unraid
@@ -1188,8 +1188,8 @@
   throttling, sensitive-response `no-store` headers, and Worker Setup refreshes its
   path details when the shared Session logs in or out.
 
-- v0.30 review-fix round 的目标与升级/运维检查见
-  [`docs/v0.30-review-fix-round.md`](docs/v0.30-review-fix-round.md)。各领域细节仍见
+- v0.30 review-fix round 的目标与升级/运维检查记录在一份内部文档里（未随仓库
+  发布）。各领域细节仍见
   成本参考值、部署、Worker setup 路径脱敏和 Search evidence correctness 文档。
 - Analysis now enqueues an idempotent `JobIndex` successor after every successful analyzer
   path, keeping asset-level FTS in sync without rebuilding it inside the canonical commit.
@@ -1385,9 +1385,8 @@ local-first footage retrieval and selection engine：**召回可以大胆，
   （不降反升，gate 把被噪音挤掉的 relevant shot 释放回 top-10）。
   详见 docs/retrieval-benchmark-v027-search-v2.md。
 - **文档**：docs/search-architecture.md（长期架构：canonical shot truth、
-  检索/断言分离、future embedding/OCR/temporal/sequence）、
-  docs/v0.27-search-architecture-goal.md、api-contract 增补结构化搜索 +
-  evidence 语义。
+  检索/断言分离、future embedding/OCR/temporal/sequence）、内部的 v0.27 检索架构
+  目标文档（未随仓库发布）、api-contract 增补结构化搜索 + evidence 语义。
 
 ## v0.26.0-alpha — 2026-08-08（检索基准 + 控制界面产品化）
 
@@ -1639,7 +1638,7 @@ admin 建账号/建空间/软链 asset（`/api/v1/admin/webdav/*`），WebDAV Ba
 
 ## v0.22.0 — 2026-08-05（优化轮：依赖卫生、测试覆盖、CI 门禁、搜索、可观测性）
 
-三轮并行优化的合集（openspec changes 0021–0033），覆盖：依赖升级、测试覆盖
+三轮并行优化的合集（内部变更规格 0021–0033），覆盖：依赖升级、测试覆盖
 提升、CI 门禁强化、素材级搜索相关度、分面多选、Rekey CLI、Worker 离线检测、
 结构化日志、SQLite integrity 检查。Docker 镜像 tag：`nexusgate:v0.22.0`。
 
@@ -2269,8 +2268,8 @@ See `docs/v0.21-unattended-and-export.md`,
   避免错误分类逻辑因缺测回退到文本匹配。
 - Skills 契约恢复：`skills/nexusgate/references/api-contract.md` 与
   `/api/v1/agent/capabilities` 的 `allowed_actions`/`denied_actions` 重新对齐。
-- `openspec/` 引入：新增 `openspec/` 目录，收录本轮审查产生的变更规格与
-  设计记录，作为后续变更的参考基线。
+- 变更规格基线：本轮审查产生的变更规格与设计记录被整理为统一的参考基线，
+  作为后续变更的依据。这批文档是内部工作稿，不随仓库发布。
 
 ## v0.19 — GPU Docker Images and Unraid Deployment
 

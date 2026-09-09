@@ -125,11 +125,11 @@ wording of the message:
 - Hard non-retries: `context.Canceled` / `context.DeadlineExceeded`, and ENOSPC
   (`isNoSpaceErr`), which the execute path defers/park before this decision.
 
-**Known discrepancy:** `openspec/specs/error-classification/spec.md` currently
-classifies a provider `context.DeadlineExceeded` as retryable, while the current
-pipeline guard treats the sentinel as a hard non-retry. Do not resolve that
-contract difference by adding message matching; change the specification and
-implementation together after a provider adapter error-chain repro.
+**Known discrepancy:** an internal specification still classifies a provider
+`context.DeadlineExceeded` as retryable, while the pipeline guard treats the
+sentinel as a hard non-retry. Whoever closes that gap: do not close it by
+matching on message text. Reproduce the provider adapter's error chain first,
+then change the classification and the specification together.
 
 There is no error-text substring list. If you introduce a new permanent failure
 mode that is not an HTTP status, mark it `domain.Permanent(...)` where it is
