@@ -178,10 +178,12 @@ if it offers to open the Hub to the network, say no.
 
 Once the library is indexed, an assistant can search it for you.
 
-**MCP** — `cmd/nexusgate-mcp` speaks MCP over stdio and exposes four tools:
-`health`, `search_shots`, `get_shot`, `get_asset`. It is a thin HTTP client of
-your Hub: no database handle, no access to your media files. Example config in
-`skills/nexusgate/mcp/.mcp.json.example`.
+**MCP** — `cmd/nexusgate-mcp` speaks MCP over stdio and exposes six read-only tools:
+`inspect_library`, `search_shots`, `get_shot`, `get_asset`,
+`get_timeline` and `get_transcript`. It is a thin HTTP client of your Hub: no
+database handle, no access to your media files. Example config in
+`skills/nexusgate/mcp/.mcp.json.example`, and a ready-made Claude Code plugin
+in `plugins/claude`.
 
 **Agent Skill** — `skills/nexusgate/SKILL.md` is a versioned contract for
 editorial research: find reusable material, retrieve shot evidence, draft a

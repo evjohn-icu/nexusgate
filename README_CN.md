@@ -159,10 +159,11 @@ claude   # 或者任何能读文件、能执行命令的 coding agent
 
 库建好之后，助手可以替你在里面找东西。
 
-**MCP** —— `cmd/nexusgate-mcp` 用 stdio 说 MCP，暴露四个工具：`health`、
-`search_shots`、`get_shot`、`get_asset`。它是你 Hub 的一个**很薄的 HTTP 客户端**：
-不持有数据库句柄，也碰不到你的媒体文件。示例配置在
-`skills/nexusgate/mcp/.mcp.json.example`。
+**MCP** —— `cmd/nexusgate-mcp` 用 stdio 说 MCP，暴露**六个只读工具**：
+`inspect_library`、`search_shots`、`get_shot`、`get_asset`、`get_timeline`、
+`get_transcript`。它是你 Hub 的一个**很薄的 HTTP 客户端**：不持有数据库句柄，
+也碰不到你的媒体文件。示例配置在 `skills/nexusgate/mcp/.mcp.json.example`，
+`plugins/claude` 下还有一个现成的 Claude Code 插件。
 
 **Agent Skill** —— `skills/nexusgate/SKILL.md` 是一份带版本的契约，用于素材调研：
 找可复用的镜头、取镜头证据、起草方案。它动手之前会先调

@@ -37,6 +37,19 @@ number_word() {
 }
 word=$(number_word "$registered")
 
+# README_CN.md states the same claim in Chinese, so the count has a second
+# spelling to keep honest. Without this the Chinese README could drift while
+# the English one stayed green -- exactly the half-green failure the two
+# locale catalogues already taught us to guard against.
+cn_number_word() {
+  case "$1" in
+    1) echo 一 ;; 2) echo 二 ;; 3) echo 三 ;; 4) echo 四 ;; 5) echo 五 ;;
+    6) echo 六 ;; 7) echo 七 ;; 8) echo 八 ;; 9) echo 九 ;; 10) echo 十 ;;
+    *) echo "" ;;
+  esac
+}
+cn_word=$(cn_number_word "$registered")
+
 # Locate the count claim in one file: the number word or digit that appears
 # up to four words before "tool"/"tools" on the same line (matching how each
 # of the four files currently phrases it: "six read-only MCP tools", "current
@@ -49,7 +62,11 @@ find_claim() {
   local file="$1"
   grep -ioE '(one|two|three|four|five|six|seven|eight|nine|ten|[0-9]+)([[:space:]]+[[:alpha:]][[:alpha:]-]*){0,4}[[:space:]]+tools?\b' "$file" \
     | head -1 \
-    | grep -ioE '^(one|two|three|four|five|six|seven|eight|nine|ten|[0-9]+)'
+    | grep -ioE '^(one|two|three|four|five|six|seven|eight|nine|ten|[0-9]+)' && return 0
+  # Chinese form: <numeral>个 ... 工具 (the measure word 个 sits between them).
+  grep -oE '(一|二|三|四|五|六|七|八|九|十|[0-9]+)个[^ ]{0,12}工具' "$file" \
+    | head -1 \
+    | grep -oE '^(一|二|三|四|五|六|七|八|九|十|[0-9]+)'
 }
 
 failures=0
@@ -57,7 +74,8 @@ for doc in \
   ".claude-plugin/marketplace.json" \
   "plugins/claude/.claude-plugin/plugin.json" \
   "plugins/claude/README.md" \
-  "README.md"
+  "README.md" \
+  "README_CN.md"
 do
   path="$root/$doc"
   if [[ ! -f "$path" ]]; then
@@ -72,7 +90,7 @@ do
     continue
   fi
   claim_lc=$(printf '%s' "$claim" | tr '[:upper:]' '[:lower:]')
-  if [[ "$claim_lc" == "$registered" || "$claim_lc" == "$word" ]]; then
+  if [[ "$claim_lc" == "$registered" || "$claim_lc" == "$word" || "$claim_lc" == "$cn_word" ]]; then
     continue
   fi
   printf '%s claims %s tools, but %s registers %s (%s) via AddTool(\n' "$doc" "$claim_lc" "cmd/nexusgate-mcp/main.go" "$registered" "$word" >&2
