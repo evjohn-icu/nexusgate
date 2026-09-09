@@ -2,6 +2,7 @@ package video
 
 import (
 	"context"
+	"errors"
 
 	"github.com/evjohn-icu/nexusgate/internal/domain"
 	videoanalysis "github.com/evjohn-icu/nexusgate/internal/domain/video_analysis"
@@ -84,11 +85,32 @@ type VideoPreparer interface {
 // all. A single hardcoded number would either waste most of the allowance or
 // exceed it.
 //
-// A zero or negative return means "unknown"; callers fall back to a
-// conservative default rather than assuming the request will fit.
+// A zero return means "unknown"; callers fall back to a conservative default
+// rather than assuming the request will fit. NoInlineRoom is a distinct,
+// specific sentinel: the provider *did* evaluate its own ceiling and found no
+// room for any video at all once its own overhead is reserved. That is a
+// real answer, not a missing one, and must not be folded into "unknown" —
+// doing so previously let a tiny explicit limit produce a *larger* effective
+// budget than declaring nothing at all. Any other negative value is also
+// read as "unknown", for the same reason zero always was.
 type InlineVideoLimiter interface {
 	MaxInlineVideoBytes() int64
 }
+
+// NoInlineRoom is the sentinel MaxInlineVideoBytes returns when a provider
+// has computed its own ceiling and determined there is no usable budget left
+// after its overhead reservation — as opposed to a zero/other-negative
+// return, which still means "unknown" and gets a fallback substituted. See
+// InlineVideoLimiter.
+const NoInlineRoom int64 = -1
+
+// ErrNoInlineRoom is returned by InlineVideoBudget when the provider reported
+// NoInlineRoom. A caller must refuse the asset before planning windows
+// against this: there is no smaller number to fall back to that would be
+// honest, and planning anyway invites the window splitter to raise a
+// fictional near-zero budget back up to its own minimum window length and
+// send something the endpoint was never going to accept.
+var ErrNoInlineRoom = errors.New("provider declared no usable inline video budget")
 
 // InlineVideoBudget reports the byte budget for one request to this provider,
 // and whether the provider needs one at all. A provider that prepares uploads
@@ -98,7 +120,10 @@ type InlineVideoLimiter interface {
 // RequiresVideoPreparation where present — because Router implements
 // PrepareVideo unconditionally in order to delegate, and a bare type assertion
 // would therefore report every routed provider as an uploader.
-func InlineVideoBudget(provider any, fallback int64) (budget int64, inline bool) {
+//
+// err is non-nil only for ErrNoInlineRoom; every other outcome returns a nil
+// error, including "unknown" (which substitutes fallback).
+func InlineVideoBudget(provider any, fallback int64) (budget int64, inline bool, err error) {
 	uploads := false
 	if declares, ok := provider.(interface{ RequiresVideoPreparation() bool }); ok {
 		uploads = declares.RequiresVideoPreparation()
@@ -106,14 +131,18 @@ func InlineVideoBudget(provider any, fallback int64) (budget int64, inline bool)
 		uploads = true
 	}
 	if uploads {
-		return 0, false
+		return 0, false, nil
 	}
 	if limiter, ok := provider.(InlineVideoLimiter); ok {
-		if declared := limiter.MaxInlineVideoBytes(); declared > 0 {
-			return declared, true
+		declared := limiter.MaxInlineVideoBytes()
+		if declared == NoInlineRoom {
+			return 0, true, ErrNoInlineRoom
+		}
+		if declared > 0 {
+			return declared, true, nil
 		}
 	}
-	return fallback, true
+	return fallback, true, nil
 }
 
 type PrepareVideoRequest = common.PrepareVideoRequest

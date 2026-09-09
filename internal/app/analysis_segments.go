@@ -182,7 +182,16 @@ func (p *Pipeline) analyzeVideo(ctx context.Context, provider videoproviders.Vid
 	if input.RemoteURI != "" {
 		return single()
 	}
-	budget, inline := videoproviders.InlineVideoBudget(provider, media.DefaultInlineBudgetBytes)
+	budget, inline, err := videoproviders.InlineVideoBudget(provider, media.DefaultInlineBudgetBytes)
+	if err != nil {
+		// The endpoint's own ceiling leaves no room for a single byte of
+		// video once the JSON envelope is accounted for. Planning windows
+		// against a fabricated budget would send a request that cannot fit
+		// and cannot be bisected into one that does, so refuse here instead —
+		// permanently, because the next attempt hands the identical declared
+		// ceiling to identical arithmetic.
+		return videoanalysis.Result{}, "", domain.Permanent(fmt.Errorf("analyse %s: %w", assetID, err))
+	}
 	if !inline {
 		return single()
 	}

@@ -78,19 +78,17 @@ func (p *Provider) MaxInlineVideoBytes() int64 {
 	if usable < 0 {
 		usable = 0
 	}
-	budget := usable * 3 / 4
+	budget := (usable / 4) * 3
 	if budget <= 0 {
-		// A configured ceiling below inlineOverheadReserveBytes must still
-		// come back positive: InlineVideoBudget (video/interface.go) treats
-		// <= 0 as "the provider has no opinion" and substitutes its own,
-		// larger fallback — so a zero here would make an operator's
-		// explicit, unrealistically tight limit produce a *bigger* effective
-		// budget than an unconfigured one, exactly backwards. The window
-		// splitter still can't do anything useful with a 1-byte budget (every
-		// window collapses to media.MinAnalysisWindowMS and this endpoint
-		// gets a 413 with nothing left to bisect), but that failure is honest
-		// about the ceiling that was actually configured.
-		budget = 1
+		// A configured ceiling at or below inlineOverheadReserveBytes truly
+		// has no room, and must say so rather than fabricate a positive
+		// number: InlineVideoBudget (video/interface.go) treats <= 0 as
+		// "the provider has no opinion" and substitutes its own, larger
+		// fallback — so a plain zero here would make an operator's explicit,
+		// unrealistically tight limit produce a *bigger* effective budget
+		// than an unconfigured one, exactly backwards. NoInlineRoom is the
+		// distinct signal that lets the caller refuse the asset instead.
+		return videoproviders.NoInlineRoom
 	}
 	return budget
 }

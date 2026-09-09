@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -46,14 +48,17 @@ func TestMaxInlineVideoBytesKeepsTheEncodedRequestUnderTheDeclaredCeiling(t *tes
 		t.Fatalf("zero MaxInlineBytes = %d, want the same as an explicit defaultMaxInlineBytes (%d)", got, want)
 	}
 
-	// A ceiling below inlineOverheadReserveBytes must still report a positive
-	// budget. videoproviders.InlineVideoBudget reads <= 0 as "this provider
-	// has no opinion" and substitutes its own, larger fallback — so a zero
-	// here would let an operator's explicit, unrealistically tight limit
-	// produce a *bigger* effective budget than an unconfigured provider,
-	// exactly backwards.
-	if tiny := (&Provider{MaxInlineBytes: 1 << 10}).MaxInlineVideoBytes(); tiny <= 0 {
-		t.Fatalf("MaxInlineVideoBytes() with a sub-reserve ceiling = %d, want a positive value so InlineVideoBudget never reads it as unknown", tiny)
+	// A ceiling below inlineOverheadReserveBytes has no room for a single byte
+	// of video once the envelope is paid for, and must say exactly that. This
+	// assertion used to demand a positive number, because InlineVideoBudget
+	// reads <= 0 as "this provider has no opinion" and substitutes its own
+	// larger fallback — so a plain zero let an operator's tight limit produce
+	// a *bigger* effective budget than an unconfigured provider. The answer to
+	// that is a distinct sentinel the caller can refuse on, not a fictional
+	// one-byte budget that the window splitter rounds back up to a
+	// thirty-second window and sends anyway.
+	if tiny := (&Provider{MaxInlineBytes: 1 << 10}).MaxInlineVideoBytes(); tiny != videoproviders.NoInlineRoom {
+		t.Fatalf("MaxInlineVideoBytes() with a sub-reserve ceiling = %d, want NoInlineRoom (%d) so the caller refuses instead of planning against it", tiny, videoproviders.NoInlineRoom)
 	}
 }
 
@@ -112,5 +117,78 @@ func TestProviderUsesRemoteVideoURIWhenAvailable(t *testing.T) {
 	result, _, err := provider.Analyze(context.Background(), videoanalysis.Input{RemoteURI: "https://media.example/clip.mp4"})
 	if err != nil || result.Summary != "remote clip" {
 		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+// TestMaxInlineVideoBytesNeverPromisesMoreThanBase64CanFit pins the property
+// the whole conversion exists for: whatever MaxInlineVideoBytes hands the
+// window splitter, base64-encoding that many raw bytes plus the reserved
+// envelope headroom must not exceed the wire ceiling the operator actually
+// configured (or the conservative default, when they configured nothing).
+// That has to hold at the small end (where usable*3/4 rounds the wrong way)
+// and at the large end (where usable*3 overflows int64) alike — a hardcoded
+// expected number would not catch either on its own, so every case is
+// checked against the ceiling instead.
+//
+// A safety check alone is not enough: the int64 overflow at math.MaxInt64
+// happens to wrap to a budget that is still safe, only wrong (too small by
+// billions of bytes). The tightness check below — one more encoded byte must
+// not fit — is what catches that, because a too-small budget passes safety
+// but fails tightness.
+func TestMaxInlineVideoBytesNeverPromisesMoreThanBase64CanFit(t *testing.T) {
+	const reserve = inlineOverheadReserveBytes
+	cases := []struct {
+		name       string
+		ceiling    int64
+		wantNoRoom bool
+	}{
+		{"zero ceiling selects the default", 0, false},
+		{"ceiling exactly the reserve", reserve, true},
+		{"reserve+1", reserve + 1, true},
+		{"reserve+2", reserve + 2, true},
+		{"reserve+3", reserve + 3, true},
+		{"reserve+4 is the first ceiling with any room", reserve + 4, false},
+		{"realistic 24MiB", 24 << 20, false},
+		{"math.MaxInt64", math.MaxInt64, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Provider{MaxInlineBytes: tc.ceiling}
+			got := p.MaxInlineVideoBytes()
+
+			if tc.wantNoRoom {
+				if got != videoproviders.NoInlineRoom {
+					t.Fatalf("ceiling=%d: got %d, want NoInlineRoom (%d)", tc.ceiling, got, videoproviders.NoInlineRoom)
+				}
+				return
+			}
+			if got == videoproviders.NoInlineRoom {
+				t.Fatalf("ceiling=%d: reported NoInlineRoom for a ceiling that has room", tc.ceiling)
+			}
+			if got <= 0 {
+				t.Fatalf("ceiling=%d: budget %d is not positive", tc.ceiling, got)
+			}
+
+			effectiveCeiling := tc.ceiling
+			if effectiveCeiling <= 0 {
+				effectiveCeiling = defaultMaxInlineBytes
+			}
+
+			// Safety: encoding the returned budget, plus the reserved
+			// envelope headroom, must fit inside the ceiling. Subtracting
+			// (rather than adding the reserve to the encoded length) avoids
+			// its own overflow at a ceiling near math.MaxInt64.
+			if encoded := int64(base64.StdEncoding.EncodedLen(int(got))); encoded > effectiveCeiling-reserve {
+				t.Fatalf("ceiling=%d: budget %d encodes to %d bytes, which with the %d reserve exceeds the ceiling",
+					tc.ceiling, got, encoded, reserve)
+			}
+			// Tightness: one more raw byte must not have fit. This is what
+			// catches the int64-overflow regression at math.MaxInt64, which
+			// stays safe but drifts far below the true limit.
+			if encoded := int64(base64.StdEncoding.EncodedLen(int(got + 1))); encoded <= effectiveCeiling-reserve {
+				t.Fatalf("ceiling=%d: budget %d is not tight — %d would also have fit (encodes to %d, ceiling-reserve=%d)",
+					tc.ceiling, got, got+1, encoded, effectiveCeiling-reserve)
+			}
+		})
 	}
 }

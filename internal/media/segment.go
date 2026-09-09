@@ -55,7 +55,7 @@ const (
 	// still answered 413 to. 1MiB is reserved for the envelope/prompt before
 	// the 3/4 base64 correction, mirroring openaivideo's
 	// inlineOverheadReserveBytes.
-	DefaultInlineBudgetBytes = (24<<20 - 1<<20) * 3 / 4
+	DefaultInlineBudgetBytes = (24<<20 - 1<<20) / 4 * 3
 )
 
 // PlanAnalysisWindows decides how to cut a proxy so each piece fits budgetBytes.
