@@ -221,9 +221,12 @@ function clearSearch(){const q=document.getElementById('q');if(q)q.value='';load
 		replacement: `<button type="button" class="tickrule-span is-possible" style="left:'+left.toFixed(3)+'%;width:'+width.toFixed(3)+'%" aria-label="'+esc(tdT('library.ariaTimeRange',{desc:description,start:fmt(start),end:fmt(end)}))+'" title="'+esc(title)+'">`},
 	// Timeline blocks become clickable shot evidence: each carries its own
 	// row (the same payload the drawer opens with) so the drawer never needs
-	// a second round trip.
-	{anchor: `title="'+esc(title)+'"><span>'+esc(description)+'</span></div>'`,
-		replacement: `data-shot="'+encodeURIComponent(JSON.stringify(s))+'" data-asset="'+esc(x.id)+'" data-filename="'+esc(x.filename||'')+'" title="'+esc(title)+'"><span>'+esc(description)+'</span></button>'`},
+	// a second round trip. The block is empty by design — its description
+	// reads in the list under the track, where a shot narrower than its own
+	// words still has room for them — so this anchor closes the tag the
+	// previous patch opened and adds no text of its own.
+	{anchor: `title="'+esc(title)+'"></div>'`,
+		replacement: `data-shot="'+encodeURIComponent(JSON.stringify(s))+'" data-asset="'+esc(x.id)+'" data-filename="'+esc(x.filename||'')+'" title="'+esc(title)+'"></button>'`},
 	// An asset card with no shots yet is a browse-mode dead end; the same
 	// test-drive coaching the search-empty state offers (below) goes here so
 	// the first-run library coaches from both modes. The status and chips
