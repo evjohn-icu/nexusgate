@@ -297,11 +297,13 @@ async function runDiscover(){
 
 // discoverDiagnostics explains the result from what the scan actually did,
 // rather than from the fact that the list came back short. "No device exposes
-// port 445" is one of at least four different situations, and three of them
+// port 445" is one of at least five different situations, and four of them
 // are not the operator's LAN being empty: the Hub is in a bridge-networked
-// container and swept Docker's own subnet, there was no scannable network at
-// all, or a subnet was too wide to sweep and was skipped. Reporting the first
-// sentence for all four sends people looking for a fault that is not there.
+// container and swept Docker's own subnet, the Hub is running under WSL and
+// (in WSL's default NAT mode) swept its own private vEthernet subnet, there
+// was no scannable network at all, or a subnet was too wide to sweep and was
+// skipped. Reporting the first sentence for all five sends people looking for
+// a fault that is not there.
 function discoverDiagnostics(data,hosts){
   data=data||{};
   var nets=(data.scanned_networks||[]).join(', ');
@@ -313,9 +315,23 @@ function discoverDiagnostics(data,hosts){
   // nothing answers on 445, and a subnet skipped for being too wide is not the
   // same as having no network to sweep — saying either of those alongside
   // "nothing was found" sends the operator after a fault that is not there.
+  //
+  // hub_wsl sits ahead of the truncated gate below on purpose. If the
+  // subnet is wider than /24 — WSL's default NAT vEthernet often is; a /20
+  // has 4094 addresses — the port scan's ~8s budget at 64 concurrent
+  // one-second dials (impl.go's portBudget/maxScanHosts) only reaches
+  // roughly 512 of them, so it always truncates before finishing. Gating
+  // the WSL note behind "not truncated" (like the plain noHosts branch
+  // below) would instead show roots.diag.truncated, which reads "a device
+  // may have been missed" — implying the NAS is on this subnet and the scan
+  // just did not reach it yet. That is the wrong claim here: this subnet is
+  // not the operator's LAN at all, so no amount of sweeping it finds the
+  // NAS, and the honest next step is the manual entry, not a retry.
   if(!hosts.length){
     if(data.hub_containerised){
       note('callout--attention',tdT('roots.diag.containerBridge',{nets:nets}));
+    }else if(data.hub_wsl){
+      note('callout--attention',tdT('roots.diag.wslNat',{nets:nets}));
     }else if(!nets&&skipped){
       note('callout--attention',tdT('roots.diag.skipped',{nets:skipped}));
       skipped='';

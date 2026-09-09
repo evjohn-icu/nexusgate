@@ -329,6 +329,22 @@ func (s *Service) HubContainerised() bool {
 	return s.mountHost().Container
 }
 
+// HubWSL reports whether this Hub process is itself running under WSL, the
+// same proven fact mount.Host.WSL already carries for mount guidance
+// (mount.LocalHost reads it from /proc/sys/kernel/osrelease, not a guess).
+// Discovery needs it for the same reason as HubContainerised: WSL's default
+// NAT networking mode puts the Linux side on its own private vEthernet
+// subnet, not the physical LAN the operator's NAS sits on, so a scan of that
+// subnet can complete cleanly and still find nothing there. This reports only
+// the provable fact — this process is running under WSL — and deliberately
+// stops there: WSL's mirrored networking mode does not have this problem
+// (the Linux side shares the host's own interfaces), and nothing this
+// process can observe tells it which mode is active, so the caller must
+// phrase the NAT explanation as conditional rather than asserted.
+func (s *Service) HubWSL() bool {
+	return s.mountHost().WSL
+}
+
 // HostHint carries the two facts about a deployment that this process cannot
 // observe for itself: which platform owns mounts on the Docker host, and
 // whether the Hub runs under a service manager. Everything else in mount.Host

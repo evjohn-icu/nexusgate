@@ -627,6 +627,7 @@
  "roots.diag.noNetworks": "This machine has no scannable LAN subnet, so there was nowhere to look. You can enter the NAS address manually.",
  "roots.diag.skipped": "{nets} is a large network and sweeping all of it would take too long, so only part of it was swept. If the device you want is not in the results, type its address in below — typing it in does not need the sweep.",
  "roots.diag.truncated": "The sweep ran out of time and covered only part of the network, so a device may have been missed. Sweeping again will probably time out the same way; typing the NAS address in below is the faster route.",
+ "roots.diag.wslNat": "The Hub is running inside WSL. Under WSL’s default NAT networking, the Hub only sees its own private virtual network ({nets}), not your LAN, so it cannot find the NAS from here — this does not apply if you have switched WSL to mirrored networking mode. Type the NAS address in below.",
  "roots.discoverButton": "Scan the LAN for shares",
  "roots.discoverIntro": "Scan the LAN to find NAS devices and computers with SMB enabled. Most NAS devices disable anonymous access by default, so share names often cannot be listed — in that case, this page shows the host address. Enter the share name yourself (find it under “Shared folders” in the NAS admin interface). The process does not need a password and does not send a password to the browser.",
  "roots.discoverOr": "Or, enter a path directly",

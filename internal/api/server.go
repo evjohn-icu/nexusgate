@@ -1245,6 +1245,13 @@ func (s *Server) discoverRoots(w http.ResponseWriter, r *http.Request) {
 		// Docker's own subnet". Both produce an empty host list; only one of
 		// them is the operator's network's fault.
 		HubContainerised bool `json:"hub_containerised"`
+		// HubWSL is the same kind of signal for WSL: under its default NAT
+		// networking mode the Hub's own interfaces sit on a private vEthernet
+		// subnet that is not the operator's physical LAN, so the scan sweeps a
+		// subnet the NAS was never on. It is a fact about this process, not
+		// about which networking mode WSL is using, so the browser must phrase
+		// what it does with it conditionally — see HubWSL's doc comment.
+		HubWSL bool `json:"hub_wsl"`
 	}{
 		Hosts:            result.Hosts,
 		ScannedNetworks:  result.ScannedNetworks,
@@ -1252,6 +1259,7 @@ func (s *Server) discoverRoots(w http.ResponseWriter, r *http.Request) {
 		MDNSAvailable:    result.MDNSAvailable,
 		Truncated:        result.Truncated,
 		HubContainerised: s.service.HubContainerised(),
+		HubWSL:           s.service.HubWSL(),
 	})
 }
 

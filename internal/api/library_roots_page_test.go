@@ -712,6 +712,39 @@ func TestDiscoverRootsAuthorizedReturnsHostsArray(t *testing.T) {
 	}
 }
 
+// hub_wsl must be wired to app.Service.HubWSL(), which reports
+// mount.LocalHost().WSL rather than a hardcoded value — a Hub under WSL's
+// default NAT networking sweeps its own private vEthernet subnet and finds
+// nothing there no matter how the scan itself behaves, so the browser needs
+// this fact independently of the scan result. Compared against
+// mount.LocalHost().WSL directly (not a hardcoded literal) so the assertion
+// holds whatever machine runs the test, but still catches the handler
+// dropping the field, wiring the wrong Service method, or wiring
+// HubContainerised's value in its place.
+func TestDiscoverRootsReportsHubWSL(t *testing.T) {
+	service := newLibraryRootsTestService(t, "discover-wsl.db", "required")
+	service.SetSMBDiscoverer(func(context.Context) (smbdiscover.Result, error) {
+		return smbdiscover.Result{}, nil
+	})
+	handler := NewServer("", service).Handler()
+	request := lanRequest(http.MethodPost, "/api/v1/roots/discover", nil)
+	request.Header.Set("Authorization", "Bearer "+service.AdminToken())
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s, want 200", response.Code, response.Body.String())
+	}
+	var payload struct {
+		HubWSL bool `json:"hub_wsl"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if want := mount.LocalHost().WSL; payload.HubWSL != want {
+		t.Fatalf("hub_wsl=%v, want %v (mount.LocalHost().WSL)", payload.HubWSL, want)
+	}
+}
+
 func TestDiscoverRootsReturnsConflictWhileScanning(t *testing.T) {
 	service := newLibraryRootsTestService(t, "discover-conflict.db", "required")
 	started := make(chan struct{})
@@ -930,29 +963,62 @@ func TestLibraryRootsPageSeparatesFileLinesFromCommands(t *testing.T) {
 	}
 }
 
-// An empty host list has at least four different causes and only one of them
-// is "your LAN has no SMB server". Reporting that one sentence for all four
+// An empty host list has at least five different causes and only one of them
+// is "your LAN has no SMB server". Reporting that one sentence for all five
 // sends operators looking for a fault that is not there — most importantly
-// when the Hub is a bridge-networked container that swept Docker's own subnet.
+// when the Hub is a bridge-networked container that swept Docker's own
+// subnet, or a Hub under WSL's default NAT networking that swept its own
+// private vEthernet subnet.
 func TestLibraryRootsPageDiagnosesEmptyDiscoveryResults(t *testing.T) {
 	body := libraryRootsHTML
 	if !strings.Contains(body, "function discoverDiagnostics") {
 		t.Fatal("discoverDiagnostics is missing")
 	}
 	for _, signal := range []string{
-		"hub_containerised", "mdns_available", "scanned_networks", "skipped_networks", "truncated",
+		"hub_containerised", "hub_wsl", "mdns_available", "scanned_networks", "skipped_networks", "truncated",
 	} {
 		if !strings.Contains(body, signal) {
 			t.Errorf("discovery diagnostics ignore the %s signal the API now returns", signal)
 		}
 	}
 	for _, key := range []string{
-		"roots.diag.containerBridge", "roots.diag.noNetworks", "roots.diag.noHosts",
+		"roots.diag.containerBridge", "roots.diag.wslNat", "roots.diag.noNetworks", "roots.diag.noHosts",
 		"roots.diag.skipped", "roots.diag.truncated", "roots.diag.allUnusable", "roots.diag.noMulticast",
 	} {
 		if !strings.Contains(body, key) {
 			t.Errorf("page never renders %s", key)
 		}
+	}
+}
+
+// hub_wsl must be checked before the truncated gate, not after it. If the
+// subnet is wider than /24 — WSL's default NAT vEthernet often is; a /20 has
+// 4094 addresses — the port scan's budget only reaches roughly 512
+// addresses, so it always truncates before finishing. If the wsl branch were
+// gated behind "not truncated" like the plain noHosts branch, a WSL Hub
+// would see roots.diag.truncated ("a device may have been missed") instead
+// of the NAT explanation — which implies the NAS is on this subnet and the
+// scan simply did not reach it, when in fact this subnet is not the
+// operator's LAN at all and no amount of sweeping it will find the NAS.
+func TestLibraryRootsPageWSLDiagnosisPrecedesTruncatedGate(t *testing.T) {
+	body := libraryRootsHTML
+	start := strings.Index(body, "function discoverDiagnostics")
+	if start < 0 {
+		t.Fatal("discoverDiagnostics is missing")
+	}
+	fn := body[start:]
+	end := strings.Index(fn, "\nfunction ")
+	if end < 0 {
+		t.Fatal("could not find the end of discoverDiagnostics")
+	}
+	fn = fn[:end]
+	wslBranch := strings.Index(fn, "data.hub_wsl")
+	truncatedGate := strings.Index(fn, "!data.truncated")
+	if wslBranch < 0 || truncatedGate < 0 {
+		t.Fatalf("hub_wsl branch (%d) or the truncated gate (%d) not found in discoverDiagnostics", wslBranch, truncatedGate)
+	}
+	if wslBranch > truncatedGate {
+		t.Fatal("hub_wsl branch is gated behind the truncated check — a WSL Hub whose NAT subnet scan truncates (which a /20 subnet always does inside the port budget) would see the generic truncated message instead of the WSL explanation")
 	}
 }
 
