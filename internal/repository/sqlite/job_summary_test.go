@@ -104,6 +104,36 @@ func TestJobSummarySeparatesDeferredAndTerminalFromTheRest(t *testing.T) {
 	}
 }
 
+// JobSummary's deferred predicate is a hand-written IN-list, not a lookup
+// against isDeferCode or JobIssues' own list -- three separate enumerations
+// of the same defer codes (see JobIssues' doc comment). A job parked with the
+// newer provider_route_unconfirmed code must count as deferred here exactly
+// like provider_route_exhausted does, or it silently falls into ordinary
+// Pending and the queue looks like backlog instead of a park nothing needs to
+// act on.
+func TestJobSummaryCountsProviderRouteUnconfirmedAsDeferred(t *testing.T) {
+	repo, ctx := summaryRepo(t)
+	if err := repo.EnqueueJob(ctx, "asset-summary", domain.JobProbe, "unconfirmed", 10); err != nil {
+		t.Fatal(err)
+	}
+	parked, err := repo.LeaseNextJob(ctx, "worker", nil, domain.LeaseFilter{})
+	if err != nil || parked == nil {
+		t.Fatalf("lease for defer: %+v %v", parked, err)
+	}
+	if err := repo.DeferJob(ctx, parked.ID, "worker", time.Now().Add(5*time.Minute), domain.JobDeferProviderRouteUnconfirmed, "route failing, not yet confirmed"); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := repo.JobSummary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := domain.JobSummary{Deferred: 1, Total: 1}
+	if summary != want {
+		t.Fatalf("summary=%+v, want %+v", summary, want)
+	}
+}
+
 // The whole reason this endpoint exists: /progress used to count the hundred
 // newest rows, and jobs are created newest-last as the chain advances, so a
 // queue whose finished work is older than its backlog reported that work as

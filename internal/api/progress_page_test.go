@@ -147,13 +147,36 @@ func TestProgressPageI18nEnumMapsCoverWireValues(t *testing.T) {
 	}
 	// The auto-recover map stays a boolean data map consulted at retry time:
 	// those deferral codes also release their parked half via resume-deferred.
-	for _, code := range []string{"provider_route_exhausted", "disk_space_low", "budget_exhausted"} {
+	for _, code := range []string{"provider_route_exhausted", "provider_route_unconfirmed", "disk_space_low", "budget_exhausted"} {
 		if !strings.Contains(progressHTML, "'"+code+"':true") {
 			t.Fatalf("issueAutoRecover missing deferral code %q", code)
 		}
 	}
 	if !strings.Contains(progressHTML, "if(issueAutoRecover[category])") {
 		t.Fatal("issue auto-recover must still gate the resume-deferred follow-up in retryIssueGroup")
+	}
+}
+
+// TestProgressPageI18nEnumMapsCoverWireValues's category loop only checks
+// that a category's wire value appears *somewhere* on the page followed by a
+// colon -- which a category present in issueAutoRecover, issueRepairRoutes or
+// issueRepairLabels but missing from issueLabels would still satisfy, since
+// provider_route_unconfirmed appears in all four. Confirmed empirically: a
+// mutation that deleted only the issueLabels entry left that test green. This
+// pins issueLabels' own declaration specifically, so a regression there
+// cannot hide behind the entry's presence in a sibling map.
+func TestProgressPageIssueLabelsMapsProviderRouteUnconfirmed(t *testing.T) {
+	start := strings.Index(progressHTML, "const issueLabels=")
+	if start < 0 {
+		t.Fatal("issueLabels declaration not found in progressHTML")
+	}
+	end := strings.Index(progressHTML[start:], ";")
+	if end < 0 {
+		t.Fatal("issueLabels declaration has no terminating semicolon")
+	}
+	block := progressHTML[start : start+end]
+	if !strings.Contains(block, "'provider_route_unconfirmed':'progress.issue.provider_route_unconfirmed'") {
+		t.Fatalf("issueLabels is missing the provider_route_unconfirmed entry: %s", block)
 	}
 }
 

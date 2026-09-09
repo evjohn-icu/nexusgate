@@ -23,7 +23,11 @@ import (
 // DeferJob stores without a second enumeration to forget. They are bound
 // from the category constants (JobDeferProviderRouteExhausted is spelled
 // from JobFailureCategoryProviderRouteExhausted), so the deferral writes and
-// the issues grouping cannot drift apart either.
+// the issues grouping cannot drift apart either. This list, isDeferCode
+// (repository.go) and JobSummary's deferred predicate are three separate
+// hand-written enumerations of the same defer codes; a new one has to join
+// all three or a parked job goes missing from one of ListJobs, JobSummary or
+// this view while showing up fine in the others.
 //
 // NULL and empty last_error_code both group under 'unknown': NULL is a job
 // that failed before classification existed (or whose failure predates the
@@ -42,10 +46,10 @@ func (r *Repository) JobIssues(ctx context.Context) ([]domain.JobIssue, error) {
     MIN(asset_id) AS example_asset
 FROM jobs
 WHERE state='failed'
-   OR (state='pending' AND run_after>? AND last_error_code IN (?,?,?))
+   OR (state='pending' AND run_after>? AND last_error_code IN (?,?,?,?))
 GROUP BY category
 ORDER BY count DESC, category`, now,
-		domain.JobFailureCategoryProviderRouteExhausted, domain.JobFailureCategoryDiskSpaceLow, domain.JobFailureCategoryBudgetExhausted)
+		domain.JobFailureCategoryProviderRouteExhausted, domain.JobFailureCategoryProviderRouteUnconfirmed, domain.JobFailureCategoryDiskSpaceLow, domain.JobFailureCategoryBudgetExhausted)
 	if err != nil {
 		return nil, err
 	}

@@ -407,6 +407,33 @@ func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 				}
 				continue
 			}
+			// The ordinary retry path above is exhausted, and everything short
+			// of that (disk, confirmed route exhaustion, lease loss) has
+			// already returned. What is left before the terminal fallback is
+			// the gap 3033ecb's confirmation requirement opened: a route that
+			// kept failing retryably but was never confirmed exhausted, on a
+			// job whose own three attempts ran out before the channel had
+			// enough calls to prove it (see providerchannels.ErrRouteUnconfirmed
+			// and routeUnconfirmedDeferral). Confirmation evidence lives in the
+			// executor, not this job, and survives across every job that calls
+			// the same route -- failing this one permanently would discard
+			// whatever it already contributed and hand an operator a queue
+			// entry that needs `pipeline retry-failed` for a problem that was
+			// never its fault. A short defer hands the attempt back instead,
+			// same as the confirmed-exhaustion park, just for a much shorter
+			// wait because nothing here is a proven verdict yet.
+			if errors.Is(err, providerchannels.ErrRouteUnconfirmed) {
+				resumeAt := time.Now().Add(routeUnconfirmedDeferral)
+				if deferErr := p.repo.DeferJob(ctx, job.ID, worker, resumeAt, domain.JobDeferProviderRouteUnconfirmed, persistedErrorMessage(err)); deferErr != nil {
+					if isLeaseLostErr(deferErr) {
+						slog.Warn("job lease reclaimed before it could be deferred; discarding", "job", job.ID, "job_type", job.Type)
+						continue
+					}
+					return executed, deferErr
+				}
+				slog.Warn("provider route failing but not yet confirmed exhausted; job deferred briefly", "job", job.ID, "job_type", job.Type, "resume_at", resumeAt.Format(time.RFC3339))
+				continue
+			}
 			// Either the failure is permanent or the attempts ran out. Both are
 			// terminal, so stop the lease predicate from handing it back. The
 			// lease-lost case is handled above before execute's error even
@@ -503,6 +530,22 @@ const providerRouteDeferral = 5 * time.Hour
 // exists to prevent.
 const minProviderRouteDeferral = time.Minute
 
+// routeUnconfirmedDeferral is how long a job parked on
+// providerchannels.ErrRouteUnconfirmed waits before it is offered again. It is
+// far shorter than providerRouteDeferral on purpose: that five-hour wait is
+// for a verdict (every key on the route confirmed dead), and this is not a
+// verdict -- it is "the route kept failing but this job's own three attempts
+// ran out before the channel had enough calls to prove or disprove an
+// outage." A few minutes is enough for the providerpool cooldowns backing that
+// confirmation (capped at 30 seconds by default) to clear several times over,
+// and for other jobs sharing the same route to contribute their own attempts
+// toward completing it -- either the route recovers, or confirmation finishes
+// and the job earns the full park next time. It is not configurable like
+// providerRouteDeferral: there is no operator decision to make about how long
+// to wait on an unproven outage, unlike the deliberate quota-plan tradeoff the
+// five-hour default documents.
+const routeUnconfirmedDeferral = 5 * time.Minute
+
 // diskSpaceRetryDelay is how long a job parked on a full disk waits before it
 // is offered again — both the preflight's verdict (cache volume below
 // minimum_free_space_bytes) and an actual ENOSPC failure. The cause is
@@ -585,21 +628,24 @@ func isRetryableJobError(err error) bool {
 	// providerchannels.ErrRouteExhausted before it ever reaches this
 	// function; that case is handled above, by parking rather than retrying.
 	// It cannot do that when the last untried member is merely saturated by a
-	// concurrent caller, or cooling from a single unconfirmed failure: Select
-	// returns ErrNoAvailable without an attempt, and
-	// providerchannels.Executor.routeFailingEverywhere reads the pool's live
-	// per-member state (cooldown, retirement, confirmed-failure count) and
-	// correctly declines to call either shape exhausted — see its doc comment
-	// for what "confirmed" requires. The raw MemberSpent error surfaces here
-	// instead of the sentinel in the saturation race. Retrying is right
-	// either way it got here: on the executor's own conclusion there truly is
-	// nothing left, backoff burns only a few attempts before this job's
-	// normal terminal path takes over; on the saturation race, the very next
-	// attempt selects the member the pool retired around, once selection
-	// succeeds at all. Classification is by status alone, not by what the
-	// provider's body says, so an upstream message that happens to read as
-	// permanent ("unauthorized", "not configured") cannot flip this back to a
-	// fail-permanent outcome for a key the pool has already moved on from.
+	// concurrent caller, or the channel's confirmation evidence is still
+	// incomplete (see routeFailingEverywhere's doc comment for what
+	// "confirmed" requires): Select returns ErrNoAvailable without an
+	// attempt in the saturation case, and Execute wraps whatever it does have
+	// -- a raw MemberSpent status, or nothing at all -- in
+	// providerchannels.ErrRouteUnconfirmed rather than ErrRouteExhausted.
+	// errors.As still finds the *common.StatusError through that wrap, so the
+	// status probe below sees it exactly as if it were unwrapped. Retrying is
+	// right either way it got here: on the executor's own conclusion there
+	// truly is nothing left yet, backoff burns only a few attempts before
+	// this job's final attempt reaches the ErrRouteUnconfirmed branch above
+	// (a short defer, not FailJobTerminally) instead of retrying further; on
+	// the saturation race, the very next attempt selects the member the pool
+	// retired around, once selection succeeds at all. Classification is by
+	// status alone, not by what the provider's body says, so an upstream
+	// message that happens to read as permanent ("unauthorized", "not
+	// configured") cannot flip this back to a fail-permanent outcome for a
+	// key the pool has already moved on from.
 	var status *common.StatusError
 	if errors.As(err, &status) && status.StatusCode >= 400 && status.StatusCode < 500 {
 		if status.StatusCode != http.StatusRequestTimeout && status.StatusCode != http.StatusTooManyRequests {

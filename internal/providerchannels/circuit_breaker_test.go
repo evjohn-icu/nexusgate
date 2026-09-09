@@ -269,6 +269,13 @@ func TestASingleRetryableFailureIsNotExhaustionEvenOnAOneMemberRoute(t *testing.
 	if !errors.Is(err, providerpool.ErrNoAvailable) {
 		t.Fatalf("job 2: expected the plain \"not eligible right now\" signal, got %v", err)
 	}
+	// The zero-calls flavor of "not proven exhausted yet" must carry the same
+	// sentinel as the "every attempt failed retryably" flavor above, so
+	// app.Pipeline's classification of one does not silently diverge from the
+	// other -- see ErrRouteUnconfirmed's doc comment.
+	if !errors.Is(err, ErrRouteUnconfirmed) {
+		t.Fatalf("job 2: expected ErrRouteUnconfirmed on the zero-calls path too, got %v", err)
+	}
 
 	// Once the cooldown actually elapses, the same member serves the next
 	// call normally -- the whole point of treating this as bounded rather

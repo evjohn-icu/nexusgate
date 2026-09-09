@@ -11,6 +11,7 @@ func TestJobFailureCategoryConstantsAreStable(t *testing.T) {
 		"provider_auth",
 		"provider_unavailable",
 		"provider_route_exhausted",
+		"provider_route_unconfirmed",
 		"media_decode",
 		"unsupported_media",
 		"preview_lut_missing",
@@ -56,6 +57,9 @@ func TestJobDeferReasonsAreCategoryValues(t *testing.T) {
 	if JobDeferDiskSpaceLow != string(JobFailureCategoryDiskSpaceLow) {
 		t.Errorf("disk-space defer reason %q diverged from category %q", JobDeferDiskSpaceLow, JobFailureCategoryDiskSpaceLow)
 	}
+	if JobDeferProviderRouteUnconfirmed != string(JobFailureCategoryProviderRouteUnconfirmed) {
+		t.Errorf("route-unconfirmed defer reason %q diverged from category %q", JobDeferProviderRouteUnconfirmed, JobFailureCategoryProviderRouteUnconfirmed)
+	}
 }
 
 // IsRetryable is the single verdict both the pipeline and the issues view use;
@@ -65,14 +69,15 @@ func TestJobDeferReasonsAreCategoryValues(t *testing.T) {
 // deterministic decision on the next attempt, or needs a human to look.
 func TestJobFailureCategoryIsRetryableTruthTable(t *testing.T) {
 	cases := map[JobFailureCategory]bool{
-		JobFailureCategoryProviderQuota:          true,
-		JobFailureCategoryProviderAuth:           false,
-		JobFailureCategoryProviderUnavailable:    true,
-		JobFailureCategoryProviderRouteExhausted: true,
-		JobFailureCategoryMediaDecode:            false,
-		JobFailureCategoryUnsupportedMedia:       false,
-		JobFailureCategoryPreviewLUTMissing:      false,
-		JobFailureCategoryDiskSpaceLow:           true,
+		JobFailureCategoryProviderQuota:            true,
+		JobFailureCategoryProviderAuth:             false,
+		JobFailureCategoryProviderUnavailable:      true,
+		JobFailureCategoryProviderRouteExhausted:   true,
+		JobFailureCategoryProviderRouteUnconfirmed: true,
+		JobFailureCategoryMediaDecode:              false,
+		JobFailureCategoryUnsupportedMedia:         false,
+		JobFailureCategoryPreviewLUTMissing:        false,
+		JobFailureCategoryDiskSpaceLow:             true,
 		// Retired producer, kept so historical rows keep their verdict.
 		JobFailureCategoryBudgetExhausted: true,
 		JobFailureCategorySourceMissing:   true,

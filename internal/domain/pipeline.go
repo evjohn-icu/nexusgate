@@ -110,6 +110,14 @@ const (
 	// key on the capability's route failed at once; see
 	// JobDeferProviderRouteExhausted.
 	JobFailureCategoryProviderRouteExhausted JobFailureCategory = "provider_route_exhausted"
+	// JobFailureCategoryProviderRouteUnconfirmed answers that the route kept
+	// failing retryably but the job's own attempt budget ran out before
+	// enough evidence existed to call it exhausted; see
+	// JobDeferProviderRouteUnconfirmed. It is deliberately distinct from
+	// JobFailureCategoryProviderRouteExhausted: that category is a verdict
+	// about the account (every key confirmed dead), this one is a statement
+	// that the verdict is still pending.
+	JobFailureCategoryProviderRouteUnconfirmed JobFailureCategory = "provider_route_unconfirmed"
 	// JobFailureCategoryMediaDecode answers that the media could not be
 	// decoded (an ffprobe/ffmpeg decode failure). No sentinel produces it
 	// yet; the identity is reserved for the day one exists.
@@ -177,6 +185,7 @@ func AllJobFailureCategories() []JobFailureCategory {
 		JobFailureCategoryProviderAuth,
 		JobFailureCategoryProviderUnavailable,
 		JobFailureCategoryProviderRouteExhausted,
+		JobFailureCategoryProviderRouteUnconfirmed,
 		JobFailureCategoryMediaDecode,
 		JobFailureCategoryUnsupportedMedia,
 		JobFailureCategoryPreviewLUTMissing,
@@ -202,6 +211,7 @@ func (c JobFailureCategory) IsRetryable() bool {
 	case JobFailureCategoryProviderQuota,
 		JobFailureCategoryProviderUnavailable,
 		JobFailureCategoryProviderRouteExhausted,
+		JobFailureCategoryProviderRouteUnconfirmed,
 		JobFailureCategoryDiskSpaceLow,
 		JobFailureCategoryBudgetExhausted,
 		JobFailureCategorySourceMissing,
@@ -228,6 +238,21 @@ func (c JobFailureCategory) IsRetryable() bool {
 // string constant keeps existing call sites (string parameters, SQL binding)
 // unchanged.
 const JobDeferProviderRouteExhausted = string(JobFailureCategoryProviderRouteExhausted)
+
+// JobDeferProviderRouteUnconfirmed is the DeferReason recorded when a job's
+// own attempt budget runs out on a provider-channel route that kept failing
+// retryably but was never confirmed exhausted (see
+// providerchannels.ErrRouteUnconfirmed). Confirmation evidence lives in the
+// executor, not the job, and it accumulates across every job that calls the
+// same route -- a wide channel (many members) can need more calls to prove
+// an outage than one job's three attempts provide. Failing such a job
+// permanently would discard the evidence it already contributed and leave an
+// operator staring at a queue entry `pipeline retry-failed` has to revive for
+// something that was never that job's fault. The park is short, not the
+// five-hour wait JobDeferProviderRouteExhausted uses: exhaustion here is
+// unproven, not confirmed, so the job is due back again soon rather than
+// parked on the assumption of a spent monthly quota.
+const JobDeferProviderRouteUnconfirmed = string(JobFailureCategoryProviderRouteUnconfirmed)
 
 // JobDeferDiskSpaceLow is the DeferReason recorded when a job is parked on a
 // full disk: an ENOSPC failure surfaced mid-job, or the pre-lease guard finding

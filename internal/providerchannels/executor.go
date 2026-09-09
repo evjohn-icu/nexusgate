@@ -25,6 +25,19 @@ var (
 	// reading error text; app.Pipeline already classifies several failure modes
 	// by substring and this must not join them.
 	ErrRouteExhausted = errors.New("providerchannels: every provider key on this route is failing")
+	// ErrRouteUnconfirmed means this call found no member that could answer
+	// successfully -- every attempt failed retryably, or retired its member --
+	// but routeFailingEverywhere could not yet call the route exhausted:
+	// evidence is still incomplete for at least one member (see its doc
+	// comment for what "confirmed" requires). This is deliberately a
+	// different sentinel from ErrRouteExhausted, not a degree of it: a wide
+	// channel's confirmation evidence is gathered across many Execute calls,
+	// each contributing at most attemptsPerChannel samples, so a single job's
+	// own attempt budget can run out before the channel has had enough calls
+	// to prove or disprove an outage. ErrRouteExhausted is a verdict; this is
+	// "come back once more calls have happened, on this route or another
+	// job's."
+	ErrRouteUnconfirmed = errors.New("providerchannels: this route is failing but not yet confirmed exhausted")
 )
 
 // attemptsPerChannel is how many members of one channel Execute will try
@@ -350,7 +363,16 @@ func (e *Executor) Execute(ctx context.Context, capability Capability, operation
 		return fmt.Errorf("%w: %w: capability %q", ErrRouteExhausted, providerpool.ErrNoAvailable, capability)
 	}
 	if lastNonTerminal != nil {
-		return lastNonTerminal
+		// Every attempt this call made failed retryably (or retired its
+		// member), and routeFailingEverywhere still declined to call the
+		// route exhausted -- not "this call went badly", but "the channel
+		// has not accumulated enough evidence yet". ErrRouteUnconfirmed
+		// carries that distinction into the pipeline: unlike a bare
+		// retryable error, on a job's last attempt it must not be treated as
+		// a verdict this job earned. See ErrRouteUnconfirmed's doc comment
+		// for why a wide channel can need more calls to confirm than one
+		// job's own attempt budget provides.
+		return fmt.Errorf("%w: %w", ErrRouteUnconfirmed, lastNonTerminal)
 	}
 	// Every member is currently ineligible (cooling, saturated, or a mix), but
 	// routeFailingEverywhere declined to call that exhaustion: at least one
@@ -358,11 +380,12 @@ func (e *Executor) Execute(ctx context.Context, capability Capability, operation
 	// That is not "no route configured" — ErrNoRoute is reserved for the
 	// len(route)==0 case above, a real configuration problem an operator must
 	// fix. Reporting ErrNoRoute here would tell the operator to go fix
-	// something that will resolve itself in seconds, so only ErrNoAvailable
-	// is wrapped; the pipeline already treats it as an ordinary retryable
-	// failure (see isRetryableJobError), which is the short wait this case
-	// deserves.
-	return fmt.Errorf("%w: capability %q", providerpool.ErrNoAvailable, capability)
+	// something that will resolve itself in seconds, so ErrNoAvailable is
+	// wrapped in the same ErrRouteUnconfirmed sentinel as the branch above:
+	// this is the "zero requests issued" flavor of the identical "not proven
+	// exhausted yet" fact, and the pipeline's classification of it must not
+	// depend on which flavor happened to occur.
+	return fmt.Errorf("%w: %w: capability %q", ErrRouteUnconfirmed, providerpool.ErrNoAvailable, capability)
 }
 
 // confirmedRetryableFailures is the number of consecutive Retryable failures

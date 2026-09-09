@@ -173,6 +173,59 @@ func TestPipelineRetriesRatherThanParksOnAMerelyCoolingRoute(t *testing.T) {
 	}
 }
 
+// The regression this audit found: a wide channel's confirmation evidence
+// (routeFailingEverywhere requiring two independently-timed failures per
+// member) can need more calls than a single job's three-attempt budget
+// provides, so providerchannels.Executor returns ErrRouteUnconfirmed instead
+// of ever reaching ErrRouteExhausted. Before this test's fix, that raw
+// retryable error had no distinguishing mark once wrapped, so the job's
+// third and final attempt fell straight through to FailJobTerminally --
+// permanently failing work that was never its fault, discarding whatever
+// confirmation evidence it had already contributed, and requiring
+// `pipeline retry-failed` where an automatic park would have sufficed.
+//
+// The first two attempts still behave exactly like an ordinary retryable
+// failure (see TestPipelineRetriesRatherThanParksOnAMerelyCoolingRoute):
+// only the third, which would otherwise go terminal, is intercepted.
+func TestPipelineDefersBrieflyOnAnUnconfirmedRouteInsteadOfFailingPermanently(t *testing.T) {
+	unconfirmed := fmt.Errorf("analyse asset: %w", fmt.Errorf("%w: %w",
+		providerchannels.ErrRouteUnconfirmed,
+		providerpool.HTTPError{Code: 500, Err: errors.New("upstream error")}))
+	repo := newQueuedIndexJob(t, unconfirmed)
+	pipeline := NewPipeline(repo, t.TempDir(), nil, nil, nil, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
+
+	before := time.Now()
+	job := singleJob(t, repo, pipeline, func(job domain.Job) bool { return job.DeferredReason != "" || job.Terminal })
+
+	if job.Terminal {
+		t.Fatalf("an unconfirmed route must not fail the job permanently -- that is exactly the regression: %+v", job)
+	}
+	if job.State != domain.JobPending {
+		t.Fatalf("a deferred job stays queued, not failed: %+v", job)
+	}
+	if job.DeferredReason != domain.JobDeferProviderRouteUnconfirmed {
+		t.Fatalf("expected the route-unconfirmed defer reason once the job's budget ran out unconfirmed: %+v", job)
+	}
+	// Only the final attempt (the one that would otherwise go terminal) is
+	// handed back; the first two were spent by the ordinary retry path,
+	// exactly like TestPipelineRetriesRatherThanParksOnAMerelyCoolingRoute.
+	if job.AttemptCount != job.MaxAttempts-1 {
+		t.Fatalf("expected exactly the final attempt handed back (%d of %d), got %d: %+v", job.MaxAttempts-1, job.MaxAttempts, job.AttemptCount, job)
+	}
+	// Short, not the five-hour confirmed-exhaustion park -- this is not a
+	// verdict, and must not be spent waiting like one.
+	if job.RunAfter.After(before.Add(routeUnconfirmedDeferral + time.Minute)) {
+		t.Fatalf("route-unconfirmed defer must not park anywhere near the five-hour confirmed-exhaustion wait: run_after=%s (started %s)", job.RunAfter, before)
+	}
+	// And not indistinguishable from an ordinary retry backoff either (which
+	// tops out at 30s) -- a defer that looks identical to a retry backoff
+	// would give the queue no signal that this job's own budget was already
+	// exhausted.
+	if !job.RunAfter.After(before.Add(time.Minute)) {
+		t.Fatalf("route-unconfirmed defer must be visibly longer than an ordinary retry backoff: run_after=%s (started %s)", job.RunAfter, before)
+	}
+}
+
 // The contrast, and the property the defer must not weaken: a failure that is
 // the job's own still spends its three attempts and then stops for good.
 func TestPipelineStillExhaustsThreeAttemptsOnAnOrdinaryFailure(t *testing.T) {

@@ -95,6 +95,8 @@ func apiErrorFromError(err error) (int, APIError) {
 		return http.StatusUnprocessableEntity, APIError{Code: "permanent_failure", Message: "the operation cannot succeed as requested"}
 	case errors.Is(err, providerchannels.ErrRouteExhausted):
 		return http.StatusServiceUnavailable, APIError{Code: "provider_route_exhausted", Message: "every configured provider key on this route is failing", Retryable: true, Action: "wait_or_change_provider"}
+	case errors.Is(err, providerchannels.ErrRouteUnconfirmed):
+		return http.StatusServiceUnavailable, APIError{Code: "provider_route_unconfirmed", Message: "this provider route is failing but not yet confirmed exhausted", Retryable: true, Action: "wait_or_change_provider"}
 	case errors.Is(err, providerchannels.ErrNoRoute):
 		return http.StatusServiceUnavailable, APIError{Code: "provider_no_route", Message: "no provider route is available for this capability", Retryable: true, Action: "configure_or_enable_a_provider_channel"}
 	case errors.Is(err, domain.ErrPlanNotFound),

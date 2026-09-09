@@ -1813,7 +1813,7 @@ func (r *Repository) ResumeDeferredJobs(ctx context.Context, reason string) (int
 // an ordinary failure. It is the single enumeration both ListJobs and
 // JobSummary use so the two cannot disagree about which jobs are parked.
 func isDeferCode(code string) bool {
-	return code == domain.JobDeferProviderRouteExhausted || code == domain.JobDeferDiskSpaceLow || code == domain.JobDeferBudgetExhausted
+	return code == domain.JobDeferProviderRouteExhausted || code == domain.JobDeferProviderRouteUnconfirmed || code == domain.JobDeferDiskSpaceLow || code == domain.JobDeferBudgetExhausted
 }
 
 func (r *Repository) ListJobs(ctx context.Context, limit int) ([]domain.Job, error) {
@@ -1904,9 +1904,10 @@ func (r *Repository) JobSummary(ctx context.Context) (domain.JobSummary, error) 
 	// Negating that in the pending arm below would yield NULL too, quietly
 	// dropping every never-failed pending job out of the count -- which is most
 	// of the queue. Deferred matches any defer code (provider route
-	// exhausted, disk space low, budget exhausted) so a parked job is counted
-	// exactly once under the deferred bucket.
-	deferred := `state='pending' AND COALESCE(last_error_code,'') IN (?,?,?) AND run_after>?`
+	// exhausted, provider route unconfirmed, disk space low, budget
+	// exhausted) so a parked job is counted exactly once under the deferred
+	// bucket.
+	deferred := `state='pending' AND COALESCE(last_error_code,'') IN (?,?,?,?) AND run_after>?`
 	query := `SELECT
         COALESCE(SUM(CASE WHEN state='pending' AND NOT (` + deferred + `) THEN 1 ELSE 0 END),0),
         COALESCE(SUM(CASE WHEN state='running' THEN 1 ELSE 0 END),0),
@@ -1918,8 +1919,8 @@ func (r *Repository) JobSummary(ctx context.Context) (domain.JobSummary, error) 
     FROM jobs`
 	now := formatTime(time.Now())
 	err := r.db.QueryRowContext(ctx, query,
-		domain.JobDeferProviderRouteExhausted, domain.JobDeferDiskSpaceLow, domain.JobDeferBudgetExhausted, now,
-		domain.JobDeferProviderRouteExhausted, domain.JobDeferDiskSpaceLow, domain.JobDeferBudgetExhausted, now).
+		domain.JobDeferProviderRouteExhausted, domain.JobDeferProviderRouteUnconfirmed, domain.JobDeferDiskSpaceLow, domain.JobDeferBudgetExhausted, now,
+		domain.JobDeferProviderRouteExhausted, domain.JobDeferProviderRouteUnconfirmed, domain.JobDeferDiskSpaceLow, domain.JobDeferBudgetExhausted, now).
 		Scan(&summary.Pending, &summary.Running, &summary.Succeeded, &summary.Failed, &summary.Terminal, &summary.Deferred, &summary.Total)
 	if err != nil {
 		return domain.JobSummary{}, err

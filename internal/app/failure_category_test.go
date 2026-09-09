@@ -40,6 +40,17 @@ func TestClassifyJobFailureSentinelMapping(t *testing.T) {
 		// shares category with an ordinary provider outage rather than
 		// falling to Unknown.
 		{"route momentarily unavailable", fmt.Errorf("analyse asset: %w", providerpool.ErrNoAvailable), domain.JobFailureCategoryProviderUnavailable},
+		// ErrRouteUnconfirmed is deliberately not special-cased here: the
+		// pipeline's route-unconfirmed defer (routeUnconfirmedDeferral)
+		// writes domain.JobDeferProviderRouteUnconfirmed directly, the same
+		// way the confirmed-exhaustion defer bypasses this function -- so
+		// what classifyJobFailure sees this sentinel wrapping (during the
+		// ordinary retries that precede a possible defer) must keep
+		// reflecting the real underlying reason, exactly like an ordinary
+		// failure would.
+		{"route unconfirmed wrapping a bare unavailable", fmt.Errorf("%w: %w: capability %q", providerchannels.ErrRouteUnconfirmed, providerpool.ErrNoAvailable, providerchannels.CapabilityVideoAnalysis), domain.JobFailureCategoryProviderUnavailable},
+		{"route unconfirmed wrapping a 500", fmt.Errorf("%w: %w", providerchannels.ErrRouteUnconfirmed, &common.StatusError{StatusCode: 500, Body: "boom"}), domain.JobFailureCategoryProviderUnavailable},
+		{"route unconfirmed wrapping a spent key", fmt.Errorf("%w: %w", providerchannels.ErrRouteUnconfirmed, &common.StatusError{StatusCode: 402, Body: "insufficient balance"}), domain.JobFailureCategoryProviderAuth},
 		// An actually unconfigured capability keeps its own unmarked path to
 		// Unknown -- it is a different problem (fix the config) from a
 		// configured route that is briefly busy.

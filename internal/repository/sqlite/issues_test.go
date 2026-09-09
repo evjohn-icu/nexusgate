@@ -158,6 +158,40 @@ func TestJobIssuesAggregatesFailuresByCategory(t *testing.T) {
 	}
 }
 
+// JobIssues' parked-deferral arm is a hand-written IN-list of defer codes,
+// not a lookup against isDeferCode or JobSummary's own list (see JobIssues'
+// doc comment for why three separate enumerations of the same set exist). A
+// job parked with the newer provider_route_unconfirmed code must surface in
+// the issues view exactly like provider_route_exhausted does -- otherwise a
+// job an operator cannot act on (it will resume on its own) also never shows
+// up as something they should know is waiting, which is worse than showing
+// it: it looks like the job vanished from the queue rather than parked.
+func TestJobIssuesIncludesProviderRouteUnconfirmedParkedDeferrals(t *testing.T) {
+	repo, ctx := issuesRepo(t)
+	future := time.Now().Add(5 * time.Minute)
+	unconfirmed := string(domain.JobFailureCategoryProviderRouteUnconfirmed)
+	insertIssueJob(t, repo, ctx, "job-unconfirmed", "asset-quota", string(domain.JobPending), false, future, time.Now().Add(-10*time.Minute), &unconfirmed)
+
+	issues, err := repo.JobIssues(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byCategory := make(map[domain.JobFailureCategory]domain.JobIssue, len(issues))
+	for _, issue := range issues {
+		byCategory[issue.Category] = issue
+	}
+	unconfirmedIssue, ok := byCategory[domain.JobFailureCategoryProviderRouteUnconfirmed]
+	if !ok {
+		t.Fatalf("provider_route_unconfirmed missing from %+v", issues)
+	}
+	if unconfirmedIssue.Count != 1 || unconfirmedIssue.AssetCount != 1 || unconfirmedIssue.Terminal != 0 {
+		t.Fatalf("provider_route_unconfirmed issue=%+v, want count 1 / 1 asset / 0 terminal", unconfirmedIssue)
+	}
+	if unconfirmedIssue.NextRetryAt == nil || !unconfirmedIssue.NextRetryAt.After(time.Now()) {
+		t.Fatalf("provider_route_unconfirmed next_retry_at=%v, want set in the future", unconfirmedIssue.NextRetryAt)
+	}
+}
+
 // TestJobIssuesEmptyQueueIsEmptySlice pins the JSON contract: an empty
 // backlog marshals as [] rather than null, because the browser UI treats the
 // two differently.
