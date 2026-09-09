@@ -687,20 +687,31 @@ func classifyJobFailure(err error) domain.JobFailureCategory {
 	// (and any plan whose renderer mode is unavailable) with a
 	// *media.PreviewRenderError before anything reads the file, so this is a
 	// statement about the asset, not about the environment. errors.As reads the
-	// exported Code rather than the message, and only
-	// PreviewErrorRendererUnavailable maps here: PreviewErrorLUTRequired is a
-	// missing operator-supplied LUT — a configuration gap, not an undecodable
-	// file — so it keeps falling through to Unknown until it has a category
-	// whose repair link points at the setting that fixes it.
+	// exported Code rather than the message, and each of the two codes carries
+	// its own category: PreviewErrorRendererUnavailable says this build lacks
+	// the renderer the asset needs (UnsupportedMedia), while
+	// PreviewErrorLUTRequired says the operator has not supplied the LUT that
+	// an Apple Log preview demands (PreviewLUTMissing). The new category
+	// deliberately carries no repair link: the remedy is the config.json key
+	// preview_lut_path, and no page can set it yet — the progress page wires
+	// its configuration link to /providers, which has nothing to do with it,
+	// and pointing at the wrong door is worse than pointing at none. Add a
+	// link only when a page gains the ability to set preview_lut_path.
 	//
-	// It stays below the disk-space guard above on purpose: a full cache volume
-	// is an environmental fault that heals on its own, and a file-level verdict
-	// must not take that park away from it. Deliberately not domain.Permanent
-	// either — a RAW renderer may be added later, and the failure happens before
-	// any read, so a retry is nearly free.
+	// Both branches stay below the disk-space guard above on purpose: a full
+	// cache volume is an environmental fault that heals on its own, and a
+	// file-level verdict must not take that park away from it. Deliberately
+	// not domain.Permanent either — a RAW renderer may be added later, the LUT
+	// can be configured at any moment, and the failure happens before any
+	// read, so a retry is nearly free.
 	var previewRenderErr *media.PreviewRenderError
-	if errors.As(err, &previewRenderErr) && previewRenderErr.Code == media.PreviewErrorRendererUnavailable {
-		return domain.JobFailureCategoryUnsupportedMedia
+	if errors.As(err, &previewRenderErr) {
+		switch previewRenderErr.Code {
+		case media.PreviewErrorRendererUnavailable:
+			return domain.JobFailureCategoryUnsupportedMedia
+		case media.PreviewErrorLUTRequired:
+			return domain.JobFailureCategoryPreviewLUTMissing
+		}
 	}
 	return domain.JobFailureCategoryUnknown
 }

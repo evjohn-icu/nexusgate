@@ -311,6 +311,7 @@
  "progress.issue.openProviders": "Open model services",
  "progress.issue.openSettings": "Open settings",
  "progress.issue.openWorkers": "Open workers",
+ "progress.issue.preview_lut_missing": "Preview LUT not configured",
  "progress.issue.provider_auth": "Provider key problem",
  "progress.issue.provider_quota": "Provider quota limit",
  "progress.issue.provider_route_exhausted": "All keys failing (on quota)",

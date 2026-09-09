@@ -118,6 +118,19 @@ const (
 	// cannot be decoded, or the asset has no audio where the chain needs one
 	// — the permanent-ish class. No sentinel produces it yet.
 	JobFailureCategoryUnsupportedMedia JobFailureCategory = "unsupported_media"
+	// JobFailureCategoryPreviewLUTMissing answers that rendering a preview
+	// needs an operator-provided LUT and this installation has none
+	// configured. It is not "the file cannot be decoded" — that is
+	// JobFailureCategoryUnsupportedMedia — and it does not reuse
+	// JobFailureCategoryConfiguration: the issues view hard-binds that
+	// category to the provider-channel page, while preview_lut_path is a
+	// config.json key that page knows nothing of, and pointing an operator
+	// at the wrong door is worse than offering no link. Classification
+	// rides the structured render-error code rather than message text.
+	// Like unsupported_media and media_decode it carries no repair link,
+	// on purpose; the day a page exists that can set preview_lut_path is
+	// the day to give it one.
+	JobFailureCategoryPreviewLUTMissing JobFailureCategory = "preview_lut_missing"
 	// JobFailureCategoryDiskSpaceLow answers that the cache volume is full;
 	// see JobDeferDiskSpaceLow.
 	JobFailureCategoryDiskSpaceLow JobFailureCategory = "disk_space_low"
@@ -142,6 +155,39 @@ const (
 	// should say rather than paper over.
 	JobFailureCategoryUnknown JobFailureCategory = "unknown"
 )
+
+// AllJobFailureCategories returns every category wire value that can appear
+// in jobs.last_error_code, in declaration order. It is the single source of
+// truth for the full palette: views and tests that need to enumerate the
+// categories must derive their lists from this function, because a
+// hand-maintained copy of the list silently drifts the moment a new category
+// is added and nothing forces the copy to catch up.
+//
+// budget_exhausted is in the list on purpose even though the pipeline no
+// longer produces it: historical job rows still carry it in
+// last_error_code, and the issues view must still be able to label those
+// rows.
+//
+// If you add a category constant above, add it here too. The progress page
+// guards its issue labels against this list, so a category missing from it
+// renders unlabeled without anything asking for the copy it needs.
+func AllJobFailureCategories() []JobFailureCategory {
+	return []JobFailureCategory{
+		JobFailureCategoryProviderQuota,
+		JobFailureCategoryProviderAuth,
+		JobFailureCategoryProviderUnavailable,
+		JobFailureCategoryProviderRouteExhausted,
+		JobFailureCategoryMediaDecode,
+		JobFailureCategoryUnsupportedMedia,
+		JobFailureCategoryPreviewLUTMissing,
+		JobFailureCategoryDiskSpaceLow,
+		JobFailureCategoryBudgetExhausted,
+		JobFailureCategorySourceMissing,
+		JobFailureCategoryWorkerOffline,
+		JobFailureCategoryConfiguration,
+		JobFailureCategoryUnknown,
+	}
+}
 
 // IsRetryable reports whether the category describes a failure that heals on
 // its own — the account is uncapped, the provider comes back, the disk frees

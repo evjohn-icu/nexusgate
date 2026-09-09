@@ -311,6 +311,7 @@
  "progress.issue.openProviders": "Abrir servicios de modelos",
  "progress.issue.openSettings": "Abrir configuración",
  "progress.issue.openWorkers": "Abrir nodos de procesamiento",
+ "progress.issue.preview_lut_missing": "LUT de vista previa no configurada",
  "progress.issue.provider_auth": "Problema de clave del proveedor",
  "progress.issue.provider_quota": "Límite de cuota del proveedor",
  "progress.issue.provider_route_exhausted": "Todas las claves fallando (esperando cuota)",

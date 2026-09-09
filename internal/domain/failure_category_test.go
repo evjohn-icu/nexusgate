@@ -13,24 +13,24 @@ func TestJobFailureCategoryConstantsAreStable(t *testing.T) {
 		"provider_route_exhausted",
 		"media_decode",
 		"unsupported_media",
+		"preview_lut_missing",
 		"disk_space_low",
+		// Retired: no sentinel produces budget_exhausted anymore, but
+		// historical rows still carry it in last_error_code, so the
+		// spelling stays pinned alongside the live ones.
+		"budget_exhausted",
 		"source_missing",
 		"worker_offline",
 		"configuration",
 		"unknown",
 	}
-	got := []JobFailureCategory{
-		JobFailureCategoryProviderQuota,
-		JobFailureCategoryProviderAuth,
-		JobFailureCategoryProviderUnavailable,
-		JobFailureCategoryProviderRouteExhausted,
-		JobFailureCategoryMediaDecode,
-		JobFailureCategoryUnsupportedMedia,
-		JobFailureCategoryDiskSpaceLow,
-		JobFailureCategorySourceMissing,
-		JobFailureCategoryWorkerOffline,
-		JobFailureCategoryConfiguration,
-		JobFailureCategoryUnknown,
+	// got comes from AllJobFailureCategories instead of a hand-written list
+	// of the constants, so a newly declared category that is not pinned
+	// above — or a pin whose constant vanished — fails the length check
+	// below instead of passing silently.
+	got := AllJobFailureCategories()
+	if len(got) != len(want) {
+		t.Fatalf("AllJobFailureCategories returned %d categories, want %d; a category was added without pinning its spelling here (or the declaration list lost one)", len(got), len(want))
 	}
 	for i := range want {
 		if got[i] != want[i] {
@@ -71,13 +71,21 @@ func TestJobFailureCategoryIsRetryableTruthTable(t *testing.T) {
 		JobFailureCategoryProviderRouteExhausted: true,
 		JobFailureCategoryMediaDecode:            false,
 		JobFailureCategoryUnsupportedMedia:       false,
+		JobFailureCategoryPreviewLUTMissing:      false,
 		JobFailureCategoryDiskSpaceLow:           true,
-		JobFailureCategorySourceMissing:          true,
-		JobFailureCategoryWorkerOffline:          true,
-		JobFailureCategoryConfiguration:          false,
-		JobFailureCategoryUnknown:                false,
+		// Retired producer, kept so historical rows keep their verdict.
+		JobFailureCategoryBudgetExhausted: true,
+		JobFailureCategorySourceMissing:   true,
+		JobFailureCategoryWorkerOffline:   true,
+		JobFailureCategoryConfiguration:   false,
+		JobFailureCategoryUnknown:         false,
 	}
-	for category, want := range cases {
+	for _, category := range AllJobFailureCategories() {
+		want, ok := cases[category]
+		if !ok {
+			t.Errorf("category %q has no retryability entry; every value AllJobFailureCategories yields must declare in this table whether it heals on retry", category)
+			continue
+		}
 		if got := category.IsRetryable(); got != want {
 			t.Errorf("%q IsRetryable = %v, want %v", category, got, want)
 		}

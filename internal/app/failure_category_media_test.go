@@ -69,19 +69,28 @@ func TestClassifyJobFailureMediaDecodeDiscriminates(t *testing.T) {
 			want: domain.JobFailureCategoryUnsupportedMedia,
 		},
 		{
-			name:     "LUT-required preview error keeps unknown",
-			property: "only Code media.PreviewErrorRendererUnavailable maps to unsupported_media; media.PreviewErrorLUTRequired is a configuration gap (the LUT is a config.json key) and must stay unknown so no one relabels the whole PreviewRenderError type and points the repair link at the wrong page; same SourceColor as the row above so Code is the only variable",
+			name:     "LUT-required preview error has its own category",
+			property: "the two Codes stay distinct under the same errors.As: media.PreviewErrorRendererUnavailable maps to unsupported_media while media.PreviewErrorLUTRequired maps to preview_lut_missing, because a missing operator LUT is a configuration verdict and not a decode verdict; one errors.As branch reading only the type would sweep both Codes into one category and point the repair link at the wrong door; same SourceColor as the row above so Code is the only variable",
 			err: fmt.Errorf("render /media/drone.braw: %w", &media.PreviewRenderError{
 				Code:        media.PreviewErrorLUTRequired,
 				SourceColor: media.SourceColorRAW,
 			}),
-			want: domain.JobFailureCategoryUnknown,
+			want: domain.JobFailureCategoryPreviewLUTMissing,
 		},
 		{
 			name:     "disk-space sentinel beats renderer-unavailable preview error",
 			property: "branch order: with both sentinels in one chain the environmental disk-space fault keeps its own category and must not be reported as a file verdict",
 			err: fmt.Errorf("cache volume full while rendering: %w: %w", errDiskSpaceLow, &media.PreviewRenderError{
 				Code:        media.PreviewErrorRendererUnavailable,
+				SourceColor: media.SourceColorRAW,
+			}),
+			want: domain.JobFailureCategoryDiskSpaceLow,
+		},
+		{
+			name:     "disk-space sentinel beats LUT-required preview error",
+			property: "branch order: the LUT-required Code earns its own category through the same errors.As, yet with both sentinels in one chain the environmental disk-space fault keeps its own category and must not be reported as either file verdict",
+			err: fmt.Errorf("cache volume full while rendering: %w: %w", errDiskSpaceLow, &media.PreviewRenderError{
+				Code:        media.PreviewErrorLUTRequired,
 				SourceColor: media.SourceColorRAW,
 			}),
 			want: domain.JobFailureCategoryDiskSpaceLow,

@@ -311,6 +311,7 @@
  "progress.issue.openProviders": "打开模型服务",
  "progress.issue.openSettings": "打开设置",
  "progress.issue.openWorkers": "打开处理节点",
+ "progress.issue.preview_lut_missing": "预览 LUT 未配置",
  "progress.issue.provider_auth": "服务商密钥问题",
  "progress.issue.provider_quota": "服务商用量限制",
  "progress.issue.provider_route_exhausted": "所有密钥都失败(等用量)",

@@ -14,6 +14,7 @@ import (
 
 	"github.com/evjohn-icu/nexusgate/internal/app"
 	"github.com/evjohn-icu/nexusgate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 	"github.com/evjohn-icu/nexusgate/internal/media"
 	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
@@ -135,10 +136,13 @@ func TestProgressPageI18nEnumMapsCoverWireValues(t *testing.T) {
 			t.Fatalf("jobTypeKeys missing pipeline job type %q", jt)
 		}
 	}
-	issueCats := []string{"provider_quota", "provider_auth", "provider_unavailable", "provider_route_exhausted", "media_decode", "unsupported_media", "disk_space_low", "budget_exhausted", "source_missing", "worker_offline", "configuration", "unknown"}
-	for _, cat := range issueCats {
-		if !strings.Contains(progressHTML, "'"+cat+"':") {
-			t.Fatalf("issueLabels missing issue category %q", cat)
+	// The category list comes from domain.AllJobFailureCategories(), not a
+	// hand-maintained copy: a category added to the domain palette must fail
+	// here until progress_page.go's issueLabels maps it, because the page
+	// otherwise renders the raw wire value where a localized label belongs.
+	for _, cat := range domain.AllJobFailureCategories() {
+		if !strings.Contains(progressHTML, "'"+string(cat)+"':") {
+			t.Fatalf("issueLabels missing issue category %q; without an issueLabels entry in progress_page.go the progress page renders the raw wire value instead of the localized label", string(cat))
 		}
 	}
 	// The auto-recover map stays a boolean data map consulted at retry time:

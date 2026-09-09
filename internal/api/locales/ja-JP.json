@@ -311,6 +311,7 @@
  "progress.issue.openProviders": "モデルサービスを開く",
  "progress.issue.openSettings": "設定を開く",
  "progress.issue.openWorkers": "処理ノードを開く",
+ "progress.issue.preview_lut_missing": "プレビュー用 LUT が未設定",
  "progress.issue.provider_auth": "プロバイダー鍵の問題",
  "progress.issue.provider_quota": "プロバイダー利用枠の制限",
  "progress.issue.provider_route_exhausted": "すべての鍵が失敗（枠待ち）",
