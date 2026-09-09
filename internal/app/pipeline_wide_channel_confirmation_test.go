@@ -89,7 +89,10 @@ func (r *wideChannelRepo) RebuildSearch(ctx context.Context, _ string) error {
 // wrong" failures. Now Execute returns ErrRouteUnconfirmed instead of a bare
 // retryable error once routeFailingEverywhere declines to confirm
 // exhaustion, and the pipeline's third and final attempt turns that into a
-// short defer (routeUnconfirmedDeferral) rather than a terminal failure.
+// short defer (routeUnconfirmedDeferral) rather than a terminal failure. What
+// happens on the *next* lease -- whether confirmation ever completes, and how
+// long that takes -- is TestWideChannelEventuallyConfirmsExhaustionInsteadOfLoopingForever's
+// job, not this one's; this test only pins the shape of the first defer.
 func TestWideChannelDefersBrieflyRatherThanFailingPermanently(t *testing.T) {
 	members := make([]providerchannels.Member, 5)
 	for i := range members {
@@ -143,56 +146,107 @@ func TestWideChannelDefersBrieflyRatherThanFailingPermanently(t *testing.T) {
 	if job.RunAfter.After(before.Add(routeUnconfirmedDeferral + time.Minute)) {
 		t.Fatalf("route-unconfirmed defer must not park anywhere near the five-hour confirmed-exhaustion wait: run_after=%s (started %s)", job.RunAfter, before)
 	}
+}
 
-	// The residual this leaves: with N=5 > attemptsPerChannel(3), the
-	// post-defer cycle never confirms either. DeferJob handed attempt_count
-	// back to 2, so the *next* lease is the job's last again -- one lease, up
-	// to three member calls, then another short defer if still unconfirmed.
-	// The pool's cooldowns cap at 30 seconds, far shorter than
-	// routeUnconfirmedDeferral (5 minutes), so by the time the job is
-	// naturally due again every member's cooldown from this round has
-	// already elapsed and confirmation has to start over from nothing --
-	// three fresh attempts cannot supply the two failures each of five
-	// members needs. Advancing the pool's own clock by the real
-	// routeUnconfirmedDeferral wait (rather than sleeping it, or than
-	// resuming instantly, which would leave lease 3's cooldowns still active
-	// and let the resumed lease piggyback on them -- an artifact of the test
-	// harness, not what happens on a wall clock) reproduces that gap
-	// faithfully: run_after is pulled forward the way an operator's
-	// resume-now button or the job's own natural due time would, and one
-	// more pass shows exactly one more lease, touching at most three of the
-	// five members, landing right back in the same deferred state -- not
-	// confirmed, not terminal, not idle. That is still strictly better than
-	// the permanent failure this fix replaces -- the job stays visible and
-	// keeps trying -- but it is not confirmation, and nothing in this fix
-	// makes it one.
-	clock.Advance(routeUnconfirmedDeferral + time.Second)
-	if _, err := base.ResumeDeferredJobs(context.Background(), domain.JobDeferProviderRouteUnconfirmed); err != nil {
+// TestWideChannelEventuallyConfirmsExhaustionInsteadOfLoopingForever drives
+// the residual TestWideChannelDefersBrieflyRatherThanFailingPermanently
+// leaves at its first defer further: not one extra defer cycle, but as many
+// as it takes, to answer whether the loop is bounded or indefinite.
+//
+// routeFailingEverywhere used to also require that each member's cooldown
+// *still be in effect* at the instant it was asked, on top of
+// confirmedRetryableFailures. The pool's cooldown caps at 30 seconds
+// (MaxCooldown); routeUnconfirmedDeferral is 5 minutes. By the time a
+// deferred job was naturally due again, every member touched in a *previous*
+// lease had an elapsed cooldown, so its accumulated RetryableFails count --
+// real evidence, never contradicted by a success -- stopped counting the
+// moment the clock, not a new attempt, moved past it. Only the up-to-three
+// members touched in the *current* lease had a live cooldown at check time,
+// and attemptsPerChannel(3) < 2*N(=10) for a five-member route, so no single
+// lease could ever supply enough live evidence on its own: the job cycled
+// through provider_route_unconfirmed forever, an unmetered, indefinite
+// trickle of calls against a route that was, in fact, already dead.
+//
+// routeFailingEverywhere no longer requires the cooldown to still be
+// in effect -- RetryableFails persists as evidence until something actually
+// contradicts it (a success, or a non-retryable failure) -- so this now
+// converges: this test requires it to confirm, with the full five-hour park,
+// well within cyclesUnderTest.
+func TestWideChannelEventuallyConfirmsExhaustionInsteadOfLoopingForever(t *testing.T) {
+	// 8 gives comfortable margin over the 4-cycle bound hand-derived from the
+	// round-robin touch schedule (lease1 touches members 0,1,2; lease2 touches
+	// 3,4,0; lease3 touches 1,2,3; lease4 touches 4,0,1 -- every member has
+	// accumulated 2 failures by the end of lease4) without making a failing
+	// run (the pre-fix case) take unreasonably long.
+	const cyclesUnderTest = 8
+
+	members := make([]providerchannels.Member, 5)
+	for i := range members {
+		members[i] = providerchannels.Member{ID: fmt.Sprintf("member-%d", i), Enabled: true}
+	}
+	clock := &offsetClock{}
+	executor, err := providerchannels.NewExecutor([]providerchannels.Channel{{
+		ID: "wide", ProviderName: "provider-a", Enabled: true,
+		Capabilities: []providerchannels.Capability{providerchannels.CapabilityVideoAnalysis},
+		Members:      members,
+	}}, providerpool.Options{Now: clock.Now})
+	if err != nil {
 		t.Fatal(err)
 	}
-	callsBeforeResume := calls
-	if _, err := pipeline.RunUntilIdle(context.Background()); err != nil {
-		t.Fatal(err)
+
+	base := newQueuedIndexJob(t, nil)
+	repo := &wideChannelRepo{indexFailureRepo: base, executor: executor}
+	pipeline := NewPipeline(repo, t.TempDir(), nil, nil, nil, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
+
+	before := time.Now()
+	job := singleJob(t, base, pipeline, func(job domain.Job) bool {
+		return job.Terminal || job.DeferredReason != ""
+	})
+	if job.Terminal {
+		t.Fatalf("job must not die permanently on lease 1: %+v", job)
 	}
-	jobsAfterResume, err := base.ListJobs(context.Background(), 10)
-	if err != nil || len(jobsAfterResume) != 1 {
-		t.Fatalf("jobs=%+v err=%v", jobsAfterResume, err)
+	if job.DeferredReason != domain.JobDeferProviderRouteUnconfirmed {
+		t.Fatalf("expected the first lease to end unconfirmed, got %+v", job)
 	}
-	after := jobsAfterResume[0]
+
+	confirmed := false
+	cyclesTaken := 0
+	for cycle := 1; cycle <= cyclesUnderTest; cycle++ {
+		clock.Advance(routeUnconfirmedDeferral + time.Second)
+		if _, err := base.ResumeDeferredJobs(context.Background(), domain.JobDeferProviderRouteUnconfirmed); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pipeline.RunUntilIdle(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		jobs, err := base.ListJobs(context.Background(), 10)
+		if err != nil || len(jobs) != 1 {
+			t.Fatalf("cycle %d: jobs=%+v err=%v", cycle, jobs, err)
+		}
+		job = jobs[0]
+		if job.Terminal {
+			t.Fatalf("cycle %d: job must never die permanently for want of confirmable route exhaustion: %+v", cycle, job)
+		}
+		if job.DeferredReason == domain.JobDeferProviderRouteExhausted {
+			confirmed = true
+			cyclesTaken = cycle
+			break
+		}
+		if job.DeferredReason != domain.JobDeferProviderRouteUnconfirmed {
+			t.Fatalf("cycle %d: unexpected non-terminal state: %+v", cycle, job)
+		}
+	}
+
 	repo.mu.Lock()
-	sequenceAfterResume := append([]string(nil), repo.attempts...)
-	callsAfterResume := repo.calls
+	sequence := append([]string(nil), repo.attempts...)
 	repo.mu.Unlock()
-	t.Logf("post-resume: %d additional lease(s), sequence now %v", callsAfterResume-callsBeforeResume, sequenceAfterResume)
-	t.Logf("post-resume job: state=%s terminal=%v attempts=%d/%d deferred_reason=%q run_after=%s",
-		after.State, after.Terminal, after.AttemptCount, after.MaxAttempts, after.DeferredReason, after.RunAfter)
-	if callsAfterResume-callsBeforeResume != 1 {
-		t.Fatalf("expected exactly one more lease after resuming the defer, got %d", callsAfterResume-callsBeforeResume)
+
+	if !confirmed {
+		t.Fatalf("route exhaustion was never confirmed after %d defer cycles (%d total leases) -- routeFailingEverywhere's live-cooldown requirement makes confirmation unreachable on a %d-member channel retried every %s: sequence=%v",
+			cyclesUnderTest, len(sequence)/3+1, len(members), routeUnconfirmedDeferral, sequence)
 	}
-	if after.Terminal {
-		t.Fatalf("the residual cycle must still never fail the job permanently: %+v", after)
-	}
-	if after.DeferredReason != domain.JobDeferProviderRouteUnconfirmed {
-		t.Fatalf("expected the job to land back in the same unconfirmed defer, not confirm exhaustion or go idle: %+v", after)
+	t.Logf("confirmed exhaustion after %d additional defer cycle(s); full sequence=%v", cyclesTaken, sequence)
+	if job.RunAfter.Before(before.Add(providerRouteDeferral - time.Minute)) {
+		t.Fatalf("confirmed exhaustion must still get the full five-hour park, got run_after=%s (started %s)", job.RunAfter, before)
 	}
 }

@@ -402,9 +402,9 @@ const confirmedRetryableFailures = 2
 // routeFailingEverywhere reports whether every enabled member that can serve
 // capability is currently exhaustion material: either the pool has retired it
 // (MemberSpent — a dead credential, cleared only by editing the channel or
-// restarting the Hub), or it is cooling from a *confirmed* run of retryable
-// failures (confirmedRetryableFailures or more, with that cooldown still in
-// effect right now).
+// restarting the Hub), or it has shown a *confirmed* run of consecutive
+// retryable failures (confirmedRetryableFailures or more) that nothing has
+// since contradicted.
 //
 // It reads the pool's live per-member state (EnabledState, HealthState)
 // rather than this executor's own call history, on purpose: a route can go
@@ -426,17 +426,53 @@ const confirmedRetryableFailures = 2
 // same moment. Retired members need no such confirmation: retirement already
 // is the pool's own verdict, not a guess from a timer.
 //
-// A member the pool has never seen fail (CooldownUntil zero) makes this
-// false immediately: that covers both a route that was never fully tried
-// (some members untouched) and a member merely saturated by a concurrent
-// caller's MaxInflight — neither is exhaustion, and neither would show a
-// cooldown. A member whose cooldown has already elapsed — cooling in the
-// past, not the future — also makes this false: Select would accept a
-// half-open probe on it right now, so the route is not out of options.
+// This deliberately does NOT also require that the member's most recent
+// cooldown still be in effect right now — it used to, and that was its own
+// bug: a member counted toward exhaustion only while
+// now.Before(CooldownUntil) held, on top of the failure count, which coupled
+// "is this route spent" to "did the check happen to land inside a specific
+// member's cooldown window". The pool's cooldown is capped at 30 seconds
+// (Options.MaxCooldown) while a job that fails to confirm exhaustion is
+// retried every routeUnconfirmedDeferral (5 minutes; see
+// app.Pipeline) — long enough that every member's cooldown from the previous
+// round has always elapsed again by the time such a job is naturally due,
+// discarding RetryableFails evidence that nothing had actually contradicted.
+// On a channel wider than attemptsPerChannel that made confirmation
+// permanently unreachable: no single lease can hold every member's cooldown
+// open at once, so the route cycled through ErrRouteUnconfirmed forever
+// instead of ever reaching either a park or a recovery. See
+// TestWideChannelEventuallyConfirmsExhaustionInsteadOfLoopingForever.
+//
+// RetryableFails is already timing-independent evidence on its own and does
+// not need that wall-clock window to be trustworthy: Select refuses to
+// reselect a member while eligible() says it is still cooling (pool.go), so
+// a second consecutive failure can only happen after real wall-clock
+// time — the member's own backoff — has actually passed and a fresh attempt
+// was made and failed again. Nothing decays the count by the mere passage of
+// time; only an actual success, a non-retryable failure, or (for a
+// concurrent caller mid-cooldown) a completed probe resets it (see
+// pool.complete). A count of confirmedRetryableFailures or more is therefore
+// already "the last time anyone tried this member, twice in a row spaced by
+// its own backoff, it failed" — it does not also need to still be inside
+// that backoff window at the instant something asks.
+//
+// What the elapsed-cooldown clause legitimately protected is narrower: not
+// declaring exhaustion while a concurrent caller is, right now, in the
+// middle of trying the same member again — an attempt that might prove
+// recovery before this call returns. That race is guarded directly here by
+// requiring Inflight == 0, instead of indirectly through a wall-clock window
+// that happened to also catch it. See
+// TestConfirmedMemberWithAnElapsedCooldownIsNotExhaustion, which isolates
+// exactly that race from the failure-count clause and must keep passing.
+//
+// A member the pool has never seen fail (RetryableFails zero — the pool
+// keeps it in lockstep with CooldownUntil.IsZero(), see pool.complete) makes
+// this false immediately: that covers both a route that was never fully
+// tried (some members untouched) and a member merely saturated by a
+// concurrent caller's MaxInflight — neither is exhaustion.
 func (e *Executor) routeFailingEverywhere(capability Capability, route []int) bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	now := e.now()
 	poolCapability := providerpool.Capability(capability)
 	considered := 0
 	for _, channelIndex := range route {
@@ -455,7 +491,14 @@ func (e *Executor) routeFailingEverywhere(capability Capability, route []int) bo
 				continue
 			}
 			health, known := runtime.pool.HealthState(member.ID, poolCapability)
-			if !known || health.CooldownUntil.IsZero() || !now.Before(health.CooldownUntil) {
+			if !known {
+				return false
+			}
+			if health.Inflight > 0 {
+				// A concurrent attempt on this exact member is still
+				// unresolved — it may yet succeed and disprove exhaustion
+				// before this call returns. See
+				// TestConfirmedMemberWithAnElapsedCooldownIsNotExhaustion.
 				return false
 			}
 			if health.RetryableFails < confirmedRetryableFailures {
