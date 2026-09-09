@@ -13,7 +13,6 @@
 
 # --- Documentation & specification (not compiled) ---
 docs/
-openspec/
 skills/
 CLAUDE.md
 CHANGELOG.md
