@@ -233,13 +233,28 @@ func clean(v []string) []string {
 	}
 	return out
 }
+
+// truncateSuffix marks a cut string the same way common.ReadError and the
+// API's truncateMessage do, so every truncated string in the system is
+// self-advertising rather than silently ending mid-thought. The marker is
+// allowed to push the result past max runes, matching truncateMessage's
+// contract (internal/api/apierror.go) — shrinking the cut to make room for
+// it would invent a second, incompatible convention for the same idea.
+const truncateSuffix = "…(truncated)"
+
+// truncateByRunes bounds s to max runes. The cut is already rune-safe (a
+// []rune slice cannot land inside a multi-byte code point), but the raw slice
+// used to end wherever the model's prose happened to fall — including
+// mid-word — with nothing to tell a reader the sentence was ever finished.
+// Appending truncateSuffix answers that: a caller sees a cut string, not a
+// clipped one that reads as complete.
 func truncateByRunes(s string, max int) string {
 	if max < 0 {
 		return ""
 	}
 	r := []rune(s)
 	if len(r) > max {
-		return string(r[:max])
+		return string(r[:max]) + truncateSuffix
 	}
 	return s
 }

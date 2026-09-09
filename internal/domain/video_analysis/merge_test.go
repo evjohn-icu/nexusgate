@@ -111,8 +111,11 @@ func TestMergeWindowResultsUnionsTagsAndTakesTheBusiestPeopleCount(t *testing.T)
 	if merged.Analysis.CameraMotion != "static" {
 		t.Errorf("single-valued fields take the first answer, got %q", merged.Analysis.CameraMotion)
 	}
-	if merged.Summary != "Empty harbour. A crowd arrives." {
-		t.Errorf("summary = %q", merged.Summary)
+	// Summary is single-valued like CameraMotion above: the first window's
+	// answer wins rather than every window's restatement being joined into
+	// one wall of near-duplicate sentences.
+	if merged.Summary != "Empty harbour." {
+		t.Errorf("summary = %q, want first window's summary only", merged.Summary)
 	}
 	if len(merged.Mood) != 2 {
 		t.Errorf("mood must be unioned, got %v", merged.Mood)
@@ -161,5 +164,47 @@ func TestMergeWindowResultsPreservesHighestConfidenceOnDedupe(t *testing.T) {
 func TestMergeWindowResultsHandlesNoWindows(t *testing.T) {
 	if got := MergeWindowResults(nil); got.Summary != "" || len(got.Shots) != 0 {
 		t.Fatalf("empty input must produce an empty result, got %+v", got)
+	}
+}
+
+// Three windows, each with its own distinct summary (the common shape for a
+// long asset that was split three or more ways): only the first window's
+// account survives. Joining all three would read as three restatements of
+// "this video", not one description of the asset.
+func TestMergeWindowResultsSummaryTakesOnlyTheFirstWindowAcrossThreeWindows(t *testing.T) {
+	merged := MergeWindowResults([]WindowResult{
+		{StartMS: 0, EndMS: 300_000, Result: Result{Summary: "First-person cycling through an alley."}},
+		{StartMS: 300_000, EndMS: 600_000, Result: Result{Summary: "First-person cycling past a KFC."}},
+		{StartMS: 600_000, EndMS: 900_000, Result: Result{Summary: "First-person cycling on a bike lane."}},
+	})
+	if merged.Summary != "First-person cycling through an alley." {
+		t.Errorf("summary = %q, want only the first window's summary", merged.Summary)
+	}
+}
+
+// A window that answered with everything else but an empty summary must not
+// blank the asset's summary — the next window with a real answer wins, the
+// same way firstNonEmpty behaves for every other single-valued field.
+func TestMergeWindowResultsSummarySkipsAnEmptyFirstWindow(t *testing.T) {
+	merged := MergeWindowResults([]WindowResult{
+		{StartMS: 0, EndMS: 300_000, Result: Result{Shots: []Shot{{StartMS: 1_000, EndMS: 2_000, Description: "x"}}}},
+		{StartMS: 300_000, EndMS: 600_000, Result: Result{Summary: "A crowd arrives."}},
+	})
+	if merged.Summary != "A crowd arrives." {
+		t.Errorf("summary = %q, want the first window that actually answered", merged.Summary)
+	}
+}
+
+// A response can carry its summary in the nested legacy Analysis field
+// instead of the top-level one (see multiframe.Provider.Analyze, which
+// accepts either) — the merge must not treat that window as having no
+// summary just because the field it checked first was empty.
+func TestMergeWindowResultsSummaryReadsTheNestedAnalysisFieldToo(t *testing.T) {
+	merged := MergeWindowResults([]WindowResult{
+		{StartMS: 0, EndMS: 300_000, Result: Result{Analysis: domain.StructuredAnalysis{Summary: "Nested-field summary."}}},
+		{StartMS: 300_000, EndMS: 600_000, Result: Result{Summary: "Top-level summary."}},
+	})
+	if merged.Summary != "Nested-field summary." {
+		t.Errorf("summary = %q, want the first window's nested Analysis.Summary", merged.Summary)
 	}
 }

@@ -121,8 +121,15 @@ func TestValidateAndNormalize_SummaryTruncated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len([]rune(got.Summary)) != MaxSummaryLength {
-		t.Errorf("Summary length = %d runes, want %d", len([]rune(got.Summary)), MaxSummaryLength)
+	// A truncated summary must say so (see truncateSuffix / common.ReadError's
+	// "…(truncated)" convention): a reader must be able to tell a cut string
+	// from one that simply ended there.
+	if !strings.HasSuffix(got.Summary, truncateSuffix) {
+		t.Errorf("Summary = %q, want suffix %q", got.Summary, truncateSuffix)
+	}
+	wantRunes := MaxSummaryLength + len([]rune(truncateSuffix))
+	if len([]rune(got.Summary)) != wantRunes {
+		t.Errorf("Summary length = %d runes, want %d", len([]rune(got.Summary)), wantRunes)
 	}
 }
 
@@ -133,8 +140,12 @@ func TestValidateAndNormalize_EditorialReasonTruncated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len([]rune(got.EditorialReason)) != MaxSummaryLength {
-		t.Errorf("EditorialReason length = %d runes, want %d", len([]rune(got.EditorialReason)), MaxSummaryLength)
+	if !strings.HasSuffix(got.EditorialReason, truncateSuffix) {
+		t.Errorf("EditorialReason = %q, want suffix %q", got.EditorialReason, truncateSuffix)
+	}
+	wantRunes := MaxSummaryLength + len([]rune(truncateSuffix))
+	if len([]rune(got.EditorialReason)) != wantRunes {
+		t.Errorf("EditorialReason length = %d runes, want %d", len([]rune(got.EditorialReason)), wantRunes)
 	}
 }
 
@@ -150,12 +161,24 @@ func TestValidateAndNormalize_SummaryChineseRuneBoundary(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	rs := []rune(got.Summary)
-	if len(rs) != MaxSummaryLength {
-		t.Errorf("Summary rune count = %d, want %d", len(rs), MaxSummaryLength)
+	wantRunes := MaxSummaryLength + len([]rune(truncateSuffix))
+	if len(rs) != wantRunes {
+		t.Errorf("Summary rune count = %d, want %d", len(rs), wantRunes)
 	}
-	// must be valid UTF-8
+	// must be valid UTF-8, and the cut content (before the ASCII marker) must
+	// still be exactly MaxSummaryLength runes of the original CJK text.
 	if !utf8Valid(got.Summary) {
 		t.Error("Summary is not valid UTF-8")
+	}
+	if !strings.HasSuffix(got.Summary, truncateSuffix) {
+		t.Errorf("Summary = %q, want suffix %q", got.Summary, truncateSuffix)
+	}
+	content := []rune(strings.TrimSuffix(got.Summary, truncateSuffix))
+	if len(content) != MaxSummaryLength {
+		t.Errorf("truncated content = %d runes, want %d", len(content), MaxSummaryLength)
+	}
+	if string(content) != string([]rune(repeat)[:MaxSummaryLength]) {
+		t.Error("truncated content does not match the original text's first MaxSummaryLength runes")
 	}
 }
 

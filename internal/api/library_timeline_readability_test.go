@@ -55,13 +55,17 @@ func TestShotListWrapsInsteadOfTruncating(t *testing.T) {
 // reader still gets the description that is no longer painted inside it.
 func TestEmptiedTimelineBlockKeepsItsLabelAndPayload(t *testing.T) {
 	page := libraryIndexHTML
-	for _, needed := range []string{
-		`aria-label="'+esc(tdT('library.ariaTimeRange'`,
-		`data-shot="'+encodeURIComponent(JSON.stringify(s))+'"`,
-		`</button>'`,
-	} {
-		if !strings.Contains(page, needed) {
-			t.Errorf("the timeline block lost %q when its text was removed", needed)
-		}
+	// Assert the whole opening tag as one string, not its parts. `data-shot`
+	// alone is satisfied by `data-shot-result` on the search cards further
+	// down the page, so a block that lost its payload entirely still passed —
+	// which it did, until a mutation caught it.
+	block := "<button type=\"button\" class=\"tickrule-span is-possible\" style=\"left:'+left.toFixed(3)+'%;width:'+width.toFixed(3)+'%\" aria-label=\"'"
+	if !strings.Contains(page, block) {
+		t.Fatal("the timeline block is no longer the labelled button the drawer binds to")
+	}
+	payload := `data-shot="'+encodeURIComponent(JSON.stringify(s))+'" data-asset="'+esc(x.id)+'" data-filename="'+esc(x.filename||'')+'" title="'+esc(title)+'"></button>'`
+	if !strings.Contains(page, payload) {
+		t.Fatal("the emptied block no longer carries the shot payload the drawer opens from, " +
+			"so clicking a shot would open an empty drawer with nothing failing anywhere")
 	}
 }

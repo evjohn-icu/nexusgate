@@ -35,6 +35,15 @@ const (
 // answered: they describe "the shot" of an asset that, once it is long enough
 // to need splitting, no longer has just one — so any choice is a simplification
 // and the earliest is at least deterministic and cheap to explain.
+//
+// Summary follows that same first-window rule, not a join. Each window is
+// shown only its own slice of the asset but is asked to summarise "the
+// video", so every window answers as if it were the whole clip — joining
+// those answers reads as the same claim restated once per window, not one
+// description of the asset, and a long asset can restate it enough times to
+// blow past the persisted length bound before reaching the end. For a split
+// asset the merged Summary describes the opening window; the deduplicated
+// Shots below carry what the later windows saw.
 func MergeWindowResults(windows []WindowResult) Result {
 	if len(windows) == 0 {
 		return Result{}
@@ -47,15 +56,17 @@ func MergeWindowResults(windows []WindowResult) Result {
 	}
 
 	merged := Result{}
-	summaries := make([]string, 0, len(windows))
 	var confidenceTotal float64
 	var confidenceCount int
 
 	for _, window := range windows {
 		r := window.Result
-		if summary := strings.TrimSpace(r.Summary); summary != "" {
-			summaries = append(summaries, summary)
-		}
+		// A model response may carry its summary in the top-level field or
+		// the nested legacy Analysis field depending on which shape it
+		// answered in (see multiframe.Provider.Analyze, which accepts
+		// either) — check both before moving to the next window.
+		windowSummary := firstNonEmpty(strings.TrimSpace(r.Summary), strings.TrimSpace(r.Analysis.Summary))
+		merged.Summary = firstNonEmpty(merged.Summary, windowSummary)
 		merged.Mood = appendUnique(merged.Mood, r.Mood...)
 		merged.RawTags = appendUnique(merged.RawTags, r.RawTags...)
 		merged.Objects = mergeObjects(merged.Objects, r.Objects)
@@ -69,7 +80,6 @@ func MergeWindowResults(windows []WindowResult) Result {
 		}
 	}
 
-	merged.Summary = strings.Join(summaries, " ")
 	if confidenceCount > 0 {
 		merged.Confidence = confidenceTotal / float64(confidenceCount)
 	}
