@@ -1140,6 +1140,48 @@ func (p *Pipeline) sourcePath(ctx context.Context, location domain.AssetLocation
 // asset_shots and the FTS index. No genuine single asset comes close.
 const maxAnalysisShots = 2000
 
+// shotBoundaryToleranceMS is the largest boundary miss treated as rounding
+// noise rather than a wrong answer. One frame at 24fps — the slowest
+// delivery/proxy frame rate nexusgate commonly sees — is ~41.7ms; 50ms clears
+// that with margin while staying under one frame even at 20fps, so a shot
+// this close to 0 or to the asset's end is what a model produces when it
+// read a frame index or rounded a unit conversion. It is a fixed bound
+// rather than one derived from the asset's own FPS: MediaMetadata.FPS is
+// optional, can be zero, and on variable-frame-rate footage describes the
+// capture rate rather than the proxy timeline the shot boundaries are
+// actually measured against — deriving a safety bound from a value that can
+// be absent or misleading is worse than a small constant. A miss just
+// outside it (51ms+) is more than a frame off at the slowest common rate: the
+// model is not reading a frame index, it is wrong about where the shot is,
+// and stays rejected exactly as before.
+const shotBoundaryToleranceMS = 50
+
+// clampShotBoundaryRounding nudges a shot's start up to 0 or its end down to
+// the asset duration when the shot straddles that boundary and misses it by
+// no more than shotBoundaryToleranceMS. It mutates shots in place — the
+// corrected boundary is what StageModelRun/CommitAnalysisWithShots persist,
+// not merely what passes validation — while the model's unclamped answer
+// stays in model_runs.raw_response as the audit trail, so the canonical shot
+// reflects the asset's real duration without the raw record losing what the
+// model actually said.
+//
+// "Straddles" is the guard that stops this from reclassifying a shot that is
+// wholly out of range: a shot that starts after the asset already ended is
+// wrong about the asset, not off by a rounding error, so it is left for
+// analysisShotsProblem to reject with its own "ends after asset duration"
+// message rather than silently collapsing into a zero-length clamp.
+func clampShotBoundaryRounding(shots []domain.AssetShot, durationMS int64) {
+	for i := range shots {
+		s := &shots[i]
+		if s.StartMS < 0 && s.StartMS >= -shotBoundaryToleranceMS && s.EndMS > 0 {
+			s.StartMS = 0
+		}
+		if durationMS > 0 && s.EndMS > durationMS && s.EndMS-durationMS <= shotBoundaryToleranceMS && s.StartMS < durationMS {
+			s.EndMS = durationMS
+		}
+	}
+}
+
 // validateAnalysisShots rejects a model answer that cannot be committed. Every
 // rejection below is a verdict on bytes the Hub already holds and already paid
 // for, so the next attempt would put the same input to the same decision and
@@ -1148,7 +1190,15 @@ const maxAnalysisShots = 2000
 // rule added to analysisShotsProblem is permanent the moment it is written;
 // the alternative was a phrase in another package that two of the four checks
 // below never got. See domain.ErrPermanentFailure.
+//
+// Boundary rounding is corrected before that verdict is reached:
+// clampShotBoundaryRounding runs first and only ever nudges a shot that is
+// within shotBoundaryToleranceMS of 0 or durationMS, so every check below —
+// including the ones it doesn't touch, like a shot with its start and end
+// merely swapped or one that starts after the asset already ended — still
+// rejects permanently, unclamped, exactly as before.
 func validateAnalysisShots(shots []domain.AssetShot, durationMS int64) error {
+	clampShotBoundaryRounding(shots, durationMS)
 	if err := analysisShotsProblem(shots, durationMS); err != nil {
 		return domain.Permanent(err)
 	}

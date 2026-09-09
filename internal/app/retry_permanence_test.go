@@ -31,6 +31,11 @@ func TestModelOutputValidationIsNeverRetried(t *testing.T) {
 		{"shot time range inverted", []domain.AssetShot{{StartMS: 4000, EndMS: 1000, Description: "a shot"}}, 60000},
 		{"shot description blank", []domain.AssetShot{{StartMS: 0, EndMS: 1000, Description: "   "}}, 60000},
 		{"shot ends after the asset", []domain.AssetShot{{StartMS: 0, EndMS: 90000, Description: "a shot"}}, 60000},
+		// One millisecond beyond shotBoundaryToleranceMS: inside the
+		// tolerance this would be clamped and accepted (see
+		// TestValidateAnalysisShotsClampsRoundingNoise); this row proves the
+		// clamp's edge does not also widen what still gets marked permanent.
+		{"shot ends just beyond the rounding tolerance", []domain.AssetShot{{StartMS: 0, EndMS: 60000 + shotBoundaryToleranceMS + 1, Description: "a shot"}}, 60000},
 	}
 	for _, tc := range shotCases {
 		t.Run(tc.name, func(t *testing.T) {
