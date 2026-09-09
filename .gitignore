@@ -93,3 +93,6 @@ demo-*.png
 # until the v0.31 audit found them in pushed history. They stay local.
 state.md
 v021-unreleased-state.md
+
+# Agent worktrees and local Claude state — never part of the published tree.
+.claude/
