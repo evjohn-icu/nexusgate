@@ -66,7 +66,7 @@ func (p *Pipeline) analyzeWithDetector(ctx context.Context, j *domain.Job, m *do
 		return err
 	}
 	detectorName := p.shotDetector.Name()
-	runHash := hashStrings(j.InputHash, "multiframe-analysis-v1", detectorName, media.FrameSamplingBoundaryAware)
+	runHash := hashStrings(j.InputHash, p.promptVersion("multiframe-analysis-v1"), detectorName, media.FrameSamplingBoundaryAware)
 	reqJSON := multiframeRequestJSON(j.AssetID, proxy.LocalPath, detectorName, media.FrameSamplingBoundaryAware)
 	runID, cached, err := p.repo.CreateModelRun(ctx, j.AssetID, "vision", route.analyzer.Name(), route.analyzer.Model(), runHash, "multiframe-analysis-v1", "asset-analysis/v2", reqJSON, j.ID, worker)
 	if err != nil {
@@ -180,7 +180,7 @@ func (p *Pipeline) analyzeTwoPass(ctx context.Context, j *domain.Job, m *domain.
 	// Pass 2: per-shot refinement from the pass-1 boundaries. The run's input
 	// hash carries its own identity so a cached refinement can never satisfy
 	// a different pass-1 output.
-	runHash := hashStrings(j.InputHash, "multiframe-refinement-v1")
+	runHash := hashStrings(j.InputHash, p.promptVersion("multiframe-refinement-v1"))
 	reqJSON := multiframeRequestJSON(j.AssetID, proxy.LocalPath, "vlm-window-analysis", media.FrameSamplingBoundaryAware)
 	runID, cached, err := p.repo.CreateModelRun(ctx, j.AssetID, "vision", route.analyzer.Name(), route.analyzer.Model(), runHash, "multiframe-refinement-v1", "asset-analysis/v2", reqJSON, j.ID, worker)
 	if err != nil {
@@ -280,7 +280,7 @@ func (p *Pipeline) summaryCall(ctx context.Context, analyzer videoproviders.Mult
 	if len(frames) == 0 {
 		return videoanalysis.Result{}, "", domain.Permanent(fmt.Errorf("shot detector produced no sampleable shots"))
 	}
-	input := videoanalysis.Input{VideoPath: proxy.LocalPath, Frames: frames, Transcript: boundSummaryTranscript(transcript), Metadata: *m}
+	input := videoanalysis.Input{VideoPath: proxy.LocalPath, Frames: frames, Transcript: boundSummaryTranscript(transcript), Metadata: *m, Language: p.analysisLanguage}
 	return analyzer.Analyze(ctx, input)
 }
 
@@ -337,6 +337,7 @@ func (p *Pipeline) refineShots(ctx context.Context, assetID, runID string, proxy
 			ShotEndMS:   b.EndMS,
 			Transcript:  sliceTranscript(transcript, window),
 			Metadata:    *m,
+			Language:    p.analysisLanguage,
 		})
 		raws = append(raws, rawMessage(raw))
 		if err != nil {

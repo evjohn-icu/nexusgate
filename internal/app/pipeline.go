@@ -124,6 +124,11 @@ type Pipeline struct {
 	// RunUntilIdle; without it an Apple Log asset can never resolve a render
 	// plan and every derive fails terminally.
 	previewLUTPath string
+	// analysisLanguage is the BCP-47 tag the model writes its prose in. It is
+	// pipeline state rather than a provider setting because the language belongs
+	// to the library being described, not to whichever channel happens to answer:
+	// switching provider must not change what language the shelf is written in.
+	analysisLanguage string
 	// onShotsCommitted is the optional post-commit hook (set by NewService
 	// via SetAfterShotsCommitted): it runs after shot rows become canonical,
 	// synchronously inside the job, so "the process exited" still means "no
@@ -200,6 +205,17 @@ func (p *Pipeline) SetCostEstimator(hook func(ctx context.Context, capability, p
 // here is shared by every stage, not just the preview path.
 func (p *Pipeline) WithPreviewLUT(path string) *Pipeline {
 	p.previewLUTPath = path
+	return p
+}
+
+// WithAnalysisLanguage sets the language the model writes summaries and shot
+// descriptions in. Chained for the same reason as WithPreviewLUT: it is one
+// more value that is empty in most installs and would otherwise have to be
+// named at every NewPipeline call site. Only the prose moves — the controlled
+// vocabulary stays English, because normalize validates it against English
+// value sets and a translated enum is a permanent failure, not a nicer answer.
+func (p *Pipeline) WithAnalysisLanguage(tag string) *Pipeline {
+	p.analysisLanguage = tag
 	return p
 }
 

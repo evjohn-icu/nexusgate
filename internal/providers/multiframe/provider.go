@@ -216,7 +216,7 @@ func summaryPrompt(input videoanalysis.Input) string {
 		tr = input.Transcript.Text
 	}
 	meta, _ := json.Marshal(input.Metadata)
-	return `Analyze this video from its sampled frames and return one JSON object only. Required schema: {"summary":string,"analysis":{"asset_type":string,"scene_tags":[string],"subjects":[string],"people_count":number,"shot_size":string,"camera_motion":string,"lighting":string,"audio_type":string,"has_speech":boolean,"summary":string,"usable_as":[string],"mood_tags":[string],"quality":string,"quality_flags":[string],"extra_tags":[string],"editorial_reason":string}}. You cannot hear the audio: derive audio_type from the transcript below only (speech present, otherwise unknown), and answer with the transcript's language and content in mind. Describe only observable footage. ` + normalize.VocabularyPrompt() + `Metadata: ` + string(meta) + ` Transcript: ` + tr
+	return `Analyze this video from its sampled frames and return one JSON object only. Required schema: {"summary":string,"analysis":{"asset_type":string,"scene_tags":[string],"subjects":[string],"people_count":number,"shot_size":string,"camera_motion":string,"lighting":string,"audio_type":string,"has_speech":boolean,"summary":string,"usable_as":[string],"mood_tags":[string],"quality":string,"quality_flags":[string],"extra_tags":[string],"editorial_reason":string}}. You cannot hear the audio: derive audio_type from the transcript below only (speech present, otherwise unknown), and answer with the transcript's language and content in mind. Describe only observable footage. ` + normalize.VocabularyPrompt() + normalize.OutputLanguagePrompt(input.Language) + `Metadata: ` + string(meta) + ` Transcript: ` + tr
 }
 
 // shotPrompt asks for pure shot metadata. The shot's window and each frame's
@@ -244,6 +244,7 @@ func shotPrompt(req videoproviders.ShotAnalysisRequest) string {
 	}
 	b.WriteString(`Describe only what these frames show. Return one JSON object only with exactly this schema: {"description":string,"objects":[string],"actions":[string],"mood":[string],"tags":[string],"shot_size":string,"camera_motion":string,"quality":string,"usable_as":[string],"confidence":number}. `)
 	b.WriteString(normalize.VocabularyPrompt())
+	b.WriteString(normalize.OutputLanguagePrompt(req.Language))
 	b.WriteString(`Do not include any time fields: the shot boundaries are already known.`)
 	return b.String()
 }

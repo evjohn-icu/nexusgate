@@ -33,6 +33,10 @@ type ShotAnalysisRequest struct {
 	ShotEndMS   int64
 	Transcript  *domain.Transcript
 	Metadata    domain.MediaMetadata
+	// Language mirrors videoanalysis.Input.Language for the per-shot call, so
+	// a shot description is written in the same language as the asset summary
+	// that sits above it in the UI.
+	Language string
 }
 
 // ShotMetadata is what a multiframe VLM returns: pure per-shot understanding,

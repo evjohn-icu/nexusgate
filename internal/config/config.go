@@ -307,7 +307,19 @@ type Config struct {
 	LibrarySupervisor LibrarySupervisorConfig `json:"library_supervisor"`
 	Pipeline          PipelineConfig          `json:"pipeline"`
 	PreviewLUTPath    string                  `json:"preview_lut_path,omitempty"`
+	// AnalysisLanguage is the language the model writes summaries and shot
+	// descriptions in. It defaults to the Hub UI's own fallback locale, so a
+	// stock install describes the shelf in the language the shelf is read in.
+	// Only the prose follows it — the controlled vocabulary is validated against
+	// English value sets and stays English whatever this says.
+	AnalysisLanguage string `json:"analysis_language,omitempty"`
 }
+
+// DefaultAnalysisLanguage matches internal/api's zh-CN fallback locale. The two
+// are the same decision — "what language does this deployment speak" — and are
+// written down twice only because internal/config must not import the HTTP
+// layer. Change one and change the other.
+const DefaultAnalysisLanguage = "zh-CN"
 
 func Load() (Config, error) {
 	dataDir, err := defaultDataDir()
@@ -373,6 +385,16 @@ func Load() (Config, error) {
 	// mounted yet.
 	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_PREVIEW_LUT_PATH")); v != "" {
 		cfg.PreviewLUTPath = v
+	}
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_ANALYSIS_LANGUAGE")); v != "" {
+		cfg.AnalysisLanguage = v
+	}
+	// Empty means "not chosen", and the choice a stock install wants is the
+	// language its own UI falls back to. Defaulting here rather than at the
+	// prompt keeps one answer to "what language is this library described in"
+	// — doctor, the API and the pipeline all read the same resolved value.
+	if strings.TrimSpace(cfg.AnalysisLanguage) == "" {
+		cfg.AnalysisLanguage = DefaultAnalysisLanguage
 	}
 	// This is a deployment hint rather than a fact LocalHost can prove: the
 	// process can detect its container, but only the operator knows which host

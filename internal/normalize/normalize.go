@@ -62,6 +62,44 @@ func VocabularyPrompt() string {
 	return b.String()
 }
 
+// outputLanguageNames maps the Hub's UI locales to the name a model actually
+// recognises. A BCP-47 tag is not a reliable instruction — "answer in zh-CN"
+// gets English back often enough to matter — so the prompt names the language
+// the way a person would.
+var outputLanguageNames = map[string]string{
+	"zh-CN": "Simplified Chinese (简体中文)",
+	"zh":    "Simplified Chinese (简体中文)",
+	"ja-JP": "Japanese (日本語)",
+	"ja":    "Japanese (日本語)",
+	"en-US": "English",
+	"en":    "English",
+	"fr-FR": "French (français)",
+	"fr":    "French (français)",
+	"es-ES": "Spanish (español)",
+	"es":    "Spanish (español)",
+}
+
+// OutputLanguagePrompt asks for the free-text fields in one language and names
+// every field it applies to. It lives beside VocabularyPrompt because the two
+// must not contradict each other: the constrained fields are matched against
+// English value sets by ValidateAndNormalize, so a translated asset_type is not
+// a nicer answer, it is a permanent failure and a paid call spent on nothing.
+// Naming the prose fields explicitly is what keeps "answer in Chinese" from
+// being read as "translate everything".
+//
+// An unknown or empty tag returns the empty string, leaving the prompt exactly
+// as it was: a language nobody configured must not silently become English.
+func OutputLanguagePrompt(languageTag string) string {
+	name, ok := outputLanguageNames[strings.TrimSpace(languageTag)]
+	if !ok {
+		return ""
+	}
+	return "Write the free-text fields in " + name +
+		": summary, analysis.summary, editorial_reason, and the description of every entry in scenes and shots. " +
+		"Everything else keeps its English form — the constrained fields above (asset_type, camera_motion, shot_size, audio_type, quality, usable_as) " +
+		"and every tag, object, action and subject list — because those are matched against fixed English values, not read as prose. "
+}
+
 // ValidateAndNormalize is a pure function of the model's answer, so anything
 // it rejects it would reject identically on every later attempt — and each of
 // those attempts is a paid provider call for a reply already known to be

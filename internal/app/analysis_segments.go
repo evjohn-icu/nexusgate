@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/evjohn-icu/nexusgate/internal/cachecoord"
@@ -29,7 +30,7 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 	// of inheriting the asset-global ones, and Gemini now reports per-shot
 	// objects/actions/mood. The version bump is what breaks CreateModelRun's
 	// cache so an old run can never satisfy a new analysis.
-	providerName, modelName, promptVersion := provider.Name(), provider.Model(), "footage-analysis-v4"
+	providerName, modelName, promptVersion := provider.Name(), provider.Model(), p.promptVersion("footage-analysis-v4")
 	runID, cached, err := p.repo.CreateModelRun(ctx, j.AssetID, "vision", providerName, modelName, j.InputHash, promptVersion, "asset-analysis/v2", reqJSON, j.ID, worker)
 	if err != nil {
 		return err
@@ -65,7 +66,7 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 			transcript = aligned
 		}
 	}
-	analyzeReq := videoanalysis.Input{VideoPath: proxy.LocalPath, Transcript: transcript, Metadata: *m}
+	analyzeReq := videoanalysis.Input{VideoPath: proxy.LocalPath, Transcript: transcript, Metadata: *m, Language: p.analysisLanguage}
 	cacheLock, e := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
 	if e != nil {
 		return e
@@ -298,4 +299,21 @@ func minInt64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// promptVersion folds the configured analysis language into the prompt identity
+// CreateModelRun dedupes on. The language is part of the prompt, so an answer
+// written in another language is not the same answer — without this, switching
+// the language returns the cached English text for every asset already
+// analysed, and the setting looks broken while behaving exactly as designed.
+//
+// An unset language leaves the version byte-identical, so no existing cache
+// entry is invalidated by this code existing. And because a cached run is only
+// consulted when an analyze job actually runs, changing the language does not
+// re-bill a library on upgrade — it changes what the next reanalysis produces.
+func (p *Pipeline) promptVersion(base string) string {
+	if strings.TrimSpace(p.analysisLanguage) == "" {
+		return base
+	}
+	return base + "+lang=" + p.analysisLanguage
 }

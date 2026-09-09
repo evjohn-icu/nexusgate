@@ -28,6 +28,11 @@ type Input struct {
 	// video directly (openai_multiframe). Each frame's timestamp is relative
 	// to the asset timeline, not to any window the asset was cut into.
 	Frames []Frame
+	// Language is the BCP-47 tag the model's prose should be written in, empty
+	// when the deployment has not chosen one. It reaches the prompt through
+	// normalize.OutputLanguagePrompt, which scopes it to the free-text fields
+	// only — the constrained fields are validated against English value sets.
+	Language string
 }
 
 type Scene struct {
