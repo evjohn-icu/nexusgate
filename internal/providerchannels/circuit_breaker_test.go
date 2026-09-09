@@ -25,6 +25,12 @@ func (c *circuitClock) Advance(d time.Duration) { c.now = c.now.Add(d) }
 // available=true — green in the shell strip and providers page while every job
 // on it parked. A cooling member must take the channel out of "available" for
 // the duration, and its own entry must show the cooldown.
+//
+// This must hold even though a single 429 on the route's only key is *not*
+// exhaustion (see routeFailingEverywhere's doc comment and
+// TestASingleRetryableFailureIsNotExhaustionEvenOnAOneMemberRoute):
+// "unavailable right now" and "exhausted" are different questions, and the
+// snapshot answers the first one.
 func TestSnapshotReportsCoolingChannelUnavailable(t *testing.T) {
 	clock := &circuitClock{now: time.Unix(1000, 0)}
 	executor, err := NewExecutor([]Channel{{
@@ -39,8 +45,8 @@ func TestSnapshotReportsCoolingChannelUnavailable(t *testing.T) {
 	err = executor.Execute(context.Background(), CapabilityVideoAnalysis, func(_ context.Context, _ Invocation) error {
 		return &common.StatusError{StatusCode: 429, Body: "slow down"}
 	})
-	if !errors.Is(err, ErrRouteExhausted) {
-		t.Fatalf("a route whose only key is cooling must report exhaustion, got %v", err)
+	if errors.Is(err, ErrRouteExhausted) {
+		t.Fatalf("one 429 on the only key is not confirmed exhaustion, got %v", err)
 	}
 
 	snapshot := executor.Snapshot(CapabilityVideoAnalysis)
@@ -202,5 +208,141 @@ func TestSnapshotStaysAvailableWhileASpentKeyIsRetired(t *testing.T) {
 	}
 	if !members["live"].CooldownUntil.IsZero() {
 		t.Fatalf("the live member shows a cooldown: %v", members["live"].CooldownUntil)
+	}
+}
+
+// This is the audited defect, reproduced directly: a library run parked 23
+// analyze jobs five hours into the future on a route whose single member had
+// only ever failed once, then recovered on its own within a second. A
+// one-second cooldown on the route's only key must not read as "every key on
+// this route is spent" -- that sentinel (ErrRouteExhausted) is reserved for
+// confirmed exhaustion, and one failure is not confirmation.
+//
+// The second Execute call is the shape that actually parked those 23 jobs:
+// each found the member still cooling from the *first* job's failure and
+// made no request of its own (providerpool.Pool.Select returns ErrNoAvailable
+// before any call is attempted). That must read as an ordinary, short-lived
+// unavailability -- not as route exhaustion, and not as "no route configured"
+// (ErrNoRoute) either, since a route that will recover on its own is not a
+// configuration problem for an operator to fix.
+func TestASingleRetryableFailureIsNotExhaustionEvenOnAOneMemberRoute(t *testing.T) {
+	clock := &circuitClock{now: time.Unix(1_600_000_000, 0)}
+	executor, err := NewExecutor([]Channel{{
+		ID: "single", ProviderName: "provider-a", Enabled: true,
+		Capabilities: []Capability{CapabilityVideoAnalysis},
+		Members:      []Member{{ID: "only", Enabled: true}},
+	}}, providerpool.Options{Now: clock.Now, BaseCooldown: time.Second, MaxCooldown: 30 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Job 1: the only member answers a transient failure once.
+	var calls []string
+	err = executor.Execute(context.Background(), CapabilityVideoAnalysis, func(_ context.Context, invocation Invocation) error {
+		calls = append(calls, invocation.MemberID)
+		return &common.StatusError{StatusCode: 503, Body: "upstream unavailable"}
+	})
+	if errors.Is(err, ErrRouteExhausted) {
+		t.Fatalf("job 1: one transient failure on the only key is not exhaustion, got %v", err)
+	}
+	if errors.Is(err, ErrNoRoute) {
+		t.Fatalf("job 1: a configured, momentarily-cooling route is not \"no route\", got %v", err)
+	}
+
+	// Job 2, issued immediately after (same instant, well inside the
+	// one-second cooldown): must find the member cooling and make no request
+	// at all -- exactly what happened to jobs 2-23 in the traced incident.
+	before := len(calls)
+	err = executor.Execute(context.Background(), CapabilityVideoAnalysis, func(_ context.Context, invocation Invocation) error {
+		calls = append(calls, invocation.MemberID)
+		return nil
+	})
+	if len(calls) != before {
+		t.Fatalf("job 2: a route still within its first cooldown should not have issued a request: %v", calls)
+	}
+	if errors.Is(err, ErrRouteExhausted) {
+		t.Fatalf("job 2: zero requests issued is not confirmed exhaustion, got %v", err)
+	}
+	if errors.Is(err, ErrNoRoute) {
+		t.Fatalf("job 2: a route that will recover on its own is not \"no route\", got %v", err)
+	}
+	if !errors.Is(err, providerpool.ErrNoAvailable) {
+		t.Fatalf("job 2: expected the plain \"not eligible right now\" signal, got %v", err)
+	}
+
+	// Once the cooldown actually elapses, the same member serves the next
+	// call normally -- the whole point of treating this as bounded rather
+	// than exhausted.
+	clock.Advance(2 * time.Second)
+	err = executor.Execute(context.Background(), CapabilityVideoAnalysis, func(_ context.Context, invocation Invocation) error {
+		calls = append(calls, invocation.MemberID)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("job 3, after the cooldown cleared, must succeed: %v", err)
+	}
+}
+
+// A member whose retryable-failure count has already reached the confirmed
+// threshold, but whose cooldown from that *last* failure has since elapsed
+// and whose slot is currently held by a concurrent caller, must not read as
+// exhausted. This isolates routeFailingEverywhere's "cooldown must still be
+// in effect right now" clause from its "confirmed failure count" clause: the
+// member here clears confirmedRetryableFailures (so a mutation that dropped
+// the elapsed-cooldown check would not be caught by the failure count alone),
+// and its unavailability right now is saturation on an elapsed cooldown, not
+// an active one.
+func TestConfirmedMemberWithAnElapsedCooldownIsNotExhaustion(t *testing.T) {
+	clock := &circuitClock{now: time.Unix(1_600_000_000, 0)}
+	executor, err := NewExecutor([]Channel{{
+		ID: "single", ProviderName: "provider-a", Enabled: true,
+		Capabilities: []Capability{CapabilityVideoAnalysis},
+		Members:      []Member{{ID: "only", Enabled: true, MaxInflight: 1}},
+	}}, providerpool.Options{Now: clock.Now, BaseCooldown: time.Second, MaxCooldown: 30 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fail := func(_ context.Context, _ Invocation) error {
+		return &common.StatusError{StatusCode: 503, Body: "upstream unavailable"}
+	}
+
+	// Fail once, let that cooldown elapse, fail again: retryableFails now
+	// reaches confirmedRetryableFailures (2). This alone must already read as
+	// exhausted (its cooldown is active) -- confirmed via the earlier
+	// multi-round test, not re-asserted here.
+	if err := executor.Execute(context.Background(), CapabilityVideoAnalysis, fail); errors.Is(err, ErrRouteExhausted) {
+		t.Fatalf("one failure is not exhaustion, got %v", err)
+	}
+	clock.Advance(2 * time.Second)
+	if err := executor.Execute(context.Background(), CapabilityVideoAnalysis, fail); !errors.Is(err, ErrRouteExhausted) {
+		t.Fatalf("two confirmed failures on the only key must read as exhausted before the cooldown elapses, got %v", err)
+	}
+
+	// Now let that second, longer cooldown elapse too.
+	clock.Advance(3 * time.Second)
+
+	// Hold the member's single inflight slot busy with a concurrent caller so
+	// the next Execute finds it saturated on an elapsed cooldown, not cooling.
+	acquired := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = executor.Execute(context.Background(), CapabilityVideoAnalysis, func(_ context.Context, _ Invocation) error {
+			close(acquired)
+			<-release
+			return nil
+		})
+	}()
+	<-acquired
+
+	err = executor.Execute(context.Background(), CapabilityVideoAnalysis, func(_ context.Context, _ Invocation) error {
+		return nil
+	})
+	close(release)
+	<-done
+
+	if errors.Is(err, ErrRouteExhausted) {
+		t.Fatalf("a confirmed member saturated after its cooldown elapsed is not exhaustion, got %v", err)
 	}
 }

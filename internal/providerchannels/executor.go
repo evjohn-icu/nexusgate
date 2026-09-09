@@ -95,13 +95,6 @@ type memberStats struct {
 	// failures but in neither histogram.
 	retryable429   uint64
 	serverError5xx uint64
-	// lastOutcomeDeferrable records whether the *most recent* outcome was a
-	// failure that leaves the route worth trying later — a retryable one, or a
-	// key that retired itself. lastFailureRetry cannot answer that: it stays
-	// true forever once set, even after the member starts succeeding again.
-	// Route exhaustion is a statement about the route right now, so it needs
-	// the current outcome, not the last bad one.
-	lastOutcomeDeferrable bool
 }
 
 // Executor selects a capability-bound provider channel and executes at most
@@ -359,33 +352,69 @@ func (e *Executor) Execute(ctx context.Context, capability Capability, operation
 	if lastNonTerminal != nil {
 		return lastNonTerminal
 	}
-	return fmt.Errorf("%w: %w: capability %q", ErrNoRoute, providerpool.ErrNoAvailable, capability)
+	// Every member is currently ineligible (cooling, saturated, or a mix), but
+	// routeFailingEverywhere declined to call that exhaustion: at least one
+	// member's unavailability is bounded and expected to clear on its own.
+	// That is not "no route configured" — ErrNoRoute is reserved for the
+	// len(route)==0 case above, a real configuration problem an operator must
+	// fix. Reporting ErrNoRoute here would tell the operator to go fix
+	// something that will resolve itself in seconds, so only ErrNoAvailable
+	// is wrapped; the pipeline already treats it as an ordinary retryable
+	// failure (see isRetryableJobError), which is the short wait this case
+	// deserves.
+	return fmt.Errorf("%w: capability %q", providerpool.ErrNoAvailable, capability)
 }
 
+// confirmedRetryableFailures is the number of consecutive Retryable failures
+// a member must show before its cooldown counts as evidence toward route
+// exhaustion, rather than a single unlucky call. A member reaches 2 only by
+// failing, having its cooldown actually elapse, being selected again (an
+// ordinary Select once the cooldown passes, or a half-open probe), and
+// failing again — real wall-clock time has to pass between the two failures.
+// One failure proves nothing about what the *next* call would do; two,
+// spaced by the member's own cooldown, is the same shape as the retry a job
+// would have made anyway, just paid for by a different lease.
+const confirmedRetryableFailures = 2
+
 // routeFailingEverywhere reports whether every enabled member that can serve
-// capability last ended in a failure that leaves the route worth trying later:
-// a retryable one, or a key that retired itself.
+// capability is currently exhaustion material: either the pool has retired it
+// (MemberSpent — a dead credential, cleared only by editing the channel or
+// restarting the Hub), or it is cooling from a *confirmed* run of retryable
+// failures (confirmedRetryableFailures or more, with that cooldown still in
+// effect right now).
 //
-// Retired members are counted rather than skipped. They are what exhaustion is
-// made of on a channel of pooled plan keys, and skipping them would leave a
-// wholly retired route looking like a route with no members at all — reported
-// as a configuration mistake instead of the outage it is.
+// It reads the pool's live per-member state (EnabledState, HealthState)
+// rather than this executor's own call history, on purpose: a route can go
+// from "just failed once" to "every key cooling" between one Execute call and
+// the next without a new request ever being issued — pool.Select returns
+// ErrNoAvailable and Execute's inner loop never reaches the provider. Only
+// the pool knows, at the moment this is asked, whether that ineligibility is
+// bounded (a cooldown with a known end) or effectively permanent (retired).
+// Executor call-count stats cannot make that distinction: they see the same
+// "attempted once, failed" shape whether the next attempt would recover in a
+// second or the key is truly spent.
 //
-// It deliberately looks at recorded outcomes rather than only at what this
-// call did. A spent monthly quota answers 429 on every key at once, and
-// providerpool cools each key as it fails, so the *next* Execute can find the
-// whole route unavailable without issuing a single request — pool.Select
-// returns ErrNoAvailable and no attempt is made. If that shape reached the
-// caller as an ordinary retryable error, the second job of a run would spend
-// its whole attempt budget on a wall the first job already found, inside the
-// few seconds the backoff allows, and fail permanently.
+// A single retryable failure — even on every member of the route at once —
+// is deliberately NOT exhaustion. A one-second cooldown on a route's only key
+// used to be enough to trip this and park the job for hours; requiring a
+// second, independently-timed failure is what tells a genuine multi-key
+// outage (every key still dead once its own cooldown clears and it is tried
+// again) apart from every key on the route happening to hiccup once at the
+// same moment. Retired members need no such confirmation: retirement already
+// is the pool's own verdict, not a guess from a timer.
 //
-// A member that has never been called (attempts == 0) makes this false: a
-// route that was never tried is not an exhausted one, and a misconfigured or
-// entirely disabled route must keep reporting itself as ErrNoRoute.
+// A member the pool has never seen fail (CooldownUntil zero) makes this
+// false immediately: that covers both a route that was never fully tried
+// (some members untouched) and a member merely saturated by a concurrent
+// caller's MaxInflight — neither is exhaustion, and neither would show a
+// cooldown. A member whose cooldown has already elapsed — cooling in the
+// past, not the future — also makes this false: Select would accept a
+// half-open probe on it right now, so the route is not out of options.
 func (e *Executor) routeFailingEverywhere(capability Capability, route []int) bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	now := e.now()
+	poolCapability := providerpool.Capability(capability)
 	considered := 0
 	for _, channelIndex := range route {
 		runtime := &e.channels[channelIndex]
@@ -397,8 +426,16 @@ func (e *Executor) routeFailingEverywhere(capability Capability, route []int) bo
 				continue
 			}
 			considered++
-			stats := e.stats[statsKey(runtime.channel.ID, member.ID)]
-			if stats.attempts == 0 || !stats.lastOutcomeDeferrable {
+			if live, known := runtime.pool.EnabledState(member.ID); known && !live {
+				// Retired via MemberSpent. Permanent until a human acts;
+				// counts toward exhaustion without further evidence.
+				continue
+			}
+			health, known := runtime.pool.HealthState(member.ID, poolCapability)
+			if !known || health.CooldownUntil.IsZero() || !now.Before(health.CooldownUntil) {
+				return false
+			}
+			if health.RetryableFails < confirmedRetryableFailures {
 				return false
 			}
 		}
@@ -476,7 +513,6 @@ func (e *Executor) record(invocation Invocation, err error, latency time.Duratio
 		stats.successes++
 		stats.lastSuccessAt = e.now().UTC()
 		stats.latencyEWMA = time.Duration(0.2*float64(latency) + 0.8*float64(stats.latencyEWMA))
-		stats.lastOutcomeDeferrable = false
 	} else {
 		stats.failures++
 		stats.lastFailureAt = e.now().UTC()
@@ -494,11 +530,8 @@ func (e *Executor) record(invocation Invocation, err error, latency time.Duratio
 			}
 		}
 		// A retired key is a failure the operator has to fix, not a transient
-		// one, so it must not be reported as retryable in the status view. It
-		// still leaves the route deferrable: a route with no key left is worth
-		// asking about later, not worth failing a job over now.
+		// one, so it must not be reported as retryable in the status view.
 		stats.lastFailureRetry = class == providerpool.Retryable
-		stats.lastOutcomeDeferrable = class == providerpool.Retryable || class == providerpool.MemberSpent
 	}
 	e.stats[key] = stats
 }

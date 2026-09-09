@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/evjohn-icu/nexusgate/internal/config"
 	"github.com/evjohn-icu/nexusgate/internal/providerpool"
@@ -223,11 +224,14 @@ func TestExecutorSupportsIDAndSecretReferenceOperation(t *testing.T) {
 	}
 }
 
-// A spent monthly quota answers 429 on every key at once. The caller has to be
-// able to tell that from one unlucky call without reading error text, because
-// the two need opposite handling: back off for seconds, or stop asking for
-// hours.
-func TestExecutorReportsRouteExhaustionWhenEveryKeyFailsRetryably(t *testing.T) {
+// A spent monthly quota answers 429 on every key at once, and keeps
+// answering 429 once each key's cooldown clears and it is tried again. That
+// second, independently-timed failure is what the caller must be able to
+// tell apart from a single round of bad luck without reading error text,
+// because the two need opposite handling: back off for seconds, or stop
+// asking for hours.
+func TestExecutorReportsRouteExhaustionOnceEveryKeyFailsRetryablyTwice(t *testing.T) {
+	clock := &circuitClock{now: time.Unix(2_000_000, 0)}
 	channels := []Channel{
 		{
 			ID: "channel-a", ProviderName: "provider-a", Enabled: true, RouteOrder: 0,
@@ -242,42 +246,66 @@ func TestExecutorReportsRouteExhaustionWhenEveryKeyFailsRetryably(t *testing.T) 
 			Members:      []Member{{ID: "b-1", Enabled: true}},
 		},
 	}
-	executor, err := NewExecutor(channels)
+	executor, err := NewExecutor(channels, providerpool.Options{Now: clock.Now, BaseCooldown: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
 	quota := providerpool.HTTPError{Code: 429, Err: errors.New("monthly quota exhausted")}
 	var calls []string
-	err = executor.Execute(context.Background(), CapabilityVideoAnalysis, func(_ context.Context, invocation Invocation) error {
+	fail := func(_ context.Context, invocation Invocation) error {
 		calls = append(calls, invocation.MemberID)
 		return quota
-	})
+	}
+
+	// Round one: every member fails once. This alone must not read as
+	// exhaustion -- a route this early cannot yet be told apart from four
+	// independent keys each hiccuping once at the same moment.
+	err = executor.Execute(context.Background(), CapabilityVideoAnalysis, fail)
+	if errors.Is(err, ErrRouteExhausted) {
+		t.Fatalf("one failure per key is not confirmed exhaustion, got %v", err)
+	}
+	if !equalStrings(calls, []string{"a-1", "a-2", "a-3", "b-1"}) {
+		t.Fatalf("every enabled member must be tried: %v", calls)
+	}
+
+	// Immediately after, with no time passed: every member is cooling and
+	// Select issues no request at all. That must not read as exhaustion
+	// either -- nothing has confirmed the failures repeat.
+	before := len(calls)
+	err = executor.Execute(context.Background(), CapabilityVideoAnalysis, fail)
+	if len(calls) != before {
+		t.Fatalf("a route still within its first cooldown should not have issued a request: %v", calls)
+	}
+	if errors.Is(err, ErrRouteExhausted) {
+		t.Fatalf("a route that was never re-tried is not confirmed exhausted, got %v", err)
+	}
+
+	// Let every member's cooldown clear, then fail them all a second time.
+	// This is the confirmation: each failure now follows a real, elapsed
+	// cooldown and a fresh attempt, exactly the shape of the retry a job
+	// would have made on its own.
+	clock.Advance(2 * time.Second)
+	err = executor.Execute(context.Background(), CapabilityVideoAnalysis, fail)
 	if !errors.Is(err, ErrRouteExhausted) {
-		t.Fatalf("every key failing must surface as ErrRouteExhausted, got %v", err)
+		t.Fatalf("every key failing twice, confirmed after its own cooldown, must surface as ErrRouteExhausted, got %v", err)
 	}
 	// The underlying failure has to stay reachable: it is what the operator
 	// reads on the progress page to find out which wall they hit.
 	if !strings.Contains(err.Error(), "monthly quota exhausted") {
 		t.Fatalf("exhaustion error dropped the cause: %v", err)
 	}
-	if !equalStrings(calls, []string{"a-1", "a-2", "a-3", "b-1"}) {
-		t.Fatalf("every enabled member must be tried before exhaustion is claimed: %v", calls)
-	}
 
-	// The second call is the shape that matters most in practice: providerpool
-	// has now cooled every member, so no request is issued at all. That must
-	// still read as exhaustion, or the next job spends its whole attempt
-	// budget discovering a wall this one already found.
-	before := len(calls)
-	err = executor.Execute(context.Background(), CapabilityVideoAnalysis, func(_ context.Context, invocation Invocation) error {
-		calls = append(calls, invocation.MemberID)
-		return quota
-	})
+	// A third call, still within the second (longer) cooldown, must still
+	// read as exhaustion without issuing a request: the confirmed route
+	// exhaustion must not evaporate just because nothing has been retried
+	// since.
+	before = len(calls)
+	err = executor.Execute(context.Background(), CapabilityVideoAnalysis, fail)
 	if len(calls) != before {
-		t.Fatalf("cooled route should not have issued a request: %v", calls)
+		t.Fatalf("a confirmed-exhausted route should not have issued a request: %v", calls)
 	}
 	if !errors.Is(err, ErrRouteExhausted) {
-		t.Fatalf("a fully cooled route must still report exhaustion, got %v", err)
+		t.Fatalf("a confirmed-exhausted route must still report exhaustion, got %v", err)
 	}
 }
 

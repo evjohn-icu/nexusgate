@@ -134,6 +134,45 @@ func TestPipelineDefersWithoutSpendingAnAttemptWhenEveryProviderKeyFails(t *test
 	}
 }
 
+// The audited defect at the pipeline layer: a route that is merely cooling
+// (providerpool.ErrNoAvailable without providerchannels.ErrRouteExhausted --
+// what providerchannels.Executor now returns when a route is configured but
+// not everything on it is confirmed exhausted, see its Execute and
+// routeFailingEverywhere) must not get the five-hour park. It is an ordinary
+// retryable failure: an attempt is spent and the job backs off for seconds,
+// not hours. Before the fix, providerchannels wrapped this exact shape in
+// ErrRouteExhausted whenever a single-member route had failed even once, and
+// this test would have seen the five-hour RunAfter and the
+// JobDeferProviderRouteExhausted reason the test above pins.
+func TestPipelineRetriesRatherThanParksOnAMerelyCoolingRoute(t *testing.T) {
+	cooling := fmt.Errorf("analyse asset: %w", providerpool.ErrNoAvailable)
+	repo := newQueuedIndexJob(t, cooling)
+	pipeline := NewPipeline(repo, t.TempDir(), nil, nil, nil, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
+
+	before := time.Now()
+	if _, err := pipeline.RunUntilIdle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := repo.ListJobs(context.Background(), 10)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("jobs=%+v err=%v", jobs, err)
+	}
+	job := jobs[0]
+	if job.AttemptCount != 1 {
+		t.Fatalf("an ordinary retry spends its attempt, unlike the route-exhausted defer: %+v", job)
+	}
+	if job.State != domain.JobPending || job.Terminal {
+		t.Fatalf("one retry with attempts remaining stays queued, not failed: %+v", job)
+	}
+	if job.DeferredReason != "" {
+		t.Fatalf("a merely-cooling route is not a parked defer and must carry no defer reason: %+v", job)
+	}
+	// The whole point: seconds, not the five-hour route-exhausted wait.
+	if job.RunAfter.After(before.Add(30 * time.Second)) {
+		t.Fatalf("a cooling route must back off for seconds, not park for hours: run_after=%s (started %s)", job.RunAfter, before)
+	}
+}
+
 // The contrast, and the property the defer must not weaken: a failure that is
 // the job's own still spends its three attempts and then stops for good.
 func TestPipelineStillExhaustsThreeAttemptsOnAnOrdinaryFailure(t *testing.T) {

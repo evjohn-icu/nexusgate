@@ -244,6 +244,15 @@ type MemberHealth struct {
 	CooldownUntil time.Time
 	HalfOpen      bool
 	Inflight      int
+	// RetryableFails counts consecutive Retryable failures since the member
+	// last recovered (a successful call, a non-retryable failure, or a
+	// completed half-open probe all reset it — see Pool.complete). It is what
+	// lets a caller tell one unlucky call from a cooldown that has already
+	// survived a second, freshly-issued attempt: the second failure can only
+	// happen once the first cooldown has actually elapsed and Select tried
+	// the member again, so a count of two or more is evidence gathered over
+	// real wall-clock time, not a guess from a single sample.
+	RetryableFails int
 }
 
 // HealthState reports the health of one member for one capability. The bool
@@ -265,7 +274,7 @@ func (p *Pool) HealthState(name string, capability Capability) (MemberHealth, bo
 			if health == nil {
 				return MemberHealth{}, true
 			}
-			return MemberHealth{CooldownUntil: health.cooldownUntil, HalfOpen: health.halfOpen, Inflight: health.inflight}, true
+			return MemberHealth{CooldownUntil: health.cooldownUntil, HalfOpen: health.halfOpen, Inflight: health.inflight, RetryableFails: health.retryableFails}, true
 		}
 	}
 	return MemberHealth{}, false

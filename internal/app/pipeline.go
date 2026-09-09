@@ -585,19 +585,21 @@ func isRetryableJobError(err error) bool {
 	// providerchannels.ErrRouteExhausted before it ever reaches this
 	// function; that case is handled above, by parking rather than retrying.
 	// It cannot do that when the last untried member is merely saturated by a
-	// concurrent caller: Pool.Select returns ErrNoAvailable without an
-	// attempt, providerchannels.Executor.routeFailingEverywhere correctly
-	// declines to call an unattempted member exhausted, and the raw
-	// MemberSpent error surfaces here instead of the sentinel. Retrying is
-	// right either way it got here: on the executor's own conclusion there
-	// truly is nothing left, backoff burns only a few attempts before this
-	// job's normal terminal path takes over; on the saturation race, the very
-	// next attempt selects the member the pool retired around, once
-	// selection succeeds at all. Classification is by status alone, not by
-	// what the provider's body says, so an upstream message that happens to
-	// read as permanent ("unauthorized", "not configured") cannot flip this
-	// back to a fail-permanent outcome for a key the pool has already moved
-	// on from.
+	// concurrent caller, or cooling from a single unconfirmed failure: Select
+	// returns ErrNoAvailable without an attempt, and
+	// providerchannels.Executor.routeFailingEverywhere reads the pool's live
+	// per-member state (cooldown, retirement, confirmed-failure count) and
+	// correctly declines to call either shape exhausted — see its doc comment
+	// for what "confirmed" requires. The raw MemberSpent error surfaces here
+	// instead of the sentinel in the saturation race. Retrying is right
+	// either way it got here: on the executor's own conclusion there truly is
+	// nothing left, backoff burns only a few attempts before this job's
+	// normal terminal path takes over; on the saturation race, the very next
+	// attempt selects the member the pool retired around, once selection
+	// succeeds at all. Classification is by status alone, not by what the
+	// provider's body says, so an upstream message that happens to read as
+	// permanent ("unauthorized", "not configured") cannot flip this back to a
+	// fail-permanent outcome for a key the pool has already moved on from.
 	var status *common.StatusError
 	if errors.As(err, &status) && status.StatusCode >= 400 && status.StatusCode < 500 {
 		if status.StatusCode != http.StatusRequestTimeout && status.StatusCode != http.StatusTooManyRequests {
@@ -644,6 +646,20 @@ func classifyJobFailure(err error) domain.JobFailureCategory {
 	}
 	if errors.Is(err, providerchannels.ErrRouteExhausted) {
 		return domain.JobFailureCategoryProviderRouteExhausted
+	}
+	// providerpool.ErrNoAvailable without providerchannels.ErrNoRoute is a
+	// configured route that is momentarily out of eligible members — cooling,
+	// saturated, or both — with at least one member's unavailability the pool
+	// itself expects to clear on its own (see routeFailingEverywhere; a route
+	// only reaches ErrRouteExhausted, above, once every member is retired or
+	// confirmed still failing after its own cooldown). It is the same
+	// "provider itself is not well" story as a bare 5xx or timeout below, just
+	// discovered without a request ever being issued, so it shares that
+	// category rather than falling to Unknown. ErrNoRoute keeps its own
+	// unmarked path to Unknown: a capability with no configured route at all
+	// is a different problem than one whose route is briefly busy.
+	if errors.Is(err, providerpool.ErrNoAvailable) && !errors.Is(err, providerchannels.ErrNoRoute) {
+		return domain.JobFailureCategoryProviderUnavailable
 	}
 	// The three provider-channel sentinels that say "the deployment is
 	// incomplete", as distinct from "this key is dead" (401/402/403, below,

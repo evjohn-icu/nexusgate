@@ -10,6 +10,7 @@ import (
 
 	"github.com/evjohn-icu/nexusgate/internal/domain"
 	"github.com/evjohn-icu/nexusgate/internal/providerchannels"
+	"github.com/evjohn-icu/nexusgate/internal/providerpool"
 	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 )
 
@@ -34,6 +35,15 @@ func TestClassifyJobFailureSentinelMapping(t *testing.T) {
 		{"other 4xx stays unknown", &common.StatusError{StatusCode: 400, Body: "bad request"}, domain.JobFailureCategoryUnknown},
 		{"route exhausted", providerchannels.ErrRouteExhausted, domain.JobFailureCategoryProviderRouteExhausted},
 		{"route exhausted wrapped", fmt.Errorf("outer: %w", providerchannels.ErrRouteExhausted), domain.JobFailureCategoryProviderRouteExhausted},
+		// A route that is configured but momentarily out of eligible members
+		// (cooling, saturated, or both, with nothing yet confirmed exhausted)
+		// shares category with an ordinary provider outage rather than
+		// falling to Unknown.
+		{"route momentarily unavailable", fmt.Errorf("analyse asset: %w", providerpool.ErrNoAvailable), domain.JobFailureCategoryProviderUnavailable},
+		// An actually unconfigured capability keeps its own unmarked path to
+		// Unknown -- it is a different problem (fix the config) from a
+		// configured route that is briefly busy.
+		{"route not configured", providerchannels.ErrNoRoute, domain.JobFailureCategoryUnknown},
 		{"preflight disk sentinel", fmt.Errorf("cache volume full: %w", errDiskSpaceLow), domain.JobFailureCategoryDiskSpaceLow},
 		{"ENOSPC", syscall.ENOSPC, domain.JobFailureCategoryDiskSpaceLow},
 		{"ENOSPC wrapped", fmt.Errorf("write failed: %w", syscall.ENOSPC), domain.JobFailureCategoryDiskSpaceLow},
