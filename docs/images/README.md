@@ -1,12 +1,15 @@
 # docs/images
 
-Screenshots for the README first screen, captured from a running instance with
-real data. Nothing here is a mockup: every image is a real capture of the local
-UI, never a fabricated product shot.
+Real captures of the running UI — never a fabricated product shot, never a
+mockup drawn to look like one. What is in frame is a generated demo library:
+synthetic test-pattern clips with written-out descriptions, so the screenshots
+can be published without publishing someone's footage. The interface is real;
+the material in it is not.
 
 - `library.png` — the library with the shot semantic timeline and filters
 - `search.png` — shot-first search results
 - `processing.png` — the pipeline queue and per-job progress
 
-The README links these from the "长什么样" quick answer. If a file is missing
-the link is broken on purpose until the real capture lands — do not stub one.
+Nothing links these at the moment. If you do link one, re-shoot it first — a UI
+screenshot ages faster than the code it shows, and a stale one is a claim about
+a product that no longer exists.
