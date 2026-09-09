@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +17,7 @@ import (
 	"github.com/evjohn-icu/nexusgate/internal/idgen"
 	"github.com/evjohn-icu/nexusgate/internal/media"
 	"github.com/evjohn-icu/nexusgate/internal/normalize"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
 )
 
@@ -153,14 +156,24 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 // result for the whole asset.
 //
 // An asset longer than the provider's request will not fit in a single call —
-// the endpoint answers 413 and the analysis is lost permanently, since a body
-// that is too large stays too large on retry. So the proxy is cut into windows
-// that fit, each is analysed on its own, and the answers are merged back onto
-// the asset timeline.
+// the endpoint answers 413. So the proxy is cut into windows that fit, each is
+// analysed on its own, and the answers are merged back onto the asset
+// timeline.
 //
 // Splitting is avoided wherever possible: a provider that uploads out of band
 // has no request-size ceiling, and a proxy already inside the budget is sent
 // whole. The overwhelming majority of clips take neither branch.
+//
+// A declared budget is an estimate, not a guarantee: bitrate is not constant
+// across a proxy, and a stream-copy extraction can only cut on a keyframe, so
+// a window can arrive larger than planned even when the arithmetic that sized
+// it was correct. A 413 is a statement about *this request's size* — unlike
+// the rest of the 4xx family, the caller controls the one thing it complains
+// about, and presenting a smaller version of the same window is not "identical
+// inputs to a deterministic decision" (see domain.ErrPermanentFailure). So a
+// window that gets a 413 is bisected and each half is retried, down to
+// media.MinAnalysisWindowMS; only a window that cannot be split any further
+// and still gets a 413 is a genuine dead end.
 func (p *Pipeline) analyzeVideo(ctx context.Context, provider videoproviders.VideoUnderstandingProvider, assetID string, input videoanalysis.Input, durationMS int64) (videoanalysis.Result, string, error) {
 	single := func() (videoanalysis.Result, string, error) {
 		return provider.Analyze(ctx, input)
@@ -179,7 +192,24 @@ func (p *Pipeline) analyzeVideo(ctx context.Context, provider videoproviders.Vid
 	}
 	plan := media.PlanAnalysisWindows(durationMS, info.Size(), budget, media.DefaultMaxWindowMS, media.DefaultWindowOverlapMS)
 	if !plan.Split {
-		return single()
+		result, raw, err := single()
+		if err == nil || !isRequestEntityTooLarge(err) {
+			return result, raw, err
+		}
+		if durationMS/2 < media.MinAnalysisWindowMS {
+			// Nothing smaller exists to retry with — the endpoint's actual
+			// ceiling is below the shortest window this pipeline will plan.
+			return videoanalysis.Result{}, raw, fmt.Errorf("analyse whole asset (0ms-%dms), too short to split further: %w", durationMS, err)
+		}
+		// The declared budget said the whole proxy would fit; the endpoint
+		// disagrees. Recover by bisecting straight away rather than resending
+		// the same oversized request first — that upload has already been
+		// paid for once.
+		mid := durationMS / 2
+		plan = media.WindowPlan{Split: true, Windows: []media.AnalysisWindow{
+			{Index: 0, StartMS: 0, EndMS: mid},
+			{Index: 1, StartMS: mid, EndMS: durationMS},
+		}}
 	}
 
 	// Windows are scratch: they are cheap to recreate from the proxy and must
@@ -192,31 +222,71 @@ func (p *Pipeline) analyzeVideo(ctx context.Context, provider videoproviders.Vid
 
 	results := make([]videoanalysis.WindowResult, 0, len(plan.Windows))
 	raws := make([]json.RawMessage, 0, len(plan.Windows))
-	for _, window := range plan.Windows {
-		path := filepath.Join(dir, fmt.Sprintf("window-%03d.mp4", window.Index))
-		if err := media.ExtractAnalysisWindow(ctx, input.VideoPath, path, window); err != nil {
-			return videoanalysis.Result{}, "", fmt.Errorf("extract analysis window %d of %d: %w", window.Index+1, len(plan.Windows), err)
-		}
-		windowInput := input
-		windowInput.VideoPath = path
-		windowInput.Transcript = sliceTranscript(input.Transcript, window)
-
-		result, raw, err := provider.Analyze(ctx, windowInput)
-		raws = append(raws, rawMessage(raw))
+	total := len(plan.Windows)
+	for i, window := range plan.Windows {
+		windowResults, windowRaws, err := p.analyzeAnalysisWindow(ctx, provider, dir, input, window, i, total)
+		raws = append(raws, windowRaws...)
 		if err != nil {
 			// One failed window makes the asset's analysis incomplete, and a
 			// partial answer committed as if it described the whole asset
 			// would be worse than none. Carry the raw responses collected so
 			// far so the failed run still records what came back.
-			return videoanalysis.Result{}, joinRaw(raws), fmt.Errorf("analyse window %d of %d (%dms-%dms): %w",
-				window.Index+1, len(plan.Windows), window.StartMS, window.EndMS, err)
+			return videoanalysis.Result{}, joinRaw(raws), err
 		}
-		results = append(results, videoanalysis.WindowResult{StartMS: window.StartMS, EndMS: window.EndMS, Result: result})
-		// Free each window as soon as it has been sent. A long asset otherwise
-		// holds every window on disk at once, on top of the proxy itself.
-		_ = os.Remove(path)
+		results = append(results, windowResults...)
 	}
 	return videoanalysis.MergeWindowResults(results), joinRaw(raws), nil
+}
+
+// analyzeAnalysisWindow extracts one window, analyses it, and — on a 413 for
+// a window still wide enough to halve — bisects it and retries each half
+// before giving up. It returns every window result the recursion produced
+// (more than one when a bisection succeeded) and every raw response along the
+// way, success or failure, so the caller's evidence trail is complete either
+// way.
+func (p *Pipeline) analyzeAnalysisWindow(ctx context.Context, provider videoproviders.VideoUnderstandingProvider, dir string, input videoanalysis.Input, window media.AnalysisWindow, index, total int) ([]videoanalysis.WindowResult, []json.RawMessage, error) {
+	path := filepath.Join(dir, fmt.Sprintf("window-%s.mp4", idgen.New()))
+	if err := media.ExtractAnalysisWindow(ctx, input.VideoPath, path, window); err != nil {
+		return nil, nil, fmt.Errorf("extract analysis window %d of %d: %w", index+1, total, err)
+	}
+	windowInput := input
+	windowInput.VideoPath = path
+	windowInput.Transcript = sliceTranscript(input.Transcript, window)
+
+	result, raw, err := provider.Analyze(ctx, windowInput)
+	// Free the window as soon as it has been sent. A long asset otherwise
+	// holds every window on disk at once, on top of the proxy itself.
+	_ = os.Remove(path)
+	raws := []json.RawMessage{rawMessage(raw)}
+	if err == nil {
+		return []videoanalysis.WindowResult{{StartMS: window.StartMS, EndMS: window.EndMS, Result: result}}, raws, nil
+	}
+	if isRequestEntityTooLarge(err) && window.Duration()/2 >= media.MinAnalysisWindowMS {
+		mid := window.StartMS + window.Duration()/2
+		left := media.AnalysisWindow{Index: window.Index, StartMS: window.StartMS, EndMS: mid}
+		right := media.AnalysisWindow{Index: window.Index, StartMS: mid, EndMS: window.EndMS}
+		leftResults, leftRaws, lerr := p.analyzeAnalysisWindow(ctx, provider, dir, input, left, index, total)
+		raws = append(raws, leftRaws...)
+		if lerr != nil {
+			return nil, raws, lerr
+		}
+		rightResults, rightRaws, rerr := p.analyzeAnalysisWindow(ctx, provider, dir, input, right, index, total)
+		raws = append(raws, rightRaws...)
+		if rerr != nil {
+			return nil, raws, rerr
+		}
+		return append(leftResults, rightResults...), raws, nil
+	}
+	return nil, raws, fmt.Errorf("analyse window %d of %d (%dms-%dms): %w", index+1, total, window.StartMS, window.EndMS, err)
+}
+
+// isRequestEntityTooLarge reports whether err is a 413 from the provider —
+// classified by status, the same way every other retry decision in this
+// pipeline is (see isRetryableJobError in pipeline.go), never by matching on
+// the body text a relay happened to echo back.
+func isRequestEntityTooLarge(err error) bool {
+	var status *common.StatusError
+	return errors.As(err, &status) && status.StatusCode == http.StatusRequestEntityTooLarge
 }
 
 // sliceTranscript narrows the transcript to what is audible inside the window

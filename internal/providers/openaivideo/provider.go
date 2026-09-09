@@ -25,28 +25,74 @@ type Provider struct {
 	Endpoint     common.Endpoint
 	ModelName    string
 	Path         string
-	// MaxInlineBytes is the largest video this endpoint accepts in a request
-	// body, before base64 expansion. Zero selects defaultMaxInlineBytes.
+	// MaxInlineBytes is the largest request body this endpoint accepts —
+	// the number an operator actually has (a 413 names the request that
+	// tripped it, never the file inside it). Zero selects
+	// defaultMaxInlineBytes. MaxInlineVideoBytes converts this wire ceiling
+	// into the pre-encoding file budget the window splitter compares
+	// against; callers of MaxInlineVideoBytes never see this field's raw
+	// value.
 	MaxInlineBytes int64
 }
 
 // defaultMaxInlineBytes is deliberately below every endpoint this adapter is
-// pointed at rather than tuned to the most generous one. Overshooting costs a
-// whole upload before the rejection arrives, and the request body is a third
-// larger than the file once base64-encoded — so the conservative default is
-// the one that fails least expensively when an endpoint does not declare its
-// own limit.
+// pointed at rather than tuned to the most generous one, and is itself a
+// request-body ceiling (see MaxInlineBytes) — MaxInlineVideoBytes is what
+// turns it into a safe file-byte budget. Overshooting costs a whole upload
+// before the rejection arrives, which is the expensive way to fail when an
+// endpoint does not declare its own limit.
 const defaultMaxInlineBytes = 24 << 20
+
+// inlineOverheadReserveBytes reserves headroom, ahead of the base64 expansion
+// below, for what rides in the same request alongside the encoded video: the
+// JSON envelope, the fixed schema/vocabulary prompt (order 1-2KB, measured),
+// and a window's sliced transcript text. It does not attempt to bound the
+// variable overshoot a stream-copy extraction can add by snapping to a
+// preceding keyframe, or bitrate variance inside one proxy — those are why a
+// window that still gets a 413 is bisected and retried
+// (internal/app/analysis_segments.go) rather than trusted to fit on the
+// first try.
+const inlineOverheadReserveBytes = 1 << 20
 
 var _ videoproviders.VideoUnderstandingProvider = (*Provider)(nil)
 var _ videoproviders.InlineVideoLimiter = (*Provider)(nil)
 
-// MaxInlineVideoBytes reports the configured inline ceiling for this endpoint.
+// MaxInlineVideoBytes reports the raw (pre-base64) file-byte budget the
+// window splitter should target so the encoded request stays under this
+// endpoint's request-body ceiling (MaxInlineBytes, or the conservative
+// default).
+//
+// Base64 (encoding/base64.StdEncoding, used by inputVideoURL below) turns
+// every 3 source bytes into 4 encoded characters — a file sized to exactly
+// the declared ceiling arrives on the wire a third larger than that ceiling
+// and the endpoint answers 413 even though the splitter believed the window
+// would fit. Multiplying by 3/4 undoes that expansion in advance; subtracting
+// inlineOverheadReserveBytes first leaves room for what else shares the
+// request body with the video.
 func (p *Provider) MaxInlineVideoBytes() int64 {
-	if p.MaxInlineBytes > 0 {
-		return p.MaxInlineBytes
+	ceiling := p.MaxInlineBytes
+	if ceiling <= 0 {
+		ceiling = defaultMaxInlineBytes
 	}
-	return defaultMaxInlineBytes
+	usable := ceiling - inlineOverheadReserveBytes
+	if usable < 0 {
+		usable = 0
+	}
+	budget := usable * 3 / 4
+	if budget <= 0 {
+		// A configured ceiling below inlineOverheadReserveBytes must still
+		// come back positive: InlineVideoBudget (video/interface.go) treats
+		// <= 0 as "the provider has no opinion" and substitutes its own,
+		// larger fallback — so a zero here would make an operator's
+		// explicit, unrealistically tight limit produce a *bigger* effective
+		// budget than an unconfigured one, exactly backwards. The window
+		// splitter still can't do anything useful with a 1-byte budget (every
+		// window collapses to media.MinAnalysisWindowMS and this endpoint
+		// gets a 413 with nothing left to bisect), but that failure is honest
+		// about the ceiling that was actually configured.
+		budget = 1
+	}
+	return budget
 }
 
 func (p *Provider) Name() string {

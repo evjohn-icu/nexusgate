@@ -24,11 +24,16 @@ type ProviderConfig struct {
 	AuthScheme     string            `json:"auth_scheme,omitempty"`
 	ExtraHeaders   map[string]string `json:"extra_headers,omitempty"`
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
-	// MaxInlineVideoBytes is the largest video this endpoint accepts inside a
-	// request body. It is per-endpoint rather than a shared constant because
-	// the ceiling varies by more than an order of magnitude between them, and a
-	// relay in front of an API can impose its own lower one. Zero means use the
-	// conservative built-in default.
+	// MaxInlineVideoBytes is the largest request body this endpoint accepts —
+	// the number a 413 response actually tells an operator, not the size of
+	// the video file inside it. It is per-endpoint rather than a shared
+	// constant because the ceiling varies by more than an order of magnitude
+	// between them, and a relay in front of an API can impose its own lower
+	// one. Zero means use the conservative built-in default. The adapter
+	// (openaivideo.Provider.MaxInlineVideoBytes) is responsible for turning
+	// this wire ceiling into the smaller pre-encoding file budget its window
+	// splitter targets — base64 expands a file by 4/3 once inlined, so this
+	// field is never compared directly against a file's size on disk.
 	MaxInlineVideoBytes int64 `json:"max_inline_video_bytes,omitempty"`
 }
 

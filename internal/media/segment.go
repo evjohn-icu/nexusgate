@@ -37,10 +37,25 @@ type WindowPlan struct {
 // spends context per second of footage, and a window can exceed that budget
 // long before it exceeds a byte limit.
 const (
-	MinAnalysisWindowMS      = 30_000
-	DefaultMaxWindowMS       = 8 * 60_000
-	DefaultWindowOverlapMS   = 5_000
-	DefaultInlineBudgetBytes = 24 << 20
+	MinAnalysisWindowMS    = 30_000
+	DefaultMaxWindowMS     = 8 * 60_000
+	DefaultWindowOverlapMS = 5_000
+	// DefaultInlineBudgetBytes is the raw (pre-base64) file-byte budget used
+	// when the caller cannot name a provider's declared limit at all —
+	// notably a provider-channel video route, which answers "unknown" for
+	// MaxInlineVideoBytes rather than resolving a secret merely to size a
+	// request (internal/app/provider_channel_runtime.go's channelVideo).
+	// Every provider that reaches this fallback today inlines its video as a
+	// base64 data URL (internal/providers/openaivideo), which expands the
+	// file by 4/3 on the wire, plus a JSON envelope and prompt text on top —
+	// the same arithmetic openaivideo.Provider.MaxInlineVideoBytes applies
+	// to its own declared/default ceiling. A 24MiB "budget" compared
+	// directly against raw file bytes reaches the wire at ~32MiB, which is
+	// how a channel with no declared limit produced a window an endpoint
+	// still answered 413 to. 1MiB is reserved for the envelope/prompt before
+	// the 3/4 base64 correction, mirroring openaivideo's
+	// inlineOverheadReserveBytes.
+	DefaultInlineBudgetBytes = (24<<20 - 1<<20) * 3 / 4
 )
 
 // PlanAnalysisWindows decides how to cut a proxy so each piece fits budgetBytes.

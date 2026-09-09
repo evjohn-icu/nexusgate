@@ -2,17 +2,25 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/evjohn-icu/nexusgate/internal/domain"
 	videoanalysis "github.com/evjohn-icu/nexusgate/internal/domain/video_analysis"
 	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
+	"github.com/evjohn-icu/nexusgate/internal/providers/openaivideo"
 	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
 )
 
@@ -178,6 +186,313 @@ func TestAnalyzeVideoRemovesItsScratchWindows(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(proxy), "analysis-windows")); !os.IsNotExist(err) {
 		t.Fatalf("scratch window directory was left behind: %v", err)
+	}
+}
+
+// countingSizeThresholdServer is a fixture endpoint that answers 413 above a
+// byte threshold, measured against the request body actually written to the
+// wire, and 200 with a valid unified-analysis reply below it. It is the
+// shape the task calls for: a real HTTP server, not a mock of one, so the
+// base64 expansion inputVideoURL performs is exercised for real rather than
+// asserted about.
+func countingSizeThresholdServer(t *testing.T, threshold int64) (*httptest.Server, func() (total, tooLarge int)) {
+	t.Helper()
+	var mu sync.Mutex
+	var total, tooLarge int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		total++
+		over := int64(len(body)) > threshold
+		if over {
+			tooLarge++
+		}
+		mu.Unlock()
+		if over {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			_, _ = w.Write([]byte("request too large"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"summary\":\"ok\",\"shots\":[{\"start_ms\":1000,\"end_ms\":2000,\"description\":\"a shot\"}]}"}}]}`))
+	}))
+	t.Cleanup(server.Close)
+	return server, func() (int, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		return total, tooLarge
+	}
+}
+
+// buildHighBitrateFixtureProxy forces true CBR (nal-hrd=cbr) rather than
+// trusting libx264's default rate control on a near-static synthetic
+// pattern, which compresses far below any requested target bitrate. A
+// predictable byte size is what lets this file's arithmetic tests choose a
+// ceiling that is neither trivially satisfied nor dominated by
+// media.MinAnalysisWindowMS's own floor.
+func buildHighBitrateFixtureProxy(t *testing.T, seconds, bitrateKbps int) (string, int64) {
+	t.Helper()
+	dir := t.TempDir()
+	proxy := filepath.Join(dir, "proxy.mp4")
+	rate := strconv.Itoa(bitrateKbps) + "k"
+	if output, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25",
+		"-t", strconv.Itoa(seconds), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "25",
+		"-b:v", rate, "-minrate", rate, "-maxrate", rate, "-bufsize", rate,
+		"-x264-params", "nal-hrd=cbr:force-cfr=1", proxy).CombinedOutput(); err != nil {
+		t.Skipf("test fixture cannot be encoded by local ffmpeg: %v: %s", err, output)
+	}
+	return proxy, int64(seconds) * 1000
+}
+
+// This is the arithmetic the bug report asked to be established: a window
+// planned to fit a declared byte budget must not exceed that budget once
+// base64-encoded on the wire. The endpoint here enforces its ceiling against
+// the real request body length (not a mock's opinion of it), so this fails
+// if MaxInlineVideoBytes ever again hands the splitter a raw-byte budget
+// equal to (rather than 3/4 of) the endpoint's declared ceiling.
+func TestAnalyzeVideoWindowsFitTheDeclaredCeilingOnceBase64Encoded(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg is required to build and cut the fixture")
+	}
+	// ~4Mbps CBR for 60s is ~30MB: large enough that the fixed prompt/JSON
+	// overhead reserve is a small fraction of the budget, so the planned
+	// window size is driven by the byte budget, not clamped up by
+	// media.MinAnalysisWindowMS (which would confound this test with that
+	// separate floor).
+	proxy, durationMS := buildHighBitrateFixtureProxy(t, 60, 4000)
+	info, err := os.Stat(proxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The endpoint's real, observed ceiling — exactly what "the channel
+	// declared no explicit limit" resolves to once a limit is declared.
+	// Comfortably under the proxy's own size, so several windows are forced.
+	ceiling := int64(25 << 20)
+	if ceiling >= info.Size() {
+		t.Fatalf("fixture (%d bytes) is not larger than the test ceiling (%d) — adjust the bitrate", info.Size(), ceiling)
+	}
+	server, counts := countingSizeThresholdServer(t, ceiling)
+
+	provider := &openaivideo.Provider{ProviderName: "wire_ceiling_test", Endpoint: common.Endpoint{BaseURL: server.URL}, MaxInlineBytes: ceiling}
+	pipeline := newTestPipelineWithVideo(provider)
+
+	if _, _, err := pipeline.analyzeVideo(context.Background(), provider, "asset-1",
+		videoanalysis.Input{VideoPath: proxy}, durationMS); err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	total, tooLarge := counts()
+	if total < 2 {
+		t.Fatalf("expected the proxy to be split into several windows against a %d-byte ceiling, got %d request(s)", ceiling, total)
+	}
+	if tooLarge != 0 {
+		t.Fatalf("%d of %d requests exceeded the declared %d-byte ceiling — the splitter is still sizing windows against pre-encoding bytes", tooLarge, total, ceiling)
+	}
+}
+
+// unknownLimitVideoProvider wraps a real provider but, deliberately, does not
+// implement videoproviders.InlineVideoLimiter — exactly the shape of
+// internal/app/provider_channel_runtime.go's channelVideo for a
+// provider-channel video route, which answers "unknown" for
+// MaxInlineVideoBytes rather than resolving a secret merely to size a
+// request. This is the reported bug's actual path: "the channel in use
+// declared no explicit limit, so the default applied."
+type unknownLimitVideoProvider struct {
+	inner *openaivideo.Provider
+}
+
+func (u *unknownLimitVideoProvider) Name() string  { return u.inner.Name() }
+func (u *unknownLimitVideoProvider) Model() string { return u.inner.Model() }
+func (u *unknownLimitVideoProvider) Capabilities() []videoproviders.Capability {
+	return u.inner.Capabilities()
+}
+func (u *unknownLimitVideoProvider) Analyze(ctx context.Context, input videoanalysis.Input) (videoanalysis.Result, string, error) {
+	return u.inner.Analyze(ctx, input)
+}
+
+var _ videoproviders.VideoUnderstandingProvider = (*unknownLimitVideoProvider)(nil)
+
+// This is the channel-routed half of the same arithmetic bug:
+// channelVideo.MaxInlineVideoBytes intentionally answers "unknown" rather
+// than resolve a secret to size a request, which sends InlineVideoBudget to
+// media.DefaultInlineBudgetBytes. That fallback needs the identical base64
+// correction as openaivideo's own default, and this proves it against a real
+// endpoint rather than the fallback constant's own arithmetic.
+func TestAnalyzeVideoFallbackBudgetFitsTheDeclaredCeilingWhenTheProviderDeclinesToDeclareOne(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg is required to build and cut the fixture")
+	}
+	proxy, durationMS := buildHighBitrateFixtureProxy(t, 90, 4000)
+	info, err := os.Stat(proxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The same round 24MiB figure the pre-fix defaultMaxInlineBytes and
+	// DefaultInlineBudgetBytes both used unscaled — the value that produced
+	// the reported 413 when a channel declared no explicit limit.
+	const wireCeiling = 24 << 20
+	if wireCeiling >= info.Size() {
+		t.Fatalf("fixture (%d bytes) is not larger than the test ceiling — adjust the bitrate/duration", info.Size())
+	}
+	server, counts := countingSizeThresholdServer(t, wireCeiling)
+
+	provider := &unknownLimitVideoProvider{inner: &openaivideo.Provider{ProviderName: "channel_routed_test", Endpoint: common.Endpoint{BaseURL: server.URL}}}
+	pipeline := newTestPipelineWithVideo(provider)
+
+	if _, _, err := pipeline.analyzeVideo(context.Background(), provider, "asset-1",
+		videoanalysis.Input{VideoPath: proxy}, durationMS); err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	total, tooLarge := counts()
+	if total < 2 {
+		t.Fatalf("expected the proxy to be split into several windows against the %d-byte fallback, got %d request(s)", wireCeiling, total)
+	}
+	if tooLarge != 0 {
+		t.Fatalf("%d of %d requests exceeded the %d-byte ceiling — media.DefaultInlineBudgetBytes is still an unscaled pre-encoding figure", tooLarge, total, wireCeiling)
+	}
+}
+
+// A declared budget is an estimate: bitrate variance or an endpoint whose
+// real ceiling is stricter than assumed can still produce a 413. This
+// endpoint's threshold is deliberately set so that neither the whole proxy
+// nor one bisection is enough — only a window bisected *twice* fits — so a
+// pass requires both recovery mechanisms in analyzeVideo: the one-time
+// unsplit-path fallback (whole → two halves) and analyzeAnalysisWindow's own
+// recursive bisect (a half that still 413s → two quarters). A 413 must not
+// cost the asset its whole analysis when a smaller window would have worked.
+func TestAnalyzeVideoRecoversFromA413ByBisectingTheWindowTwice(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg is required to build and cut the fixture")
+	}
+	// 120s leaves two floor-respecting halvings: 120s → 60s → 30s, the last
+	// exactly at media.MinAnalysisWindowMS.
+	proxy, durationMS := buildHighBitrateFixtureProxy(t, 120, 4000)
+	info, err := os.Stat(proxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 32% of the whole proxy's encoded size: a half (~50% encoded) still
+	// exceeds it, a quarter (~25% encoded) fits with margin for the JSON
+	// envelope and keyframe-alignment overshoot.
+	wireCeiling := int64(base64.StdEncoding.EncodedLen(int(info.Size()))) * 32 / 100
+	server, counts := countingSizeThresholdServer(t, wireCeiling)
+
+	// A generous declared ceiling: the provider believes (wrongly, per this
+	// endpoint) that the whole proxy fits in one request, so analyzeVideo
+	// takes the unsplit path first and must recover from its own 413.
+	provider := &openaivideo.Provider{ProviderName: "shrink_recovery_test", Endpoint: common.Endpoint{BaseURL: server.URL}, MaxInlineBytes: info.Size() * 50}
+	pipeline := newTestPipelineWithVideo(provider)
+
+	result, _, err := pipeline.analyzeVideo(context.Background(), provider, "asset-1",
+		videoanalysis.Input{VideoPath: proxy}, durationMS)
+	if err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	total, tooLarge := counts()
+	// One whole-proxy attempt plus two half-window attempts must have been
+	// rejected before four quarter-windows succeeded.
+	if tooLarge < 3 {
+		t.Fatalf("expected at least 3 rejected attempts (whole + two halves) before recovery, got %d of %d requests", tooLarge, total)
+	}
+	if total <= tooLarge {
+		t.Fatalf("every request (%d of %d) got a 413 — the asset never actually recovered by shrinking", tooLarge, total)
+	}
+	if len(result.Shots) == 0 {
+		t.Fatalf("recovered analysis reported no shots: %+v", result)
+	}
+}
+
+// Once bisection reaches media.MinAnalysisWindowMS there is nothing smaller
+// left to try: an endpoint that refuses every request regardless of size is
+// a genuine dead end, and the failure must surface as the 413 itself — not
+// as an internal error from trying to extract a window with no duration —
+// and must not retry forever.
+func TestAnalyzeVideoFailsWhenNoWindowSizeIsSmallEnough(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg is required to build and cut the fixture")
+	}
+	proxy, durationMS := buildFixtureProxy(t, 60)
+	var requests int
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		_, _ = w.Write([]byte("request too large"))
+	}))
+	t.Cleanup(server.Close)
+
+	provider := &openaivideo.Provider{ProviderName: "always_413_test", Endpoint: common.Endpoint{BaseURL: server.URL}, MaxInlineBytes: 8 << 20}
+	pipeline := newTestPipelineWithVideo(provider)
+
+	_, _, err := pipeline.analyzeVideo(context.Background(), provider, "asset-1",
+		videoanalysis.Input{VideoPath: proxy}, durationMS)
+	if err == nil {
+		t.Fatal("an endpoint that always answers 413 must not be reported as a successful analysis")
+	}
+	var status *common.StatusError
+	if !errors.As(err, &status) || status.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected the 413 to surface as a *common.StatusError, got %v", err)
+	}
+	mu.Lock()
+	got := requests
+	mu.Unlock()
+	t.Logf("requests = %d", got)
+	// Tightly bounded, not merely finite: this 60s asset takes one
+	// whole-proxy attempt, then the unsplit-path fallback bisects it into two
+	// windows already at MinAnalysisWindowMS — the first of which fails and
+	// (like any failed window) stops the loop before the second is ever
+	// attempted, exactly as it would for an ordinary non-413 failure. Two
+	// requests total, neither bisected further. A gate that forgets to stop
+	// at the floor would keep halving well past it — ffmpeg tolerates a
+	// sub-second -t extraction, so it degrades into dozens of extra requests
+	// rather than an immediate, cheap extraction error — and this tight a
+	// bound catches that even though the count never grows without limit.
+	if got != 2 {
+		t.Fatalf("request count = %d, want exactly 2 (whole + the first window at the MinAnalysisWindowMS floor, not bisected further)", got)
+	}
+}
+
+// A whole asset shorter than 2*media.MinAnalysisWindowMS cannot be bisected
+// at all without producing a window under the floor — the unsplit path's own
+// dead end. This must fail on the single whole-proxy attempt, not spend a
+// second request trying to split something already too short to split.
+func TestAnalyzeVideoGivesUpWithoutSplittingAnAssetAlreadyTooShort(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg is required to build the fixture")
+	}
+	// 40s: half of it (20s) is under media.MinAnalysisWindowMS (30s), so
+	// there is no smaller window this pipeline will ever plan.
+	proxy, durationMS := buildFixtureProxy(t, 40)
+	var requests int
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		_, _ = w.Write([]byte("request too large"))
+	}))
+	t.Cleanup(server.Close)
+
+	provider := &openaivideo.Provider{ProviderName: "too_short_to_split_test", Endpoint: common.Endpoint{BaseURL: server.URL}, MaxInlineBytes: 64 << 20}
+	pipeline := newTestPipelineWithVideo(provider)
+
+	_, _, err := pipeline.analyzeVideo(context.Background(), provider, "asset-1",
+		videoanalysis.Input{VideoPath: proxy}, durationMS)
+	var status *common.StatusError
+	if !errors.As(err, &status) || status.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected the 413 to surface as a *common.StatusError, got %v", err)
+	}
+	mu.Lock()
+	got := requests
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("request count = %d, want exactly 1 — an asset already too short to split must not spend a second request trying", got)
 	}
 }
 
