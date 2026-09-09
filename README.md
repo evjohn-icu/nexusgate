@@ -1,1098 +1,218 @@
 # Re:Footage
 
-> **本地优先的视频素材索引与检索基础设施**
->
-> A local-first video footage indexing and retrieval infrastructure.
-> It reads your existing folders, understands what is inside each clip at
-> shot granularity, and makes that searchable with evidence-backed results.
+**You have terabytes of footage you can't find anything in. This fixes that.**
 
-```text
-Footage / NAS
-      ↓
-Understand (probe → shot detect → ASR/VLM)
-      ↓
-Shot Index (canonical metadata + FTS5)
-      ↓
-Retrieval + Evidence (search + gate)
-      ↓
-HTTP / CLI / MCP
-      ↓
-Human / App / Agent
+[中文说明 → README_CN.md](README_CN.md)
+
+`Re:Footage` is the product; `nexusgate` is the binary, the module and the
+config namespace.
+
+---
+
+## The problem
+
+Your drive or NAS has years of clips on it. `DJI_0284.MP4`. `A001_C007.mov`.
+`IMG_4471.MOV`. You know there's a good sunset drone shot in there somewhere.
+Finding it means scrubbing through folders for forty minutes, and usually you
+give up and shoot something new.
+
+Filenames don't tell you what's in a clip. Neither do folders. The only thing
+that does is watching it.
+
+## What this does
+
+It watches your footage for you — once — and remembers.
+
+It reads your existing folders (**never writes to them**), splits each clip
+into shots, and builds a searchable index down to the individual shot. Then you
+ask for what you want in plain language and get back the clip *and the
+timecode*:
+
+```
+"drone shot pulling back over a coastline at sunset"
+→ travel/DJI_0284.MP4    00:12–00:24    ← the shot, not just the file
+→ b-roll/A001_C007.mov   01:47–02:03
 ```
 
-`Re:Footage` is the product name; `nexusgate` remains the binary and the
-configuration namespace, so existing libraries and Workers keep working.
+Everything runs on your own machine. Your footage never leaves it.
 
-## 30 seconds: 这是什么? 为什么有用? 长什么样? 怎么跑起来?
+**Concretely, you get:**
 
-**这是什么** — a local-first intelligence layer for your footage library:
-indexed, searchable down to the individual shot.
+- **Shot-level search** — over what's visible, what's said, and metadata, with
+  an evidence gate that separates "this ranked high" from "this actually
+  contains what you asked for". It will answer *unknown* rather than guess.
+- **Proxies and thumbnails** — generated once, so browsing stays instant even
+  when the originals are 16 GB ProRes on a spinning disk.
+- **Transcripts** — searchable as complete phrases, not loose keywords.
+- **A browser UI, a CLI, an HTTP API and an MCP server** — use whichever fits.
 
-**为什么有用** — 在大量旧素材里找到某样东西真正出现的那几秒.
+## What this is not
 
-**长什么样** — three pages cover the whole loop:
+Being straight with you, because the alternative wastes your evening:
 
-![Library — the footage library with the shot semantic timeline and filters](docs/images/library.png)
+- **This is alpha.** The current release is `v0.38.0-alpha`. It works. It is
+  not finished. It will change.
+- **Don't expose it to the internet.** It is built for your own machine or a
+  trusted LAN. The Hub refuses to start if it detects the careless version of
+  this inside a container.
+- **The smart parts need a model provider.** Scanning, proxies, thumbnails,
+  metadata search and shot detection are fully local. Transcription and visual
+  understanding call a provider you configure — or a local model you run
+  yourself. Without one you still get a browsable, deduplicated, proxy-backed
+  library; you just don't get semantic search.
+- **It is not an editor** and not a media manager. It finds things. Your NLE
+  does the rest — there is a timeline export for that.
 
-![Search — shot-first search results with per-shot evidence](docs/images/search.png)
+---
 
-![Processing — the pipeline queue and per-job progress](docs/images/processing.png)
+## Install
 
-**怎么跑起来** — two routes, detailed in [Quick start](#quick-start). Both need an
-environment check and an analysis provider configured **before** the first scan:
-a scan enqueues jobs and starts draining them immediately with whatever is
-configured (`vision_primary` defaults to `none`, so jobs fail visibly rather than
-fabricating a result). For a native install, run `./nexusgate doctor`; for Docker,
-run `docker compose run --rm hub doctor` after setting `NEXUSGATE_MEDIA_ROOT`.
-
-- **Browser-wizard route** — start the Hub (`./nexusgate serve` for a native
-  install, or the Docker command below), then open the HTTPS URL it prints. The
-  `/setup` first-use wizard checks the environment, walks you through adding a
-  footage root and configuring the model channels, and guides the first scan —
-  no CLI beyond starting the Hub.
-- **Native CLI route** — configure the provider, then
-  `./nexusgate root add /path/to/footage && ./nexusgate root scan <root-id>`
-  to import, enqueue and drain the currently-leasable queue, and run
-  `./nexusgate pipeline run` (or `serve`, which also exposes `/progress`) for
-  any later passes.
-
-### The loop in 30 seconds
-
-装好 → 配置模型 → 加素材目录 → 处理几个片段 → 搜索 → 播放/收藏镜头.
-Install, configure a model, add a footage folder, process a few clips, search,
-play or favourite the shot.
-
-## Project status
-
-**Alpha / technical preview.** The core ingestion, per-shot analysis, search,
-the local multimodal path, and the Hub/Worker architecture are functional and
-regression-tested, but APIs, database migrations and model contracts may still
-change. There is no stable release yet, no API stability promise, and no
-supported-version table.
-
-The current repository release target is `v0.38.0-alpha`. It is being prepared
-from `main` and has not been published; see the [v0.31 release
-notes](docs/v0.31-release-notes.md) for the release-closure scope and current
-verification status.
-
-**Do not expose the Hub directly to the public Internet.** It is built for a
-trusted LAN (or a private overlay like Tailscale): library reads are gated by
-source network, administrative routes by a token, and the security model
-assumes a single trusted machine.
-
-## What it is, and what it is not
-
-NexusGate does:
-- Ingest and probe footage
-- Detect shots and build a shot-level index
-- Understand content via ASR and VLM
-- Retrieve shots with evidence-backed results
-- Serve results over HTTP API, CLI, and MCP
-
-NexusGate does not:
-- Make editorial decisions
-- Edit timelines or re-encode footage
-- Automatically produce finished videos
-- Do creative planning or storyboarding
-
-Two more deliberate non-claims:
-
-- **Proprietary RAW is identified, not decoded.** BRAW/R3D/ARI/CRM/N-RAW are
-  recognised and their render state recorded; without a compatible renderer the
-  asset is reported as unrendered rather than silently treated as SDR.
-- **Shot similarity is a heuristic feature vector**, built from the model's own
-  descriptions and tags, blended with SQLite FTS5. Text retrieval may
-  additionally use a configured embedding provider (SQLite-stored float32
-  vectors, cosine scan in Go — no vector database), but shot similarity itself
-  is not a learned visual embedding.
-
-NexusGate is independently usable and is also being developed as part of the
-underlying footage intelligence layer for ChatCut.
-
-## How it works
-
-**NexusGate owns the timeline. VLMs describe the frames.**
-
-A scan enqueues jobs; each stage enqueues its successor, so the whole chain is
-idempotent and resumable.
-
-```text
-Footage / NAS
-     ↓
-probe + proxy          (ffprobe + read-only derive: thumbnail, 720p proxy)
-     ↓
-deterministic shot detection
-     ↓
-2 / 4 / 6 representative frames + timestamped transcript
-     ↓
-Local VLM / Cloud VLM  (Gemini, Qwen, Volcengine, local OpenAI-compatible)
-     ↓
-shot-level metadata
-     ↓
-SQLite FTS5 + hybrid retrieval
-     ↓
-exact source time range
-```
-
-```text
-probe → derive → speech_gate → transcribe → [align] → analyze → index
-           └────────────── (no audio) ──────────────────┘
-```
-
-Everything is local-first: original media stays read-only, derived files live
-in a separate cache, all search state is SQLite, and **no vector database is
-currently required**. A local VLM is optional — `local_vlm` speaks the same
-OpenAI-compatible `chat/completions` surface a llama.cpp / LM Studio / vLLM /
-SGLang runtime exposes — and cloud providers plug into the same pipeline.
-Whatever answers, a shot's metadata comes only from that shot's own evidence,
-and search returns the exact `start_ms` / `end_ms` where the thing you asked
-for actually is. Search is a layered retrieval engine (`internal/search`):
-query compilation, per-intent retrieval channels, RRF fusion, an evidence gate
-that refuses to claim a shot contains something without shot-level evidence
-(`confirmed`/`possible`/`contradicted`/`unknown` — unknown is never "确认无
-人"), and a diversity selection pass. A configured embedding provider adds a
-text-embedding channel (`providers.embedding`); its vectors are a retrieval
-signal, never evidence, and `nexusgate search rebuild-embeddings` rebuilds
-them when the model changes. The structured endpoint
-`POST /api/v1/search/shots` serves UI, MCP and editing agents alike with
-per-constraint evidence; the legacy GET endpoints keep their exact behaviour.
-
-| Stage | What it does |
-| --- | --- |
-| `probe` | ffprobe + optional ExifTool; records duration, codecs, capture metadata, colour class |
-| `derive` | thumbnail, 720p H.264 proxy, temporary 16 kHz audio |
-| `speech_gate` | decides locally whether transcription is worth paying for |
-| `transcribe` | the configured ASR provider, with fallback |
-| `align` | optional forced alignment through an external command |
-| `analyze` | the configured video-understanding provider → shots, tags, summary |
-| `index` | SQLite FTS5 rebuild |
-
-**Supported source formats (current behaviour):** the scanner recognises
-`.mov`, `.mp4`, `.m4v`, `.mxf`, `.braw`, `.r3d`, `.ari`, `.crm`, `.dng`,
-`.nev`, `.insv`. Any other extension is silently skipped during a scan — no
-error, no warning — a known limitation worth remembering when a folder seems
-to index nothing.
-
-### Model output never writes directly to canonical tables
-
-This is the boundary the project is built around.
-
-```text
-input hash → model_runs (immutable cache + staging)
-          → parse + schema/vocabulary validation
-          → transactional commit to asset_analysis
-          → FTS5 rebuild
-```
-
-Failed, timed-out, malformed or out-of-range responses stay in `model_runs` and
-cannot contaminate trusted analysis, tags, shots or search rows. The same shape
-governs tag governance (`raw tags → normalize → unresolved pool → staged
-proposals → human approval → canonical catalog`) and Repurpose plans (immutable
-revisions; approval is human-only and locks the plan). **Agents may draft; humans
-approve.**
-
-## Interfaces
-
-NexusGate exposes its library through four co-equal interfaces:
-
-| Interface | Transport | Use case |
-|---|---|---|
-| **HTTP API** | HTTPS (self-signed) | Web UI, custom integrations, scripts |
-| **CLI** | Local process | Import (`root add` / `root scan`), pipeline runs (`pipeline run` / `retry-failed`), maintenance (cache, search, secrets), Worker enrollment |
-| **MCP** | stdio (JSON-RPC) | Read-only library queries for AI agents (Claude Code, Codex, Cursor, DeepSeek Harness via `plugins/dsh`) |
-| **Agent Skill** | HTTPS (self-signed) + agent token | HTTP draft / revise workflow for Repurpose plans |
-
-The MCP server (`nexusgate-mcp`) is a thin client of the HTTP API — it holds
-no database handle and never touches the NAS. Every tool calls the same
-`/api/v1/...` endpoints the browser uses, with the same agent-token and
-trusted-read contracts. MCP is read-only and exposes exactly six tools:
-`inspect_library`, `search_shots`, `get_timeline`, `get_transcript`,
-`get_asset`, `get_shot`. It cannot create or revise plans. Drafting and
-revising plans is the **Agent Skill**'s HTTP workflow (agent token,
-`POST /api/v1/repurpose/plans` and its revision routes); approval and export
-stay human-only actions in the browser UI.
-DeepSeek Harness consumes the same MCP server through the bundle plugin in
-`plugins/dsh/` (one `dsh-mcp-client` row spawning `nexusgate-mcp` over
-stdio); its install steps mirror the Claude Code plugin above.
-
-Cross-machine MCP needs an `https://` Hub URL plus `NEXUSGATE_HUB_FINGERPRINT`
-— the SHA-256 certificate fingerprint `nexusgate serve` prints. A plain
-`http://` URL is refused for any non-loopback host, and an `https://` URL
-without the fingerprint refuses to start rather than trusting an unpinned
-certificate.
-
-## Requirements
-
-- Go 1.25.5 (match `go.mod` — the module is the dependency truth)
-- `ffmpeg` / `ffprobe`. Any recent build runs the pipeline. The read-rate limit
-  additionally needs **FFmpeg 5.1+**, since `-readrate` does not exist before
-  that; on an older build that one setting is skipped with a warning instead of
-  failing every derive.
-- `exiftool` — recommended, optional. Without it, capture metadata is limited to
-  what ffprobe exposes.
-
-No database server, no web framework, no frontend build step. NexusGate
-intentionally keeps its dependency surface small and avoids a web framework,
-ORM and frontend build system; `go.mod` lists every direct dependency.
-
-## Build
+### Docker — shortest path, nothing to install
 
 ```bash
-go mod tidy
-go test ./...
-go build -o nexusgate ./cmd/nexusgate
-```
-
-Or build nothing locally: `Dockerfile` is multi-stage and compiles inside the
-Go image, so Docker alone is enough — no Go toolchain, and FFmpeg and exiftool
-come with the runtime image. That is the shortest path on Windows.
-
-```bash
-# First create the docker-compose.override.yml shown below.
+git clone https://github.com/evjohn-icu/nexusgate.git && cd nexusgate
 NEXUSGATE_MEDIA_ROOT=/path/to/footage docker compose up -d --build hub
 ```
 
-**Admin auth in a container defaults to `required`.** The shipped
-`docker-compose.yml` sets `NEXUSGATE_HUB_ADMIN_AUTH: ${NEXUSGATE_HUB_ADMIN_AUTH:-required}`,
-so a clean `docker compose up -d --build hub` starts with the administrator
-token demanded on every administrator call and no LAN passwordless waiver. No
-override file is needed.
+The image compiles Go and brings its own FFmpeg and exiftool, so the complete
+prerequisite list is: Docker. This is also the shortest path on Windows.
 
-That default exists because the waiver is decided from the peer address alone.
-Behind Docker's NAT every client looks like an RFC1918 peer, so
-`trusted_network` inside a container would silently waive the password for
-anything that reaches the published port — which is why the Hub **fails closed**
-(refuses to start) if it detects it is containerised with
-`hub_security.admin_auth: trusted_network` and no explicit
-`admin_auth_networks`.
+Your footage appears inside the container at `/media/library` — use *that*
+path when you add it below, not the host path.
 
-If you do want passwordless admin on a trusted LAN, name the CIDRs rather than
-relaxing the mode blindly:
-
-```yaml
-# docker-compose.override.yml — merged automatically; the shipped file stays untouched.
-services:
-  hub:
-    environment:
-      NEXUSGATE_HUB_ADMIN_AUTH: trusted_network
-      NEXUSGATE_HUB_ADMIN_AUTH_NETWORKS: 192.168.1.0/24
-```
-
-Both variables are read from the environment, so no `config.json` edit is
-required for this. On Unraid, set the same two items in the Hub template's
-environment. None of this is a recommendation to expose the Hub to the public
-Internet.
-
-The Hub then answers on `https://127.0.0.1:8787`, and `root add` must be given
-the container path (`/media/library`), not the host path. A published port puts
-Docker's NAT in front of the read guard described under
-[security boundaries](#security-boundaries), so read
-[the deployment notes](docs/v0.14-deployment.md#docker-compose) before widening
-that binding.
-
-The plain image above has no GPU userspace installed, so hardware
-acceleration inside it falls back to software x264 regardless of the host.
-`docker build --target gpu` produces a second image with the Intel/AMD VAAPI
-userspace layered on top (NVIDIA needs nothing baked in — it comes entirely
-from the host via the NVIDIA Container Toolkit); pair it with the
-commented-out device-passthrough stanzas in `docker-compose.yml` to actually
-hand the container `/dev/dri` or an NVIDIA device. See
-[GPU Docker images and Unraid deployment](docs/v0.19-gpu-docker-unraid.md)
-for the image tags, the Compose wiring, the Unraid Community Applications
-templates under `deploy/unraid/`, and the `NVIDIA_DRIVER_CAPABILITIES`
-gotcha that makes NVENC fail silently without it.
-
-## Quick start
-
-`doctor` always runs first, whatever the config looks like. The provider-config
-validator that runs before command dispatch deliberately exempts `doctor` (and
-`worker`), so a `config.json` with an enabled provider whose key never resolved
-is something the environment check *reports* rather than something that blocks
-it — a diagnostic you must fix the problem to run would be useless. Every other
-non-Worker command does fail fast on that config, so fix what `doctor` names
-before `scan` or `serve`.
+### From source
 
 ```bash
-export NEXUSGATE_DATA_DIR="$PWD/.nexusgate-dev"
-
-./nexusgate doctor                        # check ffmpeg, hardware profile, paths
-./nexusgate root add /path/to/footage     # read-only; nothing is written there
-./nexusgate root scan <root-id>           # scans, enqueues, then drains the queue
-./nexusgate pipeline run                  # drain again (backoff/deferred/off-peak passes)
-./nexusgate search rebuild                # rebuild asset-level FTS from canonical rows
-./nexusgate search rebuild-embeddings     # re-embed all shots (after a model switch)
-./nexusgate cache inspect                 # report cache categories and rebuildable space
-./nexusgate cache verify                  # compare derived-artifact rows with cache files
-./nexusgate cache gc --rebuildable --yes  # delete rebuildable artifacts and enqueue re-derive
-./nexusgate serve                         # HTTPS by default; prints the Hub HTTPS fingerprint
+git clone https://github.com/evjohn-icu/nexusgate.git && cd nexusgate
+go build -o nexusgate ./cmd/nexusgate
 ```
 
-Then open the browser UI. Analysis commits shot-level
-FTS immediately; the successor `JobIndex` rebuilds the asset-level FTS row.
+You will need:
 
-`root scan` and `pipeline run` drain the queue until no job is *currently*
-leasable: jobs parked on a retry backoff, provider-route deferral, the disk
-floor or the off-peak window stay queued and are picked up by a later pass.
-The `library_supervisor` (an optional `serve` config) rescans every root and
-drains on a timer, unattended — it is not a prerequisite for a manual run.
+| | |
+|---|---|
+| **Go** | 1.25.5 — `go.mod` is the truth if this line ever drifts |
+| **ffmpeg / ffprobe** | any recent build. 5.1+ for the read-rate limiter (`-readrate` does not exist before that; older builds skip that one setting with a warning instead of failing every render) |
+| **exiftool** | optional. Without it, capture metadata is whatever ffprobe exposes |
 
-Everything lives under `$NEXUSGATE_DATA_DIR`: `nexusgate.db`, optional
-`config.json`, `cache/`, `admin-token`, `agent-token`, `provider-secrets/`.
-Deleting that directory is how you reset.
+No database server, no web framework, no frontend build step. Nine direct
+dependencies, all listed in `go.mod`.
 
-On first start the Hub generates and persists the raw `admin-token` (exact mode
-`0600`) so the same bearer credential can be recovered after a Hub restart. The
-data directory is exact mode `0700`; the token must be a regular, non-symlink
-file with exact mode `0600`. The Hub fails closed rather than repairing an unsafe
-directory or token file. Use the token only for Hub management calls; never put
-it in Worker configuration or browser storage.
+---
 
-If jobs failed because a provider was not configured yet, configure it and then:
+## First run
 
 ```bash
-./nexusgate pipeline retry-failed
+export NEXUSGATE_DATA_DIR="$PWD/.nexusgate-data"
+
+./nexusgate doctor                     # what is missing? fix what it names first
+./nexusgate root add /path/to/footage  # read-only. nothing is ever written there
+./nexusgate root list                  # copy the root id it prints
+./nexusgate root scan <root-id>        # walk, fingerprint, then process
+./nexusgate serve                      # opens on https://127.0.0.1:8787
 ```
 
-### Maintenance commands
+Then open the browser UI.
 
-`nexusgate search rebuild` repairs all asset-level FTS rows from canonical data.
-It is separate from `search rebuild-embeddings`, which rebuilds the shot text
-embedding rows after an embedding-model change and never reruns VLM analysis.
+**A word about `root scan`, because the first one surprises people.** It walks
+your library and then drains the whole processing queue in the same command. On
+a 50-clip library that is minutes. On a 5000-clip NAS it is an overnight job —
+it reads every file across the network and transcodes a proxy for each one.
+Ctrl-C is safe: what is done stays done, and the next run picks up where it
+stopped. Watch the `queued=` number it prints — that is how much work it
+actually created.
 
-Cache maintenance is intentionally explicit:
+Later scans are fast. Files whose size and mtime have not changed are never
+re-read.
 
-- `nexusgate cache inspect` reports artifact classes, orphan directories and
-  rebuildable space.
-- `nexusgate cache verify` reports missing derived files and cache files without
-  database rows. Source staging under `cache/sources/` is excluded by design.
-- `nexusgate cache gc [--scratch] [--rebuildable] [--orphans] [--yes]` removes
-  only the named disposable categories. Without `--yes` it is a dry run; with
-  `--rebuildable --yes`, completed assets are queued for re-derive.
-- `nexusgate cache repair-derived --invalidate-hardware-profiles [--yes]`
-  removes hardware-derived thumbnail/proxy rows and files and, with `--yes`,
-  queues re-derive jobs. Without `--yes` it only reports what would change.
-- `nexusgate secrets rekey` rotates the encrypted provider-secret store's data
-  key, re-encrypts all secrets and keeps the previous key at
-  `provider-secrets/store.key.pre-rekey`. The operation is journaled and
-  recovers interrupted file replacement on the next open.
+Everything lives under `$NEXUSGATE_DATA_DIR` — database, cache, tokens.
+**Deleting that directory is how you reset.** Your footage is untouched by
+that, because nothing was ever written next to it.
 
-Neither an exhausted attempt budget nor a permanent failure is undone by
-re-scanning, so this is the way back.
+### The two tokens
 
-## The browser UI
+The Hub generates two credentials on first start, both mode `0600` inside the
+data directory:
 
-Served by `nexusgate serve` over HTTPS by default. The browser uses a short-lived,
-memory-only Hub administrator Session in an HttpOnly cookie plus a readable CSRF
-cookie; the pasted administrator token is used only to establish that Session and
-is never stored in browser storage. CLI, Agent, and Worker clients keep their
-separate Bearer credentials.
+- **`admin-token`** — full control. Yours. Never give it to an agent, never put
+  it in a Worker config, never in browser storage.
+- **`agent-token`** — read and draft only. This is the one you hand to an
+  assistant.
 
-| Page | Purpose |
-| --- | --- |
-| `/` | The library. Each row is **thumbnail → material context → shot-level timeline**, so you can see what exists at each point in a source before planning anything. Filter by capture date, region, camera or shoot session, or by asset type, shot size, camera motion, audio type, quality, usable-as and a duration range. |
-| `/collections` | 收藏 baskets: pin shots from search results and review or export their timecodes later. |
-| `/progress` | Jobs — run the queue; watch counts, per-job attempts and failures. Failure text is administrator-only. |
-| `/library-roots` | Add and scan footage roots; the `smb://`/`nfs://` mount wizard lives here. |
-| `/providers` | Capability-scoped model channels; add, test, enable, disable, remove. Keys never come back to the browser. |
-| `/workers` | Paired node status, stage/progress, retry history, optional derive routing. |
-| `/worker-setup` | Generates an install script for a new Worker. |
-| `/tags` | Tag governance: review and approve staged proposals. |
-| `/settings` | Disk-load limits (below). |
-| `/setup` | First-use wizard: environment check, add a root, configure providers, guide the first scan. The working configuration pages are `/library-roots` and `/providers`. |
-| `/repurpose` | Labs — turn an editorial brief into a reviewable plan; experimental workflow built on NexusGate retrieval. |
+On a trusted LAN, reads need no token at all; writes do. From anywhere else,
+both do.
 
-The first-import path is `/setup` (or directly `/library-roots`) to add a
-footage root, then `/` to search it, then `/collections` to pin the shots
-worth keeping.
+---
 
-`/setup` 的 Status 是首次引导启发式，不是完整的搜索 readiness 证明：它统计
-root、provider channel 和 asset 行，不代表资产已经 probe/analyze/index，也不
-会把 legacy `providers.*` env/config 路由计入 Provider 数。完成扫描后，以
-`/progress` 的作业状态和 `/` 是否出现镜头时间轴为准；ExifTool 是可选的，
-缺少它只会减少 capture metadata。
+## Let an agent install it for you
 
-The settings page also exposes optional daily and monthly cost guides. They are
-operator references for the append-only post-call estimate ledger, never billing
-records or enforced provider caps. Exceeding a guide does not pause, reject or
-defer analysis or transcription; the cost summary reports `today_estimate` and
-`month_estimate` in the configured channel unit.
-
-## Limiting disk load
-
-By default the pipeline reads source media as fast as the bus allows, and a
-full-library scan holds a mechanical disk or a NAS link at that rate for hours.
-`/settings` bounds it. Both levers default to off, so upgrading never silently
-slows an existing library.
-
-The pipeline leases **one job at a time**, so this is not a concurrency setting.
-The two things that actually reduce sustained load are:
-
-- **Read-rate limit** — caps FFmpeg's input read speed as a multiple of realtime
-  (`1` reads a 10-minute clip over 10 minutes). Only whole-file reads honour it;
-  a thumbnail decodes a single frame, where a cap would just slow the seek.
-- **Per-job cooldown** — the pause after each finished job. This is what turns a
-  multi-hour scan from continuous load into duty-cycled load. A rate cap alone
-  still reads flat out, only slower.
-
-An **off-peak window** defers heavy work to the small hours. Assets above a size
-threshold wait for the window; assets below a second, smaller threshold are exempt
-from both the wait and the rate cap — throttling a phone clip saves nothing and
-only makes the library feel broken. Size rather than duration, because bytes read
-is what the disk feels.
-
-The window is judged in the **Hub's** local time, and the page shows the Hub's own
-clock so a time set from another zone is not ambiguous. Inside the window the
-cooldown is skipped: draining the queue at full speed at night is the point of
-having a window.
-
-Changes take effect on the next job, not on restart, so a scan that is already
-grinding can be reined in. Held work is filtered before it is leased, so waiting
-for a window never consumes a job's retry budget.
-
-## Configuration
-
-Copy `config.example.json` to `$NEXUSGATE_DATA_DIR/config.json`. Most settings
-also have an environment variable. Prefer environment variables for legacy
-Provider keys or the encrypted `/providers` channel store; an explicit legacy
-`api_key` field in `config.json` is plaintext on disk and should be treated as a
-secret until migrated.
-
-### Hardware-accelerated derived media
-
-Acceleration applies to the read-only derive stage only: hardware decode for
-thumbnails and proxies, hardware H.264 for the 720p proxy. The original file is
-never modified.
-
-```json
-{ "hardware": { "mode": "auto", "allow_fallback": true, "proxy_bitrate_kbps": 1800 } }
-```
-
-| `mode` | Selects |
-| --- | --- |
-| `auto` | macOS VideoToolbox; on Linux CUDA/NVENC, then Intel QSV, then VAAPI |
-| `cuda` | NVIDIA discrete GPU decode + NVENC |
-| `qsv` | Intel Quick Sync Video |
-| `vaapi` | Linux DRM render device, normally `/dev/dri/renderD128` |
-| `videotoolbox` | Apple silicon / Intel Mac media engine |
-| `software` | force libx264 |
-
-The detector inspects the installed FFmpeg build rather than guessing from the
-machine — `nexusgate doctor` or `GET /api/v1/hardware` reports what was chosen.
-With `allow_fallback`, an unsupported codec or driver retries in software.
-Hardware and software cache paths are kept distinct, so a software proxy is never
-mislabelled as a hardware result.
-
-### NAS and network shares
-
-NexusGate runs on a machine with CPU/GPU, not on the NAS. Mount the share, add the
-mounted folder as a normal library root, and enable copy staging:
-
-```json
-{ "source_staging": { "mode": "copy", "max_bytes": 0 } }
-```
-
-`max_bytes` caps the local staging cache in bytes; `0` means unbounded, which is
-the Hub default so upgrading changes no behaviour. A Worker's copy of that cache
-defaults to 256 GiB instead — see `worker enroll --source-cache-max-bytes` below.
-The source is opened read-only and copied once into
-`$NEXUSGATE_DATA_DIR/cache/sources/` before jobs that decode or transform the
-source. The NAS receives no derived files, sidecars or metadata writes, and a
-completed cache entry keeps working if the share disconnects after staging.
-Budget local disk for the files being processed; the cache is disposable while
-NexusGate is stopped.
-
-**Probe exception (current behaviour):** the `probe` stage still reads the
-original path directly, even with `mode: copy`; the initial metadata read is not
-isolated from a NAS disconnect.
-
-The `/library-roots` wizard turns a pasted `smb://`/`nfs://`/UNC address into
-paste-ready mount commands rather than guessing a password or mounting
-anything itself — `internal/mount` deliberately never acquires root for you.
-For the containerised Hub, mounting the share is a host-side step, not a
-container one; [NAS mounting](docs/v0.20-nas-mounting.md) is the decision
-record for why: it ranks every option from "mount on the host, bind a parent
-directory into the container" down to the ones that were evaluated and
-rejected (mounting inside the container, a userspace SMB client), and states
-the real cost of the Docker-native NFS and SMB volume paths — NFS carries no
-password at all, SMB's does end up in cleartext in Docker's own volume
-metadata.
-
-### Video understanding providers
-
-```text
-video → VideoUnderstandingProvider router → VideoAnalysisResult
-        ├── Gemini            ├── summary / scenes / shots
-        ├── Qwen              ├── objects / actions / mood
-        ├── Volcengine        └── raw_tags + confidence
-        └── local VLM
-```
-
-Set `providers.vision_primary` to `gemini`, `qwen_video`, `volcengine_video` or
-`local_vlm`, and list alternatives in `providers.vision_fallback`. Set it to
-`none` to browse an existing library without analysing: jobs then fail visibly
-rather than being filled with a fabricated local result.
-
-Prefer `/providers` over the config file for **cloud** channels. A channel is
-capability-scoped, can hold several keys for the same provider, and gets
-health-aware retry, cooldown, concurrency limits and ordered fallback. Keys
-are encrypted in the Hub-only `provider-secrets/` directory (`0700`, files
-`0600`) and are never returned by any API, written to SQLite, or sent to a
-Worker's configuration.
-
-**Current UI limitation:** the beginner `/providers` wizard is not a universal
-configuration form. It starts with Gemini video analysis plus embedding selected,
-but the runtime treats video and embedding as different provider capabilities;
-configure embedding with an embedding provider, not a video provider. Gemini and
-some native ASR endpoints do not provide a model list for the wizard, and the
-wizard currently requires a detected model; use the Advanced editor or
-`config.json` to enter a model manually. A local VLM may be keyless, but the
-wizard currently expects a key, so use the documented `providers.local_vlm`
-config block for an unauthenticated local endpoint. These are current UI limits,
-not additional provider requirements.
-
-One deliberate exception: **Local Multiframe v1 currently uses
-`providers.local_vlm` in `config.json`.** The `/providers` channel UI does not
-yet route `openai_multiframe` through the multiframe orchestration path; a
-channel with that protocol is refused with a clear message at build time
-rather than failing mid-analysis. See below.
-
-### Local multimodal analysis (Local Multiframe)
-
-NexusGate detects shot boundaries itself (ffmpeg scene filter or an external
-detector), samples 2/4/6 representative frames per shot, slices the timed
-transcript per shot, and sends *still frames* to a local OpenAI-compatible
-VLM — the endpoint never receives whole videos. This is the cheapest way to
-index a library on one machine with an 8–16 GB consumer GPU.
-
-NexusGate does **not** download models or start the VLM runtime. Point it at
-an OpenAI-compatible multimodal HTTP endpoint:
-
-```json
-{
-  "providers": {
-    "vision_primary": "local_vlm",
-    "local_vlm": {
-      "enabled": true,
-      "protocol": "openai_multiframe",
-      "base_url": "http://127.0.0.1:8080/v1",
-      "path": "chat/completions",
-      "model": "Qwen3-VL-4B-Instruct"
-    },
-    "shot_detection": {
-      "enabled": true,
-      "mode": "ffmpeg_scene",
-      "scene_threshold": 0.3
-    }
-  }
-}
-```
+This repository is written to be read by a coding agent, and setting it up is a
+good job for one.
 
 ```bash
-export NEXUSGATE_DATA_DIR="$PWD/.nexusgate-dev"
-./nexusgate root add /path/to/footage
-./nexusgate root scan <root-id>
-./nexusgate pipeline run      # leases and runs jobs until the queue is idle
-./nexusgate search rebuild-embeddings   # after switching the embedding model
-./nexusgate serve
+git clone https://github.com/evjohn-icu/nexusgate.git && cd nexusgate
+claude   # or any coding agent that can read files and run commands
 ```
 
-Any OpenAI-compatible multimodal runtime (llama.cpp, LM Studio, vLLM, SGLang,
-Ollama) satisfies the contract; the model only has to describe still frames
-and return the shot-metadata schema. See
-[docs/v0.25.1-multiframe-local-vlm.md](docs/v0.25.1-multiframe-local-vlm.md)
-for the sampling rules and honest boundaries of the v1 path.
+Then tell it, in roughly these words:
 
-### Relay and reverse-proxy endpoints
+> Get this running against my footage at `/path/to/footage`. Read `CLAUDE.md`
+> first, then run `nexusgate doctor` and fix whatever it reports before you
+> scan anything.
 
-Direct provider endpoints and relays use the same configuration shape:
+**Why this works rather than being a gimmick:** `CLAUDE.md` at the repo root is
+a real architecture document — the layer map, the pipeline, the invariants that
+are easy to break. And `nexusgate doctor` is written to be *acted on*: it names
+the missing binary, the wrong directory mode, the provider whose key never
+resolved. Between the two, an agent has what it needs to take you from a clone
+to a running Hub without you learning the CLI first.
 
-| Field | Meaning |
-| --- | --- |
-| `base_url` | official or relay base URL |
-| `path` | endpoint path the relay exposes |
-| `protocol` | e.g. `gemini_interactions`, `openai_chat`, `openai_video`, `openai_embeddings` |
-| `auth_header` | usually `Authorization`, or e.g. `x-goog-api-key` |
-| `auth_scheme` | `Bearer`, another scheme, or `raw` to send the key bare |
-| `extra_headers` | anything else the relay needs |
-| `model` | relay-side alias; need not match the official model name |
+Be clear-eyed about what is happening: there is no installer script. The agent
+reads the same docs and runs the same commands you would. What you are buying
+is not having to do it yourself.
 
-```json
-{
-  "enabled": true,
-  "protocol": "openai_chat",
-  "base_url": "https://relay.example.com/v1",
-  "path": "chat/completions",
-  "api_key_env": "NEXUSGATE_RELAY_KEY",
-  "model": "gemini-3.6-flash"
-}
-```
+**Two things to tell it.** Give it the **agent token**, not the admin one. And
+if it offers to open the Hub to the network, say no.
 
-The OpenAI-compatible video adapter sends a `video_url` data URL, so the relay
-must genuinely support video content — a text/image-only gateway is not enough.
+## Using it with an agent afterwards
 
-### Volcengine Agent Plan / Coding Plan
+Once the library is indexed, an assistant can search it for you.
 
-The two personal plans are treated as **separate quota and key domains**, not as
-aliases of one relay, so Agent Plan traffic cannot draw down Coding Plan quota.
+**MCP** — `cmd/nexusgate-mcp` speaks MCP over stdio and exposes four tools:
+`health`, `search_shots`, `get_shot`, `get_asset`. It is a thin HTTP client of
+your Hub: no database handle, no access to your media files. Example config in
+`skills/nexusgate/mcp/.mcp.json.example`.
 
-| Plan | Roles | Base URL |
-| --- | --- | --- |
-| Agent Plan | Tag Curator / library summary, tag embeddings, Seed ASR 2.0 | `https://ark.cn-beijing.volces.com/api/plan/v3` |
-| Coding Plan | Tag Curator / library summary, plan embedding entitlement | `https://ark.cn-beijing.volces.com/api/coding/v3` |
+**Agent Skill** — `skills/nexusgate/SKILL.md` is a versioned contract for
+editorial research: find reusable material, retrieve shot evidence, draft a
+plan. Before acting it calls `GET /api/v1/agent/capabilities`, which declares
+what is out of bounds — plan approval, pipeline runs, provider keys and raw
+media paths. That declaration is enforced by the routes, not merely promised in
+a prompt.
 
-```json
-{
-  "providers": {
-    "asr_primary": "volcengine_asr",
-    "asr_fallback": "qwen",
-    "tag_curator_primary": "volc_agent_plan",
-    "embedding_primary": "volc_agent_plan_embedding",
-    "volc_agent_plan": { "enabled": true },
-    "volc_agent_plan_embedding": { "enabled": true },
-    "volc_asr": { "enabled": true }
-  }
-}
-```
+**Approval stays human.** An agent may draft a plan. It cannot approve one.
 
-Set `model` to something enabled for your subscription in the Volcengine console;
-the example names are not a fixed allow-list.
+---
 
-Both plan endpoints authenticate with `Authorization: Bearer <key>`, which is what
-these blocks now default to. Releases before this one shipped `"auth_header":
-"X-Api-Key"` / `"auth_scheme": "raw"`, and an Agent Plan account rejects that with
-a 401 — indistinguishable from a bad key. If your `config.json` was copied from an
-earlier `config.example.json`, delete those two fields from the four
-`volc_*_plan*` blocks (or set them to `Authorization` / `Bearer`); an existing
-config file overrides the corrected defaults. Note that `volc_asr` is unaffected:
-Seed ASR 2.0 is a different service on a different host and genuinely uses
-`X-Api-Key`.
+## Going further
 
-Seed ASR 2.0 is not OpenAI-shaped: it uses the documented native WebSocket binary
-protocol, so it exists only as `volcengine_asr` and is never sent to an audio
-endpoint. It defaults to offline `bigmodel_nostream`, which suits imported
-footage: derived audio is converted to 16 kHz mono PCM and sent in 200 ms chunks.
-A missing subscription capability or wrong resource ID fails the run and activates
-the configured fallback — it cannot silently downgrade to an older ASR model.
+Everything above is the short version. When you need more:
 
-### ASR flow
-
-1. Speech Gate decides whether transcription is needed at all.
-2. `asr_primary` is called.
-3. On provider failure, `asr_fallback` is attempted.
-4. Successful transcripts are cached by `asset_id + input_hash`.
-5. Vision analysis consumes the transcript when available.
-
-### Tag governance
-
-```text
-raw tags → normalize → exact canonical/alias resolution → unresolved pool
-        → bounded Tag Curator → staged proposals → human approve/reject
-        → transactional catalog update → affected asset links updated
-```
-
-The heuristic curator is deliberately conservative. An optional OpenAI-compatible
-or Gemini-native small model implements the same proposal contract — it can return
-semantic groups only. NexusGate derives the database IDs itself, rejects aliases
-absent from the unresolved pool, and writes nothing to the canonical catalog until
-a human approves.
-
-Optional embedding-based clustering finds candidate groups before the Curator
-names them. It embeds normalised tag **strings** only; it never sees video and
-does not rank footage. Without an embedding provider, clustering is simply
-unavailable — a lexical fallback is not presented as semantic clustering.
-(The search engine's `text_embedding` channel is a separate use of the same
-provider interface: it embeds shot text — description/tags/speech — and only
-ever ranks, never proves; evidence comes from the gate, not the vectors.)
-
-```bash
-curl -k -H "Authorization: Bearer $(cat \"$NEXUSGATE_DATA_DIR/admin-token\")" \
-  -X POST 'https://127.0.0.1:8787/api/v1/tags/clusters?limit=500&threshold=0.86'
-```
-
-`threshold` is cosine similarity and is conservative by default. Nothing merges
-automatically.
-
-### Optional forced alignment
-
-With `providers.alignment.enabled`, NexusGate runs the configured command and
-writes one JSON object to stdin:
-
-```json
-{"audio_path":"/abs/audio.m4a","language":"zh","text":"完整转写文本","segments":[]}
-```
-
-The adapter writes JSON to stdout:
-
-```json
-{"words":[{"start_ms":1320,"end_ms":1680,"text":"我们","confidence":0.98}]}
-```
-
-This keeps Python, CUDA and forced-aligner dependencies outside the Go process; a
-Qwen3-ForcedAligner wrapper can satisfy the contract with no changes here.
-
-## Search
-
-```bash
-curl -k --get --data-urlencode 'q=demo' https://127.0.0.1:8787/api/v1/search
-curl -k --get --data-urlencode 'q=雨夜街道' https://127.0.0.1:8787/api/v1/search/shots
-curl -k --get --data-urlencode 'q=rainy city night' https://127.0.0.1:8787/api/v1/search/shots/hybrid
-curl -k https://127.0.0.1:8787/api/v1/shots/<shot-id>/similar
-curl -k https://127.0.0.1:8787/api/v1/discover/rare-shots
-```
-
-Results carry the source asset plus exact `start_ms` / `end_ms`, so a plan can
-reference a clip without touching the media. Chinese queries fall back to a
-parameterised literal match, so short terms like `雨夜` work against the existing
-index. `rare-shots` is **library-relative**: it finds uncommon semantic
-combinations in *your* library, not universally good shots.
-
-## Repurpose plans
-
-```text
-brief → optional planner (or deterministic fallback) → material needs
-     → shot search and ranking → reviewable plan with exact time ranges
-```
-
-```bash
-curl -k -H "Authorization: Bearer $(cat \"$NEXUSGATE_DATA_DIR/admin-token\")" \
-  -X POST https://127.0.0.1:8787/api/v1/repurpose/plans \
-  -H 'content-type: application/json' \
-  -d '{"brief":"我要做一个深圳城市宣传视频","duration_ms":30000,"style":"城市生活","audience":"品牌客户"}'
-```
-
-Creating a plan creates revision 1. An editor picks one candidate per section,
-optionally locks it, excludes weak alternatives, adds a note, and saves a new
-immutable revision. Only the latest draft can be approved, and approval locks the
-plan.
-
-The planner may propose semantic queries and section durations. It **cannot**
-invent asset IDs, shot IDs or timestamps. A locked selection changes only after an
-explicit unlock in a later revision. Approval rejects a required section that has
-candidates but no explicit choice, so a gap stays visible instead of being
-approved by accident. When the only valid match for a required section is a shot
-already used elsewhere, it is kept and marked `reused: true` — a visible editorial
-trade-off rather than a silently missing ending.
-
-An approved plan exports as a CMX3600 EDL or an FCPXML 1.9 document:
-
-```bash
-curl -k -H "Authorization: Bearer $(cat "$NEXUSGATE_DATA_DIR/admin-token")" \
-  https://127.0.0.1:8787/api/v1/repurpose/plans/<plan-id>/export.edl
-```
-
-Both routes are administrator-only and reject the agent token. An FCPXML embeds
-the absolute path of every original — the one thing `access_original_media_paths`
-denies — and an EDL is the artifact an editor cuts with, so both sit on the human
-side of the approval boundary. Order and selection are exactly what was approved;
-nothing is re-ranked at export time.
-
-## Distributed: Hub and Workers
-
-One binary, two roles. The **Hub** owns the database, the browser UI, source
-probing and all secrets. A **Worker** owns only its local cache, FFmpeg work and a
-revocable node token. Original media stays read-only and `probe` reads it directly
-on the NAS.
-
-Workers stage media into their own cache, upload thumbnail/proxy/audio artifacts
-back to Hub storage, then report completion — so previews stay available while a
-Worker is offline.
-
-### Enrolling a Worker
-
-Easiest path: open `/worker-setup`, which generates a ready-to-run install script
-(PowerShell for Windows, POSIX `sh` for Linux) with the hub URL, certificate
-fingerprint, one-time pairing token and mounts already filled in. Cross-compile
-the Worker and drop it into `$NEXUSGATE_DATA_DIR/worker-binaries/` — the Hub
-serves it, so the LAN needs no second web server:
-
-```bash
-GOOS=windows GOARCH=amd64 go build -o nexusgate-windows-amd64.exe ./cmd/nexusgate
-GOOS=linux   GOARCH=amd64 go build -o nexusgate-linux-amd64      ./cmd/nexusgate
-GOOS=linux   GOARCH=arm64 go build -o nexusgate-linux-arm64      ./cmd/nexusgate
-```
-
-That endpoint is administrator-gated because the generated script embeds a
-single-use pairing token. Treat the script as a credential; do not commit it.
-
-By hand:
-
-```bash
-nexusgate worker enroll --hub https://nas:8787 --fingerprint <fingerprint> \
-  --pairing <one-time-token> --name studio-windows \
-  --mount <library-root-id>=D:\\NAS\\Footage
-nexusgate worker run
-```
-
-`--source-cache-max-bytes` caps `cache/sources` on that node. Omitting it takes
-the 256 GiB default and `0` means unbounded. A Worker stages every source in copy
-mode and executes one derive job at a time, so that directory is transit rather
-than a working set: it only has to hold the largest single clip, not the library.
-
-`provider_operations` is enrollment-time trust; heartbeats cannot grant provider
-access. Re-enroll to change it.
-
-### Windows: tray icon
-
-```bash
-nexusgate worker run --tray
-```
-
-Puts an icon in the notification area with **设置…** and **退出**. Quitting from
-the menu stops the lease loop rather than killing the process, so a job in flight
-is reported back instead of leaving a stale lease on the Hub.
-
-It is built on Win32 through the standard library, so a Worker stays one
-cross-compiled `.exe` with no DLLs beside it. Note that a tray program and a
-Windows **service** are different things: a service runs in session 0 and has no
-notification area. For autostart, put a shortcut in the Startup folder.
-
-**设置…** opens a settings page the Worker serves on `127.0.0.1`, covering exactly
-the three values the Hub cannot push down — hub URL, pinned fingerprint, node
-token — because a Worker must know where to look before it can be told anything.
-Mounts, limits and capabilities stay Hub-decided. The listener is loopback-only
-and every route is gated by a random token in the URL, since a loopback port is
-reachable by any process on the machine. The node token can be replaced but is
-never displayed; leaving it blank keeps the current one, so the hub address can be
-changed without re-pasting a credential you cannot read.
-
-### Under WSL
-
-This works. WSL is **Linux**, so use `nexusgate-linux-amd64`, not the `.exe`, and
-expect `--tray` to refuse — there is no notification area for a Linux binary, and
-it says so rather than starting a process you cannot quit. Stop it with `Ctrl-C`
-or run it under `systemd` inside the distro.
-
-Reading footage through `/mnt/c` crosses WSL's 9p filesystem bridge, which costs
-roughly 4–8× against a native read. Measured on one WSL2 box with `O_DIRECT`, so
-the page cache is out of the way:
-
-| | native ext4 | `/mnt/c` (9p) |
-| --- | --- | --- |
-| sequential read, 1 MiB blocks | 3.6 GB/s | 422 MB/s |
-| sequential read, 64 KiB blocks | 1.1 GB/s | 268 MB/s |
-| random 64 KiB read | 1.04 ms | 2.51 ms |
-
-Read the absolute column, not the ratio: 268–422 MB/s still exceeds any
-mechanical disk and saturates a 1 GbE NAS link several times over, so for footage
-on spinning disks or a NAS the bridge is not the bottleneck — the source is. It
-only becomes the limit when the media sits on fast local NVMe, where the native
-Windows binary skips the bridge and is the better choice.
-
-If the media is on a NAS, mount the share *inside* WSL rather than through a
-Windows drive letter — one bridge crossing fewer, and the mount options become
-yours:
-
-```bash
-sudo mount -t cifs //nas/footage /mnt/footage -o ro,username=<user>,vers=3.0
-nexusgate worker enroll --hub https://nas:8787 --fingerprint <fingerprint> \
-  --pairing <one-time-token> --name wsl-worker \
-  --mount <library-root-id>=/mnt/footage
-```
-
-Mount read-only: NexusGate never writes beside source media, and `ro` makes that a
-property of the mount rather than a promise.
-
-One WSL-specific detection gap to know about: `/dev/dri` does not exist under
-WSL2, so Intel QSV and VAAPI are genuinely unavailable there and `doctor`
-correctly reports software. An NVIDIA GPU does work, but only if FFmpeg was built
-with NVENC — a Homebrew FFmpeg typically is not, and then `-hwaccels` lists
-nothing at all. Check before assuming the GPU is being used:
-
-```bash
-ffmpeg -hide_banner -encoders | grep nvenc
-```
-
-### Provider calls from a Worker
-
-Both modes below read **`providers.*` config only** (`config.json`/env) — never a
-`/providers` channel, even an enabled one with a healthy member. This is
-deliberate, not an oversight: a channel carries channel-scoped keys, member
-pools and health state that are meant to stay Hub-side, and a Worker's
-provider access already has its own, narrower trust boundary (opt-in
-direct-credential delivery, or the Hub-side JSON proxy). If you followed the
-advice above to prefer `/providers` over the config file, a Worker asking for
-that same capability still fails, but the two ways it can fail now answer
-differently: 403 (`app.ErrWorkerProviderConfiguredAsChannelOnly`) if the
-capability is configured only as a channel, which this path does not read;
-503 (`app.ErrWorkerProviderNotConfigured`) if nothing is configured for it by
-either method. Both routes answered a flat 400 for either case before, which
-read like your `/providers` setup was wrong when it was not. Give the Worker
-its own `providers.*` entry for any operation it needs to reach directly or
-through the proxy.
-
-**Proxy mode** (default) relays small JSON provider requests through the Hub and
-keeps the key Hub-side. It rejects video, audio, images, multipart uploads and
-bodies over 2 MiB, so it cannot become a media relay.
-
-**Direct mode** is an explicit opt-in for a trusted Worker that already sees the
-media mount. Enable `hub_security.allow_worker_provider_credentials` only after
-reviewing that device boundary. The Worker may request a task-bound provider
-configuration only while it holds that job lease and only for a declared
-operation. The key is never written to Worker config, SQLite or logs — but a
-long-lived third-party key does become visible in that Worker's memory. The
-five-minute lease is a delivery and audit window, **not** upstream key revocation.
-
-See [NAS Hub and Worker deployment](docs/v0.14-deployment.md) for Docker, systemd
-and ARM notes, and [v0.16 operations](docs/v0.16-operations.md) for mode selection
-and an acceptance checklist.
-
-## Security boundaries
-
-These are load-bearing, not aspirational.
-
-- **Original media is read-only.** Nothing is ever written beside a source file.
-- **Provider keys** live only in the encrypted, Hub-only `provider-secrets/`
-  store. Never in SQLite, API responses, browser storage, Worker config, logs or
-  error strings.
-- **Administrator token** (`admin-token`, exact `0600`) is a raw bearer credential
-  reused across restarts and compared in constant time. Whether it is demanded is
-  controlled by `hub_security.admin_auth`: `required` always demands it;
-  `trusted_network` (the default) waives it for peers inside
-  `hub_security.admin_auth_networks`, so LAN peers skip the password while
-  internet peers still need it; `off` never demands it. New write endpoints
-  default to gated. The waiver is decided from the peer address alone, exactly
-  like the read guard below — so behind a reverse proxy or a published Docker
-  port, where every peer looks like the RFC1918 bridge gateway, you MUST set
-  `admin_auth_networks` explicitly (or use `admin_auth: "required"`), or the
-  admin password is waived for anyone who can reach the port.
-- **Agent token** (`agent-token`, exact `0600`) follows the same raw-token file
-  contract and restart reuse. It is a strictly narrower credential: it is
-  accepted on exactly two routes — create and revise a *draft* Repurpose plan —
-  and refused everywhere else. Plan approval and pipeline runs stay
-  administrator-only, so `approval_mode: human_required` is enforced by access
-  control rather than by prompt text.
-- **Library reads** (browse, search, thumbnails, proxies) carry no token so the UI
-  works without one, and are restricted instead by **source network**: loopback,
-  the RFC1918 ranges, link-local, IPv6 unique-local, and the CGNAT range that
-  Tailscale-style overlays assign — so a Tailnet reaches the Hub while a forwarded
-  port does not. Override with `hub_security.trusted_read_networks`, where an
-  explicit list *replaces* the defaults and a malformed range fails startup. A
-  valid token is admitted from any network. Forwarded headers are deliberately
-  ignored, because they are attacker-controlled on a directly exposed listener —
-  so a reverse-proxied deployment must do this filtering itself.
-- **Worker trust** is a one-time pairing token, a revocable node token, and TLS
-  certificate fingerprint pinning.
-- **Capture coordinates** are exposed as a region label. Source precision is
-  administrator-only, per asset.
-
-## Agent Skill
-
-A versioned Skill lives at `skills/nexusgate`. It can inspect readiness, retrieve
-shot evidence, create a draft plan and submit a user-directed revision. Point a
-Skill session at that folder and the local server URL (HTTPS by default — the
-URL `nexusgate serve` prints), and give it the **agent** token — not the
-administrator token.
-
-Before acting it calls `GET /api/v1/agent/capabilities`, which declares that plan
-approval, pipeline execution, provider keys and original-media paths are out of
-bounds. That is now enforced by the routes themselves: approval remains a human
-action in the Repurpose workspace.
-
-## API examples
-
-```bash
-curl -k https://127.0.0.1:8787/api/v1/health
-curl -k https://127.0.0.1:8787/api/v1/assets
-curl -k https://127.0.0.1:8787/api/v1/jobs
-curl -k https://127.0.0.1:8787/api/v1/hardware
-curl -k https://127.0.0.1:8787/api/v1/pipeline/throttle
-curl -k https://127.0.0.1:8787/api/v1/assets/<asset-id>/shots
-curl -k -H "Authorization: Bearer $(cat "$NEXUSGATE_DATA_DIR/admin-token")" \
-  -X POST https://127.0.0.1:8787/api/v1/pipeline/run
-```
-
-All examples assume the default `hub_tls.mode: auto`: the Hub serves HTTPS
-with a locally self-signed certificate, so `curl -k` skips certificate
-verification (the browser asks for a one-time confirmation). With
-`hub_tls.mode: off`, the plain `http://127.0.0.1:8787` form works only for
-local API/CLI development. An HTTPS reverse proxy should expose an `https://`
-URL to browsers and clients; TLS termination with a plaintext backend is not a
-supported browser-session shortcut in this version. The administrator token
-goes in the `Authorization` header, never in the URL.
-
-Read routes need no token from a trusted network. Writes need the administrator
-token unless `hub_security.admin_auth` waives it (`trusted_network` for trusted
-peers, or `off` for everyone).
-
-## Testing
-
-```bash
-go test ./...          # all offline: provider adapters use httptest fixtures
-go vet ./...
-GOOS=windows GOARCH=amd64 go vet ./...   # the tray is Win32 code CI cannot run
-```
-
-`internal/media/process_integration_test.go` skips itself unless `ffmpeg` and
-`ffprobe` are on PATH. **No test ever calls a real provider API.**
-
-### Offline eval corpus（评估语料）
-
-`nexusgate-corpusgen` generates the offline eval corpus: deterministic
-synthetic clips (lavfi test sources, reproducible and licence-free) plus
-`ground_truth.json`, mirroring the retrieval golden set's adversarial assets
-in `internal/repository/sqlite/retrieval_golden_corpus_test.go`. `nexusgate-eval`
-then runs a provider configuration against that corpus exactly the way a Hub
-would and scores the results with the product's hybrid retrieval; `score`
-attributes false positives per signal (`semantic_false_positives` /
-`lexical_false_positives`, the same attribution the golden set uses). Each
-run's data dir holds its own `config.json` (the same file a real Hub uses) and
-database, so comparing models is comparing data dirs. Not part of CI — it is
-the manual, offline benchmark.
-
-```bash
-nexusgate-corpusgen --out ./corpus
-nexusgate-eval run  --corpus ./corpus --data-dir ./eval/qwen   --label qwen3vl-4b
-nexusgate-eval run  --corpus ./corpus --data-dir ./eval/gemini --label gemini-flash
-nexusgate-eval score --corpus ./corpus --data-dir ./eval --labels qwen3vl-4b,gemini-flash
-```
-
-## Documentation
-
-`CHANGELOG.md` records what changed and, more usefully, which boundary each change
-moved. Each release also has a version-scoped document under `docs/`:
-
-- [v0.30 — review-fix round goal and operations](docs/v0.30-review-fix-round.md)
-- [v0.31 — deployment guide](docs/v0.31-deployment.md)
-- [v0.31 — footage capability provider](docs/v0.31-footage-capability-provider.md)
-- [v0.31 — release-closure notes and verification status](docs/v0.31-release-notes.md)
-- [v0.21 — unattended inspection, quota-exhausted waiting, and timeline export](docs/v0.21-unattended-and-export.md)
-- [v0.21 — model provider deployment](docs/v0.21-provider-deployment.md)
-- [v0.21 — retrieval and search](docs/v0.21-retrieval-and-search.md)
-- [v0.20 — NAS mounting: the ladder and why each rung sits where it does](docs/v0.20-nas-mounting.md)
-- [v0.19 — GPU Docker images and Unraid deployment](docs/v0.19-gpu-docker-unraid.md)
-- [v0.18 — disk load limits, off-peak scheduling, Worker onboarding](docs/v0.18-throttle-and-worker-onboarding-goal.md)
-- [v0.17 — regression repair and retrieval performance](docs/v0.17-regression-and-retrieval-goal.md)
-- [v0.16 — operations and security](docs/v0.16-operations.md)
-- [v0.15 — operations guide](docs/v0.15-operations.md)
-- [v0.14 — NAS Hub and Worker deployment](docs/v0.14-deployment.md)
+| | |
+|---|---|
+| **NAS and network shares** | a guided mount wizard in the browser UI generates the exact command for your platform — Linux, macOS, Windows and Unraid — plus a ready-made Docker Compose volume definition |
+| **Model providers** | configure them in the browser at `/providers`. Keys are stored encrypted and never appear in the database, the API, logs or error messages |
+| **Distributed processing** | pair Worker nodes to a Hub so transcoding runs on the machine with the GPU — see `docs/v0.31-deployment.md` |
+| **Disk load** | off-peak windows, read-rate limits and a cache size cap, so a scan does not saturate your NAS for hours |
+| **Architecture** | `CLAUDE.md` — layer map, pipeline, and the invariants worth knowing before changing anything |
+| **Everything else** | `docs/` — deployment, search architecture, per-version release notes |
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the dependency rule, the local test
-gate and the boundaries a change must not cross. Report vulnerabilities
-privately — [SECURITY.md](SECURITY.md).
-
-## Screenshots
-
-Real captures from a running Hub are in the [30 seconds](#30-seconds-这是什么-为什么有用-长什么样-怎么跑起来)
-section at the top: the library with the shot semantic timeline, shot-first
-search results, and the processing/providers view. They are captures of a live
-instance — never mockups.
+Read `CONTRIBUTING.md`. The short version: the dependency rule is real (nine
+direct dependencies; adding one is a conversation), and `go test ./...` plus
+`gofmt -l .` must be clean.
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE). Third-party
-licences for the components linked into the binary are listed in
-[THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES).
-
-```text
-Copyright 2026 ev
-```
-
-Apache-2.0 was chosen over MIT for its explicit patent grant, which matters for a
-tool that may be used commercially. The direct dependencies keep their own
-licences — see `THIRD-PARTY-LICENSES` for the full list (`modernc.org/sqlite`
-BSD-3-Clause, `github.com/coder/websocket` ISC, `github.com/mark3labs/mcp-go`
-MIT, `golang.org/x/crypto` / `golang.org/x/net` BSD-3-Clause, and their
-transitive modules). `ffmpeg`, `ffprobe` and `exiftool` are external programs
-NexusGate invokes, not bundled code — their licences are their own.
+Apache-2.0. See `LICENSE`.
