@@ -59,6 +59,33 @@ func TestClassifyJobFailureMediaDecodeDiscriminates(t *testing.T) {
 			err:      fmt.Errorf("cache volume full while probing: %w: %w", errDiskSpaceLow, media.ErrProbeRejected),
 			want:     domain.JobFailureCategoryDiskSpaceLow,
 		},
+		{
+			name:     "RAW renderer-unavailable preview error wrapped once",
+			property: "a *media.PreviewRenderError with Code media.PreviewErrorRendererUnavailable must classify as unsupported_media through the error chain (errors.As, not equality)",
+			err: fmt.Errorf("render /media/drone.braw: %w", &media.PreviewRenderError{
+				Code:        media.PreviewErrorRendererUnavailable,
+				SourceColor: media.SourceColorRAW,
+			}),
+			want: domain.JobFailureCategoryUnsupportedMedia,
+		},
+		{
+			name:     "LUT-required preview error keeps unknown",
+			property: "only Code media.PreviewErrorRendererUnavailable maps to unsupported_media; media.PreviewErrorLUTRequired is a configuration gap (the LUT is a config.json key) and must stay unknown so no one relabels the whole PreviewRenderError type and points the repair link at the wrong page; same SourceColor as the row above so Code is the only variable",
+			err: fmt.Errorf("render /media/drone.braw: %w", &media.PreviewRenderError{
+				Code:        media.PreviewErrorLUTRequired,
+				SourceColor: media.SourceColorRAW,
+			}),
+			want: domain.JobFailureCategoryUnknown,
+		},
+		{
+			name:     "disk-space sentinel beats renderer-unavailable preview error",
+			property: "branch order: with both sentinels in one chain the environmental disk-space fault keeps its own category and must not be reported as a file verdict",
+			err: fmt.Errorf("cache volume full while rendering: %w: %w", errDiskSpaceLow, &media.PreviewRenderError{
+				Code:        media.PreviewErrorRendererUnavailable,
+				SourceColor: media.SourceColorRAW,
+			}),
+			want: domain.JobFailureCategoryDiskSpaceLow,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

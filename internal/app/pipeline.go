@@ -678,11 +678,29 @@ func classifyJobFailure(err error) domain.JobFailureCategory {
 	// binary or a timeout (those stay retryable and fall through to Unknown).
 	// Deliberately not domain.Permanent: exit 1 cannot rule out a file still
 	// being copied in, and the failure happens before any read, so a retry is
-	// nearly free. JobFailureCategoryUnsupportedMedia still has no producer in
-	// internal/media; the registry stays extensible, so the day one appears it
-	// maps here without touching the issues view.
+	// nearly free.
 	if errors.Is(err, media.ErrProbeRejected) {
 		return domain.JobFailureCategoryMediaDecode
+	}
+	// The other file-level verdict, and the first producer of
+	// JobFailureCategoryUnsupportedMedia: ResolvePlan rejects a RAW source
+	// (and any plan whose renderer mode is unavailable) with a
+	// *media.PreviewRenderError before anything reads the file, so this is a
+	// statement about the asset, not about the environment. errors.As reads the
+	// exported Code rather than the message, and only
+	// PreviewErrorRendererUnavailable maps here: PreviewErrorLUTRequired is a
+	// missing operator-supplied LUT — a configuration gap, not an undecodable
+	// file — so it keeps falling through to Unknown until it has a category
+	// whose repair link points at the setting that fixes it.
+	//
+	// It stays below the disk-space guard above on purpose: a full cache volume
+	// is an environmental fault that heals on its own, and a file-level verdict
+	// must not take that park away from it. Deliberately not domain.Permanent
+	// either — a RAW renderer may be added later, and the failure happens before
+	// any read, so a retry is nearly free.
+	var previewRenderErr *media.PreviewRenderError
+	if errors.As(err, &previewRenderErr) && previewRenderErr.Code == media.PreviewErrorRendererUnavailable {
+		return domain.JobFailureCategoryUnsupportedMedia
 	}
 	return domain.JobFailureCategoryUnknown
 }
