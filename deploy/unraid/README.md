@@ -19,7 +19,7 @@ caveat); this file is the Unraid-specific walkthrough.
 ## 1. Build (or obtain) the GPU image
 
 This project does not publish images to a registry yet, so the exact tag the
-templates reference (`nexusgate:v0.31.0-alpha`) has to exist somewhere Unraid's
+templates reference (`nexusgate:v0.38.0-alpha`) has to exist somewhere Unraid's
 Docker can see. The simplest path is building it directly on the Unraid box,
 which needs no registry at all — Unraid's Docker daemon will use a locally
 tagged image instead of trying to pull it:
@@ -27,7 +27,7 @@ tagged image instead of trying to pull it:
 ```sh
 # From the Unraid terminal, with the repo checked out somewhere under /mnt/user:
 cd /mnt/user/.../nexusgate
-docker build --target gpu -t nexusgate:v0.31.0-alpha .
+docker build --target gpu -t nexusgate:v0.38.0-alpha .
 ```
 
 If you'd rather build elsewhere, push the same tag to a registry your Unraid
@@ -152,7 +152,7 @@ chown -R 10001:10001 /mnt/user/appdata/nexusgate-worker
 
 docker run --rm -it \
   -v /mnt/user/appdata/nexusgate-worker:/var/lib/nexusgate-worker \
-  nexusgate:v0.31.0-alpha \
+  nexusgate:v0.38.0-alpha \
   worker enroll --hub https://<hub-ip>:8787 \
     --fingerprint <hub-fingerprint-from-/workers> \
     --pairing <one-time-token-from-/workers> \
@@ -201,7 +201,7 @@ Back up the Hub data directory before upgrading: stop the `nexusgate-hub`
 container and copy `/mnt/user/appdata/nexusgate-hub` (the SQLite database
 together with its `-wal`/`-shm` sidecars), and note the current
 `schema_migrations` state so a rollback can restore the snapshot. Then rebuild
-or repull the `nexusgate:v0.31.0-alpha` tag and recreate both containers from
+or repull the `nexusgate:v0.38.0-alpha` tag and recreate both containers from
 the CA UI (**Force Update** / **Apply**).
 
 Recreating keeps template values, so the `NEXUSGATE_HUB_ADMIN_AUTH` Variable

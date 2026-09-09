@@ -70,7 +70,7 @@ regression-tested, but APIs, database migrations and model contracts may still
 change. There is no stable release yet, no API stability promise, and no
 supported-version table.
 
-The current repository release target is `v0.31.0-alpha`. It is being prepared
+The current repository release target is `v0.38.0-alpha`. It is being prepared
 from `main` and has not been published; see the [v0.31 release
 notes](docs/v0.31-release-notes.md) for the release-closure scope and current
 verification status.

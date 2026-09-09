@@ -11,7 +11,7 @@
 -->
 <Container version="2">
   <Name>nexusgate-worker</Name>
-  <Repository>nexusgate:v0.31.0-alpha</Repository>
+  <Repository>nexusgate:v0.38.0-alpha</Repository>
   <Registry/>
   <Network>bridge</Network>
   <MyIP/>
@@ -28,7 +28,7 @@
 
   docker run --rm -it \
     -v /mnt/user/appdata/nexusgate-worker:/var/lib/nexusgate-worker \
-    nexusgate:v0.31.0-alpha \
+    nexusgate:v0.38.0-alpha \
     worker enroll --hub https://&lt;Hub的IP&gt;:8787 \
       --fingerprint &lt;Hub证书指纹&gt; \
       --pairing &lt;一次性配对Token&gt; \

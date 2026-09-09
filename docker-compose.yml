@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: nexusgate:v0.31.0-alpha
+    image: nexusgate:v0.38.0-alpha
     command: ["serve"]
     environment:
       NEXUSGATE_DATA_DIR: /var/lib/nexusgate
@@ -117,7 +117,7 @@ services:
     #           capabilities: [gpu]
 
   worker:
-    image: nexusgate:v0.31.0-alpha
+    image: nexusgate:v0.38.0-alpha
     # Not started by `docker compose up`: worker.json only exists after
     # `worker enroll` has run against a live Hub, and without it the container
     # exits immediately and restarts forever. Enroll first, then

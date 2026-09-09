@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.38.0-alpha — 2026-09-09（UnsupportedMedia 首个生产者、预览 LUT 分类与失败清单单一真源）
+
+- **`UnsupportedMedia` has its first producer, so RAW sources stop landing in
+  the bucket that offers neither a tag nor a repair link.** A RAW source
+  failing its preview render with "RAW preview renderer unavailable" now
+  reaches `domain.JobFailureCategoryUnsupportedMedia` instead of `unknown`.
+  `media.ResolvePlan` has always refused RAW sources with a
+  `*PreviewRenderError` carrying the exported `Code`
+  `PreviewErrorRendererUnavailable`, and the classifier reads that field
+  rather than the message text, so exactly this identity maps to the
+  category. The identity's comment has said "No sentinel produces it yet"
+  since it was written, while its own description — "the container or codec
+  cannot be decoded" — has described the RAW situation all along; until now
+  nothing produced it, and every such failure was recorded as
+  `last_error_code=unknown`.
+
+  The branch is ordered after the disk-full guard on purpose: disk-full is
+  the outcome that heals itself and must keep its retry, and a file-level
+  verdict must not take that retry away. It is deliberately **not**
+  `domain.Permanent` — a RAW preview renderer may yet be added, and the
+  refusal happens before any byte of the file is read, so a retry costs
+  almost nothing. Nothing else about the category changes.
+
+- **A missing preview LUT got a name of its own, and the failure-category
+  inventory got a single source of truth.** Apple Log sources failing with
+  "Apple Log preview needs LUT" used to fall into `unknown` as well. The
+  semantically nearest category, `configuration`, is hard-bound to
+  `/providers` in `internal/api/progress_page.go`'s `issueRepairRoutes`, but
+  `preview_lut_path` is a `config.json` key — linking to a page that cannot
+  fix the problem is worse than offering no link at all. The new
+  `domain.JobFailureCategoryPreviewLUTMissing` therefore carries accurate
+  labels in all five languages and **deliberately no repair link**; the day
+  a page exists that can set `preview_lut_path` is the day it earns one.
+
+  The larger half is the guard. Deleting an entire `issueLabels` entry used
+  to leave `go test ./internal/api` fully green, because that guard walked a
+  hand-maintained string slice in the test file — the same weakness as the
+  one where a single item missing from an inventory let two of
+  `validateAnalysisShots`' four refusals be retried.
+  `domain.AllJobFailureCategories` is now the single source of truth, and
+  three checks walk it: the progress-page label guard, the spelling-stability
+  table and the retryable truth table. Retired `budget_exhausted` stays in
+  the inventory on purpose — nothing produces it any more, but historical
+  rows still carry it, and the issues view must keep labelling those rows.
+
 ## v0.31.0-alpha — 2026-09-09（NAS 发现与挂载向导、界面多语言、检索分页、Provider 一键配置）
 
 - **Apple Log previews could never render, because the LUT the renderer
