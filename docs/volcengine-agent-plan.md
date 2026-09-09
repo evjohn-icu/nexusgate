@@ -105,9 +105,14 @@ openai_multiframe is currently supported through providers.local_vlm config only
 provider-channel routing support is not available yet
 ```
 
-也就是说**多帧协议目前只能通过 legacy 的 `providers.local_vlm` 配置块启用，通道路由还
-没接上**。想走多帧就得把 Key 放进 `config.json`（或 `api_key_env` 指向环境变量），
-放弃 secretstore。
+这句报错的措辞比实情窄。多帧协议在 **legacy config 里对三个视频 provider 都可用**——
+`qwen_video`、`volcengine_video`、`local_vlm` 共用同一个 `openai_multiframe` 注册分支
+（`internal/providers/factory.go`）。真正接不上的是**通道路由**：通道遇到
+`openai_multiframe` 直接返回永久错误（`internal/app/provider_channel_runtime.go`）。
+
+所以限制是「多帧 ⊗ 通道」，不是「多帧 ⊗ 非 local_vlm」。想走多帧就得把配置写进
+`config.json` 的 `providers.*` 块（Key 用 `api_key_env` 指向环境变量，别写进文件），
+放弃 secretstore 和多 Key 池化。
 
 所以套餐 + 通道这条组合只能用 `openai_video`：整段代理内联进请求体。实际影响是每次
 分析要上传一次代理文件，比抽帧慢、也更吃套餐额度。代理体积由 `openai_video` 适配器的
@@ -148,19 +153,31 @@ ASR 是**另一套协议、另一个主机、另一种鉴权**，别跟上面两
 
 ### 没配 ASR 会怎样
 
-管线不会卡住：`speech_gate` 在没有 ASR provider 时直接把作业转给 `analyze`
-（`pipeline.go` 里那句 `c.SpeechProbability >= 0.5 && p.asr != nil`）。但**已经因为
-缺 ASR 失败过的 `transcribe` 作业不会自动补上**，它们后面的 `analyze` 也就一直排不到。
-补配 ASR 之后要跑一次 `nexusgate pipeline retry-failed` 把它们捞回来。
+**用通道配的话，管线会卡住。** `pipeline.go` 里的分流条件是
+`c.SpeechProbability >= 0.5 && p.asr != nil`，读起来像「没有 ASR 就跳过转写」，但通道
+运行时的 `asr()` **永远返回一个非 nil 的 wrapper**（`provider_channel_runtime.go`），
+所以 `p.asr != nil` 恒真：有语音的素材照样进 `transcribe`，然后因为没有 asr 通道而失败，
+它后面的 `analyze` 就一直排不到。只有 legacy config 完全没配 ASR 时，那个 nil 判断才
+真的成立。
+
+实测就是这个形状：43 个有代理的素材里 33 个卡在 `transcribe`，`analyze` 只跑了 11 个。
+补配 ASR 通道之后要跑一次 `nexusgate pipeline retry-failed` 把它们捞回来——失败过的作业
+不会自己重排。
 
 ---
 
 ## 套餐盖不到的两块
 
-**Tag 整理 / 翻新方案**：`tag_curator` 和 `repurpose` 需要通用文本模型。套餐里的
-`doubao-seed-2.0-lite` 能干这活（配 `volc_agent_plan` 通道，协议 `openai_chat`，
-同一个端点），但它和视频理解吃同一份额度。想省额度就把这两样留给 heuristic 兜底——
-它们本来就有非模型的降级路径。
+**Tag 整理**：可以走套餐。配一条 `tag_curator` 通道，provider 选 `volc_agent_plan`，
+协议 `openai_chat`，同一个端点。代价是它和视频理解吃同一份额度。
+
+**翻新方案（repurpose）走不了套餐通道**：`repurpose` 能力只接受 `openai_chat` 这一个
+provider 名，`volc_agent_plan` 不在它的白名单里
+（`internal/app/provider_channel_runtime.go` 的 `supportedChannelProvider`）。要用套餐
+端点做 repurpose，只能配一条 `openai_chat` 通道、endpoint 指向 `/api/plan/v3`、模型填
+`doubao-seed-2.0-lite`——即绕开 `volc_agent_plan` 这个名字，用通用 OpenAI 兼容通道。
+
+想省额度就把这两样留给 heuristic 兜底，它们本来就有非模型的降级路径。
 
 **TTS 用不上**：套餐同时覆盖 `doubao-seed-tts-2.0`（Resource ID `seed-tts-2.0`，
 端点在 `openspeech.bytedance.com/api/v3/plan/tts/*`）。NexusGate 没有语音合成阶段，
