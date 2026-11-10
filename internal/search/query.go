@@ -107,15 +107,15 @@ type SearchRequest struct {
 	Diversity       float64            `json:"diversity"`
 	IncludeEvidence bool               `json:"include_evidence"`
 	IncludeContext  bool               `json:"include_context"`
-	Facets         domain.FacetFilter `json:"facets,omitempty"`
+	Facets          domain.FacetFilter `json:"facets,omitempty"`
 	// AssetFilter narrows by the owning asset's capture/session/status
 	// context. A nil or all-empty filter matches everything.
-	AssetFilter    *domain.AssetContextFilter `json:"asset_filter,omitempty"`
-	Modalities     []string                   `json:"modalities,omitempty"`
-	ReferenceID    string                     `json:"reference_id,omitempty"`
-	VisualShotID   string                     `json:"visual_shot_id,omitempty"`
-	Temporal       *TemporalQuery             `json:"temporal,omitempty"`
-	SpeakerFilter  *SpeakerFilter             `json:"speaker_filter,omitempty"`
+	AssetFilter   *domain.AssetContextFilter `json:"asset_filter,omitempty"`
+	Modalities    []string                   `json:"modalities,omitempty"`
+	ReferenceID   string                     `json:"reference_id,omitempty"`
+	VisualShotID  string                     `json:"visual_shot_id,omitempty"`
+	Temporal      *TemporalQuery             `json:"temporal,omitempty"`
+	SpeakerFilter *SpeakerFilter             `json:"speaker_filter,omitempty"`
 }
 
 // DefaultLimit applies when SearchRequest.Limit is <= 0.
@@ -161,9 +161,9 @@ func DefaultOptions() Options {
 
 // SearchQueryInfo is the echo of how the query was understood.
 type SearchQueryInfo struct {
- Raw      string       `json:"raw"`
- Intent   SearchIntent `json:"intent"`
- Temporal string       `json:"temporal,omitempty"`
+	Raw      string       `json:"raw"`
+	Intent   SearchIntent `json:"intent"`
+	Temporal string       `json:"temporal,omitempty"`
 }
 
 // SearchResponse is the structured v2 search response. SearchID and QueryHash
@@ -207,11 +207,11 @@ type ResultItem struct {
 	// Scores carries the per-signal scores (lexical, heuristic_semantic,
 	// transcript, metadata) plus the fused value under the fusion strategy's
 	// name ("blend" or "rrf").
- Scores   map[string]float64 `json:"scores,omitempty"`
- Evidence []Evidence         `json:"evidence,omitempty"`
- Context  *ShotContext       `json:"context,omitempty"`
- Matches  []Match            `json:"matches,omitempty"`
- Coverage []Coverage         `json:"coverage,omitempty"`
+	Scores   map[string]float64 `json:"scores,omitempty"`
+	Evidence []Evidence         `json:"evidence,omitempty"`
+	Context  *ShotContext       `json:"context,omitempty"`
+	Matches  []Match            `json:"matches,omitempty"`
+	Coverage []Coverage         `json:"coverage,omitempty"`
 }
 
 // ShotContext carries the neighbouring shots of a matched shot. Neighbour
