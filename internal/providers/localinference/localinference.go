@@ -962,14 +962,15 @@ func decodeEmbeddings(raw json.RawMessage, output *[]domain.EmbeddingRecord) err
 		return nil
 	}
 	var records []struct {
-		ShotID      string    `json:"shot_id"`
-		SampleIndex int       `json:"sample_index"`
-		TimestampMS int64     `json:"timestamp_ms"`
-		StartMS     int64     `json:"start_ms"`
-		EndMS       int64     `json:"end_ms"`
-		Strategy    string    `json:"strategy"`
-		SourceHash  string    `json:"source_hash"`
-		Vector      []float32 `json:"vector"`
+		ShotID      string          `json:"shot_id"`
+		SampleIndex int             `json:"sample_index"`
+		TimestampMS int64           `json:"timestamp_ms"`
+		StartMS     int64           `json:"start_ms"`
+		EndMS       int64           `json:"end_ms"`
+		Strategy    string          `json:"strategy"`
+		SourceHash  string          `json:"source_hash"`
+		Quality     json.RawMessage `json:"quality"`
+		Vector      []float32       `json:"vector"`
 	}
 	if err := json.Unmarshal(raw, &records); err != nil {
 		return fmt.Errorf("embedding records cannot be decoded")
@@ -982,11 +983,19 @@ func decodeEmbeddings(raw json.RawMessage, output *[]domain.EmbeddingRecord) err
 		decoded = append(decoded, domain.EmbeddingRecord{
 			ShotID: record.ShotID, SampleIndex: record.SampleIndex, TimestampMS: record.TimestampMS,
 			StartMS: record.StartMS, EndMS: record.EndMS, Strategy: record.Strategy,
-			SourceHash: record.SourceHash, Vector: record.Vector,
+			SourceHash: record.SourceHash, QualityJSON: qualityJSON(record.Quality), Vector: record.Vector,
 		})
 	}
 	*output = decoded
 	return nil
+}
+
+func qualityJSON(raw json.RawMessage) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return ""
+	}
+	return string(trimmed)
 }
 
 func (p *resultParser) finish() error {

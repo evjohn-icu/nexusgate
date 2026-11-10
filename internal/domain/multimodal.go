@@ -500,13 +500,17 @@ func (r InferenceRequest) Validate() error {
 // SampleIndex -1 marks an aggregate record (a shot's pooled mean, or a
 // native-video clip embedding); non-negative indices are individual frames.
 type EmbeddingRecord struct {
-	ShotID      string    `json:"shot_id,omitempty"`
-	SampleIndex int       `json:"sample_index"`
-	TimestampMS int64     `json:"timestamp_ms,omitempty"`
-	StartMS     int64     `json:"start_ms,omitempty"`
-	EndMS       int64     `json:"end_ms,omitempty"`
-	Strategy    string    `json:"strategy,omitempty"`
-	SourceHash  string    `json:"source_hash,omitempty"`
+	ShotID      string `json:"shot_id,omitempty"`
+	SampleIndex int    `json:"sample_index"`
+	TimestampMS int64  `json:"timestamp_ms,omitempty"`
+	StartMS     int64  `json:"start_ms,omitempty"`
+	EndMS       int64  `json:"end_ms,omitempty"`
+	Strategy    string `json:"strategy,omitempty"`
+	SourceHash  string `json:"source_hash,omitempty"`
+	// QualityJSON carries the adapter's measured eligibility metrics (for
+	// speaker extraction: clipping, RMS and speech duration). It never holds a
+	// vector or an identity.
+	QualityJSON string    `json:"quality_json,omitempty"`
 	Vector      []float32 `json:"-"`
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +99,7 @@ func TestSpeakerCommitEncryptsBeforePublishing(t *testing.T) {
 		SpaceID: request.SpaceID, InputHash: request.InputHash, ConfigHash: request.ConfigHash,
 		Backend: "cpu", Embeddings: []domain.EmbeddingRecord{{
 			StartMS: 1000, EndMS: 4000, Vector: []float32{1, 0},
+			QualityJSON: `{"clipped_fraction":0,"rms_dbfs":-20,"speech_duration_ms":3000}`,
 		}},
 	}
 	if err := service.commitSpeakerInferenceResult(ctx, jobID, "owner", request, result); err != nil {
@@ -109,6 +111,9 @@ func TestSpeakerCommitEncryptsBeforePublishing(t *testing.T) {
 	}
 	if records[0].ConsentGeneration != consent.Generation || records[0].GenerationID != "diarization-1" {
 		t.Fatalf("published provenance = %+v", records[0])
+	}
+	if !strings.Contains(records[0].QualityJSON, "rms_dbfs") {
+		t.Fatalf("quality metrics were dropped: %q", records[0].QualityJSON)
 	}
 	raw, ok, err := service.secrets.Resolve(records[0].SecretRef)
 	if err != nil || !ok {

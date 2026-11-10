@@ -88,26 +88,31 @@ def _request(entry: Mapping[str, Any], operation: str, input_value: dict[str, An
 
 
 def _prepare_sample(entry: Mapping[str, Any], batch: int,
-                    directory: Path) -> tuple[dict[str, Any], str]:
+                    directory: Path, native_video: bool = False) -> tuple[dict[str, Any], str]:
     family = entry["family"]
     operation = entry["operations"][0]
     if operation == "visual_embedding":
-        frames = _write_images(directory, batch)
+        # Native video decoding rejects single-frame clips and the Qwen
+        # sampler targets ~2 fps, so give that strategy a 4-frame clip.
+        frame_count = max(4, batch) if native_video else batch
+        frames = _write_images(directory, frame_count)
         video_path = directory / "visual-input.mp4"
         command = ["ffmpeg", "-nostdin", "-v", "error", "-framerate", "1", "-i",
-                   str(directory / "frame-%d.jpg"), "-frames:v", str(batch), "-c:v", "mpeg4",
+                   str(directory / "frame-%d.jpg"), "-frames:v", str(frame_count), "-c:v", "mpeg4",
                    "-y", str(video_path)]
         completed = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, check=False, timeout=60)
         if completed.returncode != 0 or not video_path.is_file():
             raise RuntimeError("ffmpeg could not generate the visual benchmark clip")
-        duration_ms = max(1000, batch * 1000)
+        duration_ms = max(1000, frame_count * 1000)
+        strategy = "native_video" if native_video else "shot_frame_pooled"
+        timestamps = [] if native_video else [index * 1000 for index in range(batch)]
         shot = {"shot_id": "benchmark-shot", "start_ms": 0, "end_ms": duration_ms,
-                "timestamps_ms": [index * 1000 for index in range(batch)]}
+                "timestamps_ms": timestamps}
         request = _request(entry, operation,
                            {"kind": "asset", "path": str(video_path.resolve()), "duration_ms": duration_ms,
                             "interval": {"start_ms": 0, "end_ms": duration_ms}},
-                           {"visual": {"strategy": "shot_frame_pooled", "shot_set_hash": "benchmark-shotset",
+                           {"visual": {"strategy": strategy, "shot_set_hash": "benchmark-shotset",
                                        "shots": [shot], "truncate_to": 0}})
         return request, operation
     if operation == "audio_embedding":
@@ -334,10 +339,10 @@ def _verify_output(operation: str, payload: Mapping[str, Any], dimension: int) -
 
 
 def _profile(entry: Mapping[str, Any], model_dir: Path, device: str, dtype: str, batch: int,
-             warmup: int, iters: int) -> dict[str, Any]:
+             warmup: int, iters: int, native_video: bool = False) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="inference-benchmark-") as scratch:
         sample_dir = Path(scratch)
-        request, operation = _prepare_sample(entry, batch, sample_dir)
+        request, operation = _prepare_sample(entry, batch, sample_dir, native_video)
         first, cold_start_ms, child_load_ms, first_error, returncode = _run_child(request, model_dir, device, dtype)
         dimension = expected_dimension(entry, request)
         if first is None:
@@ -413,6 +418,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--iters", type=int, default=3)
     parser.add_argument("--model-dir", type=Path, default=Path("models"))
+    parser.add_argument("--native-video", action="store_true",
+                        help="use the native-video visual strategy (visual models only)")
     args = parser.parse_args(argv)
     if args.warmup < 0 or args.iters < 1:
         parser.error("--warmup must be nonnegative and --iters must be positive")
@@ -425,7 +432,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("batch values must be positive")
         entry = _catalog_entry(args.model)
         model_dir = args.model_dir.resolve()
-        profiles = [_profile(entry, model_dir, args.device, dtype, batch, args.warmup, args.iters)
+        profiles = [_profile(entry, model_dir, args.device, dtype, batch, args.warmup, args.iters, args.native_video)
                     for dtype in dtypes for batch in batches]
     except Exception as exc:
         parser.error(str(exc))

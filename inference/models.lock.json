@@ -60,7 +60,7 @@
     "torch_cuda_wemm": {
       "python": "3.12",
       "lockfile": "inference/requirements/torch-cuda-wemm.lock",
-      "digest": "sha256:97aeb6ffed72c74f7dedbff08f8fd4a96b6f8bd94681cf9770dbb6f4c31d436c",
+      "digest": "sha256:ddf9cd7f11b19684457a1777c6c85a8bc9500ca16ca508fb29925808f83314be",
       "backends": [
         "cuda"
       ],
@@ -401,6 +401,27 @@
           "environment_file": "inference/requirements/torch-cuda-wemm.lock",
           "environment_digest": "sha256:97aeb6ffed72c74f7dedbff08f8fd4a96b6f8bd94681cf9770dbb6f4c31d436c",
           "note": "Pooled-frame strategy only; native-video encoding was not benchmarked."
+        },
+        {
+          "device": "cuda",
+          "dtype": "float16",
+          "batch": 1,
+          "cold_start_ms": 9874.9,
+          "load_ms": 6687.3,
+          "peak_rss_mib": 11088.1,
+          "peak_vram_mib": 5358.0,
+          "latency_p50_ms": 265.8,
+          "latency_p95_ms": 265.8,
+          "dimension": 2048,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-11",
+          "environment_file": "inference/requirements/torch-cuda-wemm.lock",
+          "environment_digest": "sha256:ddf9cd7f11b19684457a1777c6c85a8bc9500ca16ca508fb29925808f83314be",
+          "strategy": "native_video",
+          "note": "Native-video strategy, 4-frame 1 fps benchmark clip; peak 5358 MiB is inside the 7168 MiB gate."
         }
       ]
     },

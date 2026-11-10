@@ -9,6 +9,7 @@ click==8.5.1
 cuda-bindings==12.9.7
 cuda-pathfinder==1.6.0
 cuda-toolkit==12.6.3
+decord==0.6.0
 filelock==4.2.4
 fsspec==2026.9.0
 h11==0.16.0

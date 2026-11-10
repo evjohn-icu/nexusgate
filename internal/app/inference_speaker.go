@@ -106,6 +106,10 @@ func (s *Service) commitSpeakerInferenceResult(ctx context.Context, jobID, owner
 	if generationID == "" {
 		generationID = request.OperationID
 	}
+	quality := strings.TrimSpace(record.QualityJSON)
+	if quality == "" {
+		quality = `{}`
+	}
 	records := []domain.SpeakerEmbedding{{
 		ProfileID:         request.Speaker.ProfileID,
 		AssetID:           request.Input.AssetID,
@@ -114,7 +118,7 @@ func (s *Service) commitSpeakerInferenceResult(ctx context.Context, jobID, owner
 		StartMS:           interval.StartMS,
 		EndMS:             interval.EndMS,
 		SpeechDurationMS:  interval.EndMS - interval.StartMS,
-		QualityJSON:       `{}`,
+		QualityJSON:       quality,
 		SecretRef:         staging.SecretRef,
 		ConsentGeneration: staging.ConsentGeneration,
 		ProfileGeneration: staging.ProfileGeneration,
