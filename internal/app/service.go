@@ -504,6 +504,7 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 		// multimodal queries (test fakes, pre-V1.5 schemas); every modality
 		// channel then stays unavailable instead of failing legacy search.
 		opts.ModalityStore = NewModalityStore(repo)
+		opts.ModalityEncoder = &modalityQueryEncoder{service: service}
 		service.searchV2 = search.NewService(store, opts)
 	}
 	// The canonical-shot moment triggers both derived layers. One hook keeps

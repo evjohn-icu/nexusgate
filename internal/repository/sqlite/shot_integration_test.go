@@ -537,7 +537,16 @@ func seedTopKLibrary(t *testing.T, repo *Repository, descriptions []string) map[
 	shots := map[string]domain.AssetShot{}
 	for i, desc := range descriptions {
 		assetID := fmt.Sprintf("asset-topk-%d", i/perAsset)
-		shot := domain.AssetShot{ID: fmt.Sprintf("shot-topk-%03d", i), StartMS: 0, EndMS: 5000, Description: desc}
+		// Distinct, adjacent spans: canonical shots are a partition now, so a
+		// fixture that stacks every shot on [0,5000) would be rejected as
+		// duplicate intervals. The vectors depend on descriptions only.
+		slot := i % perAsset
+		shot := domain.AssetShot{
+			ID:          fmt.Sprintf("shot-topk-%03d", i),
+			StartMS:     int64(slot) * 5000,
+			EndMS:       int64(slot+1) * 5000,
+			Description: desc,
+		}
 		byAsset[assetID] = append(byAsset[assetID], shot)
 		shots[shot.ID] = shot
 	}

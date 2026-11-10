@@ -2182,6 +2182,10 @@ func (r *Repository) replaceAssetShotsTx(ctx context.Context, tx *sql.Tx, assetI
 	if err := rows.Close(); err != nil {
 		return err
 	}
+	// A canonical shot set is a partition: two shots over the same interval are
+	// ambiguous evidence (which one does a span belong to?), so the write is
+	// rejected instead of storing both. Fixtures that need many shots emit
+	// distinct spans.
 	seenIntervals := make(map[intervalKey]struct{}, len(shots))
 	keptIDs := make(map[string]struct{}, len(shots))
 	changedIntervals := oldCount != len(shots)

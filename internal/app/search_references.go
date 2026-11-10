@@ -119,6 +119,9 @@ func (s *Service) CreateSearchReference(ctx context.Context, raw io.Reader) (dom
 		os.Remove(absolute)
 		return domain.SearchReference{}, err
 	}
+	// Encoding happens here, under the administrator who uploaded the image,
+	// not on the public read path.
+	s.enqueueReferenceQuery(ctx, ref)
 	return ref, nil
 }
 
