@@ -152,9 +152,14 @@ func (r *Repository) HeartbeatWorker(ctx context.Context, workerID, version stri
 	if err := json.Unmarshal([]byte(storedRaw), &stored); err != nil {
 		return err
 	}
-	// Provider operations are the operator's enrollment-time trust decision;
-	// a heartbeat may report capabilities but cannot grant provider access.
+	// Provider and inference operations are the operator's enrollment-time
+	// trust decisions; a heartbeat may report capabilities but cannot grant
+	// access. Requested inference capabilities are intersected with the stored
+	// grant so a Worker cannot widen its own authorization.
 	capabilities.ProviderOperations = stored.ProviderOperations
+	capabilities.InferenceOperations = stored.InferenceOperations
+	capabilities.ModelManagementOperations = stored.ModelManagementOperations
+	capabilities.Inference = remote.IntersectInferenceCapabilities(capabilities.Inference, stored.InferenceOperations)
 	raw, err := json.Marshal(capabilities)
 	if err != nil {
 		return err

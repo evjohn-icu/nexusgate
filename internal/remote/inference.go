@@ -7,6 +7,10 @@
 package remote
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -161,4 +165,42 @@ type ModelManagementTask struct {
 	ManifestDigest  string `json:"manifest_digest"`
 	Action          string `json:"action"`
 	LicenseAccepted bool   `json:"license_accepted"`
+}
+
+// ErrResultCommitted reports that an inference result was accepted and
+// committed by the Hub. The Worker must not call the ordinary complete
+// endpoint afterwards: the Hub already moved the job to succeeded inside the
+// commit transaction.
+var ErrResultCommitted = errors.New("inference result committed")
+
+// DigestResult returns the canonical digest a Worker sends with a result.
+// It hashes the JSON encoding of the result (map order is deterministic in
+// encoding/json for structs), and the Hub recomputes it from the bytes it
+// received before staging anything.
+func DigestResult(result domain.InferenceResult) (string, error) {
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(encoded)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// IntersectInferenceCapabilities keeps only the capabilities whose operation
+// was granted at enrollment. A heartbeat may narrow what a Worker can run (a
+// model was removed, the GPU is busy) but it can never add an operation the
+// operator did not authorize; without this filter a Worker could widen its own
+// access by editing the body it sends every thirty seconds.
+func IntersectInferenceCapabilities(caps []InferenceCapability, granted []string) []InferenceCapability {
+	allowed := make(map[string]bool, len(granted))
+	for _, op := range granted {
+		allowed[op] = true
+	}
+	out := make([]InferenceCapability, 0, len(caps))
+	for _, capability := range caps {
+		if allowed[string(capability.Operation)] {
+			out = append(out, capability)
+		}
+	}
+	return out
 }

@@ -11,19 +11,8 @@ import (
 // Installation moves bytes and verifies hashes; probing asks the runtime what
 // it can actually load. Neither runs model inference.
 type ModelManager interface {
-	Install(ctx context.Context, task ModelManagementTask) error
-	Probe(ctx context.Context, task ModelManagementTask) error
-}
-
-// ModelManagementTask is the app-level view of a maintenance unit; the remote
-// package mirrors it on the wire.
-type ModelManagementTask struct {
-	JobID           string
-	TargetWorkerID  string
-	CatalogID       string
-	ManifestDigest  string
-	Action          string
-	LicenseAccepted bool
+	Install(ctx context.Context, task domain.ModelManagementTask) error
+	Probe(ctx context.Context, task domain.ModelManagementTask) error
 }
 
 // WithModelManager attaches the installer/prober. A Hub without one still
@@ -50,7 +39,7 @@ func (p *Pipeline) executeModelManagement(ctx context.Context, j domain.Job, own
 	if err != nil {
 		return err
 	}
-	unit := ModelManagementTask{
+	unit := domain.ModelManagementTask{
 		JobID:           task.JobID,
 		TargetWorkerID:  task.TargetWorkerID,
 		CatalogID:       task.CatalogID,
@@ -79,15 +68,5 @@ func (p *Pipeline) executeModelManagement(ctx context.Context, j domain.Job, own
 // separate interface so a minimal repository used by tests does not have to
 // implement the installer.
 type ModelManagementRepository interface {
-	GetModelManagementTask(ctx context.Context, jobID string) (ModelManagementTaskRow, error)
-}
-
-// ModelManagementTaskRow is the stored form.
-type ModelManagementTaskRow struct {
-	JobID           string
-	TargetWorkerID  string
-	CatalogID       string
-	ManifestDigest  string
-	Action          string
-	LicenseAccepted bool
+	GetModelManagementTask(ctx context.Context, jobID string) (domain.ModelManagementTask, error)
 }

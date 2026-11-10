@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/evjohn-icu/nexusgate/internal/app"
@@ -29,6 +31,7 @@ func (s *Server) multimodalRouteSpecs() []routeSpec {
 		newRouteSpec("search-reference-get", "GET /api/v1/admin/search-references/{id}", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.getSearchReference))),
 		newRouteSpec("search-reference-delete", "DELETE /api/v1/admin/search-references/{id}", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.deleteSearchReference))),
 		newRouteSpec("worker-job-input", "GET /api/v1/worker/jobs/{id}/input", routeAuthWorker, http.HandlerFunc(s.workerInferenceInput)),
+		newRouteSpec("asset-timeline", "GET /api/v1/assets/{id}/timeline", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.assetTimeline))),
 	}
 }
 
@@ -180,4 +183,68 @@ func (s *Server) workerInferenceInput(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Digest", descriptor.Digest)
 	http.ServeContent(w, r, "", time.Time{}, file)
+}
+
+// assetTimeline renders every track with one time base. Intervals keep their
+// stored bounds; the viewport filters, it never clips, so a client seeking to
+// an event's start always reaches the real start.
+func (s *Server) assetTimeline(w http.ResponseWriter, r *http.Request) {
+	assetID := r.PathValue("id")
+	startMS, endMS, ok := parseViewport(w, r)
+	if !ok {
+		return
+	}
+	limit := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 || parsed > 1000 {
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "limit must be between 1 and 1000"})
+			return
+		}
+		limit = parsed
+	}
+	timeline, truncated, err := s.service.AssetTimeline(r.Context(), assetID, startMS, endMS, limit)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "asset not found"})
+			return
+		}
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"timeline":               timeline,
+		"truncated":              truncated,
+		"processing_unavailable": len(timeline.Coverage) == 0,
+	})
+}
+
+// parseViewport reads start_ms/end_ms, rejecting a reversed or non-numeric
+// window instead of silently serving a different one.
+func parseViewport(w http.ResponseWriter, r *http.Request) (int64, int64, bool) {
+	parse := func(name string) (int64, bool) {
+		raw := strings.TrimSpace(r.URL.Query().Get(name))
+		if raw == "" {
+			return 0, true
+		}
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || value < 0 {
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: name + " must be a non-negative integer"})
+			return 0, false
+		}
+		return value, true
+	}
+	startMS, ok := parse("start_ms")
+	if !ok {
+		return 0, 0, false
+	}
+	endMS, ok := parse("end_ms")
+	if !ok {
+		return 0, 0, false
+	}
+	if endMS != 0 && endMS <= startMS {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "end_ms must be greater than start_ms"})
+		return 0, 0, false
+	}
+	return startMS, endMS, true
 }

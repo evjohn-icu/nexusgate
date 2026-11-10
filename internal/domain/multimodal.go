@@ -871,3 +871,96 @@ var ErrSearchReferenceExpired = errors.New("search reference expired")
 // serve one search round-trip; keeping the pixels longer would turn a transient
 // query into an undeclared image library.
 const SearchReferenceTTL = 24 * time.Hour
+
+// ModelManagementTask is one queued install/probe unit. It is a maintenance
+// job, not an inference operation: it moves and verifies bytes, it never runs
+// model code. The row records the catalog identity, manifest digest and
+// licence acceptance that authorized the download.
+type ModelManagementTask struct {
+	JobID             string `json:"job_id"`
+	TargetWorkerID    string `json:"target_worker_id"`
+	CatalogID         string `json:"catalog_id"`
+	ManifestDigest    string `json:"manifest_digest"`
+	Action            string `json:"action"`
+	LicenseAccepted   bool   `json:"license_accepted"`
+	LicenseAcceptedAt string `json:"license_accepted_at,omitempty"`
+}
+
+// AudioEventRow is the stored form of one environmental event, joined with the
+// generation and model identity that produced it.
+type AudioEventRow struct {
+	ID                   string   `json:"id"`
+	GenerationID         string   `json:"generation_id"`
+	AssetID              string   `json:"asset_id"`
+	StartMS              int64    `json:"start_ms"`
+	EndMS                int64    `json:"end_ms"`
+	Label                string   `json:"event_label"`
+	Confidence           *float64 `json:"confidence"`
+	RawScore             float64  `json:"raw_score"`
+	EvidenceStatus       string   `json:"evidence_status"`
+	BoundaryResolutionMS int      `json:"boundary_resolution_ms"`
+	ModelID              string   `json:"model_id"`
+	ModelVersion         string   `json:"model_version"`
+	AnalysisRunID        string   `json:"analysis_run_id,omitempty"`
+}
+
+// AudioWindowRow is the timing of one stored audio embedding window. The vector
+// itself is never part of a timeline response.
+type AudioWindowRow struct {
+	GenerationID string `json:"generation_id"`
+	StartMS      int64  `json:"start_ms"`
+	EndMS        int64  `json:"end_ms"`
+}
+
+// SpeakerTurnRow is one stored diarization turn.
+type SpeakerTurnRow struct {
+	ID             string   `json:"id"`
+	GenerationID   string   `json:"generation_id"`
+	AssetID        string   `json:"asset_id"`
+	StartMS        int64    `json:"start_ms"`
+	EndMS          int64    `json:"end_ms"`
+	LocalSpeakerID string   `json:"local_speaker_id,omitempty"`
+	Confidence     *float64 `json:"confidence"`
+	Overlap        bool     `json:"overlap"`
+}
+
+// ModalityCoverageRow reports what a committed generation actually covered.
+// "complete" is a statement about processed coverage, never about the world:
+// an event missing from complete coverage is still not proof of absence.
+type ModalityCoverageRow struct {
+	Operation          InferenceOperation `json:"operation"`
+	State              string             `json:"state"`
+	ProcessedIntervals IntervalSet        `json:"processed_intervals"`
+	FailureIntervals   IntervalSet        `json:"failure_intervals"`
+	ModelID            string             `json:"model_id,omitempty"`
+	ModelVersion       string             `json:"model_version,omitempty"`
+	ConfigHash         string             `json:"config_hash"`
+	CommittedAt        string             `json:"committed_at,omitempty"`
+}
+
+// AssetTimeline is the trusted-read view of one asset's tracks. Biometric
+// profiles and associations are deliberately absent: they are admin-only and
+// never appear in a library-facing response.
+type AssetTimeline struct {
+	AssetID      string                `json:"asset_id"`
+	DurationMS   int64                 `json:"duration_ms"`
+	Shots        []AssetShot           `json:"shots"`
+	VisualRefs   []VisualRef           `json:"visual_refs"`
+	Segments     []TranscriptSegment   `json:"transcript_segments"`
+	Words        []AlignmentWord       `json:"transcript_words"`
+	Turns        []SpeakerTurnRow      `json:"speaker_turns"`
+	Events       []AudioEventRow       `json:"sound_events"`
+	AudioWindows []AudioWindowRow      `json:"audio_windows"`
+	Coverage     []ModalityCoverageRow `json:"coverage"`
+}
+
+// VisualRef names one stored visual vector without exposing its bytes.
+type VisualRef struct {
+	ShotID      string `json:"shot_id"`
+	SampleIndex int    `json:"sample_index"`
+	TimestampMS int64  `json:"timestamp_ms"`
+	StartMS     int64  `json:"start_ms"`
+	EndMS       int64  `json:"end_ms"`
+	Strategy    string `json:"strategy"`
+	SpaceID     string `json:"space_id"`
+}
