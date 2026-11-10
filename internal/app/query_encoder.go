@@ -72,7 +72,7 @@ func (e *modalityQueryEncoder) Encode(ctx context.Context, modality, text, refer
 	}
 	jobID, pending, _ := repo.QueryJobByContentHash(ctx, ref.ContentHash)
 	if pending {
-		return "", nil, fmt.Errorf("%w: query image is still being encoded (job %s)", search.ErrModalitiesUnavailable, jobID)
+		return "", nil, &search.PendingModalitiesError{JobIDs: []string{jobID}, Reason: "query image is still being encoded"}
 	}
 	return "", nil, fmt.Errorf("%w: query image has not been submitted for encoding", search.ErrModalitiesUnavailable)
 }

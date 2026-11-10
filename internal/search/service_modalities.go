@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -73,6 +74,12 @@ func (s *Service) retrieveModality(ctx context.Context, modality string, req Sea
 		}
 		spaceID, vector, err := s.opts.ModalityEncoder.Encode(ctx, modality, q.Raw, req.ReferenceID)
 		if err != nil {
+			// Preserve a typed "pending with job ids" error; only a real
+			// unavailability is wrapped as one.
+			var pending *PendingModalitiesError
+			if errors.As(err, &pending) {
+				return modalityBundle{}, fmt.Errorf("%s: %w", modality, err)
+			}
 			return modalityBundle{}, fmt.Errorf("%w: %s: %v", ErrModalitiesUnavailable, modality, err)
 		}
 		retriever.SpaceID = spaceID

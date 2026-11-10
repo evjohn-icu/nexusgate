@@ -415,7 +415,7 @@
       ],
       "license": {
         "code": "Apache-2.0 (tensorflow/models research/audioset/yamnet)",
-        "weights": "AudioSet release terms, Apache-2.0 per upstream model page",
+        "weights": "unverified: upstream AudioSet/YAMNet weight terms were not confirmed during locking; the installer must not bundle or redistribute weights until they are",
         "source": "https://github.com/tensorflow/models/tree/master/research/audioset/yamnet"
       },
       "code_revision": "c14bf9ad91962cf189f9f58db2132c06247fcd53",

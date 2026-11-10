@@ -587,6 +587,11 @@ func (res InferenceResult) ValidateFor(req InferenceRequest, durationMS int64, d
 		}
 	}
 
+	// Exactly one payload KIND may be present, selected by the operation. The
+	// kind may legitimately be empty: a silent recording produces no sound
+	// events and a recording with no speech produces no turns, and rejecting
+	// those would fail every quiet clip permanently. Vectors are the exception
+	// — a vector operation that produced none failed.
 	payloads := 0
 	for _, present := range []bool{
 		len(res.Embeddings) > 0, len(res.Events) > 0, len(res.Turns) > 0,
@@ -596,8 +601,26 @@ func (res InferenceResult) ValidateFor(req InferenceRequest, durationMS int64, d
 			payloads++
 		}
 	}
-	if payloads != 1 {
-		return fmt.Errorf("result must carry exactly one typed payload, got %d", payloads)
+	if payloads > 1 {
+		return fmt.Errorf("result must carry at most one typed payload, got %d", payloads)
+	}
+	belongs := func(operation InferenceOperation) bool {
+		switch operation {
+		case OpVisualEmbedding, OpAudioEmbedding, OpSpeakerEmbedding:
+			return len(res.Embeddings) > 0 || payloads == 0
+		case OpSoundEvents:
+			return len(res.Events) > 0 || payloads == 0
+		case OpDiarization:
+			return len(res.Turns) > 0 || payloads == 0
+		case OpASR:
+			return len(res.Segments) > 0 || payloads == 0
+		case OpAlignment:
+			return len(res.Words) > 0 || payloads == 0
+		}
+		return false
+	}
+	if !belongs(req.Operation) {
+		return fmt.Errorf("operation %q returned a payload of another type", req.Operation)
 	}
 
 	switch req.Operation {
@@ -626,9 +649,7 @@ func (res InferenceResult) ValidateFor(req InferenceRequest, durationMS int64, d
 			}
 		}
 	case OpSoundEvents:
-		if len(res.Events) == 0 {
-			return fmt.Errorf("sound_events returned no events payload")
-		}
+		// Zero events is a valid answer for a silent recording.
 		for i, ev := range res.Events {
 			if strings.TrimSpace(ev.Label) == "" {
 				return fmt.Errorf("event %d has no label", i)
@@ -647,9 +668,7 @@ func (res InferenceResult) ValidateFor(req InferenceRequest, durationMS int64, d
 			}
 		}
 	case OpDiarization:
-		if len(res.Turns) == 0 {
-			return fmt.Errorf("diarization returned no turns payload")
-		}
+		// Zero turns is a valid answer for a recording with no speech.
 		for i, turn := range res.Turns {
 			iv := TimeInterval{StartMS: turn.StartMS, EndMS: turn.EndMS}
 			if err := iv.Validate(durationMS); err != nil {
@@ -657,9 +676,6 @@ func (res InferenceResult) ValidateFor(req InferenceRequest, durationMS int64, d
 			}
 		}
 	case OpASR:
-		if len(res.Segments) == 0 {
-			return fmt.Errorf("asr returned no segments payload")
-		}
 		for i, seg := range res.Segments {
 			iv := TimeInterval{StartMS: seg.StartMS, EndMS: seg.EndMS}
 			if err := iv.Validate(durationMS); err != nil {
@@ -667,9 +683,6 @@ func (res InferenceResult) ValidateFor(req InferenceRequest, durationMS int64, d
 			}
 		}
 	case OpAlignment:
-		if len(res.Words) == 0 {
-			return fmt.Errorf("alignment returned no words payload")
-		}
 		for i, word := range res.Words {
 			iv := TimeInterval{StartMS: word.StartMS, EndMS: word.EndMS}
 			if err := iv.Validate(durationMS); err != nil {

@@ -2102,7 +2102,14 @@ func (s *Server) searchShotsV2(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := s.service.SearchV2(r.Context(), req)
 	if err != nil {
+		var pending *search.PendingModalitiesError
 		switch {
+		case errors.As(err, &pending):
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"status":  "pending",
+				"job_ids": pending.JobIDs,
+				"reason":  clipText(pending.Error(), 300),
+			})
 		case errors.Is(err, search.ErrInvalidMultimodal), errors.Is(err, search.ErrConflictingReferences):
 			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
 		case errors.Is(err, search.ErrModalitiesUnavailable):

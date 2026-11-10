@@ -642,3 +642,24 @@ func mergeCoverageState(a, b string) string {
 	}
 	return "partial"
 }
+
+// PendingModalitiesError reports that a requested channel is being computed and
+// carries the job ids the caller should poll. It is deliberately distinct from
+// ErrModalitiesUnavailable: one means "wait", the other means "this Hub cannot
+// serve the channel at all".
+type PendingModalitiesError struct {
+	JobIDs []string
+	Reason string
+}
+
+// Error renders a stable message without the job ids (they travel in JobIDs).
+func (e *PendingModalitiesError) Error() string {
+	if e == nil {
+		return ErrModalitiesUnavailable.Error()
+	}
+	message := strings.TrimSpace(e.Reason)
+	if message == "" {
+		message = "requested modality is still being encoded"
+	}
+	return message
+}

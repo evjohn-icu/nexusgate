@@ -58,7 +58,7 @@ and the override is recorded in the generation's `preprocessing_json`.
 
 | model | revision | artifact | output | license | decision |
 | --- | --- | --- | --- | --- | --- |
-| YAMNet (AudioSet, 521 classes) | TF-Models code `c14bf9ad91962cf189f9f58db2132c06247fcd53` | official version-1 release via Kaggle Models `google/yamnet/TensorFlow2/yamnet/1` | 16 kHz mono, 0.96 s patches / 0.48 s hop, per-frame 521-class scores | Apache-2.0 weights and code per the AudioSet release | CPU baseline for environmental events |
+| YAMNet (AudioSet, 521 classes) | TF-Models code `c14bf9ad91962cf189f9f58db2132c06247fcd53` | official version-1 release via Kaggle Models `google/yamnet/TensorFlow2/yamnet/1` | 16 kHz mono, 0.96 s patches / 0.48 s hop, per-frame 521-class scores | code Apache-2.0; weight redistribution terms **unverified** — not bundled pending confirmation | CPU baseline for environmental events |
 | PANNs `Cnn14_DecisionLevelMax` | optional comparison only | not locked | clip-level backbone + frame-level decision head | Apache-2.0 code, weights per upstream release | **not selected**; clip-only classification is never reinterpreted as exact boundaries |
 
 YAMNet's own README pins its dependency: the SavedModel was exported for Keras 2

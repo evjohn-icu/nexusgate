@@ -222,3 +222,39 @@ func TestSoundEventValidationRejectsReversedIntervals(t *testing.T) {
 		t.Fatalf("valid event rejected: %v", err)
 	}
 }
+
+func TestInferenceResultAcceptsEmptyEventAndTurnPayloads(t *testing.T) {
+	soundReq := validRequest()
+	sound := InferenceResult{
+		SchemaVersion: InferenceSchemaVersion, OperationID: soundReq.OperationID,
+		Operation: soundReq.Operation, ModelID: soundReq.ModelID, ModelRevision: soundReq.ModelRevision,
+		InputHash: soundReq.InputHash, ConfigHash: soundReq.ConfigHash, Backend: "cpu",
+		// A silent recording legitimately yields no events.
+	}
+	if err := sound.ValidateFor(soundReq, 40000, 0); err != nil {
+		t.Fatalf("empty sound events must be valid: %v", err)
+	}
+
+	diarReq := validRequest()
+	diarReq.Operation = OpDiarization
+	diarReq.SoundEvent = nil
+	diarReq.Diarization = &DiarizationSettings{}
+	diar := InferenceResult{
+		SchemaVersion: InferenceSchemaVersion, OperationID: diarReq.OperationID,
+		Operation: diarReq.Operation, ModelID: diarReq.ModelID, ModelRevision: diarReq.ModelRevision,
+		InputHash: diarReq.InputHash, ConfigHash: diarReq.ConfigHash, Backend: "cpu",
+	}
+	if err := diar.ValidateFor(diarReq, 40000, 0); err != nil {
+		t.Fatalf("empty diarization turns must be valid: %v", err)
+	}
+
+	wrongKind := InferenceResult{
+		SchemaVersion: InferenceSchemaVersion, OperationID: soundReq.OperationID,
+		Operation: soundReq.Operation, ModelID: soundReq.ModelID, ModelRevision: soundReq.ModelRevision,
+		InputHash: soundReq.InputHash, ConfigHash: soundReq.ConfigHash, Backend: "cpu",
+		Turns: []SpeakerTurn{{StartMS: 0, EndMS: 1000}},
+	}
+	if err := wrongKind.ValidateFor(soundReq, 40000, 0); err == nil {
+		t.Fatal("a sound-events result carrying turns must be rejected")
+	}
+}
