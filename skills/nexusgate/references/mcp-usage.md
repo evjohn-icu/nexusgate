@@ -54,6 +54,12 @@ it instead returns the synchronized timeline: shots, transcript segments and
 words, speaker turns (anonymous local ids), sound events, audio windows and
 modality coverage.
 
+The timeline route also exposes a real waveform viewport:
+`GET /api/v1/assets/{id}/waveform?level=&start_ms=&end_ms=` returns at most
+4096 `{start_ms,min,max}` buckets. It is a trusted read like the other asset
+routes; `waveform_unavailable` means the derivative has not been generated yet,
+not that the asset is silent.
+
 `get_shot` returns one shot's speech alongside its metadata, and says where the
 timing came from: `transcript_source` is `aligned` (word boundaries, in
 `transcript`), `asr` (sentence segments only, in `transcript_segments`), or
