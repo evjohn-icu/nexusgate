@@ -30,7 +30,11 @@ func newMultimodalTestStack(t *testing.T) (http.Handler, *sqlite.Repository) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { repo.Close() })
-	cfg := config.Config{DataDir: secureTestDataDir(t), Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true}}
+	cfg := config.Config{
+		DataDir:  secureTestDataDir(t),
+		CacheDir: filepath.Join(t.TempDir(), "cache"),
+		Hardware: media.HardwareConfig{Mode: "software", AllowFallback: true},
+	}
 	cfg.HubSecurity.AdminAuth = "off"
 	service, err := app.NewService(repo, cfg)
 	if err != nil {
