@@ -231,6 +231,20 @@ func (c *hubClient) inspectLibrary(ctx context.Context) (map[string]any, error) 
 // a score — matching how the README positions the search surface. Uses the
 // agent token like the other trusted reads.
 func (c *hubClient) searchShots(ctx context.Context, q string, limit, offset int, filters map[string]any) (map[string]any, error) {
+	return c.searchShotsAdvanced(ctx, q, limit, offset, filters, searchOptions{})
+}
+
+// searchOptions carries the optional multimodal selectors. They are forwarded
+// verbatim; the Hub validates them, and the agent token never gains biometric
+// access because a speaker profile id is not part of this surface.
+type searchOptions struct {
+	Modalities   []string       `json:"modalities,omitempty"`
+	ReferenceID  string         `json:"reference_id,omitempty"`
+	VisualShotID string         `json:"visual_shot_id,omitempty"`
+	Temporal     map[string]any `json:"temporal,omitempty"`
+}
+
+func (c *hubClient) searchShotsAdvanced(ctx context.Context, q string, limit, offset int, filters map[string]any, options searchOptions) (map[string]any, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -247,6 +261,18 @@ func (c *hubClient) searchShots(ctx context.Context, q string, limit, offset int
 	if filters != nil {
 		body["facets"] = filters
 	}
+	if len(options.Modalities) > 0 {
+		body["modalities"] = options.Modalities
+	}
+	if options.ReferenceID != "" {
+		body["reference_id"] = options.ReferenceID
+	}
+	if options.VisualShotID != "" {
+		body["visual_shot_id"] = options.VisualShotID
+	}
+	if options.Temporal != nil {
+		body["temporal"] = options.Temporal
+	}
 	var out map[string]any
 	if err := c.do(ctx, http.MethodPost, "/api/v1/search/shots", c.agentToken, body, &out); err != nil {
 		return nil, err
@@ -257,6 +283,25 @@ func (c *hubClient) searchShots(ctx context.Context, q string, limit, offset int
 // getTimeline returns every shot of one asset with exact time ranges and shot
 // descriptions, so an agent can enumerate a whole clip's timeline (all shots,
 // not just the matched ones search returns).
+// getTimelineView reads one of the two timeline surfaces. The default is the
+// per-asset shot list every existing agent already consumes; include_tracks
+// returns the synchronized multimodal timeline, which carries model provenance,
+// explicit coverage and anonymous speaker turns — never biometric profiles.
+func (c *hubClient) getTimelineView(ctx context.Context, assetID string, includeTracks bool) (any, error) {
+	if includeTracks {
+		var out map[string]any
+		if err := c.getLarge(ctx, "/api/v1/assets/"+url.PathEscape(assetID)+"/timeline", &out); err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
+	var shots []map[string]any
+	if err := c.getLarge(ctx, "/api/v1/assets/"+url.PathEscape(assetID)+"/shots", &shots); err != nil {
+		return nil, err
+	}
+	return shots, nil
+}
+
 func (c *hubClient) getTimeline(ctx context.Context, assetID string) ([]map[string]any, error) {
 	var out []map[string]any
 	// A valid 2,000-shot timeline can exceed do()'s 1 MiB success-body
@@ -493,6 +538,10 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 			mcp.WithNumber("limit", mcp.Description("Maximum number of shots (default 20)")),
 			mcp.WithNumber("offset", mcp.Description("Optional zero-based offset into the full result list for pagination (default 0)")),
 			mcp.WithString("filters", mcp.Description("Optional facet filters, as a JSON object or as a JSON object encoded in a string (both are accepted). Supported keys: asset_types, shot_sizes, camera_motions, audio_types, qualities, usable_as (each a JSON array of strings), min_duration_ms, max_duration_ms (integers). Example: '{\"asset_types\":[\"broll\"]}'. An unknown key is rejected with an error rather than ignored, because an ignored filter returns a wider result set that looks correct.")),
+			mcp.WithString("modalities", mcp.Description("Optional comma-separated channels to search in addition to the legacy ones: lexical,transcript,visual,audio,sound_event,speaker. A requested channel the Hub cannot serve returns a typed error, never a silently narrower result set.")),
+			mcp.WithString("reference_id", mcp.Description("Optional Hub-issued query-image reference id (from an admin upload). Local image paths are never accepted.")),
+			mcp.WithString("visual_shot_id", mcp.Description("Optional shot id to restrict visual matching to one canonical shot")),
+			mcp.WithString("temporal", mcp.Description("Optional temporal query as a JSON object (conditions + predicates) or a JSON object encoded in a string. Relations: simultaneous, before, after, during, starts_within, ends_within. A before/after predicate requires max_gap_ms.")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			query, rerr := requireString(req.GetArguments(), "query")
@@ -511,7 +560,11 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 			if ferr != nil {
 				return errResult(ferr), nil
 			}
-			result, err := client.searchShots(ctx, query, limit, offset, filters)
+			options, oerr := parseSearchOptions(req.GetArguments())
+			if oerr != nil {
+				return errResult(oerr), nil
+			}
+			result, err := client.searchShotsAdvanced(ctx, query, limit, offset, filters, options)
 			if err != nil {
 				return errResult(err), nil
 			}
@@ -524,17 +577,19 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 		mcp.NewTool("get_timeline",
 			mcp.WithDescription("Return every shot of an asset in chronological order with exact start_ms/end_ms time ranges, descriptions, and tags. Use to understand the full timeline context around a matched shot — agents should call this after search_shots to see what comes before and after a candidate."),
 			mcp.WithString("asset_id", mcp.Required(), mcp.Description("The asset id from search_shots results")),
+			mcp.WithBoolean("include_tracks", mcp.Description("Also return the synchronized multimodal timeline (waveform metadata is not included): shots, transcript segments/words, speaker turns, sound events, audio windows and modality coverage. Speaker turns are anonymous local ids; biometric profiles are never exposed.")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			assetID, rerr := requireString(req.GetArguments(), "asset_id")
 			if rerr != nil {
 				return rerr, nil
 			}
-			shots, err := client.getTimeline(ctx, assetID)
+			include, _ := req.GetArguments()["include_tracks"].(bool)
+			timeline, err := client.getTimelineView(ctx, assetID, include)
 			if err != nil {
 				return errResult(err), nil
 			}
-			raw, _ := json.MarshalIndent(shots, "", "  ")
+			raw, _ := json.MarshalIndent(timeline, "", "  ")
 			return toolResult(string(raw)), nil
 		},
 	)
@@ -596,4 +651,42 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 		},
 	)
 
+}
+
+// parseSearchOptions reads the optional multimodal selectors. A malformed
+// temporal object is an error, not a query that quietly loses its constraint.
+func parseSearchOptions(args map[string]any) (searchOptions, error) {
+	var options searchOptions
+	if raw, ok := args["modalities"].(string); ok && strings.TrimSpace(raw) != "" {
+		for _, value := range strings.Split(raw, ",") {
+			value = strings.TrimSpace(value)
+			if value != "" {
+				options.Modalities = append(options.Modalities, value)
+			}
+		}
+	}
+	if raw, ok := args["reference_id"].(string); ok {
+		options.ReferenceID = strings.TrimSpace(raw)
+	}
+	if raw, ok := args["visual_shot_id"].(string); ok {
+		options.VisualShotID = strings.TrimSpace(raw)
+	}
+	if raw, present := args["temporal"]; present && raw != nil {
+		switch value := raw.(type) {
+		case string:
+			if strings.TrimSpace(value) == "" {
+				return options, nil
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal([]byte(value), &decoded); err != nil {
+				return searchOptions{}, fmt.Errorf("temporal must be a JSON object: %w", err)
+			}
+			options.Temporal = decoded
+		case map[string]any:
+			options.Temporal = value
+		default:
+			return searchOptions{}, fmt.Errorf("temporal must be a JSON object or a JSON object encoded in a string")
+		}
+	}
+	return options, nil
 }

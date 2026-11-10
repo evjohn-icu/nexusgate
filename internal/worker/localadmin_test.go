@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"context"
 	"encoding/json"
 	"io/fs"
 	"net"
@@ -296,5 +297,42 @@ func TestLocalAdminURLCarriesTheToken(t *testing.T) {
 	}
 	if len(admin.pathToken) < 32 {
 		t.Fatalf("token %q is too short to resist guessing", admin.pathToken)
+	}
+}
+
+func TestReadFileIfPresent(t *testing.T) {
+	dir := t.TempDir()
+	if raw, err := readFileIfPresent(filepath.Join(dir, "missing")); raw != nil || err != nil {
+		t.Fatalf("missing file = %q %v", raw, err)
+	}
+	path := filepath.Join(dir, "present")
+	if err := os.WriteFile(path, []byte("value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := readFileIfPresent(path); err != nil || string(raw) != "value" {
+		t.Fatalf("present file = %q %v", raw, err)
+	}
+}
+
+func TestLocalAdminServeShutsDownWithContext(t *testing.T) {
+	admin, err := NewLocalAdmin(filepath.Join(t.TempDir(), "worker-config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- admin.Serve(ctx) }()
+	response, err := http.Get(admin.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("settings page status=%d", response.StatusCode)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }

@@ -405,3 +405,50 @@ func TestLibraryStructuredSearchCarriesAllFilters(t *testing.T) {
 		t.Fatalf("library must advance date_to by one day for the exclusive bound")
 	}
 }
+
+func TestLibraryTimelinePanelAndLocaleKeys(t *testing.T) {
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	(&Server{}).serveLocalizedPage(response, request, pageID("/"), libraryIndexHTML)
+	if response.Code != http.StatusOK {
+		t.Fatalf("library page status=%d", response.Code)
+	}
+	page := response.Body.String()
+	for _, marker := range []string{
+		`id="asset-timeline-panel"`,
+		`data-asset-timeline="`,
+		`/timeline?limit=1000`,
+		`/waveform?level=`,
+		`function timelinePack(intervals)`,
+		`lanes[lane]>start`,
+		`timelineVideo.addEventListener('timeupdate',timelineUpdatePlayhead)`,
+		`requestAnimationFrame(timelineAnimationFrame)`,
+		`function timelineWheelZoom(chart,event)`,
+		`timelineDrawWave(result)`,
+		`result.buckets.length>4096`,
+		`data-evidence-status`,
+	} {
+		if !strings.Contains(page, marker) {
+			t.Errorf("served library timeline is missing %q", marker)
+		}
+	}
+	if strings.Contains(page, `[[i18n:library.timeline.`) {
+		t.Fatal("unresolved timeline i18n marker leaked into the served library page")
+	}
+	keys := []string{
+		"library.timeline.open", "library.timeline.aria", "library.timeline.title",
+		"library.timeline.reset", "library.timeline.instructions", "library.timeline.empty",
+		"library.timeline.noIntervals", "library.timeline.modelUnknown", "library.timeline.evidenceUnknown",
+		"library.timeline.unknownLabel", "library.timeline.unknownSpeaker", "library.timeline.interval",
+		"library.timeline.track.waveform", "library.timeline.track.shots", "library.timeline.track.sounds",
+		"library.timeline.track.speakers", "library.timeline.track.transcript", "library.timeline.noWaveform",
+		"library.timeline.waveformError", "library.timeline.loadError", "library.timeline.retry",
+	}
+	for _, loc := range supportedLocales {
+		for _, key := range keys {
+			if value, ok := catalogs[loc][key]; !ok || value == "" {
+				t.Errorf("locale %s does not resolve timeline key %q", loc, key)
+			}
+		}
+	}
+}

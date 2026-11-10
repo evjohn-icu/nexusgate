@@ -26,7 +26,7 @@ silently accept any certificate; `http://` remains for local development.
 |---|---|---|
 | `inspect_library` | GET /api/v1/health, /hardware, /setup/status, /jobs/summary | trusted read (token optional) |
 | `search_shots` | POST /api/v1/search/shots | trusted read (token optional) |
-| `get_timeline` | GET /api/v1/assets/{id}/shots | trusted read (token optional) |
+| `get_timeline` | GET /api/v1/assets/{id}/shots, /assets/{id}/timeline | trusted read (token optional) |
 | `get_asset` | GET /api/v1/assets/{id} | trusted read (token optional) |
 | `get_shot` | GET /api/v1/shots/{id} | trusted read (token optional) |
 | `get_transcript` | GET /api/v1/assets/{id}/transcript | trusted read (token optional) |
@@ -49,7 +49,16 @@ issues — for that, use the Skill's HTTP flow (`/api/v1/jobs`,
 per-constraint `evidence` (confirmed/possible/contradicted/unknown) alongside
 its score — treat a high score as a retrieval signal, the evidence as the
 claim. `get_timeline` enumerates every shot of one asset (all shots and exact
-time ranges), which `search_shots` does not return.
+time ranges), which `search_shots` does not return. With `include_tracks=true`
+it instead returns the synchronized timeline: shots, transcript segments and
+words, speaker turns (anonymous local ids), sound events, audio windows and
+modality coverage.
+
+The timeline route also exposes a real waveform viewport:
+`GET /api/v1/assets/{id}/waveform?level=&start_ms=&end_ms=` returns at most
+4096 `{start_ms,min,max}` buckets. It is a trusted read like the other asset
+routes; `waveform_unavailable` means the derivative has not been generated yet,
+not that the asset is silent.
 
 `get_shot` returns one shot's speech alongside its metadata, and says where the
 timing came from: `transcript_source` is `aligned` (word boundaries, in

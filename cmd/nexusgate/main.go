@@ -2,11 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -20,10 +26,12 @@ import (
 	"github.com/evjohn-icu/nexusgate/internal/app"
 	"github.com/evjohn-icu/nexusgate/internal/buildinfo"
 	"github.com/evjohn-icu/nexusgate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 	"github.com/evjohn-icu/nexusgate/internal/hubauth"
 	"github.com/evjohn-icu/nexusgate/internal/hubtls"
 	"github.com/evjohn-icu/nexusgate/internal/media"
 	"github.com/evjohn-icu/nexusgate/internal/providers"
+	"github.com/evjohn-icu/nexusgate/internal/providers/localinference"
 	"github.com/evjohn-icu/nexusgate/internal/remote"
 	sqliterepo "github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 	"github.com/evjohn-icu/nexusgate/internal/secretstore"
@@ -116,6 +124,8 @@ func run() error {
 	case "serve":
 		fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 		addr := fs.String("addr", cfg.ListenAddress, "HTTP listen address")
+		readyFile := fs.String("ready-file", "", "write a ready JSON {url,fingerprint,pid} after the listener is bound (desktop launcher)")
+		shutdownOnEOF := fs.Bool("shutdown-on-stdin-eof", false, "shut down when stdin closes (desktop child process)")
 		if err := fs.Parse(os.Args[2:]); err != nil {
 			return err
 		}
@@ -147,6 +157,7 @@ func run() error {
 		if err := service.HealOnStartup(ctx); err != nil {
 			slog.Warn("self-heal sweep failed; stale running jobs will be reclaimed on the next lease attempt", "error", err)
 		}
+		attachLocalInference(ctx, service, cfg)
 		certificate, key, err := hubTLSFiles(cfg)
 		if err != nil {
 			return err
@@ -170,6 +181,44 @@ func run() error {
 		}
 		server := api.NewTLSServer(*addr, service, certificate, key)
 		setupWebDAVDelivery(service, server, repo, cfg.DataDir)
+		if *shutdownOnEOF {
+			// The desktop launcher owns this child's lifetime through stdin:
+			// closing the pipe is the graceful stop, and anything else would
+			// leave an orphan after a parent crash.
+			go func() {
+				_, _ = io.Copy(io.Discard, os.Stdin)
+				stop()
+			}()
+		}
+		if *readyFile != "" {
+			listener, err := net.Listen("tcp", *addr)
+			if err != nil {
+				return fmt.Errorf("bind desktop listener: %w", err)
+			}
+			fingerprint, err := certificateFingerprint(certificate)
+			if err != nil {
+				listener.Close()
+				return err
+			}
+			payload, err := json.Marshal(map[string]any{
+				"url":         "https://" + listener.Addr().String(),
+				"fingerprint": fingerprint,
+				"pid":         os.Getpid(),
+			})
+			if err != nil {
+				listener.Close()
+				return err
+			}
+			if err := writeReadyFile(*readyFile, payload); err != nil {
+				listener.Close()
+				return err
+			}
+			serveErr := server.RunListener(ctx, listener)
+			if serveErr != nil && !errors.Is(serveErr, context.Canceled) {
+				return serveErr
+			}
+			return nil
+		}
 		serveErr := server.Run(ctx)
 		// A listen failure does not cancel the signal context. Cancel it here as
 		// well so background Pipeline work cannot outlive the failed server.
@@ -209,6 +258,10 @@ func run() error {
 			if err := service.HealOnStartup(ctx); err != nil {
 				slog.Warn("self-heal sweep failed; stale running jobs will be reclaimed on the next lease attempt", "error", err)
 			}
+			// A separate pipeline process must attach the same local runtime as
+			// serve; otherwise inference jobs are never leasable by it and wait
+			// for a scan-triggered pass inside the HTTP process.
+			attachLocalInference(ctx, service, cfg)
 			return service.RunPipeline(ctx)
 		case "retry-failed":
 			requeued, err := service.RequeueFailedJobs(context.Background())
@@ -250,8 +303,10 @@ func run() error {
 			}
 			fmt.Printf("rebuilt %d shot text embedding(s); run `nexusgate pipeline run` if jobs are queued\n", rebuilt)
 			return nil
+		case "rebuild-visual":
+			return runRebuildVisualCommand(service, repo, os.Args[3:])
 		default:
-			return errors.New("usage: nexusgate search rebuild|rebuild-embeddings")
+			return errors.New("usage: nexusgate search rebuild|rebuild-embeddings|rebuild-visual")
 		}
 
 	case "doctor":
@@ -326,6 +381,43 @@ func detectContainer() bool {
 // analysis must be refreshable without deleting the database. Old model runs
 // stay immutable and auditable; the new run switches the canonical analysis
 // and rebuilds search when it lands.
+// attachLocalInference binds the locked Python runtime and model manager to a
+// service when the operator configured one. Both `serve` and `pipeline run`
+// need it: inference jobs are leased by whichever process runs the pipeline,
+// so attaching only in serve left them pending forever in the documented
+// separate-pipeline deployment.
+func attachLocalInference(ctx context.Context, service *app.Service, cfg config.Config) {
+	if !cfg.Inference.LocalRuntimeConfigured() {
+		return
+	}
+	executor, err := localinference.New(localinference.Config{
+		PythonPath:    cfg.Inference.PythonPath,
+		ModuleDir:     cfg.Inference.ModuleDir,
+		ModelDir:      cfg.Inference.ModelDir,
+		Device:        cfg.Inference.Device,
+		Dtype:         cfg.Inference.Dtype,
+		ScratchDir:    cfg.Inference.ScratchDir,
+		MaxFrameBytes: cfg.Inference.MaxFrameBytes,
+		ResolveAssetPath: func(input domain.InferenceInput) (string, error) {
+			return service.ResolveInferenceAssetPath(ctx, input)
+		},
+		ResolveImagePath: func(referenceID, digest string) (string, error) {
+			return service.ResolveInferenceImagePath(ctx, referenceID, digest)
+		},
+	})
+	if err != nil {
+		slog.Warn("local inference runtime unavailable", "error", err)
+		return
+	}
+	service.AttachInferenceExecutor(executor)
+	if manager, err := app.NewLocalModelManager(cfg.Inference.LockPath, cfg.Inference.ModelDir, executor); err != nil {
+		slog.Warn("model manager unavailable", "error", err)
+	} else {
+		service.AttachModelManager(manager)
+	}
+	fmt.Printf("Inference runtime: %s (%s/%s)\n", cfg.Inference.PythonPath, cfg.Inference.Device, cfg.Inference.Dtype)
+}
+
 func runReanalyzeCommand(service *app.Service, args []string) error {
 	flags := flag.NewFlagSet("reanalyze", flag.ContinueOnError)
 	assetID := flags.String("asset", "", "reanalyze a single asset by id")
@@ -615,6 +707,11 @@ func runWorkerCommand(cfg config.Config) error {
 		fs := flag.NewFlagSet("worker run", flag.ContinueOnError)
 		configPath := fs.String("config", defaultWorkerConfigPath(), "worker config path")
 		tray := fs.Bool("tray", false, "show a notification-area icon with a settings link and a quit item (Windows)")
+		inferencePython := fs.String("inference-python", "", "locked Python interpreter for local inference (empty: derive-only Worker)")
+		inferenceModule := fs.String("inference-module", "", "directory containing the inference Python package")
+		inferenceModels := fs.String("inference-models", "", "locked model directory")
+		inferenceDevice := fs.String("inference-device", "auto", "auto, cpu or cuda")
+		inferenceDtype := fs.String("inference-dtype", "auto", "auto, float32 or float16")
 		if err := fs.Parse(os.Args[3:]); err != nil {
 			return err
 		}
@@ -635,6 +732,28 @@ func runWorkerCommand(cfg config.Config) error {
 		capabilities := worker.MergeDetectedCapabilities(config.Registration.Capabilities, hardwareReport)
 		deriver := worker.NewFFmpegDeriver(plan).WithPreviewLUT(config.PreviewLUTPath)
 		runtime := worker.NewRuntime(client, config, deriver, capabilities)
+		if strings.TrimSpace(*inferencePython) != "" {
+			executor, err := localinference.New(localinference.Config{
+				PythonPath: *inferencePython,
+				ModuleDir:  *inferenceModule,
+				ModelDir:   *inferenceModels,
+				Device:     *inferenceDevice,
+				Dtype:      *inferenceDtype,
+				ScratchDir: filepath.Join(config.CachePath(), "inference"),
+				ResolveAssetPath: func(input domain.InferenceInput) (string, error) {
+					return config.ResolveSourcePath(input.RootID, input.RelativePath)
+				},
+				ResolveImagePath: func(referenceID, digest string) (string, error) {
+					return "", fmt.Errorf("worker image inputs require the lease-bound fetch, which this runtime does not perform")
+				},
+			})
+			if err != nil {
+				slog.Warn("local inference runtime unavailable; continuing derive-only", "error", err)
+			} else {
+				runtime = runtime.WithInferenceExecutor(executor)
+				fmt.Printf("Inference runtime: %s (%s/%s)\n", *inferencePython, *inferenceDevice, *inferenceDtype)
+			}
+		}
 		if !*tray {
 			return runtime.Run(ctx, worker.RunOptions{})
 		}
@@ -795,4 +914,127 @@ func hostname() string {
 		return "nexusgate-worker"
 	}
 	return value
+}
+
+// runRebuildVisualCommand queues visual indexing for one asset, one library
+// root or the whole library. It never enqueues a VLM or ASR pass: a rebuild
+// reuses canonical shots (or asks the deterministic detector for bare ones), so
+// paying a provider to re-describe the footage is not part of the command.
+func runRebuildVisualCommand(service *app.Service, repo *sqliterepo.Repository, args []string) error {
+	fs := flag.NewFlagSet("search rebuild-visual", flag.ContinueOnError)
+	asset := fs.String("asset", "", "asset id to rebuild")
+	root := fs.String("root", "", "library root id to rebuild")
+	all := fs.Bool("all", false, "rebuild every asset")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	selected := 0
+	for _, value := range []string{*asset, *root} {
+		if strings.TrimSpace(value) != "" {
+			selected++
+		}
+	}
+	if *all {
+		selected++
+	}
+	if selected != 1 {
+		return errors.New("exactly one of --asset, --root or --all is required")
+	}
+	ctx := context.Background()
+	queued := 0
+	var failures []string
+	queue := func(assetID string) {
+		if _, err := service.RebuildAssetModality(ctx, assetID, domain.OpVisualEmbedding); err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", assetID, err))
+			return
+		}
+		queued++
+	}
+	switch {
+	case strings.TrimSpace(*asset) != "":
+		queue(strings.TrimSpace(*asset))
+	case strings.TrimSpace(*root) != "":
+		assets, err := repo.ListAssetsByRoot(ctx, strings.TrimSpace(*root))
+		if err != nil {
+			return err
+		}
+		for _, id := range assets {
+			queue(id)
+		}
+	default:
+		assets, err := repo.ListAssets(ctx, 1<<31-1, 0)
+		if err != nil {
+			return err
+		}
+		for _, a := range assets {
+			queue(a.ID)
+		}
+	}
+	for _, failure := range failures {
+		fmt.Printf("failed: %s\n", failure)
+	}
+	fmt.Printf("queued visual rebuild for %d asset(s); %d failure(s)\n", queued, len(failures))
+	if len(failures) > 0 {
+		return errors.New("one or more visual rebuilds could not be queued")
+	}
+	return nil
+}
+
+// writeReadyFile publishes the launcher handshake atomically: the parent must
+// never read a half-written JSON object, and a file that exists must already
+// describe a bound listener.
+func writeReadyFile(path string, payload []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".ready-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(payload); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(name, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
+}
+
+// certificateFingerprint is the SHA-256 of the leaf DER, the same form the Hub
+// prints and a Worker pins. It parses the certificate file directly so a
+// key/certificate pair is not required just to compute the pin.
+func certificateFingerprint(certificatePath string) (string, error) {
+	if strings.TrimSpace(certificatePath) == "" {
+		return "", fmt.Errorf("desktop mode requires TLS")
+	}
+	raw, err := os.ReadFile(certificatePath)
+	if err != nil {
+		return "", err
+	}
+	for {
+		block, rest := pem.Decode(raw)
+		if block == nil {
+			return "", fmt.Errorf("certificate is not PEM")
+		}
+		if block.Type == "CERTIFICATE" {
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				return "", err
+			}
+			sum := sha256.Sum256(cert.Raw)
+			return hex.EncodeToString(sum[:]), nil
+		}
+		raw = rest
+	}
 }

@@ -1,0 +1,7 @@
+# Speaker embedding environment: FunASR/3D-Speaker CAM++ and ERes2NetV2.
+# FunASR needs a Kaldi fbank backend; torchvision does not provide one.
+torch>=2.9,<3
+numpy>=2
+soundfile>=0.13,<1
+funasr==1.4.24
+kaldi-native-fbank==1.23.0

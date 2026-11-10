@@ -1,0 +1,9 @@
+# Optional WeMM-Embedding-2B environment layered on the torch CUDA environment.
+# The model ships remote code written against transformers 5.2.0 and needs the
+# Qwen vision preprocessing helpers. Keep this separate: SigLIP 2/CLAP adapters
+# are validated against transformers 4.57.1.
+transformers==5.2.0
+qwen-vl-utils==0.0.14
+# Native-video decode; torchvision 0.29 no longer exposes the reader that
+# qwen-vl-utils falls back to, so decord is the working backend.
+decord==0.6.0

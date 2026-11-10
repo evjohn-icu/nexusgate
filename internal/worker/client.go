@@ -142,6 +142,68 @@ func (c *Client) Progress(ctx context.Context, token, jobID, stage string, progr
 	}, nil, http.StatusNoContent)
 }
 
+// ProgressState records a progress update and returns the lease/cancellation
+// state the Hub reports. Legacy derive endpoints answer 204; an inference job
+// answers 200 with the typed state, which is what lets a long model run stop
+// its subprocess before producing a result nobody will accept.
+func (c *Client) ProgressState(ctx context.Context, token, jobID, stage string, progress float64, event, message string) (remote.InferenceProgress, error) {
+	body := map[string]any{
+		"stage": stage, "progress": progress, "event": event, "message": redactSecrets(message),
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return remote.InferenceProgress{}, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/worker/jobs/"+jobID+"/progress", bytes.NewReader(encoded))
+	if err != nil {
+		return remote.InferenceProgress{}, err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := c.http.Do(request)
+	if err != nil {
+		return remote.InferenceProgress{}, err
+	}
+	defer response.Body.Close()
+	switch response.StatusCode {
+	case http.StatusNoContent:
+		return remote.InferenceProgress{LeaseValid: true}, nil
+	case http.StatusOK:
+		var state remote.InferenceProgress
+		if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&state); err != nil {
+			return remote.InferenceProgress{}, err
+		}
+		return state, nil
+	default:
+		payload, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return remote.InferenceProgress{}, apiclient.DecodeError(response.StatusCode, response.Status, payload)
+	}
+}
+
+// SubmitInferenceResult hands a validated result to the Hub. The Hub revalidates
+// it against the stored request and the live lease, then commits the canonical
+// rows and the job's terminal success in one transaction. A digest mismatch is
+// refused before any write.
+func (c *Client) SubmitInferenceResult(ctx context.Context, token, jobID string, submission remote.InferenceResultSubmission) error {
+	if strings.TrimSpace(submission.Digest) == "" {
+		digest, err := remote.DigestResult(submission.Result)
+		if err != nil {
+			return err
+		}
+		submission.Digest = digest
+	}
+	err := c.postJSON(ctx, "/api/v1/worker/jobs/"+jobID+"/inference-result", token, submission, nil, http.StatusNoContent)
+	if err == nil {
+		return nil
+	}
+	// A retried submission whose first response was lost is answered with the
+	// committed outcome, not a second write. Treat that as success.
+	if strings.Contains(strings.ToLower(err.Error()), "already_committed") {
+		return nil
+	}
+	return err
+}
+
 // Credential fetches a short-lived task credential. Callers must keep the
 // returned API key in memory and discard it when the task exits.
 func (c *Client) Credential(ctx context.Context, token, jobID string, operation credentials.Operation) (credentials.Lease, error) {

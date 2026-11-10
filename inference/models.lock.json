@@ -1,0 +1,975 @@
+{
+  "schema_version": "inference.models.lock.v1",
+  "generated_at": "2026-11-10",
+  "notes": [
+    "Immutable pins only: no entry may resolve `main`, `master`, `latest` or a floating tag at inference time.",
+    "Every downloadable file carries the SHA-256 the installer must verify before publishing.",
+    "measured is an array of actual inference/benchmark.py profiles; null means no run exists for that model (a failed gate, not a default). Each profile names the environment file and its digest."
+  ],
+  "device": {
+    "reference_gpu": "NVIDIA GeForce RTX 2070",
+    "vram_total_mib": 8192,
+    "driver": "610.88",
+    "compute_capability": "7.5",
+    "bf16_native": false,
+    "vram_budget_mib": 7168,
+    "reserved_mib": 1024,
+    "gpu_concurrency": 1
+  },
+  "environments": {
+    "torch": {
+      "python": "3.12",
+      "lockfile": "inference/requirements/torch.lock",
+      "digest": "sha256:872964e18165fc2aec3c325470355a1faeb87204fbfc2d5d89b0c76b6cdc90af",
+      "backends": [
+        "cpu",
+        "cuda"
+      ],
+      "resolved": {
+        "torch": "2.15.0+cpu",
+        "torchvision": "0.24.0+cpu",
+        "transformers": "4.57.1",
+        "numpy": "2.5.4"
+      },
+      "device_note": "CPU wheel set (torch 2.15.0+cpu). The CUDA build is the separate torch_cuda environment; each measured profile names its environment file and digest."
+    },
+    "tensorflow": {
+      "python": "3.12",
+      "lockfile": "inference/requirements/tensorflow.lock",
+      "digest": "pending",
+      "backends": [
+        "cpu"
+      ],
+      "notes": "YAMNet's SavedModel was exported for Keras 2; this environment must never share site-packages with the torch environment."
+    },
+    "torch_cuda": {
+      "python": "3.12",
+      "lockfile": "inference/requirements/torch-cuda.lock",
+      "digest": "sha256:b4517d1813ef0adf44c0379fde8cdc9a314528d286a159ea4042af47c8822d81",
+      "backends": [
+        "cuda"
+      ],
+      "resolved": {
+        "torch": "2.14.1+cu126",
+        "torchvision": "0.29.1+cu126",
+        "transformers": "4.57.1",
+        "numpy": "2.5.4"
+      },
+      "device_note": "Measured CUDA resolution on the reference RTX 2070 (driver 610.88); the cu126 index tops out at torch 2.14.1+cu126, so CUDA installs use an exclusive --index-url rather than --extra-index-url."
+    },
+    "torch_cuda_wemm": {
+      "python": "3.12",
+      "lockfile": "inference/requirements/torch-cuda-wemm.lock",
+      "digest": "sha256:ddf9cd7f11b19684457a1777c6c85a8bc9500ca16ca508fb29925808f83314be",
+      "backends": [
+        "cuda"
+      ],
+      "resolved": {
+        "torch": "2.14.1+cu126",
+        "torchvision": "0.29.1+cu126",
+        "transformers": "5.2.0",
+        "qwen-vl-utils": "0.0.14",
+        "numpy": "2.5.4"
+      },
+      "device_note": "Separate WeMM environment: the model ships remote code targeting transformers 5.2.0; the SigLIP 2/CLAP environment stays on 4.57.1. Measured on the reference RTX 2070 with FP16 weights; peak 6336 MiB leaves 832 MiB under the 7168 MiB gate, so device concurrency stays 1."
+    },
+    "torch_speaker": {
+      "python": "3.12",
+      "lockfile": "inference/requirements/torch-speaker.lock",
+      "digest": "sha256:cc91abd387451d81306b5a5094cce9ab8025c25fae1473f702a3715df2ab4700",
+      "backends": [
+        "cpu",
+        "cuda"
+      ],
+      "resolved": {
+        "torch": "2.14.1+cu126",
+        "funasr": "1.4.24",
+        "kaldi-native-fbank": "1.23.0",
+        "numpy": "2.5.4"
+      },
+      "device_note": "FunASR environment layered on the torch CUDA wheels. The fbank backend is required; without it speaker inference fails with a typed model_unavailable."
+    }
+  },
+  "models": [
+    {
+      "catalog_id": "visual-siglip2-base",
+      "model_id": "google/siglip2-base-patch16-224",
+      "revision": "75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2",
+      "family": "siglip2",
+      "operations": [
+        "visual_embedding"
+      ],
+      "license": {
+        "code": "Apache-2.0",
+        "weights": "Apache-2.0",
+        "source": "https://huggingface.co/google/siglip2-base-patch16-224"
+      },
+      "registry": {
+        "type": "huggingface",
+        "repo": "google/siglip2-base-patch16-224",
+        "hosts": [
+          "huggingface.co",
+          "cdn-lfs.huggingface.co"
+        ]
+      },
+      "files": [
+        {
+          "path": "config.json",
+          "size": 253,
+          "sha256": "fe8b5fe6d5734360678fd71c11c21e1ea3364bd8598d34295d9206335973ffd7"
+        },
+        {
+          "path": "preprocessor_config.json",
+          "size": 394,
+          "sha256": "9b36b57ebaf20f09bf4c22100ccc21877ea6bfe5aead0c00c59f8af8ccefacfc"
+        },
+        {
+          "path": "special_tokens_map.json",
+          "size": 636,
+          "sha256": "baec30ea10906f16adb8c18af7a34023002c1746542612b8b41c9f09e1351351"
+        },
+        {
+          "path": "tokenizer.json",
+          "size": 34363039,
+          "sha256": "cb9140fae3ac5122c972d37adf83e1248471a38147ad76f8215c8872c6fd8322"
+        },
+        {
+          "path": "tokenizer.model",
+          "size": 4241003,
+          "sha256": "61a7b147390c64585d6c3543dd6fc636906c9af3865a5548f27f31aee1d4c8e2"
+        },
+        {
+          "path": "tokenizer_config.json",
+          "size": 47164,
+          "sha256": "14afe629fe4959b9e0d51e1852b8d9f7ad074f90a1a7125a4fcdd17f06e78fc8"
+        },
+        {
+          "path": "model.safetensors",
+          "size": 1500800904,
+          "sha256": "612923381c76ec5a9bed335d1c48827e3f2e506ac31b044b63b2031fadee6a0b"
+        }
+      ],
+      "preprocessing": {
+        "image": {
+          "resize": [
+            224,
+            224
+          ],
+          "resample": "bicubic",
+          "rescale_factor": 0.00392156862745098,
+          "mean": [
+            0.5,
+            0.5,
+            0.5
+          ],
+          "std": [
+            0.5,
+            0.5,
+            0.5
+          ],
+          "color": "RGB"
+        },
+        "text": {
+          "max_tokens": 64,
+          "padding": "max_length",
+          "truncation": true
+        }
+      },
+      "output": {
+        "dimension": 768,
+        "dtype": "float32",
+        "normalization": "l2",
+        "matryoshka": []
+      },
+      "space": {
+        "modality": "visual",
+        "strategies": [
+          "shot_frame_pooled",
+          "native_video"
+        ],
+        "query_text": true
+      },
+      "runtime": {
+        "backend": "torch",
+        "dtypes": [
+          "float32",
+          "float16"
+        ]
+      },
+      "measured": [
+        {
+          "device": "cpu",
+          "dtype": "float32",
+          "batch": 1,
+          "cold_start_ms": 4927.1,
+          "load_ms": 4573.6,
+          "peak_rss_mib": 1597.2,
+          "peak_vram_mib": 0.0,
+          "latency_p50_ms": 190.8,
+          "latency_p95_ms": 192.0,
+          "dimension": 768,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-10",
+          "environment_file": "inference/requirements/torch-cuda.lock",
+          "environment_digest": "sha256:b4517d1813ef0adf44c0379fde8cdc9a314528d286a159ea4042af47c8822d81"
+        },
+        {
+          "device": "cpu",
+          "dtype": "float32",
+          "batch": 2,
+          "cold_start_ms": 5110.1,
+          "load_ms": 1824.6,
+          "peak_rss_mib": 1616.8,
+          "peak_vram_mib": 0.0,
+          "latency_p50_ms": 360.4,
+          "latency_p95_ms": 380.4,
+          "dimension": 768,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-10",
+          "environment_file": "inference/requirements/torch-cuda.lock",
+          "environment_digest": "sha256:b4517d1813ef0adf44c0379fde8cdc9a314528d286a159ea4042af47c8822d81"
+        },
+        {
+          "device": "cuda",
+          "dtype": "float16",
+          "batch": 1,
+          "cold_start_ms": 5553.0,
+          "load_ms": 4150.4,
+          "peak_rss_mib": 2848.9,
+          "peak_vram_mib": 762.0,
+          "latency_p50_ms": 67.6,
+          "latency_p95_ms": 73.3,
+          "dimension": 768,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-10",
+          "environment_file": "inference/requirements/torch-cuda.lock",
+          "environment_digest": "sha256:b4517d1813ef0adf44c0379fde8cdc9a314528d286a159ea4042af47c8822d81"
+        },
+        {
+          "device": "cuda",
+          "dtype": "float16",
+          "batch": 2,
+          "cold_start_ms": 5664.8,
+          "load_ms": 2461.3,
+          "peak_rss_mib": 3491.9,
+          "peak_vram_mib": 764.0,
+          "latency_p50_ms": 132.9,
+          "latency_p95_ms": 133.2,
+          "dimension": 768,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-10",
+          "environment_file": "inference/requirements/torch-cuda.lock",
+          "environment_digest": "sha256:b4517d1813ef0adf44c0379fde8cdc9a314528d286a159ea4042af47c8822d81"
+        }
+      ]
+    },
+    {
+      "catalog_id": "visual-wemm-embedding-2b",
+      "model_id": "tencent/WeMM-Embedding-2B",
+      "revision": "bbd6cd4bf52cfc6716f752a2df80b2706720bd95",
+      "family": "wemm",
+      "operations": [
+        "visual_embedding"
+      ],
+      "license": {
+        "code": "Apache-2.0 (model card declares license_name apache-2.0; HF metadata license field is 'other', so the LICENSE text is authoritative)",
+        "weights": "Apache-2.0 per bundled LICENSE",
+        "source": "https://huggingface.co/tencent/WeMM-Embedding-2B"
+      },
+      "registry": {
+        "type": "huggingface",
+        "repo": "tencent/WeMM-Embedding-2B",
+        "hosts": [
+          "huggingface.co",
+          "cdn-lfs.huggingface.co"
+        ]
+      },
+      "files": [
+        {
+          "path": "config.json",
+          "size": 2853,
+          "sha256": "f6e5925cba6a907adedb9c86ab61f336947c4010eee3bf8583086cb90067eec2"
+        },
+        {
+          "path": "processor_config.json",
+          "size": 1192,
+          "sha256": "d601e2fe0de1bc11852de3aa843f01a1677ca84f4dc743916c9ce4b8d30fb384"
+        },
+        {
+          "path": "chat_template.jinja",
+          "size": 7755,
+          "sha256": "273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80"
+        },
+        {
+          "path": "embedding_chat_template.jinja",
+          "size": 1086,
+          "sha256": "7c3df2aab83ab9096428ec27b6b99ad87c4790418b830d119957634f28c677ba"
+        },
+        {
+          "path": "modeling_wemm_embedding.py",
+          "size": 1205,
+          "sha256": "ac255e1fad459cc3e68891d6c3327f4486922aed02fb3c5c13fb53277ba8e94f"
+        },
+        {
+          "path": "modeling_st_wemm.py",
+          "size": 3180,
+          "sha256": "521d02c1c60ae727cc9dc6500cdb0b28c53b259e0ce3d37197920a33ba4dd333"
+        },
+        {
+          "path": "tokenizer.json",
+          "size": 19990378,
+          "sha256": "40e444c744512f423da4c8443c47c21e22ff76056ba4e9796a81c04c13a9daf0"
+        },
+        {
+          "path": "tokenizer_config.json",
+          "size": 1148,
+          "sha256": "35db43580d8c551641a5fe1d1daafb10e73d0a1243db18ff7bc00413a6152ff5"
+        },
+        {
+          "path": "LICENSE",
+          "size": 24546,
+          "sha256": "e87f02efc35e9bdde65c8cd5cfa26fbd3a8dcb209c5b82ed91b274b2ff643b53"
+        },
+        {
+          "path": "model.safetensors",
+          "size": 5441695216,
+          "sha256": "e1a1ad752808c26965aa97d37bf4a9bca71d838513f41e83790cb1e71cac6e59"
+        }
+      ],
+      "preprocessing": {
+        "image": {
+          "patch_size": 16,
+          "spatial_merge_size": 2,
+          "color": "RGB"
+        },
+        "video": {
+          "temporal_patch_size": 2,
+          "max_frames": null,
+          "max_resolution": null
+        },
+        "text": {
+          "max_tokens": 512
+        }
+      },
+      "output": {
+        "dimension": 2048,
+        "dtype": "float32",
+        "declared_weight_dtype": "bfloat16",
+        "normalization": "l2",
+        "matryoshka": [
+          64,
+          128,
+          256,
+          512,
+          1024,
+          2048
+        ]
+      },
+      "space": {
+        "modality": "visual",
+        "strategies": [
+          "shot_frame_pooled",
+          "native_video"
+        ],
+        "query_text": true,
+        "audio": false
+      },
+      "runtime": {
+        "backend": "torch",
+        "dtypes": [
+          "float16"
+        ],
+        "requires": [
+          "transformers>=5.2.0",
+          "qwen-vl-utils"
+        ],
+        "device_note": "BF16 weights must be cast to FP16; Turing has no native BF16. Native-video frame/resolution caps stay null until the benchmark measures them."
+      },
+      "measured": [
+        {
+          "device": "cuda",
+          "dtype": "float16",
+          "batch": 1,
+          "cold_start_ms": 11758.4,
+          "load_ms": 6387.4,
+          "peak_rss_mib": 11090.7,
+          "peak_vram_mib": 6336.0,
+          "latency_p50_ms": 3632.4,
+          "latency_p95_ms": 3632.4,
+          "dimension": 2048,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-10",
+          "environment_file": "inference/requirements/torch-cuda-wemm.lock",
+          "environment_digest": "sha256:ddf9cd7f11b19684457a1777c6c85a8bc9500ca16ca508fb29925808f83314be",
+          "note": "Pooled-frame strategy. The environment lock also carries decord for native decode; decord is not used by this profile."
+        },
+        {
+          "device": "cuda",
+          "dtype": "float16",
+          "batch": 1,
+          "cold_start_ms": 9874.9,
+          "load_ms": 6687.3,
+          "peak_rss_mib": 11088.1,
+          "peak_vram_mib": 5358.0,
+          "latency_p50_ms": 265.8,
+          "latency_p95_ms": 265.8,
+          "dimension": 2048,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-11",
+          "environment_file": "inference/requirements/torch-cuda-wemm.lock",
+          "environment_digest": "sha256:ddf9cd7f11b19684457a1777c6c85a8bc9500ca16ca508fb29925808f83314be",
+          "strategy": "native_video",
+          "note": "Native-video strategy, 4-frame 1 fps benchmark clip; peak 5358 MiB is inside the 7168 MiB gate."
+        }
+      ]
+    },
+    {
+      "catalog_id": "audio-clap-htsat-unfused",
+      "model_id": "laion/clap-htsat-unfused",
+      "revision": "8fa0f1c6d0433df6e97c127f64b2a1d6c0dcda8a",
+      "family": "clap",
+      "operations": [
+        "audio_embedding"
+      ],
+      "license": {
+        "code": "Apache-2.0",
+        "weights": "Apache-2.0",
+        "source": "https://huggingface.co/laion/clap-htsat-unfused"
+      },
+      "registry": {
+        "type": "huggingface",
+        "repo": "laion/clap-htsat-unfused",
+        "hosts": [
+          "huggingface.co",
+          "cdn-lfs.huggingface.co"
+        ]
+      },
+      "files": [
+        {
+          "path": "config.json",
+          "size": 5390,
+          "sha256": "9efb9557bc804f2ca6e394486af2e45dfed0b18554909735a99c6220b84e4288"
+        },
+        {
+          "path": "preprocessor_config.json",
+          "size": 541,
+          "sha256": "9739f58296aa6f9ac18008fd0150fb2649bc554985fbde86d0a4041c882ac753"
+        },
+        {
+          "path": "merges.txt",
+          "size": 456356,
+          "sha256": "fe36cab26d4f4421ed725e10a2e9ddb7f799449c603a96e7f29b5a3c82a95862"
+        },
+        {
+          "path": "vocab.json",
+          "size": 798293,
+          "sha256": "ed19656ea1707df69134c4af35c8ceda2cc9860bf2c3495026153a133670ab5e"
+        },
+        {
+          "path": "special_tokens_map.json",
+          "size": 280,
+          "sha256": "06e405a36dfe4b9604f484f6a1e619af1a7f7d09e34a8555eb0b77b66318067f"
+        },
+        {
+          "path": "tokenizer_config.json",
+          "size": 384,
+          "sha256": "377f91458f7729a4574a84c77bdce67dbc3c58c1a345a29bbf8c4eb1307948a3"
+        },
+        {
+          "path": "tokenizer.json",
+          "size": 2108746,
+          "sha256": "77ef92283d67f0d97e1454909a964afcbfa2019f0fb9f18f8e88d5c25c3ba729"
+        },
+        {
+          "path": "pytorch_model.bin",
+          "size": 614525833,
+          "sha256": "1cd3c601bc4afe0fa87be3de4c13dd2cfadd249fac1e29acf74a9b296c3219bb"
+        }
+      ],
+      "preprocessing": {
+        "audio": {
+          "sample_rate": 48000,
+          "channels": 1,
+          "window_ms": 10000,
+          "hop_ms": 5000,
+          "upstream_padding": "repeatpad",
+          "override": "explicit zero-pad for tails shorter than 10s; never upsample the 16kHz ASR derivative"
+        },
+        "text": {
+          "max_tokens": 77
+        }
+      },
+      "output": {
+        "dimension": 512,
+        "dtype": "float32",
+        "normalization": "l2"
+      },
+      "space": {
+        "modality": "audio",
+        "query_text": true
+      },
+      "runtime": {
+        "backend": "torch",
+        "dtypes": [
+          "float32",
+          "float16"
+        ]
+      },
+      "measured": [
+        {
+          "device": "cpu",
+          "dtype": "float32",
+          "batch": 1,
+          "cold_start_ms": 3236.6,
+          "load_ms": 1977.0,
+          "peak_rss_mib": 953.3,
+          "peak_vram_mib": 0.0,
+          "latency_p50_ms": 293.2,
+          "latency_p95_ms": 328.0,
+          "dimension": 512,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-10",
+          "environment_file": "inference/requirements/torch-cuda.lock",
+          "environment_digest": "sha256:b4517d1813ef0adf44c0379fde8cdc9a314528d286a159ea4042af47c8822d81"
+        },
+        {
+          "device": "cpu",
+          "dtype": "float32",
+          "batch": 2,
+          "cold_start_ms": 3435.3,
+          "load_ms": 221.0,
+          "peak_rss_mib": 953.3,
+          "peak_vram_mib": 0.0,
+          "latency_p50_ms": 388.8,
+          "latency_p95_ms": 420.4,
+          "dimension": 512,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-10",
+          "environment_file": "inference/requirements/torch-cuda.lock",
+          "environment_digest": "sha256:b4517d1813ef0adf44c0379fde8cdc9a314528d286a159ea4042af47c8822d81"
+        },
+        {
+          "device": "cuda",
+          "dtype": "float16",
+          "batch": 1,
+          "cold_start_ms": 3823.8,
+          "load_ms": 2392.6,
+          "peak_rss_mib": 1710.3,
+          "peak_vram_mib": 340.0,
+          "latency_p50_ms": 68.7,
+          "latency_p95_ms": 72.2,
+          "dimension": 512,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-10",
+          "environment_file": "inference/requirements/torch-cuda.lock",
+          "environment_digest": "sha256:b4517d1813ef0adf44c0379fde8cdc9a314528d286a159ea4042af47c8822d81"
+        },
+        {
+          "device": "cuda",
+          "dtype": "float16",
+          "batch": 2,
+          "cold_start_ms": 3837.9,
+          "load_ms": 401.7,
+          "peak_rss_mib": 2444.1,
+          "peak_vram_mib": 340.0,
+          "latency_p50_ms": 98.3,
+          "latency_p95_ms": 99.2,
+          "dimension": 512,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-10",
+          "environment_file": "inference/requirements/torch-cuda.lock",
+          "environment_digest": "sha256:b4517d1813ef0adf44c0379fde8cdc9a314528d286a159ea4042af47c8822d81"
+        }
+      ]
+    },
+    {
+      "catalog_id": "sound-yamnet",
+      "model_id": "google/yamnet",
+      "revision": "kaggle:google/yamnet/TensorFlow2/yamnet/1",
+      "family": "yamnet",
+      "operations": [
+        "sound_events"
+      ],
+      "license": {
+        "code": "Apache-2.0 (tensorflow/models research/audioset/yamnet)",
+        "weights": "unverified: upstream AudioSet/YAMNet weight terms were not confirmed during locking; the installer must not bundle or redistribute weights until they are",
+        "source": "https://github.com/tensorflow/models/tree/master/research/audioset/yamnet"
+      },
+      "code_revision": "c14bf9ad91962cf189f9f58db2132c06247fcd53",
+      "registry": {
+        "type": "kaggle_models",
+        "ref": "google/yamnet/TensorFlow2/yamnet/1",
+        "hosts": [
+          "www.kaggle.com",
+          "storage.googleapis.com"
+        ]
+      },
+      "files": [],
+      "artifact_status": "pending_download",
+      "artifact_note": "The legacy tfhub-modules bucket no longer serves https://storage.googleapis.com/tfhub-modules/google/yamnet/1.tar.gz (HTTP 200 with a 389-byte error body on 2026-11-10). The installer must fetch the Kaggle Models archive and verify the SHA-256 recorded here once the archive download completes; until then the adapter reports model_unavailable.",
+      "preprocessing": {
+        "audio": {
+          "sample_rate": 16000,
+          "channels": 1,
+          "patch_ms": 960,
+          "hop_ms": 480
+        }
+      },
+      "output": {
+        "classes": 521,
+        "dtype": "float32",
+        "frame_scores": true,
+        "boundary_resolution_ms": 100
+      },
+      "postprocessing": {
+        "cell_ms": 100,
+        "smoothing": "centered 3-cell median on overlap-weighted class scores",
+        "start_score": 0.35,
+        "close_score": 0.2,
+        "close_consecutive_cells": 2,
+        "merge_gap_ms": 300,
+        "min_span_ms": 200,
+        "confidence": null
+      },
+      "space": {
+        "modality": "sound_event",
+        "query_text": false
+      },
+      "runtime": {
+        "backend": "tensorflow",
+        "dtypes": [
+          "float32"
+        ]
+      },
+      "measured": null
+    },
+    {
+      "catalog_id": "diarization-pyannote-community-1",
+      "model_id": "pyannote/speaker-diarization-community-1",
+      "revision": "3533c8cf8e369892e6b79ff1bf80f7b0286a54ee",
+      "family": "pyannote",
+      "operations": [
+        "diarization"
+      ],
+      "license": {
+        "code": "MIT (pyannote.audio)",
+        "weights": "CC-BY-4.0, gated model",
+        "source": "https://huggingface.co/pyannote/speaker-diarization-community-1"
+      },
+      "registry": {
+        "type": "huggingface_gated",
+        "repo": "pyannote/speaker-diarization-community-1",
+        "hosts": [
+          "huggingface.co",
+          "cdn-lfs.huggingface.co"
+        ]
+      },
+      "files": [],
+      "artifact_status": "blocked_gated",
+      "artifact_note": "Unauthenticated file GET returned HTTP 401 on 2026-11-10; no licence acceptance exists in this environment. The Hub-side installer may stream verified artifacts to a Worker once a token is present in the encrypted secret store, but the adapter must return model_unavailable until then.",
+      "theoretical_preprocessing": {
+        "audio": {
+          "sample_rate": 16000,
+          "channels": 1
+        }
+      },
+      "output": {
+        "turns": true,
+        "overlap": true,
+        "confidence": null,
+        "speaker_count_limit": 20
+      },
+      "space": {
+        "modality": "speaker"
+      },
+      "runtime": {
+        "backend": "torch",
+        "dtypes": [
+          "float32"
+        ]
+      },
+      "measured": null
+    },
+    {
+      "catalog_id": "speaker-campplus",
+      "model_id": "iic/speech_campplus_sv_zh-cn_16k-common",
+      "revision": "013c18884dffb82846cf472dd06dd4a08d97e2cd",
+      "family": "campplus",
+      "operations": [
+        "speaker_embedding"
+      ],
+      "license": {
+        "code": "Apache-2.0 (3D-Speaker)",
+        "weights": "Apache-2.0 per model page",
+        "source": "https://modelscope.cn/models/iic/speech_campplus_sv_zh-cn_16k-common",
+        "code_revision": "065629c313eaf1a01c65c640c46d77e61e9607b4"
+      },
+      "registry": {
+        "type": "modelscope",
+        "repo": "iic/speech_campplus_sv_zh-cn_16k-common",
+        "hosts": [
+          "modelscope.cn"
+        ]
+      },
+      "files": [
+        {
+          "path": "campplus_cn_common.bin",
+          "size": 28036335,
+          "sha256": "3388cf5fd3493c9ac9c69851d8e7a8badcfb4f3dc631020c4961371646d5ada8"
+        },
+        {
+          "path": "configuration.json",
+          "size": 389,
+          "sha256": "7203fc0b2b8cb37fdcfc67ebc9bbfde653f65f89efa0cfef36ad722aeb3aabf7"
+        }
+      ],
+      "preprocessing": {
+        "audio": {
+          "sample_rate": 16000,
+          "channels": 1,
+          "features": "80-dim fbank",
+          "min_speech_ms": 3000
+        }
+      },
+      "output": {
+        "dimension": 192,
+        "dtype": "float32",
+        "normalization": "l2"
+      },
+      "space": {
+        "modality": "speaker"
+      },
+      "runtime": {
+        "backend": "torch",
+        "dtypes": [
+          "float32"
+        ],
+        "requires": [
+          "funasr>=1.4,<2",
+          "kaldi-native-fbank>=1.23,<2",
+          "numpy>=2",
+          "soundfile>=0.13,<1"
+        ]
+      },
+      "measured": [
+        {
+          "device": "cpu",
+          "dtype": "float32",
+          "batch": 1,
+          "cold_start_ms": 5330.7,
+          "load_ms": 5210.3,
+          "peak_rss_mib": 953.3,
+          "peak_vram_mib": 0.0,
+          "latency_p50_ms": 49.5,
+          "latency_p95_ms": 49.7,
+          "dimension": 192,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-11",
+          "environment_file": "inference/requirements/torch-speaker.lock",
+          "environment_digest": "sha256:cc91abd387451d81306b5a5094cce9ab8025c25fae1473f702a3715df2ab4700",
+          "note": "Same/different cosine separation on the 12-utterance check: 0.707-0.768 vs 0.244-0.349. Speaker default; the 2-speaker trial threshold is infrastructure evidence only."
+        },
+        {
+          "device": "cpu",
+          "dtype": "float32",
+          "batch": 2,
+          "cold_start_ms": 5269.9,
+          "load_ms": 147.1,
+          "peak_rss_mib": 953.3,
+          "peak_vram_mib": 0.0,
+          "latency_p50_ms": 91.4,
+          "latency_p95_ms": 94.9,
+          "dimension": 192,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-11",
+          "environment_file": "inference/requirements/torch-speaker.lock",
+          "environment_digest": "sha256:cc91abd387451d81306b5a5094cce9ab8025c25fae1473f702a3715df2ab4700",
+          "note": "Same/different cosine separation on the 12-utterance check: 0.707-0.768 vs 0.244-0.349. Speaker default; the 2-speaker trial threshold is infrastructure evidence only."
+        }
+      ]
+    },
+    {
+      "catalog_id": "speaker-eres2netv2",
+      "model_id": "iic/speech_eres2netv2_sv_zh-cn_16k-common",
+      "revision": "1cf80d41fb3435bd3d8df185b5c423333b2db42a",
+      "family": "eres2netv2",
+      "operations": [
+        "speaker_embedding"
+      ],
+      "license": {
+        "code": "Apache-2.0 (3D-Speaker)",
+        "weights": "Apache-2.0 per model page",
+        "source": "https://modelscope.cn/models/iic/speech_eres2netv2_sv_zh-cn_16k-common",
+        "code_revision": "065629c313eaf1a01c65c640c46d77e61e9607b4"
+      },
+      "registry": {
+        "type": "modelscope",
+        "repo": "iic/speech_eres2netv2_sv_zh-cn_16k-common",
+        "hosts": [
+          "modelscope.cn"
+        ]
+      },
+      "files": [
+        {
+          "path": "pretrained_eres2netv2.ckpt",
+          "size": 71768231,
+          "sha256": "0eb4057106b2573dd7b132cf0c36273ab29afd192c1610f80baa9c556dbb963c"
+        },
+        {
+          "path": "configuration.json",
+          "size": 354,
+          "sha256": "e5f9570df8867e8a50285205ba38fb468a70aa436e5c994935986e4c435dc168"
+        }
+      ],
+      "preprocessing": {
+        "audio": {
+          "sample_rate": 16000,
+          "channels": 1,
+          "features": "80-dim fbank",
+          "min_speech_ms": 3000
+        }
+      },
+      "output": {
+        "dimension": 192,
+        "dtype": "float32",
+        "normalization": "l2"
+      },
+      "space": {
+        "modality": "speaker"
+      },
+      "runtime": {
+        "backend": "torch",
+        "dtypes": [
+          "float32"
+        ],
+        "requires": [
+          "funasr>=1.4,<2",
+          "kaldi-native-fbank>=1.23,<2",
+          "numpy>=2",
+          "soundfile>=0.13,<1"
+        ]
+      },
+      "measured": [
+        {
+          "device": "cpu",
+          "dtype": "float32",
+          "batch": 1,
+          "cold_start_ms": 5451.6,
+          "load_ms": 5184.0,
+          "peak_rss_mib": 1015.2,
+          "peak_vram_mib": 0.0,
+          "latency_p50_ms": 172.9,
+          "latency_p95_ms": 181.2,
+          "dimension": 192,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-11",
+          "environment_file": "inference/requirements/torch-speaker.lock",
+          "environment_digest": "sha256:cc91abd387451d81306b5a5094cce9ab8025c25fae1473f702a3715df2ab4700",
+          "note": "Same/different separation 0.663-0.884 vs 0.219-0.404; the stem-key warnings during the second load pass did not corrupt the embeddings. Not the default: higher latency than CAM++."
+        },
+        {
+          "device": "cpu",
+          "dtype": "float32",
+          "batch": 2,
+          "cold_start_ms": 5420.4,
+          "load_ms": 218.2,
+          "peak_rss_mib": 1015.2,
+          "peak_vram_mib": 0.0,
+          "latency_p50_ms": 311.9,
+          "latency_p95_ms": 325.2,
+          "dimension": 192,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-11",
+          "environment_file": "inference/requirements/torch-speaker.lock",
+          "environment_digest": "sha256:cc91abd387451d81306b5a5094cce9ab8025c25fae1473f702a3715df2ab4700",
+          "note": "Same/different separation 0.663-0.884 vs 0.219-0.404; the stem-key warnings during the second load pass did not corrupt the embeddings. Not the default: higher latency than CAM++."
+        }
+      ]
+    }
+  ],
+  "selection": {
+    "visual_default": "visual-siglip2-base",
+    "visual_candidate": "visual-wemm-embedding-2b",
+    "audio_default": "audio-clap-htsat-unfused",
+    "sound_default": "sound-yamnet",
+    "diarization_preferred": "diarization-pyannote-community-1",
+    "speaker_candidates": [
+      "speaker-campplus",
+      "speaker-eres2netv2"
+    ],
+    "speaker_tie_break": "campplus",
+    "asr_default": "existing configured provider"
+  },
+  "excluded": [
+    {
+      "model_id": "nvidia/diar_sortformer_4spk-v1",
+      "reason": "weights declare CC-BY-NC-4.0; cannot satisfy the production licence gate"
+    },
+    {
+      "model_id": "facebook/vjepa2",
+      "reason": "research-stage encoder, no production adapter in V1.5"
+    },
+    {
+      "model_id": "TimeLens2",
+      "reason": "research-only temporal grounding"
+    },
+    {
+      "model_id": "SAM 3.1",
+      "reason": "research-only segmentation"
+    },
+    {
+      "model_id": "OpenFLAM",
+      "reason": "research-only"
+    },
+    {
+      "model_id": "Qwen3-VL-Reranker",
+      "reason": "not required; existing reranker retained"
+    },
+    {
+      "model_id": "tencent/WeMM-Embedding-2B (audio)",
+      "reason": "the model has no audio path; audio is never routed to it"
+    }
+  ]
+}

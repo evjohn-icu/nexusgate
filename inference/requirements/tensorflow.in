@@ -1,0 +1,7 @@
+# YAMNet environment. TensorFlow 2 ships Keras 3 by default; the official
+# YAMNet SavedModel was exported for Keras 2, so the legacy Keras package is
+# pinned explicitly and this environment must not be merged with the torch one.
+tensorflow>=2.16,<2.21
+tf-keras>=2.16,<2.21
+numpy>=1.26,<3
+soundfile>=0.13,<1

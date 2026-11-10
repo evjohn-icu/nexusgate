@@ -16,6 +16,7 @@ import (
 
 	"github.com/evjohn-icu/nexusgate/internal/apiclient"
 	"github.com/evjohn-icu/nexusgate/internal/credentials"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 	"github.com/evjohn-icu/nexusgate/internal/remote"
 )
 
@@ -694,5 +695,79 @@ func TestWorkerClientHubErrorEnvelope(t *testing.T) {
 	}
 	if apiErr.Code != "" || !strings.Contains(apiErr.Error(), "boom") {
 		t.Fatalf("non-envelope lease error = %+v (%q)", apiErr, apiErr.Error())
+	}
+}
+
+func TestClientInferenceProgressCompleteAndResult(t *testing.T) {
+	var progressCalls, resultCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/progress"):
+			progressCalls++
+			if r.Header.Get("Authorization") != "Bearer token" {
+				t.Fatalf("progress missing bearer token")
+			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["stage"] == "inference" {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"lease_valid":true,"cancel_requested":true}`))
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case strings.HasSuffix(r.URL.Path, "/complete"):
+			w.WriteHeader(http.StatusNoContent)
+		case strings.HasSuffix(r.URL.Path, "/inference-result"):
+			resultCalls++
+			var submission remote.InferenceResultSubmission
+			if err := json.NewDecoder(r.Body).Decode(&submission); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(submission.Digest, "sha256:") {
+				t.Fatalf("result digest was not filled: %q", submission.Digest)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, "")
+	ctx := context.Background()
+	state, err := client.ProgressState(ctx, "token", "job-1", "inference", 0.5, "progress", "working")
+	if err != nil || !state.LeaseValid || !state.CancelRequested || progressCalls != 1 {
+		t.Fatalf("ProgressState state=%+v err=%v calls=%d", state, err, progressCalls)
+	}
+	state, err = client.ProgressState(ctx, "token", "job-1", "derive", 0.5, "progress", "working")
+	if err != nil || !state.LeaseValid || state.CancelRequested {
+		t.Fatalf("legacy ProgressState state=%+v err=%v", state, err)
+	}
+	if err := client.Complete(ctx, "token", "job-1", "failed", "fixture failure"); err != nil {
+		t.Fatal(err)
+	}
+	result := domain.InferenceResult{OperationID: "op-1", Operation: domain.OpSoundEvents, Backend: "cpu"}
+	if err := client.SubmitInferenceResult(ctx, "token", "job-1", remote.InferenceResultSubmission{OperationID: "op-1", Result: result}); err != nil {
+		t.Fatal(err)
+	}
+	if resultCalls != 1 {
+		t.Fatalf("inference result calls=%d", resultCalls)
+	}
+}
+
+func TestClientSubmitInferenceResultTreatsCommittedRetryAsSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":{"code":"already_committed","message":"already committed"}}`))
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, "")
+	err := client.SubmitInferenceResult(context.Background(), "token", "job-1", remote.InferenceResultSubmission{
+		OperationID: "op-1", Digest: "sha256:" + strings.Repeat("a", 64),
+		Result: domain.InferenceResult{OperationID: "op-1"},
+	})
+	if err != nil {
+		t.Fatalf("already-committed retry = %v", err)
 	}
 }

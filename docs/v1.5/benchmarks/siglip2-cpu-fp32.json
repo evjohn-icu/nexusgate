@@ -1,0 +1,69 @@
+{
+  "schema_version": "inference.benchmark.v1",
+  "model": "visual-siglip2-base",
+  "device": "cpu",
+  "profiles": [
+    {
+      "schema_version": "inference.benchmark.v1",
+      "model": "visual-siglip2-base",
+      "device": "cpu",
+      "dtype": "float32",
+      "batch": 1,
+      "cold_start_ms": 4927.13579699921,
+      "load_ms": 4573.585742000432,
+      "peak_vram_mib": 0.0,
+      "peak_rss_mib": 1597.24609375,
+      "latency_ms": {
+        "p50": 190.77649699829635,
+        "p95": 192.03104400003213
+      },
+      "checks": {
+        "finite": true,
+        "normalized": true,
+        "dimension": 768,
+        "output_records": 2,
+        "first_process_result_ms": 4927.13579699921,
+        "resident_first_result_ms": 4759.400131999428,
+        "vram_allocated_mib": 0.0,
+        "vram_reserved_mib": 0.0,
+        "cancellation_probe": true,
+        "oom_probe": true
+      },
+      "cancelled": true,
+      "oom_code": "resource_exhausted",
+      "status": "complete",
+      "rejected": false
+    },
+    {
+      "schema_version": "inference.benchmark.v1",
+      "model": "visual-siglip2-base",
+      "device": "cpu",
+      "dtype": "float32",
+      "batch": 2,
+      "cold_start_ms": 5110.119125001802,
+      "load_ms": 1824.5772329973988,
+      "peak_vram_mib": 0.0,
+      "peak_rss_mib": 1616.78515625,
+      "latency_ms": {
+        "p50": 360.39204800181324,
+        "p95": 380.3735540022899
+      },
+      "checks": {
+        "finite": true,
+        "normalized": true,
+        "dimension": 768,
+        "output_records": 3,
+        "first_process_result_ms": 5110.119125001802,
+        "resident_first_result_ms": 2177.279876999819,
+        "vram_allocated_mib": 0.0,
+        "vram_reserved_mib": 0.0,
+        "cancellation_probe": true,
+        "oom_probe": true
+      },
+      "cancelled": true,
+      "oom_code": "resource_exhausted",
+      "status": "complete",
+      "rejected": false
+    }
+  ]
+}

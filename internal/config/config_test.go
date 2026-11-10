@@ -245,3 +245,26 @@ func TestLoadEmptyHostPlatformEnvironmentPreservesDefault(t *testing.T) {
 		t.Fatalf("unset host platform environment changed default to %q", cfg.HostPlatform)
 	}
 }
+
+func TestLoadDefaultsLockPathBesideInferencePackage(t *testing.T) {
+	dataDir := t.TempDir()
+	moduleDir := t.TempDir()
+	t.Setenv("NEXUSGATE_DATA_DIR", dataDir)
+	t.Setenv("NEXUSGATE_INFERENCE_ENABLED", "true")
+	t.Setenv("NEXUSGATE_INFERENCE_PYTHON", "python3")
+	t.Setenv("NEXUSGATE_INFERENCE_MODULE_DIR", moduleDir)
+	if err := os.MkdirAll(filepath.Join(moduleDir, "inference"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lock := filepath.Join(moduleDir, "inference", "models.lock.json")
+	if err := os.WriteFile(lock, []byte(`{"schema_version":"inference.models.lock.v1","models":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Inference.LockPath != lock {
+		t.Fatalf("LockPath=%q, want %q", cfg.Inference.LockPath, lock)
+	}
+}

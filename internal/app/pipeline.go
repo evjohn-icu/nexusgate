@@ -27,6 +27,7 @@ import (
 	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 	"github.com/evjohn-icu/nexusgate/internal/providers/shotdetect"
 	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
+	"github.com/evjohn-icu/nexusgate/internal/remote"
 	"github.com/evjohn-icu/nexusgate/internal/staging"
 )
 
@@ -150,6 +151,25 @@ type Pipeline struct {
 	// minimal setups, where RunUntilIdle falls back to a fresh per-run owner
 	// (the historical behaviour).
 	leaseOwner string
+	// inferenceExec executes inference.v1 operations on this machine; nil when
+	// the Hub has no local model runtime, in which case inference jobs stay
+	// leasable by paired Workers only.
+	inferenceExec InferenceExecutor
+	// inferenceRepo persists tasks, staged results and canonical generations.
+	// nil in minimal test pipelines, where inference dispatch is skipped.
+	inferenceRepo InferenceRepository
+	// speakerCommit publishes a biometric result through the Hub secret
+	// boundary. It is nil in minimal pipelines that have no secret store;
+	// speaker tasks then fail permanently instead of writing plaintext.
+	speakerCommit func(ctx context.Context, jobID, owner string, request domain.InferenceRequest, result domain.InferenceResult) error
+	// modelManager installs/probes locked artifacts. nil on a Hub that only
+	// routes maintenance jobs to Workers.
+	modelManager ModelManager
+	// onDeriveCompleted fires after usable derived artifacts exist. It is the
+	// point where audio-driven modalities become possible: a sound detector
+	// needs the extracted audio, and it runs independently of the speech gate,
+	// so a recording with no usable speech still yields environmental events.
+	onDeriveCompleted func(ctx context.Context, assetID, inputHash string)
 }
 
 func (p *Pipeline) failModelRun(ctx context.Context, runID, code, message, raw string, j *domain.Job, worker string) error {
@@ -186,6 +206,20 @@ func (p *Pipeline) SetLeaseOwner(owner string) {
 // Tests construct pipelines without one; the hook stays nil there.
 func (p *Pipeline) SetAfterShotsCommitted(hook func(ctx context.Context, assetID string)) {
 	p.onShotsCommitted = hook
+}
+
+// SetAfterDeriveCompleted attaches the post-derive hook that enqueues
+// audio-driven modalities. It runs for every derive whose artifacts were
+// written, regardless of the speech gate's verdict.
+func (p *Pipeline) SetAfterDeriveCompleted(hook func(ctx context.Context, assetID, inputHash string)) {
+	p.onDeriveCompleted = hook
+}
+
+// afterDeriveCompleted fires the post-derive hook when one is attached.
+func (p *Pipeline) afterDeriveCompleted(ctx context.Context, assetID, inputHash string) {
+	if p.onDeriveCompleted != nil {
+		p.onDeriveCompleted(ctx, assetID, inputHash)
+	}
 }
 
 // SetCostEstimator attaches the post-commit cost hook (see costEstimator).
@@ -303,7 +337,14 @@ func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 			throttle = domain.DefaultPipelineThrottle()
 		}
 		now := time.Now()
-		job, err := p.repo.LeaseNextJob(ctx, worker, leaseTTL, domain.LeaseFilter{MaxAssetBytes: throttle.MaxAssetBytesAt(now)})
+		// Device work is leased before the generic queue: inference and
+		// maintenance jobs are excluded from LeaseNextJob by design, and the
+		// Hub must run them when it has a local runtime instead of leaving them
+		// for a Worker that may never exist.
+		job, err := p.leaseLocalDeviceJob(ctx, worker, throttle.MaxAssetBytesAt(now), now)
+		if err == nil && job == nil {
+			job, err = p.repo.LeaseNextJob(ctx, worker, leaseTTL, domain.LeaseFilter{MaxAssetBytes: throttle.MaxAssetBytesAt(now)})
+		}
 		if err != nil {
 			consecutiveLeaseErrors++
 			if consecutiveLeaseErrors%5 == 1 || consecutiveLeaseErrors == 1 {
@@ -326,6 +367,13 @@ func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 		// changed either way, which is all the caller needs to know.
 		executed++
 		if err := p.execute(ctx, *job, worker, throttle); err != nil {
+			// The operation published its canonical rows and moved its own job
+			// to succeeded inside that transaction. Issuing another completion
+			// would race a job that is no longer running; this is a success,
+			// not a failure, and it is distinct from a lease loss.
+			if errors.Is(err, ErrJobCommittedEarly) {
+				continue
+			}
 			// A stale execution: something else's compare-and-swap already won
 			// this job (a paired Worker on `derive`, or a second Hub process --
 			// `nexusgate serve` and `nexusgate pipeline run` are both
@@ -856,6 +904,16 @@ func (p *Pipeline) diskSpaceErr(floor int64) error {
 }
 
 func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, throttle domain.PipelineThrottle) error {
+	// Inference and maintenance jobs are dispatched before any source lookup:
+	// an assetless query task has no asset, so GetPrimaryLocation would fail
+	// with a not-found error that looks like a broken job instead of the
+	// absence of an asset that the task legitimately has.
+	switch j.Type {
+	case domain.JobInference:
+		return p.executeInference(ctx, j, worker)
+	case domain.JobModelInstall, domain.JobModelProbe:
+		return p.executeModelManagement(ctx, j, worker)
+	}
 	loc, err := p.repo.GetPrimaryLocation(ctx, j.AssetID)
 	if err != nil {
 		return err
@@ -875,6 +933,8 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 	}
 	diskFloor := p.diskFloor(throttle, configured)
 	switch j.Type {
+	case domain.JobDetectShots:
+		return p.executeDetectShots(ctx, j, sourcePath, worker)
 	case domain.JobProbe:
 		probe, err := media.Probe(ctx, sourcePath)
 		if err != nil {
@@ -975,6 +1035,23 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 			if err := saveArtifact(p.repo, ctx, j.AssetID, "audio", "audio-16k-v1", audio, j.ID, worker); err != nil {
 				return err
 			}
+			// The waveform is a presentational derivative, so a failure to build
+			// it must not fail the derive job: the audio exists and the chain
+			// can continue without a picture of it.
+			waveBase := filepath.Join(base, "waveform")
+			if _, statErr := os.Stat(waveBase + ".json"); os.IsNotExist(statErr) {
+				if _, waveErr := media.GenerateWaveformPyramid(ctx, audio, waveBase, media.DefaultWaveformConfig()); waveErr != nil {
+					slog.Warn("waveform generation failed", "asset", j.AssetID, "error", waveErr)
+				} else if saveErr := saveArtifact(p.repo, ctx, j.AssetID, "waveform", "waveform-v1", waveBase+".json", j.ID, worker); saveErr != nil {
+					slog.Warn("waveform artifact not recorded", "asset", j.AssetID, "error", saveErr)
+				}
+			}
+			// Audio-driven modalities are queued only after the audio artifact
+			// row exists: the enqueue path checks artifacts, so firing this
+			// before the save would depend on a race with the worker that
+			// leases the new job. The order is the contract; the speech gate's
+			// verdict is irrelevant to environmental sound and diarization.
+			p.afterDeriveCompleted(ctx, j.AssetID, j.InputHash)
 			// A re-derive job (enqueued by `cache gc --rebuildable`) re-creates
 			// the files for an asset whose analysis already committed. The paid
 			// chain must not re-run: the canonical shots are already there, and
@@ -1283,4 +1360,57 @@ func hashStrings(v ...string) string {
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// localDeviceLeaseRepository is the optional lease capability a Hub with a
+// local runtime needs. Asserted rather than embedded so minimal repositories
+// keep compiling.
+type localDeviceLeaseRepository interface {
+	LeaseNextLocalInference(ctx context.Context, worker string, lease time.Duration, caps []remote.InferenceCapability, maxAssetBytes int64, now time.Time) (*remote.WorkerJob, error)
+	LeaseNextModelManagement(ctx context.Context, worker string, lease time.Duration, now time.Time) (*remote.WorkerJob, error)
+}
+
+// leaseLocalDeviceJob returns one inference or maintenance job this Hub can
+// execute itself, or nil when it has no runtime, no matching capability, or
+// nothing queued.
+func (p *Pipeline) leaseLocalDeviceJob(ctx context.Context, worker string, maxAssetBytes int64, now time.Time) (*domain.Job, error) {
+	repo, ok := p.repo.(localDeviceLeaseRepository)
+	if !ok {
+		return nil, nil
+	}
+	if p.inferenceExec != nil {
+		caps, err := p.inferenceExec.Capabilities(ctx)
+		if err != nil {
+			slog.Warn("local inference capabilities unavailable", "error", err)
+		} else {
+			available := make([]remote.InferenceCapability, 0, len(caps))
+			for _, capability := range caps {
+				if !capability.Available || !capability.Operation.Valid() ||
+					strings.TrimSpace(capability.ModelID) == "" ||
+					strings.TrimSpace(capability.ModelRevision) == "" {
+					continue
+				}
+				available = append(available, capability)
+			}
+			if len(available) > 0 {
+				leased, err := repo.LeaseNextLocalInference(ctx, worker, InferenceLease, available, maxAssetBytes, now)
+				if err != nil || leased != nil {
+					if leased == nil {
+						return nil, err
+					}
+					return &domain.Job{ID: leased.JobID, AssetID: leased.AssetID, Type: leased.JobType, AttemptCount: leased.AttemptCount, MaxAttempts: leased.MaxAttempts}, err
+				}
+			}
+		}
+	}
+	if p.modelManager != nil {
+		leased, err := repo.LeaseNextModelManagement(ctx, worker, InferenceLease, now)
+		if err != nil || leased != nil {
+			if leased == nil {
+				return nil, err
+			}
+			return &domain.Job{ID: leased.JobID, AssetID: leased.AssetID, Type: leased.JobType, AttemptCount: leased.AttemptCount, MaxAttempts: leased.MaxAttempts}, err
+		}
+	}
+	return nil, nil
 }

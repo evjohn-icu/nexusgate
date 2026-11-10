@@ -22,6 +22,16 @@
     "provider_route_deferral_minutes": 300,
     "minimum_free_space_bytes": 0
   },
+  "inference": {
+    "enabled": false,
+    "python_path": "",
+    "module_dir": "",
+    "model_dir": "",
+    "scratch_dir": "",
+    "device": "auto",
+    "dtype": "auto",
+    "lock_path": ""
+  },
   "preview_lut_path": "",
   "analysis_language": "zh-CN",
   "hub_security": {

@@ -42,11 +42,32 @@ DELETE /api/v1/admin/provider-channels/{id}
 POST /api/v1/admin/provider-channels/{id}/test
 POST /api/v1/admin/provider-channels/probe-models
 GET /api/v1/admin/assets/{id}/capture-location
+GET /api/v1/admin/speaker-consent
+PUT /api/v1/admin/speaker-consent
+GET /api/v1/admin/speaker-profiles
+POST /api/v1/admin/speaker-profiles
+DELETE /api/v1/admin/speaker-profiles/{id}
+POST /api/v1/admin/speaker-profiles/{id}/matches
+PATCH /api/v1/admin/speaker-associations/{id}
+POST /api/v1/admin/speaker-clusters/{id}/split
+GET /api/v1/admin/multimodal/settings
+PUT /api/v1/admin/multimodal/settings
+POST /api/v1/admin/assets/{id}/modalities/{operation}/rebuild
+POST /api/v1/admin/inference/jobs/{id}/cancel
+GET /api/v1/admin/inference/catalog
+POST /api/v1/admin/inference/models/{catalog_id}/install
+POST /api/v1/admin/inference/models/{catalog_id}/probe
+GET /api/v1/admin/inference/operations/{id}
+POST /api/v1/admin/search-references
+GET /api/v1/admin/search-references/{id}
+DELETE /api/v1/admin/search-references/{id}
 POST /api/v1/worker/enroll
 POST /api/v1/worker/heartbeat
 POST /api/v1/worker/lease
 POST /api/v1/worker/jobs/{id}/complete
 POST /api/v1/worker/jobs/{id}/progress
+POST /api/v1/worker/jobs/{id}/inference-result
+GET /api/v1/worker/jobs/{id}/input
 POST /api/v1/worker/jobs/{id}/credentials/{operation}
 POST /api/v1/worker/jobs/{id}/provider/{operation}
 POST /api/v1/worker/jobs/{id}/artifacts
@@ -80,6 +101,8 @@ GET /api/v1/shoot-sessions
 GET /api/v1/assets/{id}
 GET /api/v1/assets/{id}/shots
 GET /api/v1/assets/{id}/transcript
+GET /api/v1/assets/{id}/timeline
+GET /api/v1/assets/{id}/waveform
 GET /api/v1/assets/{id}/thumbnail
 GET /api/v1/assets/{id}/proxy
 GET /api/v1/jobs
@@ -235,6 +258,29 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 		{http.MethodGet, "/api/v1/admin/hub/worker-setup/library-roots", "admin", "none", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/hub/worker-binaries/linux-amd64", "worker-bootstrap", "none", http.StatusForbidden},
 		{http.MethodPost, "/api/v1/hub/worker-setup/script", "admin", "JSON", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/admin/speaker-consent", "admin", "none", http.StatusUnauthorized},
+		{http.MethodPut, "/api/v1/admin/speaker-consent", "admin", "JSON", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/admin/speaker-profiles", "admin", "none", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/admin/speaker-profiles", "admin", "JSON", http.StatusUnauthorized},
+		{http.MethodDelete, "/api/v1/admin/speaker-profiles/x", "admin", "none", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/admin/speaker-profiles/x/matches", "admin", "none", http.StatusUnauthorized},
+		{http.MethodPatch, "/api/v1/admin/speaker-associations/x", "admin", "JSON", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/admin/speaker-clusters/x/split", "admin", "JSON", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/admin/multimodal/settings", "admin", "none", http.StatusUnauthorized},
+		{http.MethodPut, "/api/v1/admin/multimodal/settings", "admin", "JSON", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/admin/assets/x/modalities/visual_embedding/rebuild", "admin", "none", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/admin/inference/jobs/x/cancel", "admin", "none", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/worker/jobs/x/inference-result", "worker", "JSON", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/worker/jobs/x/input", "worker", "none", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/admin/inference/catalog", "admin", "none", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/admin/inference/models/visual-siglip2-base/install", "admin", "JSON", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/admin/inference/models/visual-siglip2-base/probe", "admin", "JSON", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/admin/inference/operations/x", "admin", "none", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/admin/search-references", "admin", "raw", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/admin/search-references/x", "admin", "none", http.StatusUnauthorized},
+		{http.MethodDelete, "/api/v1/admin/search-references/x", "admin", "none", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/assets/x/timeline", "trusted", "none", http.StatusForbidden},
+		{http.MethodGet, "/api/v1/assets/x/waveform", "trusted", "none", http.StatusForbidden},
 		{http.MethodGet, "/api/v1/unknown", "catch-all", "none", http.StatusNotFound},
 		{http.MethodPost, "/api/v1/unknown", "catch-all", "none", http.StatusNotFound},
 	}
@@ -254,7 +300,7 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 func TestAPIRouteInventoryIsComplete(t *testing.T) {
 	server := NewServer("admin-token", newErrorEnvelopeTestService(t, "route-inventory"))
 	specs := server.routeInventory()
-	if got, want := len(specs), 114; got != want {
+	if got, want := len(specs), 137; got != want {
 		t.Fatalf("route inventory contains %d routes, want %d", got, want)
 	}
 	expected := strings.Split(expectedRouteInventoryPatterns, "\n")

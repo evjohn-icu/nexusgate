@@ -41,7 +41,7 @@ func newRouteSpec(name, pattern string, auth routeAuthClass, handler http.Handle
 }
 
 func (s *Server) routeSpecs() []routeSpec {
-	specs := make([]routeSpec, 0, 109)
+	specs := make([]routeSpec, 0, 132)
 	specs = append(specs, s.coreRouteSpecs()...)
 	if s.webdav != nil {
 		specs = append(specs, newRouteSpec("webdav-space-delivery", "/spaces/", routeAuthWebDAVBasic, s.webdav.Handler()))
@@ -53,6 +53,8 @@ func (s *Server) routeSpecs() []routeSpec {
 	specs = append(specs, s.workerRouteSpecs()...)
 	specs = append(specs, s.pipelineRouteSpecs()...)
 	specs = append(specs, s.searchRouteSpecs()...)
+	specs = append(specs, s.multimodalRouteSpecs()...)
+	specs = append(specs, s.speakerRouteSpecs()...)
 	specs = append(specs, s.repurposeRouteSpecs()...)
 	specs = append(specs, s.workerSetupRouteSpecs()...)
 	specs = append(specs, s.pageRouteSpecs()...)
@@ -159,6 +161,7 @@ func (s *Server) workerRouteSpecs() []routeSpec {
 		newRouteSpec("worker-lease", "POST /api/v1/worker/lease", routeAuthWorker, http.HandlerFunc(s.workerLease)),
 		newRouteSpec("worker-job-complete", "POST /api/v1/worker/jobs/{id}/complete", routeAuthWorker, http.HandlerFunc(s.workerCompleteJob)),
 		newRouteSpec("worker-job-progress", "POST /api/v1/worker/jobs/{id}/progress", routeAuthWorker, http.HandlerFunc(s.workerProgress)),
+		newRouteSpec("worker-job-inference-result", "POST /api/v1/worker/jobs/{id}/inference-result", routeAuthWorker, http.HandlerFunc(s.workerInferenceResult)),
 		newRouteSpec("worker-job-credentials", "POST /api/v1/worker/jobs/{id}/credentials/{operation}", routeAuthWorker, http.HandlerFunc(s.workerCredential)),
 		newRouteSpec("worker-job-provider", "POST /api/v1/worker/jobs/{id}/provider/{operation}", routeAuthWorker, http.HandlerFunc(s.workerProviderProxy)),
 		newRouteSpec("worker-job-artifact-multipart", "POST /api/v1/worker/jobs/{id}/artifacts", routeAuthWorker, http.HandlerFunc(s.workerUploadArtifactMultipart)),

@@ -225,3 +225,34 @@ These results establish the measured 100k SQLite boundary for this host and
 configuration; they do not predict other hardware or a cold-disk run. The
 500k measurement was deferred because of resource/runtime cost. No ANN index
 is implemented in v0.31.
+
+## V1.5 exact visual retrieval (real SQLite)
+
+`internal/repository/sqlite/scale_visual_bench_test.go` seeds one active visual
+generation per corpus size with a deterministic 64-dimensional unit vector per
+shot and measures `VisualWindowMatches`, the exact-cosine path Search v2's
+visual channel uses (sqlite-vec's `vec_distance_cosine` joined to the active
+head). `TestVisualKNNMatchesBruteForce` proves the SQL neighbour list and a Go
+full scan agree in order and score.
+
+```bash
+go test ./internal/repository/sqlite -run '^$' \
+  -bench 'BenchmarkSQLiteScaleVisual(1k|10k|100k)$' -benchmem -benchtime=10x -count=3
+```
+
+Current run: 2026-11-10, AMD Ryzen 5 5600X, modernc sqlite v1.56.0 with the
+bundled sqlite-vec 0.1.9, warm page cache, limit 20.
+
+| corpus | mean per query | B/op | allocs/op |
+| --- | --- | --- | --- |
+| 1 000 shots | 1.67–1.72 ms | 18.8 kB | 687 |
+| 10 000 shots | 17.0–17.8 ms | 18.8 kB | 684 |
+| 100 000 shots | 183 ms (3 iterations) | 19.4 kB | 684 |
+| 10 000 shots, filtered universe | 42.3 ms (5 iterations) | 958 kB | 705 |
+
+These are benchmark means, not percentiles. The 10k target (P95 ≤ 1 s) is met by
+a wide margin on this hardware, but a percentile claim needs individual request
+samples from the multimodal evaluation over a real query set; the filter cost is
+dominated by materializing the 10 000-id universe as JSON for `json_each`
+(≈0.9 MB per query), which is the first thing to replace if filtered latency
+matters at 100k.

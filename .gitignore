@@ -96,3 +96,11 @@ v021-unreleased-state.md
 
 # Agent worktrees and local Claude state — never part of the published tree.
 .claude/
+
+# Inference environments and weights stay out of Git. The lock file, the
+# requirements inputs and the code are the reviewed artifacts; a virtualenv and
+# multi-gigabyte weights are neither portable nor reviewable.
+inference/.venv/
+inference/.venv-tf/
+inference/models/
+**/__pycache__/

@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -101,14 +102,7 @@ func newServer(address string, service *app.Service, certificateFile, keyFile st
 }
 
 func (s *Server) Run(ctx context.Context) error {
-	server := &http.Server{
-		Addr:              s.address,
-		Handler:           s.Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       5 * time.Minute,
-		WriteTimeout:      5 * time.Minute,
-		IdleTimeout:       60 * time.Second,
-	}
+	server := s.newHTTPServer()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -130,6 +124,50 @@ func (s *Server) Run(ctx context.Context) error {
 			return nil
 		}
 		return err
+	}
+}
+
+// RunListener serves on a listener the caller already bound. The desktop
+// launcher needs this: it asks the kernel for a free loopback port, writes the
+// ready file with that exact address, and only then starts accepting, so there
+// is no window in which the client can dial a port that nothing is listening
+// on. TLS and shutdown behaviour are identical to Run.
+func (s *Server) RunListener(ctx context.Context, listener net.Listener) error {
+	if listener == nil {
+		return fmt.Errorf("run listener: nil listener")
+	}
+	server := s.newHTTPServer()
+	errCh := make(chan error, 1)
+	go func() {
+		slog.Info("local API started", "address", listener.Addr().String())
+		if s.tlsCert != "" && s.tlsKey != "" {
+			errCh <- server.ServeTLS(listener, s.tlsCert, s.tlsKey)
+			return
+		}
+		errCh <- server.Serve(listener)
+	}()
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return server.Shutdown(shutdownCtx)
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
+}
+
+// newHTTPServer carries the timeouts and handler every serve path shares.
+func (s *Server) newHTTPServer() *http.Server {
+	return &http.Server{
+		Addr:              s.address,
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       5 * time.Minute,
+		WriteTimeout:      5 * time.Minute,
+		IdleTimeout:       60 * time.Second,
 	}
 }
 
@@ -726,6 +764,17 @@ func (s *Server) workerLease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if job == nil {
+		// Derive work comes first: it is the library chain every Worker
+		// understands. Inference and maintenance are reached only by Workers
+		// whose enrollment granted the matching operations, so an unmodified
+		// Worker never receives a job it cannot run.
+		job, err = s.service.LeaseNextWorkerInference(r.Context(), worker, app.InferenceLease, domain.LeaseFilter{})
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+	}
+	if job == nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -776,6 +825,16 @@ func (s *Server) workerProgress(w http.ResponseWriter, r *http.Request) {
 	if !decodeStrictJSON(w, r, &request, 16<<10) {
 		return
 	}
+	// Inference jobs answer with the lease/cancellation state a long model run
+	// needs; derive jobs keep the legacy 204, so an older Worker is unaffected.
+	if state, inference, err := s.service.WorkerInferenceProgress(r.Context(), worker.ID, r.PathValue("id"), strings.TrimSpace(request.Stage), request.Progress, strings.TrimSpace(request.Event), strings.TrimSpace(request.Message)); inference {
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "worker progress rejected"})
+			return
+		}
+		writeJSON(w, http.StatusOK, state)
+		return
+	}
 	if err := s.service.RecordWorkerJobProgress(r.Context(), r.PathValue("id"), worker.ID, strings.TrimSpace(request.Stage), request.Progress, strings.TrimSpace(request.Event), strings.TrimSpace(request.Message)); err != nil {
 		if errors.Is(err, domain.ErrJobLeaseLost) {
 			status, apiErr := apiErrorFromError(err)
@@ -786,6 +845,29 @@ func (s *Server) workerProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// workerInferenceResult accepts a validated inference result. The Hub owns the
+// canonical write and the job's terminal transition; the ordinary complete
+// endpoint is not a way to mark inference work succeeded.
+func (s *Server) workerInferenceResult(w http.ResponseWriter, r *http.Request) {
+	worker, ok := s.authenticatedWorker(w, r)
+	if !ok {
+		return
+	}
+	var submission remote.InferenceResultSubmission
+	if !decodeStrictJSON(w, r, &submission, 32<<20) {
+		return
+	}
+	err := s.service.SubmitWorkerInferenceResult(r.Context(), worker.ID, r.PathValue("id"), submission)
+	switch {
+	case err == nil, errors.Is(err, app.ErrInferenceAlreadyCommitted):
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, domain.ErrJobLeaseLost):
+		writeAPIError(w, http.StatusConflict, APIError{Code: "lease_lost", Message: "inference lease is no longer held by this worker"})
+	default:
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_output", Message: clipText(err.Error(), 300)})
+	}
 }
 
 func (s *Server) workerCredential(w http.ResponseWriter, r *http.Request) {
@@ -1993,7 +2075,8 @@ func (s *Server) searchShotsV2(w http.ResponseWriter, r *http.Request) {
 	if !decodeStrictJSON(w, r, &req, 1<<20) {
 		return
 	}
-	if strings.TrimSpace(req.Query) == "" {
+	multimodal := len(req.Modalities) > 0 || req.ReferenceID != "" || req.VisualShotID != "" || req.Temporal != nil || req.SpeakerFilter != nil
+	if strings.TrimSpace(req.Query) == "" && !multimodal {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "missing query"})
 		return
 	}
@@ -2019,7 +2102,23 @@ func (s *Server) searchShotsV2(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := s.service.SearchV2(r.Context(), req)
 	if err != nil {
-		writeError(w, err)
+		var pending *search.PendingModalitiesError
+		switch {
+		case errors.As(err, &pending):
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"status":  "pending",
+				"job_ids": pending.JobIDs,
+				"reason":  clipText(pending.Error(), 300),
+			})
+		case errors.Is(err, search.ErrInvalidMultimodal), errors.Is(err, search.ErrConflictingReferences):
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
+		case errors.Is(err, search.ErrModalitiesUnavailable):
+			// The request named a channel this Hub cannot serve. Saying so is
+			// the point: a 200 with fewer channels would look like an answer.
+			writeAPIError(w, http.StatusServiceUnavailable, APIError{Code: "modality_unavailable", Message: clipText(err.Error(), 300), Action: "configure_the_inference_runtime"})
+		default:
+			writeError(w, err)
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, response)

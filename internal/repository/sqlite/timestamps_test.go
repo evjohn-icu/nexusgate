@@ -178,7 +178,20 @@ func TestMigration0021CoversEveryTimestampColumn(t *testing.T) {
 	// is nothing for 0021 to rewrite. Keeping this set explicit (rather than
 	// inferring from sqlite_master order) makes the exemption auditable when
 	// the next post-0021 table is added.
-	post0021Tables := map[string]bool{"webdav_accounts": true, "reanalysis_requests": true, "shot_text_embeddings": true, "collection_shots": true, "cost_ledger": true, "pipeline_executors": true}
+	post0021Tables := map[string]bool{
+		"webdav_accounts": true, "reanalysis_requests": true, "shot_text_embeddings": true,
+		"collection_shots": true, "cost_ledger": true, "pipeline_executors": true,
+		// V1.5 multimodal tables: created after 0021, so their timestamp columns
+		// are written with the fixed-width formatTime layout from birth.
+		"inference_tasks": true, "embedding_spaces": true, "modality_generations": true,
+		"modality_heads": true, "audio_events": true, "audio_embeddings": true,
+		"visual_embeddings": true, "speaker_turns": true, "speaker_transcript_links": true,
+		"multimodal_settings": true, "speaker_consent": true, "speaker_profiles": true,
+		"speaker_profile_sources": true, "speaker_embeddings": true,
+		"speaker_associations": true, "biometric_purge_refs": true,
+		"speaker_embedding_staging": true, "search_references": true,
+		"model_management_tasks": true, "model_attestations": true,
+	}
 
 	// Timestamp columns added to a pre-0021 table by a later migration share
 	// the same birth-formatTime property, but land under a table 0021 must

@@ -1,0 +1,107 @@
+{
+  "schema_version": "multimodal-results.v1",
+  "ranking": {},
+  "speaker_trials": [
+    {
+      "id": "same-1-4-5",
+      "same": true,
+      "similarity": 0.8525153359483719,
+      "partition": "test"
+    },
+    {
+      "id": "same-1-4-6",
+      "same": true,
+      "similarity": 0.64577031953468,
+      "partition": "test"
+    },
+    {
+      "id": "same-1-5-6",
+      "same": true,
+      "similarity": 0.6842379640156475,
+      "partition": "test"
+    },
+    {
+      "id": "same-2-4-5",
+      "same": true,
+      "similarity": 0.7291543914354968,
+      "partition": "test"
+    },
+    {
+      "id": "same-2-4-6",
+      "same": true,
+      "similarity": 0.597940931731295,
+      "partition": "test"
+    },
+    {
+      "id": "same-2-5-6",
+      "same": true,
+      "similarity": 0.6379566437019966,
+      "partition": "test"
+    },
+    {
+      "id": "diff-4-4",
+      "same": false,
+      "similarity": 0.14632958011220878,
+      "partition": "test"
+    },
+    {
+      "id": "diff-4-5",
+      "same": false,
+      "similarity": 0.2717630413223721,
+      "partition": "test"
+    },
+    {
+      "id": "diff-4-6",
+      "same": false,
+      "similarity": 0.21048397941014912,
+      "partition": "test"
+    },
+    {
+      "id": "diff-5-4",
+      "same": false,
+      "similarity": 0.14179380066941244,
+      "partition": "test"
+    },
+    {
+      "id": "diff-5-5",
+      "same": false,
+      "similarity": 0.3054593381981658,
+      "partition": "test"
+    },
+    {
+      "id": "diff-5-6",
+      "same": false,
+      "similarity": 0.15783783683642033,
+      "partition": "test"
+    },
+    {
+      "id": "diff-6-4",
+      "same": false,
+      "similarity": 0.25077798196324014,
+      "partition": "test"
+    },
+    {
+      "id": "diff-6-5",
+      "same": false,
+      "similarity": 0.3285241573826586,
+      "partition": "test"
+    },
+    {
+      "id": "diff-6-6",
+      "same": false,
+      "similarity": 0.21525114602055645,
+      "partition": "test"
+    }
+  ],
+  "runtime": {
+    "model": "iic/speech_campplus_sv_zh-cn_16k-common",
+    "revision": "013c18884dffb82846cf472dd06dd4a08d97e2cd",
+    "funasr": "1.4.24",
+    "kaldi_native_fbank": "1.23.0",
+    "torch": "2.14.1+cu126",
+    "device": "cpu",
+    "pipeline": "inference.dispatch speaker_embedding",
+    "samples": "https://github.com/speechbrain/speechbrain/tree/develop/tests/samples/ASR",
+    "partition_note": "calibration=snt1-3, test=snt4-6; only two speakers, so identities are not disjoint across partitions"
+  }
+}

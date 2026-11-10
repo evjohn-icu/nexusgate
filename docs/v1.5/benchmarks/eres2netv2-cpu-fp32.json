@@ -1,0 +1,69 @@
+{
+  "schema_version": "inference.benchmark.v1",
+  "model": "speaker-eres2netv2",
+  "device": "cpu",
+  "profiles": [
+    {
+      "schema_version": "inference.benchmark.v1",
+      "model": "speaker-eres2netv2",
+      "device": "cpu",
+      "dtype": "float32",
+      "batch": 1,
+      "cold_start_ms": 5451.575547001994,
+      "load_ms": 5183.994568000344,
+      "peak_vram_mib": 0.0,
+      "peak_rss_mib": 1015.1875,
+      "latency_ms": {
+        "p50": 172.89187599817524,
+        "p95": 181.2446980002278
+      },
+      "checks": {
+        "finite": true,
+        "normalized": true,
+        "dimension": 192,
+        "output_records": 1,
+        "first_process_result_ms": 5451.575547001994,
+        "resident_first_result_ms": 5468.565318999026,
+        "vram_allocated_mib": 0.0,
+        "vram_reserved_mib": 0.0,
+        "cancellation_probe": true,
+        "oom_probe": true
+      },
+      "cancelled": true,
+      "oom_code": "resource_exhausted",
+      "status": "complete",
+      "rejected": false
+    },
+    {
+      "schema_version": "inference.benchmark.v1",
+      "model": "speaker-eres2netv2",
+      "device": "cpu",
+      "dtype": "float32",
+      "batch": 2,
+      "cold_start_ms": 5420.359478001046,
+      "load_ms": 218.16564199980348,
+      "peak_vram_mib": 0.0,
+      "peak_rss_mib": 1015.1875,
+      "latency_ms": {
+        "p50": 311.8807829996513,
+        "p95": 325.24056599868345
+      },
+      "checks": {
+        "finite": true,
+        "normalized": true,
+        "dimension": 192,
+        "output_records": 2,
+        "first_process_result_ms": 5420.359478001046,
+        "resident_first_result_ms": 554.0831969992723,
+        "vram_allocated_mib": 0.0,
+        "vram_reserved_mib": 0.0,
+        "cancellation_probe": true,
+        "oom_probe": true
+      },
+      "cancelled": true,
+      "oom_code": "resource_exhausted",
+      "status": "complete",
+      "rejected": false
+    }
+  ]
+}

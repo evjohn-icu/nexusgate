@@ -1,0 +1,8 @@
+# Core PyTorch inference environment. Build with the CPU or CUDA wheel index
+# documented in README.md; the resolved set goes into torch.lock.
+torch>=2.9,<3
+torchvision>=0.24,<1
+numpy>=2,<3
+pillow>=11,<13
+soundfile>=0.13,<1
+transformers==4.57.1

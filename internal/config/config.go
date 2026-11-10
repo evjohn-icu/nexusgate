@@ -200,6 +200,33 @@ type PipelineConfig struct {
 // rolls over.
 const defaultProviderRouteDeferralMinutes = 5 * 60
 
+// InferenceConfig describes the Hub-local Python runtime. Everything here is
+// optional: a Hub without it still serves the library and delegates inference
+// to paired Workers. Model weights are never bundled — ModelDir points at the
+// directory an operator (or the installer) populated from the lock file.
+type InferenceConfig struct {
+	Enabled bool `json:"enabled"`
+	// PythonPath is the interpreter of a locked environment. Empty means the
+	// local runtime is not configured.
+	PythonPath string `json:"python_path,omitempty"`
+	// ModuleDir is the directory that contains the `inference` Python package.
+	ModuleDir string `json:"module_dir,omitempty"`
+	// ModelDir holds the locked model artifacts.
+	ModelDir string `json:"model_dir,omitempty"`
+	// ScratchDir holds per-operation working directories; always inside the
+	// managed cache.
+	ScratchDir string `json:"scratch_dir,omitempty"`
+	// Device is auto, cpu or cuda. Dtype is auto, float32 or float16.
+	Device string `json:"device,omitempty"`
+	Dtype  string `json:"dtype,omitempty"`
+	// LockPath is the shipped model lock. It defaults to models.lock.json
+	// beside the Python package directory, which is how the repository and the
+	// deployed inference bundle are laid out.
+	LockPath string `json:"lock_path,omitempty"`
+	// MaxFrameBytes bounds one result frame; zero means 32 MiB.
+	MaxFrameBytes int64 `json:"max_frame_bytes,omitempty"`
+}
+
 type HubTLSConfig struct {
 	Mode            string `json:"mode"` // auto, files, off
 	CertificateFile string `json:"certificate_file,omitempty"`
@@ -311,6 +338,7 @@ type Config struct {
 	HubSecurity       HubSecurityConfig       `json:"hub_security"`
 	LibrarySupervisor LibrarySupervisorConfig `json:"library_supervisor"`
 	Pipeline          PipelineConfig          `json:"pipeline"`
+	Inference         InferenceConfig         `json:"inference"`
 	PreviewLUTPath    string                  `json:"preview_lut_path,omitempty"`
 	// AnalysisLanguage is the language the model writes summaries and shot
 	// descriptions in. It defaults to the Hub UI's own fallback locale, so a
@@ -400,6 +428,58 @@ func Load() (Config, error) {
 	// — doctor, the API and the pipeline all read the same resolved value.
 	if strings.TrimSpace(cfg.AnalysisLanguage) == "" {
 		cfg.AnalysisLanguage = DefaultAnalysisLanguage
+	}
+	// Inference defaults are resolved here rather than at the call site so
+	// doctor, the API and the pipeline all read the same paths. An empty
+	// PythonPath keeps the local runtime disabled: a stock install must not
+	// start a subprocess it has no locked environment for.
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_INFERENCE_ENABLED")); v != "" {
+		if enabled, err := strconv.ParseBool(v); err == nil {
+			cfg.Inference.Enabled = enabled
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_INFERENCE_PYTHON")); v != "" {
+		cfg.Inference.PythonPath = v
+	}
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_INFERENCE_MODULE_DIR")); v != "" {
+		cfg.Inference.ModuleDir = v
+	}
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_INFERENCE_MODEL_DIR")); v != "" {
+		cfg.Inference.ModelDir = v
+	}
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_INFERENCE_DEVICE")); v != "" {
+		cfg.Inference.Device = v
+	}
+	if v := strings.TrimSpace(os.Getenv("NEXUSGATE_INFERENCE_DTYPE")); v != "" {
+		cfg.Inference.Dtype = v
+	}
+	cfg.Inference.Device = strings.ToLower(strings.TrimSpace(cfg.Inference.Device))
+	if cfg.Inference.Device == "" {
+		cfg.Inference.Device = "auto"
+	}
+	cfg.Inference.Dtype = strings.ToLower(strings.TrimSpace(cfg.Inference.Dtype))
+	if cfg.Inference.Dtype == "" {
+		cfg.Inference.Dtype = "auto"
+	}
+	if strings.TrimSpace(cfg.Inference.ModelDir) == "" {
+		cfg.Inference.ModelDir = filepath.Join(dataDir, "models")
+	}
+	if strings.TrimSpace(cfg.Inference.ScratchDir) == "" {
+		cfg.Inference.ScratchDir = filepath.Join(cfg.CacheDir, "inference")
+	}
+	if strings.TrimSpace(cfg.Inference.LockPath) == "" && strings.TrimSpace(cfg.Inference.ModuleDir) != "" {
+		// ModuleDir contains the `inference` Python package. The repository and
+		// the documented bundle keep the lock beside that package; older flat
+		// bundles keep it at ModuleDir itself.
+		nested := filepath.Join(cfg.Inference.ModuleDir, "inference", "models.lock.json")
+		if _, err := os.Stat(nested); err == nil {
+			cfg.Inference.LockPath = nested
+		} else {
+			cfg.Inference.LockPath = filepath.Join(cfg.Inference.ModuleDir, "models.lock.json")
+		}
+	}
+	if err := cfg.Inference.Validate(); err != nil {
+		return Config{}, err
 	}
 	// This is a deployment hint rather than a fact LocalHost can prove: the
 	// process can detect its container, but only the operator knows which host
@@ -558,4 +638,31 @@ func defaultDataDir() (string, error) {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
 	return filepath.Join(home, ".nexusgate"), nil
+}
+
+// Validate rejects values the runtime cannot honour instead of letting the
+// subprocess fail per job with an error that looks like a model problem.
+func (c InferenceConfig) Validate() error {
+	switch c.Device {
+	case "auto", "cpu", "cuda":
+	default:
+		return fmt.Errorf("inference.device must be auto, cpu or cuda, got %q", c.Device)
+	}
+	switch c.Dtype {
+	case "auto", "float32", "float16":
+	default:
+		return fmt.Errorf("inference.dtype must be auto, float32 or float16, got %q", c.Dtype)
+	}
+	if c.MaxFrameBytes < 0 {
+		return fmt.Errorf("inference.max_frame_bytes must not be negative")
+	}
+	return nil
+}
+
+// LocalRuntimeConfigured reports whether the Hub has enough configuration to
+// start the Python executor. It deliberately does not check the filesystem:
+// a missing directory is a run-time model_unavailable, not a reason to refuse
+// to boot.
+func (c InferenceConfig) LocalRuntimeConfigured() bool {
+	return c.Enabled && strings.TrimSpace(c.PythonPath) != "" && strings.TrimSpace(c.ModuleDir) != ""
 }
