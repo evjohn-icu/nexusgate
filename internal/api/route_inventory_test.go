@@ -98,6 +98,7 @@ GET /api/v1/assets/{id}
 GET /api/v1/assets/{id}/shots
 GET /api/v1/assets/{id}/transcript
 GET /api/v1/assets/{id}/timeline
+GET /api/v1/assets/{id}/waveform
 GET /api/v1/assets/{id}/thumbnail
 GET /api/v1/assets/{id}/proxy
 GET /api/v1/jobs
@@ -271,6 +272,7 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 		{http.MethodGet, "/api/v1/admin/search-references/x", "admin", "none", http.StatusUnauthorized},
 		{http.MethodDelete, "/api/v1/admin/search-references/x", "admin", "none", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/assets/x/timeline", "trusted", "none", http.StatusForbidden},
+		{http.MethodGet, "/api/v1/assets/x/waveform", "trusted", "none", http.StatusForbidden},
 		{http.MethodGet, "/api/v1/unknown", "catch-all", "none", http.StatusNotFound},
 		{http.MethodPost, "/api/v1/unknown", "catch-all", "none", http.StatusNotFound},
 	}
@@ -290,7 +292,7 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 func TestAPIRouteInventoryIsComplete(t *testing.T) {
 	server := NewServer("admin-token", newErrorEnvelopeTestService(t, "route-inventory"))
 	specs := server.routeInventory()
-	if got, want := len(specs), 132; got != want {
+	if got, want := len(specs), 133; got != want {
 		t.Fatalf("route inventory contains %d routes, want %d", got, want)
 	}
 	expected := strings.Split(expectedRouteInventoryPatterns, "\n")

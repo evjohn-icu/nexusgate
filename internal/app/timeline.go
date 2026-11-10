@@ -186,3 +186,10 @@ func capRefs(in []domain.VisualRef, limit int) ([]domain.VisualRef, bool) {
 	}
 	return in[:limit], true
 }
+
+// GetArtifactForAsset returns one derived artifact row. The waveform route
+// needs the manifest path; containment is checked by the artifact's own cache
+// location and by the reader's root check.
+func (s *Service) GetArtifactForAsset(ctx context.Context, assetID, typ string) (*domain.DerivedArtifact, error) {
+	return s.repo.GetArtifact(ctx, assetID, typ)
+}

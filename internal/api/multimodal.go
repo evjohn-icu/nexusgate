@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"github.com/evjohn-icu/nexusgate/internal/app"
 	"github.com/evjohn-icu/nexusgate/internal/domain"
 	"github.com/evjohn-icu/nexusgate/internal/inferencecatalog"
+	"github.com/evjohn-icu/nexusgate/internal/media"
 )
 
 // multimodalRouteSpecs is the admin surface for the inference boundary: what
@@ -32,6 +34,7 @@ func (s *Server) multimodalRouteSpecs() []routeSpec {
 		newRouteSpec("search-reference-delete", "DELETE /api/v1/admin/search-references/{id}", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.deleteSearchReference))),
 		newRouteSpec("worker-job-input", "GET /api/v1/worker/jobs/{id}/input", routeAuthWorker, http.HandlerFunc(s.workerInferenceInput)),
 		newRouteSpec("asset-timeline", "GET /api/v1/assets/{id}/timeline", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.assetTimeline))),
+		newRouteSpec("asset-waveform", "GET /api/v1/assets/{id}/waveform", routeAuthTrustedRead, http.HandlerFunc(s.requireTrustedRead(s.assetWaveform))),
 	}
 }
 
@@ -380,4 +383,58 @@ func (s *Server) splitSpeakerCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "split"})
+}
+
+// assetWaveform serves a viewport of the stored waveform pyramid. The response
+// is capped at 4096 buckets so a zoomed-out request cannot stream a megabyte of
+// JSON per repaint; the client asks for a coarser level instead.
+func (s *Server) assetWaveform(w http.ResponseWriter, r *http.Request) {
+	assetID := r.PathValue("id")
+	startMS, endMS, ok := parseViewport(w, r)
+	if !ok {
+		return
+	}
+	level := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("level")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 || parsed > 24 {
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "level must be between 0 and 24"})
+			return
+		}
+		level = parsed
+	}
+	artifact, err := s.service.GetArtifactForAsset(r.Context(), assetID, "waveform")
+	if err != nil || artifact == nil {
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "waveform_unavailable", Message: "no waveform has been generated for this asset"})
+		return
+	}
+	manifestRaw, err := os.ReadFile(artifact.LocalPath)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "waveform_unavailable", Message: "waveform manifest is unreadable"})
+		return
+	}
+	var manifest media.WaveformManifest
+	if err := json.Unmarshal(manifestRaw, &manifest); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, APIError{Code: "waveform_corrupt", Message: "waveform manifest is corrupt"})
+		return
+	}
+	payload, err := os.ReadFile(strings.TrimSuffix(artifact.LocalPath, ".json") + ".bin")
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "waveform_unavailable", Message: "waveform payload is unreadable"})
+		return
+	}
+	if endMS == 0 {
+		endMS = manifest.DurationMS
+	}
+	buckets, err := media.ReadWaveformBuckets(manifest, payload, level, startMS, endMS, 4096)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 200)})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"level":       level,
+		"bucket_ms":   int64(manifest.BucketMS) << level,
+		"duration_ms": manifest.DurationMS,
+		"buckets":     buckets,
+	})
 }

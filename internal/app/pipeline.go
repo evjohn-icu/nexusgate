@@ -1023,6 +1023,17 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 			if err := saveArtifact(p.repo, ctx, j.AssetID, "audio", "audio-16k-v1", audio, j.ID, worker); err != nil {
 				return err
 			}
+			// The waveform is a presentational derivative, so a failure to build
+			// it must not fail the derive job: the audio exists and the chain
+			// can continue without a picture of it.
+			waveBase := filepath.Join(base, "waveform")
+			if _, statErr := os.Stat(waveBase + ".json"); os.IsNotExist(statErr) {
+				if _, waveErr := media.GenerateWaveformPyramid(ctx, audio, waveBase, media.DefaultWaveformConfig()); waveErr != nil {
+					slog.Warn("waveform generation failed", "asset", j.AssetID, "error", waveErr)
+				} else if saveErr := saveArtifact(p.repo, ctx, j.AssetID, "waveform", "waveform-v1", waveBase+".json", j.ID, worker); saveErr != nil {
+					slog.Warn("waveform artifact not recorded", "asset", j.AssetID, "error", saveErr)
+				}
+			}
 			// Audio-driven modalities are queued only after the audio artifact
 			// row exists: the enqueue path checks artifacts, so firing this
 			// before the save would depend on a race with the worker that
