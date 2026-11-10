@@ -20,8 +20,10 @@ uv pip install --python .venv/bin/python -r requirements/torch.in \
 # CUDA (the reference device is a Turing RTX 2070; cu126 wheels are compatible)
 # The measured GPU set is pinned in requirements/torch-cuda.lock
 # (torch 2.14.1+cu126, torchvision 0.29.1+cu126, transformers 4.57.1).
+# Exclusive index: with --extra-index-url uv prefers PyPI's newer torch, which
+# would silently replace the measured cu126 resolution.
 uv pip install --python .venv/bin/python -r requirements/torch.in \
-    --extra-index-url https://download.pytorch.org/whl/cu126
+    --index-url https://download.pytorch.org/whl/cu126
 ```
 
 YAMNet needs a separate environment because its SavedModel was exported for

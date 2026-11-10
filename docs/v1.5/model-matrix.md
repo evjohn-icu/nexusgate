@@ -121,11 +121,11 @@ pretend it exists. Absence from the lock file is the enforcement point.
 
 | model | cold start | peak VRAM | peak RSS | warm latency | output checks | measured on |
 | --- | --- | --- | --- | --- | --- | --- |
-| SigLIP 2 base (FP32 CPU) | 4657.6 ms | n/a | 1325.3 MiB | P50 183.4 / P95 184.6 ms (batch 1); P50 351.2 / P95 356.7 ms (batch 2) | 768d, finite, L2-normalized, cancellation and OOM probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.15.0+cpu |
+| SigLIP 2 base (FP32 CPU) | 4927.0 ms | n/a | 1597.2 MiB | P50 190.8 / P95 192.0 ms (batch 1); P50 360.4 / P95 380.4 ms (batch 2) | 768d, finite, L2-normalized, cancellation and OOM probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.14.1+cu126 (CPU device) |
 | SigLIP 2 base (FP16 CUDA) | 5553.0 ms | 762 MiB | 2848.9 MiB | P50 67.6 / P95 73.3 ms (batch 1); P50 132.9 / P95 133.2 ms (batch 2) | 768d, finite, L2-normalized, cancellation and OOM probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.14.1+cu126 on RTX 2070 |
 | WeMM-Embedding-2B (FP16 CUDA, pooled frames) | pending | pending | pending | pending | pending | — |
 | WeMM-Embedding-2B (FP16 CUDA, native video) | pending | pending | pending | pending | pending | — |
-| CLAP unfused (FP32 CPU) | 3001.0 ms | n/a | 763.8 MiB | P50 287.4 / P95 289.4 ms (batch 1); P50 393.3 / P95 399.5 ms (batch 2) | 512d, finite, L2-normalized, cancellation and OOM probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.15.0+cpu |
+| CLAP unfused (FP32 CPU) | 3237.0 ms | n/a | 953.0 MiB | P50 293.2 / P95 328.0 ms (batch 1); P50 388.8 / P95 420.4 ms (batch 2) | 512d, finite, L2-normalized, cancellation and OOM probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.14.1+cu126 (CPU device) |
 | CLAP unfused (FP16 CUDA) | 3823.8 ms | 340 MiB | 1710.3 MiB | P50 68.7 / P95 72.2 ms (batch 1); P50 98.3 / P95 99.2 ms (batch 2) | 512d, finite, L2-normalized, cancellation and OOM probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.14.1+cu126 on RTX 2070 |
 | YAMNet (CPU) | pending | n/a | pending | pending | pending | — |
 | CAM++ (CPU) | pending | n/a | pending | pending | pending | — |
@@ -136,10 +136,11 @@ Every `pending` row is a gate that has not passed. The CUDA rows above are from
 actual runs of `inference/benchmark.py` against the locked revisions on
 `NVIDIA GeForce RTX 2070, 8192 MiB, driver 610.88`, with the environment
 recorded in `inference/requirements/torch-cuda.lock` (torch 2.14.1+cu126,
-transformers 4.57.1). Both GPU profiles stayed under the 7168 MiB production
+transformers 4.57.1); CPU rows were re-measured on that same runtime using its
+CPU device, so all rows share one runtime. Both GPU profiles stayed under the 7168 MiB production
 budget; the measured peaks are 762 MiB (SigLIP) and 340 MiB (CLAP), so the
-budget headroom is real but shared with any co-resident CUDA process. The CPU
-row is from the resolved CPU environment (`sha256:872964e1…`). The downloaded
+budget headroom is real but shared with any co-resident CUDA process. All profiles name their
+environment digest in `inference/models.lock.json`. The downloaded
 `model.safetensors` was verified against the lock (`61292338…6a0b`) before the
 run. A row is only replaced by numbers copied from an actual run, and the
 run's device string is recorded with it.

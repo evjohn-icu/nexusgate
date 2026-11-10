@@ -4,7 +4,7 @@
   "notes": [
     "Immutable pins only: no entry may resolve `main`, `master`, `latest` or a floating tag at inference time.",
     "Every downloadable file carries the SHA-256 the installer must verify before publishing.",
-    "measured is null where no run of inference/benchmark.py exists for this device; null is a failed gate, not a default."
+    "measured is an array of actual inference/benchmark.py profiles; null means no run exists for that model (a failed gate, not a default). Each profile names the environment file and its digest."
   ],
   "device": {
     "reference_gpu": "NVIDIA GeForce RTX 2070",
@@ -31,7 +31,7 @@
         "transformers": "4.57.1",
         "numpy": "2.5.4"
       },
-      "device_note": "CPU wheels installed and verified (torch 2.15.0+cpu); the CUDA wheel set is a separate build of the same lock and was not installed while the reference GPU was busy."
+      "device_note": "CPU wheel set (torch 2.15.0+cpu). The CUDA build is the separate torch_cuda environment; each measured profile names its environment file and digest."
     },
     "tensorflow": {
       "python": "3.12",
@@ -41,6 +41,21 @@
         "cpu"
       ],
       "notes": "YAMNet's SavedModel was exported for Keras 2; this environment must never share site-packages with the torch environment."
+    },
+    "torch_cuda": {
+      "python": "3.12",
+      "lockfile": "inference/requirements/torch-cuda.lock",
+      "digest": "sha256:b4517d1813ef0adf44c0379fde8cdc9a314528d286a159ea4042af47c8822d81",
+      "backends": [
+        "cuda"
+      ],
+      "resolved": {
+        "torch": "2.14.1+cu126",
+        "torchvision": "0.29.1+cu126",
+        "transformers": "4.57.1",
+        "numpy": "2.5.4"
+      },
+      "device_note": "Measured CUDA resolution on the reference RTX 2070 (driver 610.88); the cu126 index tops out at torch 2.14.1+cu126, so CUDA installs use an exclusive --index-url rather than --extra-index-url."
     }
   },
   "models": [
@@ -149,25 +164,84 @@
           "float16"
         ]
       },
-      "measured": {
-        "device": "cpu",
-        "dtype": "float32",
-        "batch": 1,
-        "cold_start_ms": 4657.6,
-        "load_ms": 4471.4,
-        "peak_rss_mib": 1325.3,
-        "peak_vram_mib": 0,
-        "latency_p50_ms": 183.4,
-        "latency_p95_ms": 184.6,
-        "dimension": 768,
-        "finite": true,
-        "normalized": true,
-        "cancelled": true,
-        "oom_code": "resource_exhausted",
-        "measured_at": "2026-11-10",
-        "environment_digest": "sha256:872964e18165fc2aec3c325470355a1faeb87204fbfc2d5d89b0c76b6cdc90af",
-        "note": "CUDA profile not measured; the reference GPU was busy."
-      }
+      "measured": [
+        {
+          "device": "cpu",
+          "dtype": "float32",
+          "batch": 1,
+          "cold_start_ms": 4927.1,
+          "load_ms": 4573.6,
+          "peak_rss_mib": 1597.2,
+          "peak_vram_mib": 0.0,
+          "latency_p50_ms": 190.8,
+          "latency_p95_ms": 192.0,
+          "dimension": 768,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-10",
+          "environment_file": "inference/requirements/torch.lock",
+          "environment_digest": "sha256:872964e18165fc2aec3c325470355a1faeb87204fbfc2d5d89b0c76b6cdc90af"
+        },
+        {
+          "device": "cpu",
+          "dtype": "float32",
+          "batch": 2,
+          "cold_start_ms": 5110.1,
+          "load_ms": 1824.6,
+          "peak_rss_mib": 1616.8,
+          "peak_vram_mib": 0.0,
+          "latency_p50_ms": 360.4,
+          "latency_p95_ms": 380.4,
+          "dimension": 768,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-10",
+          "environment_file": "inference/requirements/torch.lock",
+          "environment_digest": "sha256:872964e18165fc2aec3c325470355a1faeb87204fbfc2d5d89b0c76b6cdc90af"
+        },
+        {
+          "device": "cuda",
+          "dtype": "float16",
+          "batch": 1,
+          "cold_start_ms": 5553.0,
+          "load_ms": 4150.4,
+          "peak_rss_mib": 2848.9,
+          "peak_vram_mib": 762.0,
+          "latency_p50_ms": 67.6,
+          "latency_p95_ms": 73.3,
+          "dimension": 768,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-10",
+          "environment_file": "inference/requirements/torch-cuda.lock",
+          "environment_digest": "sha256:b4517d1813ef0adf44c0379fde8cdc9a314528d286a159ea4042af47c8822d81"
+        },
+        {
+          "device": "cuda",
+          "dtype": "float16",
+          "batch": 2,
+          "cold_start_ms": 5664.8,
+          "load_ms": 2461.3,
+          "peak_rss_mib": 3491.9,
+          "peak_vram_mib": 764.0,
+          "latency_p50_ms": 132.9,
+          "latency_p95_ms": 133.2,
+          "dimension": 768,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-10",
+          "environment_file": "inference/requirements/torch-cuda.lock",
+          "environment_digest": "sha256:b4517d1813ef0adf44c0379fde8cdc9a314528d286a159ea4042af47c8822d81"
+        }
+      ]
     },
     {
       "catalog_id": "visual-wemm-embedding-2b",
@@ -385,25 +459,84 @@
           "float16"
         ]
       },
-      "measured": {
-        "device": "cpu",
-        "dtype": "float32",
-        "batch": 1,
-        "cold_start_ms": 3001.0,
-        "load_ms": 2598.8,
-        "peak_rss_mib": 763.8,
-        "peak_vram_mib": 0,
-        "latency_p50_ms": 287.4,
-        "latency_p95_ms": 289.4,
-        "dimension": 512,
-        "finite": true,
-        "normalized": true,
-        "cancelled": true,
-        "oom_code": "resource_exhausted",
-        "measured_at": "2026-11-10",
-        "environment_digest": "sha256:872964e18165fc2aec3c325470355a1faeb87204fbfc2d5d89b0c76b6cdc90af",
-        "note": "CUDA profile not measured; the reference GPU was busy."
-      }
+      "measured": [
+        {
+          "device": "cpu",
+          "dtype": "float32",
+          "batch": 1,
+          "cold_start_ms": 3236.6,
+          "load_ms": 1977.0,
+          "peak_rss_mib": 953.3,
+          "peak_vram_mib": 0.0,
+          "latency_p50_ms": 293.2,
+          "latency_p95_ms": 328.0,
+          "dimension": 512,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-10",
+          "environment_file": "inference/requirements/torch.lock",
+          "environment_digest": "sha256:872964e18165fc2aec3c325470355a1faeb87204fbfc2d5d89b0c76b6cdc90af"
+        },
+        {
+          "device": "cpu",
+          "dtype": "float32",
+          "batch": 2,
+          "cold_start_ms": 3435.3,
+          "load_ms": 221.0,
+          "peak_rss_mib": 953.3,
+          "peak_vram_mib": 0.0,
+          "latency_p50_ms": 388.8,
+          "latency_p95_ms": 420.4,
+          "dimension": 512,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-10",
+          "environment_file": "inference/requirements/torch.lock",
+          "environment_digest": "sha256:872964e18165fc2aec3c325470355a1faeb87204fbfc2d5d89b0c76b6cdc90af"
+        },
+        {
+          "device": "cuda",
+          "dtype": "float16",
+          "batch": 1,
+          "cold_start_ms": 3823.8,
+          "load_ms": 2392.6,
+          "peak_rss_mib": 1710.3,
+          "peak_vram_mib": 340.0,
+          "latency_p50_ms": 68.7,
+          "latency_p95_ms": 72.2,
+          "dimension": 512,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-10",
+          "environment_file": "inference/requirements/torch-cuda.lock",
+          "environment_digest": "sha256:b4517d1813ef0adf44c0379fde8cdc9a314528d286a159ea4042af47c8822d81"
+        },
+        {
+          "device": "cuda",
+          "dtype": "float16",
+          "batch": 2,
+          "cold_start_ms": 3837.9,
+          "load_ms": 401.7,
+          "peak_rss_mib": 2444.1,
+          "peak_vram_mib": 340.0,
+          "latency_p50_ms": 98.3,
+          "latency_p95_ms": 99.2,
+          "dimension": 512,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-10",
+          "environment_file": "inference/requirements/torch-cuda.lock",
+          "environment_digest": "sha256:b4517d1813ef0adf44c0379fde8cdc9a314528d286a159ea4042af47c8822d81"
+        }
+      ]
     },
     {
       "catalog_id": "sound-yamnet",
