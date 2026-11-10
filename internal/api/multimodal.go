@@ -248,3 +248,136 @@ func parseViewport(w http.ResponseWriter, r *http.Request) (int64, int64, bool) 
 	}
 	return startMS, endMS, true
 }
+
+// speakerRouteSpecs is the biometric surface. Reads are admin-only too: the
+// existence of an opted-in profile is itself information about the recording,
+// and the plan requires every speaker route to require the Hub administrator.
+func (s *Server) speakerRouteSpecs() []routeSpec {
+	return []routeSpec{
+		newRouteSpec("speaker-consent-get", "GET /api/v1/admin/speaker-consent", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.getSpeakerConsent))),
+		newRouteSpec("speaker-consent-put", "PUT /api/v1/admin/speaker-consent", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.putSpeakerConsent))),
+		newRouteSpec("speaker-profiles-list", "GET /api/v1/admin/speaker-profiles", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.listSpeakerProfiles))),
+		newRouteSpec("speaker-profile-create", "POST /api/v1/admin/speaker-profiles", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.createSpeakerProfile))),
+		newRouteSpec("speaker-profile-delete", "DELETE /api/v1/admin/speaker-profiles/{id}", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.deleteSpeakerProfile))),
+		newRouteSpec("speaker-profile-matches", "POST /api/v1/admin/speaker-profiles/{id}/matches", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.speakerMatches))),
+		newRouteSpec("speaker-association-patch", "PATCH /api/v1/admin/speaker-associations/{id}", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.patchSpeakerAssociation))),
+		newRouteSpec("speaker-cluster-split", "POST /api/v1/admin/speaker-clusters/{id}/split", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.splitSpeakerCluster))),
+	}
+}
+
+func (s *Server) getSpeakerConsent(w http.ResponseWriter, r *http.Request) {
+	consent, err := s.service.GetSpeakerConsent(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, consent)
+}
+
+func (s *Server) putSpeakerConsent(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if !decodeStrictJSON(w, r, &body, 4<<10) {
+		return
+	}
+	consent, err := s.service.SetSpeakerConsent(r.Context(), body.Enabled)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, consent)
+}
+
+func (s *Server) listSpeakerProfiles(w http.ResponseWriter, r *http.Request) {
+	profiles, err := s.service.ListSpeakerProfiles(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"profiles": profiles})
+}
+
+func (s *Server) createSpeakerProfile(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		AssetID                 string `json:"asset_id"`
+		DiarizationGenerationID string `json:"diarization_generation_id"`
+		LocalSpeakerID          string `json:"local_speaker_id"`
+	}
+	if !decodeStrictJSON(w, r, &body, 8<<10) {
+		return
+	}
+	profile, err := s.service.CreateSpeakerProfile(r.Context(), body.AssetID, body.DiarizationGenerationID, body.LocalSpeakerID)
+	if err != nil {
+		if errors.Is(err, app.ErrSpeakerConsentRequired) {
+			writeAPIError(w, http.StatusForbidden, APIError{Code: "consent_required", Message: "speaker consent is disabled"})
+			return
+		}
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
+		return
+	}
+	writeJSON(w, http.StatusCreated, profile)
+}
+
+func (s *Server) deleteSpeakerProfile(w http.ResponseWriter, r *http.Request) {
+	if err := s.service.DeleteSpeakerProfile(r.Context(), r.PathValue("id")); err != nil {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) speakerMatches(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Limit int `json:"limit"`
+	}
+	if r.ContentLength > 0 && !decodeStrictJSON(w, r, &body, 4<<10) {
+		return
+	}
+	matches, err := s.service.SearchSpeakerMatches(r.Context(), r.PathValue("id"), body.Limit)
+	if err != nil {
+		if errors.Is(err, app.ErrSpeakerConsentRequired) {
+			writeAPIError(w, http.StatusForbidden, APIError{Code: "consent_required", Message: "speaker consent is disabled"})
+			return
+		}
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"associations": matches})
+}
+
+func (s *Server) patchSpeakerAssociation(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		State string `json:"state"`
+	}
+	if !decodeStrictJSON(w, r, &body, 4<<10) {
+		return
+	}
+	if err := s.service.SetSpeakerAssociationState(r.Context(), r.PathValue("id"), body.State); err != nil {
+		if errors.Is(err, app.ErrSpeakerConsentRequired) {
+			writeAPIError(w, http.StatusForbidden, APIError{Code: "consent_required", Message: "speaker consent is disabled"})
+			return
+		}
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) splitSpeakerCluster(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ProfileIDs []string `json:"profile_ids"`
+	}
+	if !decodeStrictJSON(w, r, &body, 8<<10) {
+		return
+	}
+	if err := s.service.SplitSpeakerCluster(r.Context(), r.PathValue("id"), body.ProfileIDs); err != nil {
+		if errors.Is(err, app.ErrSpeakerConsentRequired) {
+			writeAPIError(w, http.StatusForbidden, APIError{Code: "consent_required", Message: "speaker consent is disabled"})
+			return
+		}
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "split"})
+}

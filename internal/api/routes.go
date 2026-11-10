@@ -41,7 +41,7 @@ func newRouteSpec(name, pattern string, auth routeAuthClass, handler http.Handle
 }
 
 func (s *Server) routeSpecs() []routeSpec {
-	specs := make([]routeSpec, 0, 113)
+	specs := make([]routeSpec, 0, 132)
 	specs = append(specs, s.coreRouteSpecs()...)
 	if s.webdav != nil {
 		specs = append(specs, newRouteSpec("webdav-space-delivery", "/spaces/", routeAuthWebDAVBasic, s.webdav.Handler()))
@@ -54,6 +54,7 @@ func (s *Server) routeSpecs() []routeSpec {
 	specs = append(specs, s.pipelineRouteSpecs()...)
 	specs = append(specs, s.searchRouteSpecs()...)
 	specs = append(specs, s.multimodalRouteSpecs()...)
+	specs = append(specs, s.speakerRouteSpecs()...)
 	specs = append(specs, s.repurposeRouteSpecs()...)
 	specs = append(specs, s.workerSetupRouteSpecs()...)
 	specs = append(specs, s.pageRouteSpecs()...)

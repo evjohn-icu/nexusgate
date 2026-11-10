@@ -42,6 +42,14 @@ DELETE /api/v1/admin/provider-channels/{id}
 POST /api/v1/admin/provider-channels/{id}/test
 POST /api/v1/admin/provider-channels/probe-models
 GET /api/v1/admin/assets/{id}/capture-location
+GET /api/v1/admin/speaker-consent
+PUT /api/v1/admin/speaker-consent
+GET /api/v1/admin/speaker-profiles
+POST /api/v1/admin/speaker-profiles
+DELETE /api/v1/admin/speaker-profiles/{id}
+POST /api/v1/admin/speaker-profiles/{id}/matches
+PATCH /api/v1/admin/speaker-associations/{id}
+POST /api/v1/admin/speaker-clusters/{id}/split
 GET /api/v1/admin/multimodal/settings
 PUT /api/v1/admin/multimodal/settings
 POST /api/v1/admin/assets/{id}/modalities/{operation}/rebuild
@@ -245,6 +253,14 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 		{http.MethodGet, "/api/v1/admin/hub/worker-setup/library-roots", "admin", "none", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/hub/worker-binaries/linux-amd64", "worker-bootstrap", "none", http.StatusForbidden},
 		{http.MethodPost, "/api/v1/hub/worker-setup/script", "admin", "JSON", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/admin/speaker-consent", "admin", "none", http.StatusUnauthorized},
+		{http.MethodPut, "/api/v1/admin/speaker-consent", "admin", "JSON", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/admin/speaker-profiles", "admin", "none", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/admin/speaker-profiles", "admin", "JSON", http.StatusUnauthorized},
+		{http.MethodDelete, "/api/v1/admin/speaker-profiles/x", "admin", "none", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/admin/speaker-profiles/x/matches", "admin", "none", http.StatusUnauthorized},
+		{http.MethodPatch, "/api/v1/admin/speaker-associations/x", "admin", "JSON", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/admin/speaker-clusters/x/split", "admin", "JSON", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/admin/multimodal/settings", "admin", "none", http.StatusUnauthorized},
 		{http.MethodPut, "/api/v1/admin/multimodal/settings", "admin", "JSON", http.StatusUnauthorized},
 		{http.MethodPost, "/api/v1/admin/assets/x/modalities/visual_embedding/rebuild", "admin", "none", http.StatusUnauthorized},
@@ -274,7 +290,7 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 func TestAPIRouteInventoryIsComplete(t *testing.T) {
 	server := NewServer("admin-token", newErrorEnvelopeTestService(t, "route-inventory"))
 	specs := server.routeInventory()
-	if got, want := len(specs), 124; got != want {
+	if got, want := len(specs), 132; got != want {
 		t.Fatalf("route inventory contains %d routes, want %d", got, want)
 	}
 	expected := strings.Split(expectedRouteInventoryPatterns, "\n")

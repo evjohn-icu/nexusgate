@@ -964,3 +964,41 @@ type VisualRef struct {
 	Strategy    string `json:"strategy"`
 	SpaceID     string `json:"space_id"`
 }
+
+// SpeakerProfileSource names the asset-local speaker a profile was created
+// from. It is a pointer to a diarization result, not an identity.
+type SpeakerProfileSource struct {
+	ProfileID               string `json:"profile_id"`
+	AssetID                 string `json:"asset_id"`
+	DiarizationGenerationID string `json:"diarization_generation_id"`
+	LocalSpeakerID          string `json:"local_speaker_id"`
+}
+
+// SpeakerEmbedding is the metadata of one encrypted speaker vector. The vector
+// itself lives in the Hub-only secret store under SecretRef and never enters
+// SQLite, a model_runs payload or an HTTP response.
+type SpeakerEmbedding struct {
+	ID                string `json:"id"`
+	ProfileID         string `json:"profile_id"`
+	AssetID           string `json:"asset_id"`
+	GenerationID      string `json:"generation_id"`
+	SpaceID           string `json:"space_id"`
+	StartMS           int64  `json:"start_ms"`
+	EndMS             int64  `json:"end_ms"`
+	SpeechDurationMS  int64  `json:"speech_duration_ms"`
+	QualityJSON       string `json:"quality_json"`
+	SecretRef         string `json:"-"`
+	ConsentGeneration int64  `json:"consent_generation"`
+	ProfileGeneration int64  `json:"profile_generation"`
+}
+
+// SpeakerEmbeddingStaging binds an in-flight extraction to the generations it
+// must still match at commit time.
+type SpeakerEmbeddingStaging struct {
+	OperationID       string `json:"operation_id"`
+	JobID             string `json:"job_id"`
+	ProfileID         string `json:"profile_id"`
+	ProfileGeneration int64  `json:"profile_generation"`
+	ConsentGeneration int64  `json:"consent_generation"`
+	SecretRef         string `json:"-"`
+}
