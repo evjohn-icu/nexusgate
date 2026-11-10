@@ -20,6 +20,7 @@ import (
 	"github.com/evjohn-icu/nexusgate/internal/app"
 	"github.com/evjohn-icu/nexusgate/internal/buildinfo"
 	"github.com/evjohn-icu/nexusgate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 	"github.com/evjohn-icu/nexusgate/internal/hubauth"
 	"github.com/evjohn-icu/nexusgate/internal/hubtls"
 	"github.com/evjohn-icu/nexusgate/internal/media"

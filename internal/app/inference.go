@@ -127,44 +127,11 @@ func (k InferenceTaskKey) Key() (string, error) {
 	return "inf-" + hex.EncodeToString(sum[:]), nil
 }
 
-// CanonicalSpaceID is the SHA-256 of the canonical JSON identity of a space.
-// The ID is derived, never assigned, so two installations that agree on every
-// field agree on the space and can exchange vectors.
+// CanonicalSpaceID is kept as a thin wrapper: the identity function lives in
+// domain so both the application layer and the SQLite tests can call it without
+// an import cycle.
 func CanonicalSpaceID(space domain.EmbeddingSpace) (string, error) {
-	if !space.Modality.Valid() {
-		return "", fmt.Errorf("space: unknown modality %q", space.Modality)
-	}
-	if space.Dimension <= 0 {
-		return "", fmt.Errorf("space: dimension must be positive")
-	}
-	if strings.TrimSpace(space.ModelRevision) == "" {
-		return "", fmt.Errorf("space: immutable model revision is required")
-	}
-	payload := struct {
-		Modality          domain.Modality `json:"modality"`
-		Provider          string          `json:"provider"`
-		ModelID           string          `json:"model_id"`
-		ModelRevision     string          `json:"model_revision"`
-		Dimension         int             `json:"dimension"`
-		Normalization     string          `json:"normalization"`
-		PreprocessingJSON string          `json:"preprocessing_json"`
-		RuntimeDigest     string          `json:"runtime_digest"`
-	}{
-		Modality:          space.Modality,
-		Provider:          space.Provider,
-		ModelID:           space.ModelID,
-		ModelRevision:     space.ModelRevision,
-		Dimension:         space.Dimension,
-		Normalization:     space.Normalization,
-		PreprocessingJSON: space.PreprocessingJSON,
-		RuntimeDigest:     space.RuntimeDigest,
-	}
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("space: encode identity: %w", err)
-	}
-	sum := sha256.Sum256(encoded)
-	return "space-" + hex.EncodeToString(sum[:]), nil
+	return domain.CanonicalSpaceID(space)
 }
 
 // SortedCapabilities returns capabilities in a stable order so route decisions

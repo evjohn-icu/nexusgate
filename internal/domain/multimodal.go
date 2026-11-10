@@ -14,6 +14,9 @@
 package domain
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -1021,4 +1024,65 @@ type ModalityMatch struct {
 	ModelRevision  string   `json:"model_revision"`
 	Backend        string   `json:"backend"`
 	GenerationID   string   `json:"generation_id"`
+}
+
+// CanonicalSpaceID is the SHA-256 of the canonical JSON identity of a space.
+// The ID is derived, never assigned, so two installations that agree on every
+// field agree on the space and can exchange vectors.
+func CanonicalSpaceID(space EmbeddingSpace) (string, error) {
+	if !space.Modality.Valid() {
+		return "", fmt.Errorf("space: unknown modality %q", space.Modality)
+	}
+	if space.Dimension <= 0 {
+		return "", fmt.Errorf("space: dimension must be positive")
+	}
+	if strings.TrimSpace(space.ModelRevision) == "" {
+		return "", fmt.Errorf("space: immutable model revision is required")
+	}
+	payload := struct {
+		Modality          Modality `json:"modality"`
+		Provider          string   `json:"provider"`
+		ModelID           string   `json:"model_id"`
+		ModelRevision     string   `json:"model_revision"`
+		Dimension         int      `json:"dimension"`
+		Normalization     string   `json:"normalization"`
+		PreprocessingJSON string   `json:"preprocessing_json"`
+		RuntimeDigest     string   `json:"runtime_digest"`
+	}{
+		Modality:          space.Modality,
+		Provider:          space.Provider,
+		ModelID:           space.ModelID,
+		ModelRevision:     space.ModelRevision,
+		Dimension:         space.Dimension,
+		Normalization:     space.Normalization,
+		PreprocessingJSON: space.PreprocessingJSON,
+		RuntimeDigest:     space.RuntimeDigest,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("space: encode identity: %w", err)
+	}
+	sum := sha256.Sum256(encoded)
+	return "space-" + hex.EncodeToString(sum[:]), nil
+}
+
+// ShotSetHash is the identity of a canonical shot set. Visual vectors are
+// rejected when the asset's shots changed since the request was built.
+func ShotSetHash(shots []AssetShot) string {
+	ordered := append([]AssetShot(nil), shots...)
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].StartMS != ordered[j].StartMS {
+			return ordered[i].StartMS < ordered[j].StartMS
+		}
+		if ordered[i].EndMS != ordered[j].EndMS {
+			return ordered[i].EndMS < ordered[j].EndMS
+		}
+		return ordered[i].ID < ordered[j].ID
+	})
+	var b strings.Builder
+	for _, shot := range ordered {
+		fmt.Fprintf(&b, "%s:%d:%d\n", shot.ID, shot.StartMS, shot.EndMS)
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return "shots-" + hex.EncodeToString(sum[:])
 }

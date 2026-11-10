@@ -48,28 +48,8 @@ func inferenceConfigHash(parts ...string) string {
 	return "cfg-" + hex.EncodeToString(sum[:])
 }
 
-// ShotSetHash is the identity of a canonical shot set. Visual vectors are
-// rejected when the asset's shots changed since the request was built.
-func ShotSetHash(shots []domain.AssetShot) string {
-	ordered := append([]domain.AssetShot(nil), shots...)
-	sortShots(ordered)
-	var b strings.Builder
-	for _, shot := range ordered {
-		fmt.Fprintf(&b, "%s:%d:%d\n", shot.ID, shot.StartMS, shot.EndMS)
-	}
-	sum := sha256.Sum256([]byte(b.String()))
-	return "shots-" + hex.EncodeToString(sum[:])
-}
-
-func sortShots(shots []domain.AssetShot) {
-	for i := 1; i < len(shots); i++ {
-		for j := i; j > 0 && (shots[j].StartMS < shots[j-1].StartMS ||
-			(shots[j].StartMS == shots[j-1].StartMS && (shots[j].EndMS < shots[j-1].EndMS ||
-				(shots[j].EndMS == shots[j-1].EndMS && shots[j].ID < shots[j-1].ID)))); j-- {
-			shots[j], shots[j-1] = shots[j-1], shots[j]
-		}
-	}
-}
+// ShotSetHash delegates to the pure identity function in domain.
+func ShotSetHash(shots []domain.AssetShot) string { return domain.ShotSetHash(shots) }
 
 // buildSpace constructs the space identity for a model/operation pair and
 // returns it with its derived id.
