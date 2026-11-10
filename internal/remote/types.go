@@ -31,6 +31,14 @@ type WorkerJob struct {
 	// setting and a Worker must not be able to opt itself out of protecting the
 	// shared disk it is reading from.
 	ReadRate float64 `json:"read_rate,omitempty"`
+	// Inference carries the typed inference.v1 request when JobType is
+	// JobInference. Derive leases leave it nil, and every Worker that predates
+	// this field simply never sees the job type because the Hub only leases it
+	// to Workers whose enrollment authorized the operation.
+	Inference *domain.InferenceRequest `json:"inference,omitempty"`
+	// LeaseDeadline is the absolute lease expiry the Worker must renew before.
+	// It is advisory: the Hub stays authoritative and rejects a late result.
+	LeaseDeadline time.Time `json:"lease_deadline,omitempty"`
 }
 
 // WorkerAssignmentMode controls the safety semantics of a manual Worker
@@ -97,6 +105,16 @@ type WorkerCapabilities struct {
 	Hardware             []string `json:"hardware,omitempty"`
 	LibraryRoots         []string `json:"library_roots,omitempty"`
 	ProviderOperations   []string `json:"provider_operations,omitempty"`
+	// Inference describes the operations/model identities this Worker can
+	// actually execute right now. A heartbeat may narrow or refresh it, but it
+	// is intersected with the enrollment-time grant: a Worker can never widen
+	// its own authorization by claiming a new operation.
+	Inference []InferenceCapability `json:"inference,omitempty"`
+	// InferenceOperations and ModelManagementOperations are the enrollment-time
+	// grants. They are stored next to the Worker row when pairing completes and
+	// compared against every heartbeat and lease.
+	InferenceOperations       []string `json:"inference_operations,omitempty"`
+	ModelManagementOperations []string `json:"model_management_operations,omitempty"`
 }
 
 type WorkerRegistration struct {

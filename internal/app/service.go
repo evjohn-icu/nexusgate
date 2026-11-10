@@ -272,6 +272,13 @@ type Service struct {
 	// every method guards it.
 	searchV2 *search.Service
 
+	// inferenceRepo and inferenceExec are the multimodal boundary. Both are
+	// nil when the repository or the local runtime does not provide them, and
+	// every method below guards that: an install without inference still
+	// serves the legacy library and search surface.
+	inferenceRepo InferenceRepository
+	inferenceExec InferenceExecutor
+
 	// discoverSMB performs the SMB network discovery behind DiscoverSMB.
 	// It is a field (not a direct call) so tests can substitute a fast fake
 	// and never trigger a real 15-second LAN scan in the API test suite.
@@ -495,11 +502,23 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 		}
 		service.searchV2 = search.NewService(store, opts)
 	}
-	// The text-embedding layer (if configured) keeps its derived vectors
-	// fresh after every analysis commit. The pipeline fires the hook
-	// synchronously inside the job; ensureShotTextEmbeddings swallows its own
-	// errors so an embedding hiccup can never fail an analysis job.
-	service.pipeline.SetAfterShotsCommitted(service.ensureShotTextEmbeddings)
+	// The canonical-shot moment triggers both derived layers. One hook keeps
+	// the ordering explicit; each layer swallows its own errors so neither can
+	// fail the analysis job or suppress the other.
+	service.pipeline.SetAfterShotsCommitted(func(ctx context.Context, assetID string) {
+		service.ensureShotTextEmbeddings(ctx, assetID)
+		service.enqueueVisualModalities(ctx, assetID)
+	})
+	// Wire the multimodal boundary when the repository implements it (real
+	// sqlite does; test fakes do not). The executor is attached later by the
+	// serve command once the runtime has been probed.
+	if inferenceRepo, ok := repo.(InferenceRepository); ok {
+		service.inferenceRepo = inferenceRepo
+		service.pipeline.WithInference(nil, inferenceRepo)
+	}
+	// Audio modalities become possible the moment usable audio exists, not
+	// when the speech gate happens to agree there is speech.
+	service.pipeline.SetAfterDeriveCompleted(service.enqueueAudioModalities)
 	// The cost ledger records an estimate after every successful analysis
 	// commit; the wrapper swallows errors so a ledger hiccup can never fail
 	// an analysis job (see recordAnalysisCostEstimate).

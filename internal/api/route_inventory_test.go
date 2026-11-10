@@ -42,6 +42,10 @@ DELETE /api/v1/admin/provider-channels/{id}
 POST /api/v1/admin/provider-channels/{id}/test
 POST /api/v1/admin/provider-channels/probe-models
 GET /api/v1/admin/assets/{id}/capture-location
+GET /api/v1/admin/multimodal/settings
+PUT /api/v1/admin/multimodal/settings
+POST /api/v1/admin/assets/{id}/modalities/{operation}/rebuild
+POST /api/v1/admin/inference/jobs/{id}/cancel
 POST /api/v1/worker/enroll
 POST /api/v1/worker/heartbeat
 POST /api/v1/worker/lease
@@ -235,6 +239,10 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 		{http.MethodGet, "/api/v1/admin/hub/worker-setup/library-roots", "admin", "none", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/hub/worker-binaries/linux-amd64", "worker-bootstrap", "none", http.StatusForbidden},
 		{http.MethodPost, "/api/v1/hub/worker-setup/script", "admin", "JSON", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/admin/multimodal/settings", "admin", "none", http.StatusUnauthorized},
+		{http.MethodPut, "/api/v1/admin/multimodal/settings", "admin", "JSON", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/admin/assets/x/modalities/visual_embedding/rebuild", "admin", "none", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/admin/inference/jobs/x/cancel", "admin", "none", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/unknown", "catch-all", "none", http.StatusNotFound},
 		{http.MethodPost, "/api/v1/unknown", "catch-all", "none", http.StatusNotFound},
 	}
@@ -254,7 +262,7 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 func TestAPIRouteInventoryIsComplete(t *testing.T) {
 	server := NewServer("admin-token", newErrorEnvelopeTestService(t, "route-inventory"))
 	specs := server.routeInventory()
-	if got, want := len(specs), 114; got != want {
+	if got, want := len(specs), 118; got != want {
 		t.Fatalf("route inventory contains %d routes, want %d", got, want)
 	}
 	expected := strings.Split(expectedRouteInventoryPatterns, "\n")

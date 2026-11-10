@@ -13,6 +13,20 @@ const (
 	JobAnalyze    JobType = "analyze"
 	JobNormalize  JobType = "normalize"
 	JobIndex      JobType = "index"
+	// JobInference executes one inference.v1 operation through an
+	// InferenceExecutor (Hub-local or a leased paired Worker). It is dispatched
+	// before any source-path resolution: assetless query tasks have no asset
+	// and therefore no primary location to resolve.
+	JobInference JobType = "inference"
+	// JobDetectShots is deterministic local media work (FFmpeg/scene detect),
+	// not a Python inference operation. It exists so visual vectors can be
+	// produced for assets whose canonical shots were never created by a VLM.
+	JobDetectShots JobType = "detect_shots"
+	// JobModelInstall and JobModelProbe are maintenance jobs: they move and
+	// verify catalog-listed artifacts. They are never inference.v1 operations
+	// and never execute model code.
+	JobModelInstall JobType = "model_install"
+	JobModelProbe   JobType = "model_probe"
 )
 
 type JobState string
