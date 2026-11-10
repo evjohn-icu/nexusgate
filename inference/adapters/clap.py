@@ -4,6 +4,8 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping
 
+import torch
+
 from .base import (AdapterContext, ModelUnavailable, ResourceExhausted, UnsupportedInput,
                    decode_audio, encode_vector, interval_from_input, load_torch_model,
                    normalized_vectors, slice_audio, tensor_to_numpy)
@@ -85,5 +87,14 @@ class ClapAdapter:
             raise ModelUnavailable("CLAP embedding failed") from exc
 
     def _to_device(self, values: Mapping[str, Any]) -> dict[str, Any]:
-        return {key: value.to(self.context.device) if hasattr(value, "to") else value
-                for key, value in values.items()}
+        moved: dict[str, Any] = {}
+        for key, value in values.items():
+            if hasattr(value, "to"):
+                value = value.to(self.context.device)
+                # Processor outputs are float32 while the model may be half
+                # precision; CLAP's BatchNorm requires matching dtypes.
+                if (self.context.dtype == "float16"
+                        and getattr(value, "is_floating_point", lambda: False)()):
+                    value = value.to(torch.float16)
+            moved[key] = value
+        return moved

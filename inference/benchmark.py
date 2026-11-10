@@ -209,7 +209,9 @@ def _cancellation_probe(request: Mapping[str, Any], model_dir: Path, device: str
     assert process.stdin is not None and process.stdout is not None
     process.stdin.write(encoded)
     process.stdin.close()
-    deadline = time.monotonic() + 2.0
+    # Cold CUDA processes spend several seconds importing torch before the first
+    # progress frame; a 2 s window reported a false cancellation failure.
+    deadline = time.monotonic() + 30.0
     saw_start = False
     while time.monotonic() < deadline:
         ready, _, _ = select.select([process.stdout], [], [], 0.1)
@@ -240,7 +242,10 @@ def _cancellation_probe(request: Mapping[str, Any], model_dir: Path, device: str
     # letting subprocess raise ValueError on a closed file.
     process.stdin = None
     try:
-        rest, stderr = process.communicate(timeout=5.0)
+        # A SIGTERM handler runs only after the loader returns; a cold CUDA
+        # model load can take several seconds, so allow the same window as the
+        # frame wait.
+        rest, stderr = process.communicate(timeout=30.0)
     except subprocess.TimeoutExpired:
         process.kill()
         process.communicate()
