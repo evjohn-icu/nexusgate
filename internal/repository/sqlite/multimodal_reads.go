@@ -287,7 +287,7 @@ func (r *Repository) VisualWindowMatches(ctx context.Context, spaceID string, qu
 		limit = 200
 	}
 	sqlText := `
-		SELECT v.id,v.shot_id,v.asset_id,v.start_ms,v.end_ms,v.sample_index,
+		SELECT v.id,v.shot_id,v.asset_id,s.start_ms,s.end_ms,v.sample_index,
 		       vec_distance_cosine(v.vector, ?) AS distance,
 		       g.id,COALESCE(g.model_id,''),COALESCE(g.model_revision,''),COALESCE(g.backend,'')
 		FROM visual_embeddings v
