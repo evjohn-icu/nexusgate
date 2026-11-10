@@ -125,7 +125,8 @@ pretend it exists. Absence from the lock file is the enforcement point.
 | SigLIP 2 base (FP16 CUDA) | pending | pending | pending | pending | pending | — |
 | WeMM-Embedding-2B (FP16 CUDA, pooled frames) | pending | pending | pending | pending | pending | — |
 | WeMM-Embedding-2B (FP16 CUDA, native video) | pending | pending | pending | pending | pending | — |
-| CLAP unfused (FP32 CPU / FP16 CUDA) | pending | pending | pending | pending | pending | — |
+| CLAP unfused (FP32 CPU) | 3001.0 ms | n/a | 763.8 MiB | P50 287.4 / P95 289.4 ms (batch 1); P50 393.3 / P95 399.5 ms (batch 2) | 512d, finite, L2-normalized, cancellation and OOM probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.15.0+cpu |
+| CLAP unfused (FP16 CUDA) | pending | pending | pending | pending | pending | — |
 | YAMNet (CPU) | pending | n/a | pending | pending | pending | — |
 | CAM++ (CPU) | pending | n/a | pending | pending | pending | — |
 | ERes2NetV2 (CPU) | pending | n/a | pending | pending | pending | — |

@@ -386,7 +386,25 @@
           "float16"
         ]
       },
-      "measured": null
+      "measured": {
+        "device": "cpu",
+        "dtype": "float32",
+        "batch": 1,
+        "cold_start_ms": 3001.0,
+        "load_ms": 2598.8,
+        "peak_rss_mib": 763.8,
+        "peak_vram_mib": 0,
+        "latency_p50_ms": 287.4,
+        "latency_p95_ms": 289.4,
+        "dimension": 512,
+        "finite": true,
+        "normalized": true,
+        "cancelled": true,
+        "oom_code": "resource_exhausted",
+        "measured_at": "2026-11-10",
+        "environment_digest": "sha256:872964e18165fc2aec3c325470355a1faeb87204fbfc2d5d89b0c76b6cdc90af",
+        "note": "CUDA profile not measured; the reference GPU was busy."
+      }
     },
     {
       "catalog_id": "sound-yamnet",
