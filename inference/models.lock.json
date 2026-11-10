@@ -799,7 +799,8 @@
           "oom_code": true,
           "measured_at": "2026-11-11",
           "environment_file": "inference/requirements/torch-speaker.lock",
-          "environment_digest": "sha256:cc91abd387451d81306b5a5094cce9ab8025c25fae1473f702a3715df2ab4700"
+          "environment_digest": "sha256:cc91abd387451d81306b5a5094cce9ab8025c25fae1473f702a3715df2ab4700",
+          "note": "Same/different cosine separation on the 12-utterance check: 0.707-0.768 vs 0.244-0.349. Speaker default; the 2-speaker trial threshold is infrastructure evidence only."
         },
         {
           "device": "cpu",
@@ -818,7 +819,8 @@
           "oom_code": true,
           "measured_at": "2026-11-11",
           "environment_file": "inference/requirements/torch-speaker.lock",
-          "environment_digest": "sha256:cc91abd387451d81306b5a5094cce9ab8025c25fae1473f702a3715df2ab4700"
+          "environment_digest": "sha256:cc91abd387451d81306b5a5094cce9ab8025c25fae1473f702a3715df2ab4700",
+          "note": "Same/different cosine separation on the 12-utterance check: 0.707-0.768 vs 0.244-0.349. Speaker default; the 2-speaker trial threshold is infrastructure evidence only."
         }
       ]
     },
@@ -901,7 +903,8 @@
           "oom_code": true,
           "measured_at": "2026-11-11",
           "environment_file": "inference/requirements/torch-speaker.lock",
-          "environment_digest": "sha256:cc91abd387451d81306b5a5094cce9ab8025c25fae1473f702a3715df2ab4700"
+          "environment_digest": "sha256:cc91abd387451d81306b5a5094cce9ab8025c25fae1473f702a3715df2ab4700",
+          "note": "Same/different separation 0.663-0.884 vs 0.219-0.404; the stem-key warnings during the second load pass did not corrupt the embeddings. Not the default: higher latency than CAM++."
         },
         {
           "device": "cpu",
@@ -920,7 +923,8 @@
           "oom_code": true,
           "measured_at": "2026-11-11",
           "environment_file": "inference/requirements/torch-speaker.lock",
-          "environment_digest": "sha256:cc91abd387451d81306b5a5094cce9ab8025c25fae1473f702a3715df2ab4700"
+          "environment_digest": "sha256:cc91abd387451d81306b5a5094cce9ab8025c25fae1473f702a3715df2ab4700",
+          "note": "Same/different separation 0.663-0.884 vs 0.219-0.404; the stem-key warnings during the second load pass did not corrupt the embeddings. Not the default: higher latency than CAM++."
         }
       ]
     }

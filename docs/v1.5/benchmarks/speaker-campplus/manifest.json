@@ -1,0 +1,266 @@
+{
+  "schema_version": "multimodal-eval.v1",
+  "assets": [
+    {
+      "id": "spk1_snt1",
+      "sha256": "sha256:1b6a1e8dc6189c48f212f93407f734debabdf68143a35af00c71421dbe6206de",
+      "license": "Apache-2.0 (speechbrain repository test sample; derived from LibriSpeech)",
+      "source": "https://github.com/speechbrain/speechbrain/tree/develop/tests/samples/ASR",
+      "duration_ms": 4370,
+      "partition": "calibration",
+      "annotation_coverage": [
+        {
+          "start_ms": 0,
+          "end_ms": 4370
+        }
+      ]
+    },
+    {
+      "id": "spk1_snt2",
+      "sha256": "sha256:0ac91014a80220915bb9b579f1a3fb58ed99cc7a450402fc43b597969fc9d6f0",
+      "license": "Apache-2.0 (speechbrain repository test sample; derived from LibriSpeech)",
+      "source": "https://github.com/speechbrain/speechbrain/tree/develop/tests/samples/ASR",
+      "duration_ms": 4650,
+      "partition": "calibration",
+      "annotation_coverage": [
+        {
+          "start_ms": 0,
+          "end_ms": 4650
+        }
+      ]
+    },
+    {
+      "id": "spk1_snt3",
+      "sha256": "sha256:d83cdc88cda0f5a15bb86e08ce00d52ab383f4bdbec0d0358903685f6f00baa0",
+      "license": "Apache-2.0 (speechbrain repository test sample; derived from LibriSpeech)",
+      "source": "https://github.com/speechbrain/speechbrain/tree/develop/tests/samples/ASR",
+      "duration_ms": 4220,
+      "partition": "calibration",
+      "annotation_coverage": [
+        {
+          "start_ms": 0,
+          "end_ms": 4220
+        }
+      ]
+    },
+    {
+      "id": "spk1_snt4",
+      "sha256": "sha256:7ed21c1422ad054d34b8792cb705fb92bd814739b90f29db2bf830ae5ba3917e",
+      "license": "Apache-2.0 (speechbrain repository test sample; derived from LibriSpeech)",
+      "source": "https://github.com/speechbrain/speechbrain/tree/develop/tests/samples/ASR",
+      "duration_ms": 4030,
+      "partition": "test",
+      "annotation_coverage": [
+        {
+          "start_ms": 0,
+          "end_ms": 4030
+        }
+      ]
+    },
+    {
+      "id": "spk1_snt5",
+      "sha256": "sha256:d7239614175273ed54eef1e2ba1de78c6d29a5950aa84ad2cc90b1b98e6e3ba0",
+      "license": "Apache-2.0 (speechbrain repository test sample; derived from LibriSpeech)",
+      "source": "https://github.com/speechbrain/speechbrain/tree/develop/tests/samples/ASR",
+      "duration_ms": 4100,
+      "partition": "test",
+      "annotation_coverage": [
+        {
+          "start_ms": 0,
+          "end_ms": 4100
+        }
+      ]
+    },
+    {
+      "id": "spk1_snt6",
+      "sha256": "sha256:8aba3a7767e2b0d1c16c5d44c21fd207e9bbbd84e892b65b6c6a8aaace3e8dde",
+      "license": "Apache-2.0 (speechbrain repository test sample; derived from LibriSpeech)",
+      "source": "https://github.com/speechbrain/speechbrain/tree/develop/tests/samples/ASR",
+      "duration_ms": 3790,
+      "partition": "test",
+      "annotation_coverage": [
+        {
+          "start_ms": 0,
+          "end_ms": 3790
+        }
+      ]
+    },
+    {
+      "id": "spk2_snt1",
+      "sha256": "sha256:b4dcdebfc098c09dd12cc511f8cbe14ef1a2b0a8fab2a1fe302e409847dff6ac",
+      "license": "Apache-2.0 (speechbrain repository test sample; derived from LibriSpeech)",
+      "source": "https://github.com/speechbrain/speechbrain/tree/develop/tests/samples/ASR",
+      "duration_ms": 3510,
+      "partition": "calibration",
+      "annotation_coverage": [
+        {
+          "start_ms": 0,
+          "end_ms": 3510
+        }
+      ]
+    },
+    {
+      "id": "spk2_snt2",
+      "sha256": "sha256:aaf50caf85bd68750aba58f53369017de7da1cfcf3202abaa1576ae569569544",
+      "license": "Apache-2.0 (speechbrain repository test sample; derived from LibriSpeech)",
+      "source": "https://github.com/speechbrain/speechbrain/tree/develop/tests/samples/ASR",
+      "duration_ms": 3260,
+      "partition": "calibration",
+      "annotation_coverage": [
+        {
+          "start_ms": 0,
+          "end_ms": 3260
+        }
+      ]
+    },
+    {
+      "id": "spk2_snt3",
+      "sha256": "sha256:9c9e54c4a17b2cf09e81d9a33ded48d6017b3a424693a2301461d2bdbbabe847",
+      "license": "Apache-2.0 (speechbrain repository test sample; derived from LibriSpeech)",
+      "source": "https://github.com/speechbrain/speechbrain/tree/develop/tests/samples/ASR",
+      "duration_ms": 3380,
+      "partition": "calibration",
+      "annotation_coverage": [
+        {
+          "start_ms": 0,
+          "end_ms": 3380
+        }
+      ]
+    },
+    {
+      "id": "spk2_snt4",
+      "sha256": "sha256:d3b1951e72cdef0fe2e3f40c7918549ccaec0ff7f484e292b56af659c959142f",
+      "license": "Apache-2.0 (speechbrain repository test sample; derived from LibriSpeech)",
+      "source": "https://github.com/speechbrain/speechbrain/tree/develop/tests/samples/ASR",
+      "duration_ms": 3540,
+      "partition": "test",
+      "annotation_coverage": [
+        {
+          "start_ms": 0,
+          "end_ms": 3540
+        }
+      ]
+    },
+    {
+      "id": "spk2_snt5",
+      "sha256": "sha256:56d83d519f8b0f341cc1d5c8786801bf5c3194474fc9b0be34a84f2dcc1d7061",
+      "license": "Apache-2.0 (speechbrain repository test sample; derived from LibriSpeech)",
+      "source": "https://github.com/speechbrain/speechbrain/tree/develop/tests/samples/ASR",
+      "duration_ms": 3480,
+      "partition": "test",
+      "annotation_coverage": [
+        {
+          "start_ms": 0,
+          "end_ms": 3480
+        }
+      ]
+    },
+    {
+      "id": "spk2_snt6",
+      "sha256": "sha256:5018b4a0dd5371969dff40da74bcecb9bf6f11ee95819abb2f148c443561f7e3",
+      "license": "Apache-2.0 (speechbrain repository test sample; derived from LibriSpeech)",
+      "source": "https://github.com/speechbrain/speechbrain/tree/develop/tests/samples/ASR",
+      "duration_ms": 3300,
+      "partition": "test",
+      "annotation_coverage": [
+        {
+          "start_ms": 0,
+          "end_ms": 3300
+        }
+      ]
+    }
+  ],
+  "queries": [],
+  "speaker_trials": [
+    {
+      "id": "same-1-1-2",
+      "same": true,
+      "similarity": 0.7063650407726471,
+      "partition": "calibration"
+    },
+    {
+      "id": "same-1-1-3",
+      "same": true,
+      "similarity": 0.7683950293015643,
+      "partition": "calibration"
+    },
+    {
+      "id": "same-1-2-3",
+      "same": true,
+      "similarity": 0.7606775337982007,
+      "partition": "calibration"
+    },
+    {
+      "id": "same-2-1-2",
+      "same": true,
+      "similarity": 0.7624276781087225,
+      "partition": "calibration"
+    },
+    {
+      "id": "same-2-1-3",
+      "same": true,
+      "similarity": 0.7305827160420867,
+      "partition": "calibration"
+    },
+    {
+      "id": "same-2-2-3",
+      "same": true,
+      "similarity": 0.7074144616489153,
+      "partition": "calibration"
+    },
+    {
+      "id": "diff-1-1",
+      "same": false,
+      "similarity": 0.2993283382516816,
+      "partition": "calibration"
+    },
+    {
+      "id": "diff-1-2",
+      "same": false,
+      "similarity": 0.24968074870539897,
+      "partition": "calibration"
+    },
+    {
+      "id": "diff-1-3",
+      "same": false,
+      "similarity": 0.28093296777857374,
+      "partition": "calibration"
+    },
+    {
+      "id": "diff-2-1",
+      "same": false,
+      "similarity": 0.30178574937420766,
+      "partition": "calibration"
+    },
+    {
+      "id": "diff-2-2",
+      "same": false,
+      "similarity": 0.24353738875170597,
+      "partition": "calibration"
+    },
+    {
+      "id": "diff-2-3",
+      "same": false,
+      "similarity": 0.32191026891064906,
+      "partition": "calibration"
+    },
+    {
+      "id": "diff-3-1",
+      "same": false,
+      "similarity": 0.3075064126260307,
+      "partition": "calibration"
+    },
+    {
+      "id": "diff-3-2",
+      "same": false,
+      "similarity": 0.34259441546242114,
+      "partition": "calibration"
+    },
+    {
+      "id": "diff-3-3",
+      "same": false,
+      "similarity": 0.34889024194337803,
+      "partition": "calibration"
+    }
+  ]
+}

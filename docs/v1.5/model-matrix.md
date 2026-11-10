@@ -129,9 +129,14 @@ pretend it exists. Absence from the lock file is the enforcement point.
 | CLAP unfused (FP32 CPU) | 3237.0 ms | n/a | 953.0 MiB | P50 293.2 / P95 328.0 ms (batch 1); P50 388.8 / P95 420.4 ms (batch 2) | 512d, finite, L2-normalized, cancellation and budget-rejection probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.14.1+cu126 (CPU device) |
 | CLAP unfused (FP16 CUDA) | 3823.8 ms | 340 MiB | 1710.3 MiB | P50 68.7 / P95 72.2 ms (batch 1); P50 98.3 / P95 99.2 ms (batch 2) | 512d, finite, L2-normalized, cancellation and budget-rejection probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.14.1+cu126 on RTX 2070 |
 | YAMNet (CPU) | pending | n/a | pending | pending | pending | — |
-| CAM++ (CPU) | 5331 ms | n/a | 953 MiB | P50 49.5 / P95 49.7 ms (batch 1); P50 91.4 / P95 94.9 ms (batch 2) | 192d, finite, L2-normalized, cancellation and budget-rejection probes returned their typed codes | 2026-11-11, `inference/benchmark.py`, torch 2.14.1+cu126 / funasr 1.4.24 / kaldi-native-fbank 1.23.0 |
-| ERes2NetV2 (CPU) | 5452 ms | n/a | 1015 MiB | P50 172.9 / P95 181.2 ms (batch 1); P50 311.9 / P95 325.2 ms (batch 2) | 192d, finite, L2-normalized, cancellation and budget-rejection probes returned their typed codes | 2026-11-11, `inference/benchmark.py`, torch 2.14.1+cu126 / funasr 1.4.24 / kaldi-native-fbank 1.23.0 |
+| CAM++ (CPU) | 5331 ms | n/a | 953 MiB | P50 49.5 / P95 49.7 ms (batch 1); P50 91.4 / P95 94.9 ms (batch 2) | 192d, finite, L2-normalized; same/different separation 0.707–0.768 vs 0.244–0.349; probes typed | 2026-11-11, `inference/benchmark.py`, torch 2.14.1+cu126 / funasr 1.4.24 / kaldi-native-fbank 1.23.0 |
+| ERes2NetV2 (CPU) | 5452 ms | n/a | 1015 MiB | P50 172.9 / P95 181.2 ms (batch 1); P50 311.9 / P95 325.2 ms (batch 2) | 192d, finite, L2-normalized; separation 0.663–0.884 vs 0.219–0.404 despite stem-key load warnings, so the output sanity passed; probes typed | 2026-11-11, `inference/benchmark.py`, torch 2.14.1+cu126 / funasr 1.4.24 / kaldi-native-fbank 1.23.0 |
 | Community-1 | blocked | blocked | blocked | blocked | blocked | gated, HTTP 401 |
+
+The speaker separation check used the same 12-utterance set as the speaker
+trials; it distinguishes a partially-random checkpoint from a working one but
+is not a speaker-accuracy claim. CAM++ remains the default because its latency
+is lower and its calibration/test separation is clean.
 
 Every `pending` row is a gate that has not passed. The CUDA rows above are from
 actual runs of `inference/benchmark.py` against the locked revisions on

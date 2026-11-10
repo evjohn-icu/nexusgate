@@ -71,7 +71,18 @@ same-speaker and 9 different-speaker trials per partition.
 - 6 positive / 9 negative test trials
 
 This is an **infrastructure-valid tiny measurement**, not the plan's speaker
-gate: two speakers cannot establish a production threshold. CAM++ CPU measured
+gate. The test EER is 0 because the same/different similarities separate
+perfectly (test same 0.598–0.853 vs different 0.142–0.329), while the
+calibration-chosen threshold of 0.706 came from only six same-pair trials and
+happened to sit above four test positives. The 0.333 recall is therefore a
+**six-trial calibration sampling artifact**, not a model characteristic; a
+production threshold needs many more speakers and recordings. ERes2NetV2
+embeddings were checked on the same clips and separate cleanly
+(0.663–0.884 vs 0.219–0.404), so its stem-key load warnings did not produce
+random vectors.
+
+Artifacts: `docs/v1.5/benchmarks/speaker-campplus/{manifest,results,report}.json`.
+The WAVs remain outside Git; the manifest records their SHA-256 and source. CAM++ CPU measured
 49.5 ms P50 / 49.7 ms P95 at batch 1; ERes2NetV2 measured 172.9 / 181.2 ms.
 
 ## Remaining gate

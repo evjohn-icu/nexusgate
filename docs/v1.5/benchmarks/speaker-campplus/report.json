@@ -1,0 +1,42 @@
+{
+  "schema_version": "multimodal-report.v1",
+  "manifest": "docs/v1.5/benchmarks/speaker-campplus/manifest.json",
+  "retrieval": {
+    "queries": 0,
+    "precision_at_10": 0,
+    "recall_at_10": 0,
+    "ndcg_at_10": 0
+  },
+  "per_query": {},
+  "events": {
+    "micro_f1": 0,
+    "macro_f1": 0,
+    "mean_boundary_error_ms": 0
+  },
+  "speaker": {
+    "threshold": 0.7063650407726471,
+    "precision": 1,
+    "recall": 0.3333333333333333,
+    "far": 0,
+    "frr": 0.6666666666666666,
+    "eer": 0,
+    "positives": 6,
+    "negatives": 9,
+    "evaluable": true
+  },
+  "not_evaluable": [
+    "diarization: no cases",
+    "sound events: no annotations"
+  ],
+  "runtime": {
+    "device": "cpu",
+    "funasr": "1.4.24",
+    "kaldi_native_fbank": "1.23.0",
+    "model": "iic/speech_campplus_sv_zh-cn_16k-common",
+    "partition_note": "calibration=snt1-3, test=snt4-6; only two speakers, so identities are not disjoint across partitions",
+    "pipeline": "inference.dispatch speaker_embedding",
+    "revision": "013c18884dffb82846cf472dd06dd4a08d97e2cd",
+    "samples": "https://github.com/speechbrain/speechbrain/tree/develop/tests/samples/ASR",
+    "torch": "2.14.1+cu126"
+  }
+}
