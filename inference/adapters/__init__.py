@@ -122,6 +122,7 @@ def capability_report(model_dir: Path) -> dict[str, Any]:
         for operation in entry.get("operations", []):
             capabilities.append({"operation": operation, "model_id": entry.get("model_id"),
                                  "model_revision": entry.get("revision"),
+                                 "schema_version": "inference.v1",
                                  "dimension": output.get("dimension"), "backend": backend,
                                  "available": bool(available)})
     return {"schema_version": "inference.capabilities.v1", "capabilities": capabilities}

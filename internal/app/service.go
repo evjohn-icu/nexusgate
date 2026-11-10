@@ -523,7 +523,7 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 	}
 	// Audio modalities become possible the moment usable audio exists, not
 	// when the speech gate happens to agree there is speech.
-	service.pipeline.SetAfterDeriveCompleted(service.enqueueAudioModalities)
+	service.pipeline.SetAfterDeriveCompleted(service.EnqueuePlannedModalities)
 	// The cost ledger records an estimate after every successful analysis
 	// commit; the wrapper swallows errors so a ledger hiccup can never fail
 	// an analysis job (see recordAnalysisCostEstimate).

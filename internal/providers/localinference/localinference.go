@@ -48,6 +48,10 @@ type Config struct {
 	Timeout       time.Duration
 	MaxFrameBytes int64
 	Env           []string
+	// moduleRoot is the derived sys.path entry: either ModuleDir itself (when
+	// it contains the `inference` package) or its parent (when ModuleDir is the
+	// package directory). It is never caller-controlled.
+	moduleRoot string
 	// ResolveAssetPath and ResolveImagePath return the already-authorized local
 	// staged file. The executor never guesses a path from an asset or reference ID.
 	ResolveAssetPath func(input domain.InferenceInput) (string, error)
@@ -71,6 +75,20 @@ type Executor struct {
 // New validates and normalizes the runtime configuration, creating the
 // private managed scratch root if necessary.
 func New(cfg Config) (*Executor, error) {
+	// "auto" is a deployment preference, not a device name the dispatcher
+	// understands. Resolve it once here: a visible NVIDIA device selects CUDA,
+	// anything else stays on CPU. An overridden value is validated below.
+	if strings.EqualFold(strings.TrimSpace(cfg.Device), "auto") || strings.TrimSpace(cfg.Device) == "" {
+		cfg.Device = resolveAutoDevice()
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Dtype), "auto") || strings.TrimSpace(cfg.Dtype) == "" {
+		// FP16 on CUDA is the measured profile default; CPU stays FP32.
+		if cfg.Device == "cuda" {
+			cfg.Dtype = "float16"
+		} else {
+			cfg.Dtype = "float32"
+		}
+	}
 	for name, path := range map[string]string{
 		"PythonPath": cfg.PythonPath,
 		"ModuleDir":  cfg.ModuleDir,
@@ -111,6 +129,13 @@ func New(cfg Config) (*Executor, error) {
 		} else if !info.IsDir() {
 			return nil, fmt.Errorf("%s must be a directory", name)
 		}
+	}
+	// Accept both documented layouts: ModuleDir may be the parent that holds
+	// `inference/`, or the package directory itself.
+	if _, err := os.Stat(filepath.Join(cfg.ModuleDir, "inference", "__init__.py")); err == nil {
+		cfg.moduleRoot = cfg.ModuleDir
+	} else {
+		cfg.moduleRoot = filepath.Dir(cfg.ModuleDir)
 	}
 	if err := os.MkdirAll(cfg.ScratchDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create scratch root: %w", err)
@@ -386,12 +411,12 @@ func isRegularFile(path string) bool {
 
 func (e *Executor) environment(operationDir string) []string {
 	values := map[string]string{
-		"PATH":             filepath.Dir(e.cfg.PythonPath),
+		"PATH":             filepath.Dir(e.cfg.PythonPath) + ":/usr/local/bin:/usr/bin:/bin",
 		"HOME":             operationDir,
 		"LANG":             "C.UTF-8",
 		"PYTHONUNBUFFERED": "1",
 		"PYTHONNOUSERSITE": "1",
-		"PYTHONPATH":       e.cfg.ModuleDir,
+		"PYTHONPATH":       e.cfg.moduleRoot,
 	}
 	if e.cfg.Device == "cuda" {
 		values["CUDA_VISIBLE_DEVICES"] = "0"
@@ -775,7 +800,10 @@ func (p *resultParser) accept(line []byte) error {
 		}
 		return nil
 	case "error":
-		if frame.OperationID != p.req.OperationID {
+		// A protocol-level rejection may arrive before the dispatcher has read
+		// the operation id; an empty id is therefore accepted, but a different
+		// non-empty id is still a contract violation.
+		if frame.OperationID != "" && frame.OperationID != p.req.OperationID {
 			return fmt.Errorf("error operation id mismatch")
 		}
 		code := remote.InferenceFailureCode(frame.Code)
@@ -935,13 +963,18 @@ func decodeEmbeddings(raw json.RawMessage, output *[]domain.EmbeddingRecord) err
 	if err := json.Unmarshal(raw, &records); err != nil {
 		return fmt.Errorf("embedding records cannot be decoded")
 	}
+	// Assign rather than append: the standard unmarshal above already filled
+	// the slice with vector-less records, and appending would duplicate every
+	// embedding (with the first copy rejected as empty).
+	decoded := make([]domain.EmbeddingRecord, 0, len(records))
 	for _, record := range records {
-		*output = append(*output, domain.EmbeddingRecord{
+		decoded = append(decoded, domain.EmbeddingRecord{
 			ShotID: record.ShotID, SampleIndex: record.SampleIndex, TimestampMS: record.TimestampMS,
 			StartMS: record.StartMS, EndMS: record.EndMS, Strategy: record.Strategy,
 			SourceHash: record.SourceHash, Vector: record.Vector,
 		})
 	}
+	*output = decoded
 	return nil
 }
 
@@ -954,4 +987,20 @@ func (p *resultParser) finish() error {
 		return fmt.Errorf("result digest mismatch")
 	}
 	return nil
+}
+
+// resolveAutoDevice picks cuda only when an NVIDIA device is visible. It is a
+// cheap presence check, not a compute test: a broken driver still yields a
+// capability probe that reports the model unavailable.
+func resolveAutoDevice() string {
+	path, err := exec.LookPath("nvidia-smi")
+	if err != nil {
+		return "cpu"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(ctx, path, "-L").Run(); err != nil {
+		return "cpu"
+	}
+	return "cuda"
 }

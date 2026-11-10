@@ -2084,7 +2084,10 @@ func (r *Repository) deleteFromSearchIndexTx(ctx context.Context, tx *sql.Tx, as
 }
 
 func (r *Repository) ReplaceAssetShots(ctx context.Context, assetID, sourceRunID string, shots []domain.AssetShot, jobID, owner string) error {
-	if err := validateAssetShots(shots); err != nil {
+	// A deterministic detector writes timing-only shots; semantic fields are
+	// filled later by a model commit. The explicit replacement API therefore
+	// does not require a description, while model commits still do.
+	if err := validateAssetShots(shots, false); err != nil {
 		return err
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -2109,7 +2112,7 @@ func (r *Repository) ReplaceAssetShots(ctx context.Context, assetID, sourceRunID
 // refinement run as one transaction. The lease assertion follows all writes,
 // so a stale refinement cannot leave either shots or model-run state behind.
 func (r *Repository) CommitShotRefinement(ctx context.Context, assetID, runID string, shots []domain.AssetShot, jobID, owner string) error {
-	if err := validateAssetShots(shots); err != nil {
+	if err := validateAssetShots(shots, true); err != nil {
 		return err
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -2323,20 +2326,20 @@ func (r *Repository) deleteFromShotSearchIndexTx(ctx context.Context, tx *sql.Tx
 // one) get the same answer without either of them restating it. See
 // domain.ErrPermanentFailure for why this is a property of the error rather
 // than an entry in a list somewhere else.
-func validateAssetShots(shots []domain.AssetShot) error {
-	if err := assetShotsProblem(shots); err != nil {
+func validateAssetShots(shots []domain.AssetShot, requireDescription bool) error {
+	if err := assetShotsProblem(shots, requireDescription); err != nil {
 		return domain.Permanent(err)
 	}
 	return nil
 }
 
-func assetShotsProblem(shots []domain.AssetShot) error {
+func assetShotsProblem(shots []domain.AssetShot, requireDescription bool) error {
 	seenIDs := make(map[string]struct{}, len(shots))
 	for i, shot := range shots {
 		if shot.StartMS < 0 || shot.EndMS <= shot.StartMS {
 			return fmt.Errorf("invalid shot time range at ordinal %d: %d-%d", i, shot.StartMS, shot.EndMS)
 		}
-		if strings.TrimSpace(shot.Description) == "" {
+		if requireDescription && strings.TrimSpace(shot.Description) == "" {
 			return fmt.Errorf("shot description is required at ordinal %d", i)
 		}
 		if shot.ID != "" {
@@ -3519,7 +3522,7 @@ func (r *Repository) CommitAnalysis(ctx context.Context, assetID, runID, schemaV
 // whole-asset analysis, AI tag links, time-bounded shots, FTS, and local
 // discovery vectors either all change or all keep their prior trusted state.
 func (r *Repository) CommitAnalysisWithShots(ctx context.Context, assetID, runID, schemaVersion string, a domain.StructuredAnalysis, shots []domain.AssetShot, jobID, owner string) error {
-	if err := validateAssetShots(shots); err != nil {
+	if err := validateAssetShots(shots, true); err != nil {
 		return err
 	}
 	tx, err := r.db.BeginTx(ctx, nil)

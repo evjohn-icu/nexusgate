@@ -99,11 +99,15 @@ func (s *Service) retrieveModality(ctx context.Context, modality string, req Sea
 		// turn a truncated list into a claim about the whole library.
 		state = "partial"
 	}
+	intervals := make([]Interval, 0, len(windows))
+	for _, window := range windows {
+		intervals = append(intervals, Interval{StartMS: window.StartMS, EndMS: window.EndMS})
+	}
 	return modalityBundle{
 		signal:     modality,
 		candidates: candidates,
 		windows:    windows,
-		coverage:   Coverage{Modality: modality, State: state},
+		coverage:   Coverage{Modality: modality, State: state, Intervals: normalizeCoverageIntervals(intervals)},
 	}, nil
 }
 
@@ -255,5 +259,31 @@ func coverageForBundles(bundles []modalityBundle) []Coverage {
 		out = append(out, bundle.coverage)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Modality < out[j].Modality })
+	return out
+}
+
+// normalizeCoverageIntervals sorts and merges overlapping or touching spans so
+// a coverage statement counts each millisecond once.
+func normalizeCoverageIntervals(in []Interval) []Interval {
+	if len(in) == 0 {
+		return nil
+	}
+	sort.Slice(in, func(i, j int) bool {
+		if in[i].StartMS != in[j].StartMS {
+			return in[i].StartMS < in[j].StartMS
+		}
+		return in[i].EndMS < in[j].EndMS
+	})
+	out := []Interval{in[0]}
+	for _, interval := range in[1:] {
+		last := &out[len(out)-1]
+		if interval.StartMS <= last.EndMS {
+			if interval.EndMS > last.EndMS {
+				last.EndMS = interval.EndMS
+			}
+			continue
+		}
+		out = append(out, interval)
+	}
 	return out
 }

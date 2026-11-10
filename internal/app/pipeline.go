@@ -27,6 +27,7 @@ import (
 	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 	"github.com/evjohn-icu/nexusgate/internal/providers/shotdetect"
 	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
+	"github.com/evjohn-icu/nexusgate/internal/remote"
 	"github.com/evjohn-icu/nexusgate/internal/staging"
 )
 
@@ -332,7 +333,14 @@ func (p *Pipeline) RunUntilIdle(ctx context.Context) (int, error) {
 			throttle = domain.DefaultPipelineThrottle()
 		}
 		now := time.Now()
-		job, err := p.repo.LeaseNextJob(ctx, worker, leaseTTL, domain.LeaseFilter{MaxAssetBytes: throttle.MaxAssetBytesAt(now)})
+		// Device work is leased before the generic queue: inference and
+		// maintenance jobs are excluded from LeaseNextJob by design, and the
+		// Hub must run them when it has a local runtime instead of leaving them
+		// for a Worker that may never exist.
+		job, err := p.leaseLocalDeviceJob(ctx, worker, throttle.MaxAssetBytesAt(now), now)
+		if err == nil && job == nil {
+			job, err = p.repo.LeaseNextJob(ctx, worker, leaseTTL, domain.LeaseFilter{MaxAssetBytes: throttle.MaxAssetBytesAt(now)})
+		}
 		if err != nil {
 			consecutiveLeaseErrors++
 			if consecutiveLeaseErrors%5 == 1 || consecutiveLeaseErrors == 1 {
@@ -1348,4 +1356,57 @@ func hashStrings(v ...string) string {
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// localDeviceLeaseRepository is the optional lease capability a Hub with a
+// local runtime needs. Asserted rather than embedded so minimal repositories
+// keep compiling.
+type localDeviceLeaseRepository interface {
+	LeaseNextLocalInference(ctx context.Context, worker string, lease time.Duration, ops []string, maxAssetBytes int64, now time.Time) (*remote.WorkerJob, error)
+	LeaseNextModelManagement(ctx context.Context, worker string, lease time.Duration, now time.Time) (*remote.WorkerJob, error)
+}
+
+// leaseLocalDeviceJob returns one inference or maintenance job this Hub can
+// execute itself, or nil when it has no runtime, no matching capability, or
+// nothing queued.
+func (p *Pipeline) leaseLocalDeviceJob(ctx context.Context, worker string, maxAssetBytes int64, now time.Time) (*domain.Job, error) {
+	repo, ok := p.repo.(localDeviceLeaseRepository)
+	if !ok {
+		return nil, nil
+	}
+	if p.inferenceExec != nil {
+		caps, err := p.inferenceExec.Capabilities(ctx)
+		if err != nil {
+			slog.Warn("local inference capabilities unavailable", "error", err)
+		} else {
+			ops := make([]string, 0, len(caps))
+			seen := make(map[domain.InferenceOperation]bool, len(caps))
+			for _, capability := range caps {
+				if !capability.Available || seen[capability.Operation] {
+					continue
+				}
+				seen[capability.Operation] = true
+				ops = append(ops, string(capability.Operation))
+			}
+			if len(ops) > 0 {
+				leased, err := repo.LeaseNextLocalInference(ctx, worker, InferenceLease, ops, maxAssetBytes, now)
+				if err != nil || leased != nil {
+					if leased == nil {
+						return nil, err
+					}
+					return &domain.Job{ID: leased.JobID, AssetID: leased.AssetID, Type: leased.JobType, AttemptCount: leased.AttemptCount, MaxAttempts: leased.MaxAttempts}, err
+				}
+			}
+		}
+	}
+	if p.modelManager != nil {
+		leased, err := repo.LeaseNextModelManagement(ctx, worker, InferenceLease, now)
+		if err != nil || leased != nil {
+			if leased == nil {
+				return nil, err
+			}
+			return &domain.Job{ID: leased.JobID, AssetID: leased.AssetID, Type: leased.JobType, AttemptCount: leased.AttemptCount, MaxAttempts: leased.MaxAttempts}, err
+		}
+	}
+	return nil, nil
 }

@@ -176,7 +176,14 @@ def encode_vector(vector: Any) -> dict[str, Any]:
 
 
 def decode_audio(path: str, *, target_rate: int | None = None) -> tuple[Any, int]:
-    """Decode local audio via libsndfile or PCM WAV only; never shells out to ffmpeg."""
+    """Decode local audio: libsndfile or PCM WAV first, then FFmpeg.
+
+    Staged sources are usually MP4/MOV, which libsndfile cannot read; the plan
+    requires decoding the *source* at the model's rate (48 kHz for CLAP) rather
+    than upsampling the 16 kHz ASR derivative. FFmpeg is a decoder here, not a
+    network tool: the sanitized environment provides the binary and the path is
+    one the request already authorized.
+    """
     np = import_dependency("numpy", "NumPy")
     source = Path(path)
     if not source.is_file():
@@ -191,7 +198,7 @@ def decode_audio(path: str, *, target_rate: int | None = None) -> tuple[Any, int
         try:
             audio, sample_rate = _decode_pcm_wave(source, np)
         except Exception as fallback:
-            raise UnsupportedInput("audio input is not a supported soundfile or PCM WAV") from fallback
+            audio, sample_rate = _decode_ffmpeg(source, np, target_rate or 16000)
     if sample_rate <= 0 or audio.ndim != 1 or not len(audio) or not np.isfinite(audio).all():
         raise UnsupportedInput("decoded audio is empty or invalid")
     if target_rate is not None and sample_rate != target_rate:
@@ -291,3 +298,23 @@ def extract_video_frame(path: str, timestamp_ms: int) -> Any:
         raise
     except Exception as exc:
         raise UnsupportedInput("decoded visual frame is not a valid image") from exc
+
+
+def _decode_ffmpeg(path: Path, np: Any, rate: int) -> tuple[Any, int]:
+    import shutil
+    import subprocess
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise UnsupportedInput("audio input requires ffmpeg to decode this container")
+    result = subprocess.run(
+        [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(path),
+         "-vn", "-ac", "1", "-ar", str(int(rate)), "-f", "f32le", "-"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=600,
+    )
+    if result.returncode != 0 or not result.stdout:
+        raise UnsupportedInput("audio input could not be decoded")
+    audio = np.frombuffer(result.stdout, dtype="<f4").astype(np.float32, copy=True)
+    if audio.ndim != 1 or not len(audio):
+        raise UnsupportedInput("decoded audio is empty")
+    return audio, int(rate)

@@ -281,11 +281,11 @@ func (in InferenceInput) Validate() error {
 // caller.
 type VisualSettings struct {
 	Strategy    string       `json:"strategy"`
-	ShotSetHash string       `json:"shot_set_hash,omitempty"`
-	Shots       []VisualShot `json:"shots,omitempty"`
+	ShotSetHash string       `json:"shot_set_hash"`
+	Shots       []VisualShot `json:"shots"`
 	// TruncateTo requests a Matryoshka dimension. Zero means the model's full
 	// output. A value the model does not declare is unsupported_input.
-	TruncateTo int `json:"truncate_to,omitempty"`
+	TruncateTo int `json:"truncate_to"`
 	// NativeVideoMaxFrames bounds a native-video encode; zero means the
 	// profile's measured default. Over-limit input is unsupported_input, never
 	// a silent fallback to frame pooling.

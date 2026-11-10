@@ -104,9 +104,6 @@ func (c InferenceCapability) Validate() error {
 	if strings.TrimSpace(c.Backend) == "" {
 		return fmt.Errorf("capability %q lacks a backend", c.Operation)
 	}
-	if c.Operation.NeedsSpace() && strings.TrimSpace(c.SpaceID) == "" {
-		return fmt.Errorf("capability %q lacks a space id", c.Operation)
-	}
 	if c.Dimension < 0 {
 		return fmt.Errorf("capability %q has a negative dimension", c.Operation)
 	}
@@ -118,13 +115,24 @@ func (c InferenceCapability) Validate() error {
 
 // Matches reports whether this capability can execute req.
 func (c InferenceCapability) Matches(req domain.InferenceRequest) bool {
-	return c.Available &&
-		c.Operation == req.Operation &&
-		c.SchemaVersion == req.SchemaVersion &&
-		c.ModelID == req.ModelID &&
-		c.ModelRevision == req.ModelRevision &&
-		c.ConfigHash == req.ConfigHash &&
-		(!req.Operation.NeedsSpace() || c.SpaceID == req.SpaceID)
+	if !c.Available ||
+		c.Operation != req.Operation ||
+		c.SchemaVersion != req.SchemaVersion ||
+		c.ModelID != req.ModelID ||
+		c.ModelRevision != req.ModelRevision {
+		return false
+	}
+	// A probe reports what the runtime can load, not the exact preprocessing
+	// identity a queued request was built with. When the capability names a
+	// config or space, it must match; an empty value means "the model is
+	// available", and the request's own identity still governs execution.
+	if c.ConfigHash != "" && c.ConfigHash != req.ConfigHash {
+		return false
+	}
+	if c.SpaceID != "" && req.Operation.NeedsSpace() && c.SpaceID != req.SpaceID {
+		return false
+	}
+	return true
 }
 
 // InferenceResultSubmission is the body of the lease-bound result endpoint.

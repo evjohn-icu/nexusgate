@@ -348,8 +348,7 @@
         {
           "path": "tokenizer.json",
           "size": 2108746,
-          "sha256": null,
-          "git_oid": "99f518e1ee65361b4d772c6f805508dbf30cfd8b"
+          "sha256": "77ef92283d67f0d97e1454909a964afcbfa2019f0fb9f18f8e88d5c25c3ba729"
         },
         {
           "path": "pytorch_model.bin",
@@ -601,7 +600,7 @@
         {
           "path": "configuration.json",
           "size": 464,
-          "sha256": "836a1a502af67e72"
+          "sha256": "836a1a502af67e729a7703433fa0b56ecf54edefe417c1c9d18593691eba9197"
         }
       ],
       "preprocessing": {

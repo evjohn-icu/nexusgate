@@ -170,6 +170,12 @@ func run() error {
 				Dtype:         cfg.Inference.Dtype,
 				ScratchDir:    cfg.Inference.ScratchDir,
 				MaxFrameBytes: cfg.Inference.MaxFrameBytes,
+				ResolveAssetPath: func(input domain.InferenceInput) (string, error) {
+					return service.ResolveInferenceAssetPath(ctx, input)
+				},
+				ResolveImagePath: func(referenceID, digest string) (string, error) {
+					return service.ResolveInferenceImagePath(ctx, referenceID, digest)
+				},
 			})
 			if err != nil {
 				slog.Warn("local inference runtime unavailable", "error", err)
@@ -724,6 +730,12 @@ func runWorkerCommand(cfg config.Config) error {
 				Device:     *inferenceDevice,
 				Dtype:      *inferenceDtype,
 				ScratchDir: filepath.Join(config.CachePath(), "inference"),
+				ResolveAssetPath: func(input domain.InferenceInput) (string, error) {
+					return config.ResolveSourcePath(input.RootID, input.RelativePath)
+				},
+				ResolveImagePath: func(referenceID, digest string) (string, error) {
+					return "", fmt.Errorf("worker image inputs require the lease-bound fetch, which this runtime does not perform")
+				},
 			})
 			if err != nil {
 				slog.Warn("local inference runtime unavailable; continuing derive-only", "error", err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/evjohn-icu/nexusgate/internal/domain"
@@ -15,6 +16,8 @@ import (
 type queryVectorRepository interface {
 	QueryReferenceVector(ctx context.Context, referenceID, spaceID string) ([]float32, bool, error)
 	QueryReferenceJob(ctx context.Context, referenceID string) (string, bool, error)
+	QueryVectorByContentHash(ctx context.Context, contentHash, spaceID string) ([]float32, bool, error)
+	QueryJobByContentHash(ctx context.Context, contentHash string) (string, bool, error)
 }
 
 // modalityQueryEncoder answers search requests with vectors that were already
@@ -55,14 +58,19 @@ func (e *modalityQueryEncoder) Encode(ctx context.Context, modality, text, refer
 	if !ok {
 		return "", nil, fmt.Errorf("%w: query vectors are not stored by this Hub", search.ErrModalitiesUnavailable)
 	}
-	vector, ready, err := repo.QueryReferenceVector(ctx, referenceID, space.ID)
+	// Reuse an encoding of identical bytes even when this is a new reference id.
+	ref, _, refErr := e.service.GetSearchReference(ctx, referenceID)
+	if refErr != nil {
+		return "", nil, fmt.Errorf("%w: query image is unavailable", search.ErrModalitiesUnavailable)
+	}
+	vector, ready, err := repo.QueryVectorByContentHash(ctx, ref.ContentHash, space.ID)
 	if err != nil {
 		return "", nil, err
 	}
 	if ready && len(vector) > 0 {
 		return space.ID, vector, nil
 	}
-	jobID, pending, _ := repo.QueryReferenceJob(ctx, referenceID)
+	jobID, pending, _ := repo.QueryJobByContentHash(ctx, ref.ContentHash)
 	if pending {
 		return "", nil, fmt.Errorf("%w: query image is still being encoded (job %s)", search.ErrModalitiesUnavailable, jobID)
 	}
@@ -106,14 +114,14 @@ func (s *Service) enqueueReferenceQuery(ctx context.Context, ref domain.SearchRe
 			ReferenceID: ref.ID,
 			Digest:      ref.ContentHash,
 		},
-		Visual: &domain.VisualSettings{Strategy: "shot_frame_pooled"},
+		Visual: &domain.VisualSettings{Strategy: "shot_frame_pooled", Shots: []domain.VisualShot{}},
 	}
 	if err := request.Validate(); err != nil {
 		return
 	}
 	key, err := (InferenceTaskKey{
 		Operation:      domain.OpVisualEmbedding,
-		SourceIdentity: "image:" + ref.ContentHash,
+		SourceIdentity: "image:" + ref.ID,
 		ModelID:        model.ModelID,
 		ModelRevision:  model.Revision,
 		ConfigHash:     request.ConfigHash,
@@ -136,5 +144,7 @@ func (s *Service) enqueueReferenceQuery(ctx context.Context, ref domain.SearchRe
 	}
 	// Enqueue failure is not fatal to creating the reference: the search will
 	// report the image as pending, which is the truth.
-	_, _ = s.inferenceRepo.EnqueueInferenceTask(ctx, nil, task, 30)
+	if _, err := s.inferenceRepo.EnqueueInferenceTask(ctx, nil, task, 30); err != nil {
+		slog.Warn("query image inference enqueue failed", "reference_id", ref.ID, "error", err)
+	}
 }

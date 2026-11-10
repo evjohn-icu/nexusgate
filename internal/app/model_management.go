@@ -118,7 +118,13 @@ func (s *Service) QueueModelManagement(ctx context.Context, action, catalogID, w
 		return "", fmt.Errorf("install requires explicit licence acceptance")
 	}
 	if strings.TrimSpace(workerID) == "" {
-		workerID = "local"
+		// Hub-local maintenance is leased under this process's pipeline owner,
+		// so the row must target the same identity; a generic "local" sentinel
+		// would never match LeaseNextModelManagement.
+		workerID = s.leaseOwner
+		if strings.TrimSpace(workerID) == "" {
+			workerID = "local"
+		}
 	}
 	task := domain.ModelManagementTask{
 		TargetWorkerID:  workerID,

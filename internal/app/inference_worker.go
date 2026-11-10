@@ -195,3 +195,33 @@ func (s *Service) WorkerInferenceInput(ctx context.Context, workerID, jobID stri
 		SizeBytes: size,
 	}, path, nil
 }
+
+// ResolveInferenceAssetPath returns the Hub-local readable path for an asset
+// input. The executor contract requires an absolute staged path; callers never
+// supply one, and this resolver is the only place it is decided.
+func (s *Service) ResolveInferenceAssetPath(ctx context.Context, input domain.InferenceInput) (string, error) {
+	if input.Kind != domain.InputKindAsset || input.AssetID == "" {
+		return "", fmt.Errorf("asset resolver needs an asset input")
+	}
+	loc, err := s.repo.GetPrimaryLocation(ctx, input.AssetID)
+	if err != nil {
+		return "", err
+	}
+	if loc.AbsolutePath == "" {
+		return "", fmt.Errorf("asset has no readable primary location")
+	}
+	return loc.AbsolutePath, nil
+}
+
+// ResolveInferenceImagePath returns the managed query-image path for an image
+// input. It is only reachable for a Worker that fetched the reference.
+func (s *Service) ResolveInferenceImagePath(ctx context.Context, referenceID, digest string) (string, error) {
+	ref, path, err := s.GetSearchReference(ctx, referenceID)
+	if err != nil {
+		return "", err
+	}
+	if digest != "" && ref.ContentHash != digest {
+		return "", fmt.Errorf("query image digest does not match the stored reference")
+	}
+	return path, nil
+}

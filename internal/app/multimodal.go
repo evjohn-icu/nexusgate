@@ -490,8 +490,12 @@ func (p *Pipeline) executeDetectShots(ctx context.Context, j domain.Job, sourceP
 	if len(existing) > 0 {
 		return nil
 	}
-	if p.shotDetector == nil {
-		return domain.Permanent(fmt.Errorf("no shot detector is configured"))
+	detector := p.shotDetector
+	if detector == nil {
+		// Visual indexing must not depend on a paid provider configuration.
+		// FFmpeg scene detection is the deterministic baseline and is already
+		// available wherever derive can run.
+		detector = &shotdetect.FFmpegScene{}
 	}
 	meta, err := p.repo.GetMediaMetadata(ctx, j.AssetID)
 	if err != nil {
@@ -500,7 +504,7 @@ func (p *Pipeline) executeDetectShots(ctx context.Context, j domain.Job, sourceP
 	if meta == nil || meta.DurationMS <= 0 {
 		return domain.Permanent(fmt.Errorf("asset duration is unknown; cannot detect shots"))
 	}
-	bounds, err := p.shotDetector.Detect(ctx, sourcePath, meta.DurationMS)
+	bounds, err := detector.Detect(ctx, sourcePath, meta.DurationMS)
 	if err != nil {
 		return err
 	}
@@ -554,29 +558,5 @@ func (s *Service) enqueueVisualModalities(ctx context.Context, assetID string) {
 	}
 	if _, err := s.inferenceRepo.EnqueueInferenceTask(ctx, nil, task, 60); err != nil {
 		slog.Warn("visual inference enqueue failed", "asset_id", assetID, "error", err)
-	}
-}
-
-// enqueueAudioModalities is the derive trigger for sound events, audio
-// vectors and diarization. Speaker embedding stays manual: it requires consent
-// and an eligible profile, neither of which exists automatically.
-func (s *Service) enqueueAudioModalities(ctx context.Context, assetID, inputHash string) {
-	if s.inferenceRepo == nil {
-		return
-	}
-	tasks, err := s.PlanAssetModalities(ctx, assetID, inputHash)
-	if err != nil {
-		slog.Warn("audio modality planning failed", "asset_id", assetID, "error", err)
-		return
-	}
-	for _, task := range tasks {
-		switch task.Operation {
-		case domain.OpSoundEvents, domain.OpAudioEmbedding, domain.OpDiarization:
-		default:
-			continue
-		}
-		if _, err := s.inferenceRepo.EnqueueInferenceTask(ctx, nil, task, 55); err != nil {
-			slog.Warn("audio inference enqueue failed", "asset_id", assetID, "operation", task.Operation, "error", err)
-		}
 	}
 }
