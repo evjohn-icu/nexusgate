@@ -24,71 +24,71 @@ class WemmAdapter:
         torch, model, processor = self._model()
         source = request["input"]
         settings = request["settings"]["visual"]
-        truncate = settings.get("truncate_to")
+        truncate_to = settings["truncate_to"] or None
         if source["kind"] == "text":
             tokens = processor(text=[source["text"]], max_length=512, truncation=True,
                                padding=True, return_tensors="pt")
             encoded = self._to_device(tokens)
             with torch.inference_mode():
                 raw = self._features(model, "get_text_features", encoded)
-            vectors = normalized_vectors(raw, self.context.dimension, truncate_to=truncate)
+            vectors = normalized_vectors(raw, self.context.dimension, truncate_to=truncate_to)
             return {"kind": "visual_embedding", "vectors": [self._record(vectors[0], "", -1, 0, 0, 0)]}
-
-        if settings["strategy"] == "native_video":
-            if source["kind"] != "asset":
-                raise UnsupportedInput("native_video requires an asset input")
-            if not hasattr(model, "get_video_features"):
-                raise ModelUnavailable("installed WeMM code has no native video embedding method")
-            try:
-                encoded = processor(videos=[source["path"]], return_tensors="pt")
-            except Exception as exc:
-                raise UnsupportedInput("installed video decoder cannot read the request asset") from exc
-            encoded = self._to_device(encoded)
-            with torch.inference_mode():
-                raw = self._features(model, "get_video_features", encoded)
-            vectors = normalized_vectors(raw, self.context.dimension, truncate_to=truncate)
-            interval = source.get("interval") or {"start_ms": 0, "end_ms": source["duration_ms"]}
-            start, end = int(interval["start_ms"]), int(interval["end_ms"])
-            shot = str(settings.get("shot_id", ""))
-            self.context.progress(0.95, "encoding_complete")
-            return {"kind": "visual_embedding", "vectors": [
-                self._record(vectors[0], shot, -1, start, start, end)]}
 
         if source["kind"] == "image":
             images = [self._open_image(source["path"])]
-            shot_id = str(settings.get("shot_id", ""))
-            timestamp = 0
-        elif source["kind"] == "asset":
-            frames = settings.get("frames", [])
-            if not frames:
-                raise UnsupportedInput("shot_frame_pooled requires staged frame paths")
-            images = [self._open_image(frame["path"]) for frame in frames]
-            shot_id = str(settings.get("shot_id", ""))
-            timestamp = int((source.get("interval") or {}).get("start_ms", 0))
-        else:
+            encoded = self._to_device(processor(images=images, return_tensors="pt"))
+            with torch.inference_mode():
+                raw = self._features(model, "get_image_features", encoded)
+            vectors = normalized_vectors(raw, self.context.dimension, truncate_to=truncate_to)
+            return {"kind": "visual_embedding", "vectors": [self._record(vectors[0], "", -1, 0, 0, 0)]}
+        if source["kind"] != "asset":
             raise UnsupportedInput("unsupported WeMM visual input")
-        try:
-            encoded = processor(images=images, return_tensors="pt")
-        except Exception as exc:
-            raise UnsupportedInput("installed WeMM processor rejected the staged images") from exc
-        encoded = self._to_device(encoded)
-        with torch.inference_mode():
-            raw = self._features(model, "get_image_features", encoded)
-        vectors = normalized_vectors(raw, self.context.dimension, truncate_to=truncate)
+
+        shots = settings["shots"]
+        if settings["strategy"] == "native_video":
+            if not hasattr(model, "get_video_features"):
+                raise ModelUnavailable("installed WeMM code has no native video embedding method")
+            shot = shots[0]
+            frames = [self._extract(source["path"], timestamp) for timestamp in shot["timestamps_ms"]]
+            try:
+                # The selected temporal frames are one clip input and one native video forward pass.
+                encoded = processor(videos=[frames], return_tensors="pt")
+            except Exception as exc:
+                raise UnsupportedInput("installed WeMM processor cannot construct a native video input") from exc
+            encoded = self._to_device(encoded)
+            with torch.inference_mode():
+                raw = self._features(model, "get_video_features", encoded)
+            vectors = normalized_vectors(raw, self.context.dimension, truncate_to=truncate_to)
+            self.context.progress(0.95, "encoding_complete")
+            return {"kind": "visual_embedding", "vectors": [
+                self._record(vectors[0], shot["shot_id"], -1, shot["start_ms"],
+                             shot["start_ms"], shot["end_ms"])]}
+
         records: list[dict[str, Any]] = []
-        if source["kind"] == "image":
-            records.append(self._record(vectors[0], shot_id, -1, timestamp, 0, 0))
-        else:
-            interval = source.get("interval") or {"start_ms": 0, "end_ms": source["duration_ms"]}
-            for index, (vector, frame) in enumerate(zip(vectors, frames)):
-                at = int(frame["timestamp_ms"])
-                records.append(self._record(vector, shot_id, index, at, at, at))
-            pooled = normalized_vectors(vectors.mean(axis=0), self.context.dimension,
-                                        truncate_to=truncate)[0]
-            records.append(self._record(pooled, shot_id, -1, timestamp,
-                                        int(interval["start_ms"]), int(interval["end_ms"])))
-        self.context.progress(0.95, "encoding_complete")
+        for shot_index, shot in enumerate(shots):
+            self.context.cancel_check()
+            images = [self._extract(source["path"], timestamp) for timestamp in shot["timestamps_ms"]]
+            try:
+                encoded = processor(images=images, return_tensors="pt")
+            except Exception as exc:
+                raise UnsupportedInput("installed WeMM processor rejected staged video frames") from exc
+            encoded = self._to_device(encoded)
+            with torch.inference_mode():
+                raw = self._features(model, "get_image_features", encoded)
+            vectors = normalized_vectors(raw, self.context.dimension, truncate_to=truncate_to)
+            for sample_index, (vector, timestamp) in enumerate(zip(vectors, shot["timestamps_ms"])):
+                records.append(self._record(vector, shot["shot_id"], sample_index, timestamp,
+                                            shot["start_ms"], shot["end_ms"]))
+            pooled = normalized_vectors(vectors.mean(axis=0), vectors.shape[1])[0]
+            records.append(self._record(pooled, shot["shot_id"], -1, shot["start_ms"],
+                                        shot["start_ms"], shot["end_ms"]))
+            self.context.progress(0.20 + 0.72 * (shot_index + 1) / len(shots), "encoding_shots")
         return {"kind": "visual_embedding", "vectors": records}
+
+    @staticmethod
+    def _extract(path: str, timestamp_ms: int) -> Any:
+        from .base import extract_video_frame
+        return extract_video_frame(path, timestamp_ms)
 
     def _features(self, model: Any, method: str, encoded: Mapping[str, Any]) -> Any:
         if not hasattr(model, method):

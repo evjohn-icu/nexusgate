@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import importlib
+import io
 import math
-import os
+import subprocess
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,10 @@ class ModelUnavailable(InferenceFailure):
 
 class UnsupportedInput(InferenceFailure):
     code = "unsupported_input"
+
+
+class UnsupportedOperation(InferenceFailure):
+    code = "unsupported_operation"
 
 
 class InvalidOutput(InferenceFailure):
@@ -256,3 +261,33 @@ def interval_from_input(request: Mapping[str, Any], decoded_duration_ms: int) ->
     if start < 0 or end <= start:
         raise UnsupportedInput("audio interval is outside the decoded asset")
     return start, end
+
+def extract_video_frame(path: str, timestamp_ms: int) -> Any:
+    """Decode one requested still through the sanitized ffmpeg executable."""
+    source = Path(path)
+    if not source.is_absolute() or not source.is_file():
+        raise UnsupportedInput("visual asset is unavailable")
+    seconds = f"{timestamp_ms / 1000.0:.3f}"
+    command = ["ffmpeg", "-nostdin", "-v", "error", "-i", str(source), "-ss", seconds,
+               "-map", "0:v:0", "-an", "-sn", "-dn", "-frames:v", "1", "-threads", "1",
+               "-vf", "scale=2048:2048:force_original_aspect_ratio=decrease",
+               "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"]
+    try:
+        completed = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, check=False, timeout=60)
+    except FileNotFoundError as exc:
+        raise ModelUnavailable("ffmpeg is unavailable for visual frame extraction") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise DeadlineExceeded("visual frame extraction exceeded its deadline") from exc
+    if completed.returncode != 0 or not completed.stdout:
+        raise UnsupportedInput("ffmpeg could not decode the requested visual timestamp")
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(completed.stdout)) as image:
+            if image.format != "JPEG" or image.width * image.height > 20_000_000:
+                raise UnsupportedInput("decoded visual frame exceeds supported image bounds")
+            return image.convert("RGB")
+    except UnsupportedInput:
+        raise
+    except Exception as exc:
+        raise UnsupportedInput("decoded visual frame is not a valid image") from exc

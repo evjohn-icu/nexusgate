@@ -76,7 +76,7 @@ def expected_dimension(entry: Mapping[str, Any], request: Mapping[str, Any]) -> 
         return 0
     truncate_to = request.get("settings", {}).get("visual", {}).get("truncate_to")
     allowed = output.get("matryoshka", [])
-    if truncate_to is None:
+    if truncate_to is None or truncate_to == 0:
         return dimension
     if truncate_to not in allowed or truncate_to > dimension:
         raise UnsupportedInput("requested truncation is not supported by the locked model")

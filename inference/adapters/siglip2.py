@@ -23,7 +23,6 @@ class Siglip2Adapter:
         torch, model, processor = self._model()
         source = request["input"]
         settings = request["settings"]["visual"]
-        strategy = settings["strategy"]
         if source["kind"] == "text":
             tokens = processor(text=[source["text"]], max_length=64, padding="max_length",
                                truncation=True, return_tensors="pt")
@@ -34,47 +33,48 @@ class Siglip2Adapter:
                 raw = tensor_to_numpy(model.get_text_features(**tokens))
             vectors = normalized_vectors(raw, self.context.dimension)
             return {"kind": "visual_embedding", "vectors": [self._record(vectors[0], "", -1, 0, 0, 0)]}
-
-        if strategy == "native_video":
-            if source["kind"] != "asset":
-                raise UnsupportedInput("native_video requires an asset input")
+        if settings["strategy"] == "native_video":
             raise UnsupportedInput("SigLIP 2 does not expose a native-video embedding method")
 
-        images: list[Any] = []
-        metadata: list[tuple[str, int, int, int]] = []
+        truncate_to = settings["truncate_to"] or None
         if source["kind"] == "image":
-            images.append(self._open_image(source["path"]))
-            metadata.append((str(settings.get("shot_id", "")), -1, 0, 0))
-        else:
-            frames = settings.get("frames", [])
-            if not frames:
-                raise UnsupportedInput("shot_frame_pooled requires staged frame paths")
-            shot_id = str(settings.get("shot_id", ""))
-            for index, frame in enumerate(frames):
-                self.context.cancel_check()
-                images.append(self._open_image(frame["path"]))
-                metadata.append((shot_id, index, int(frame["timestamp_ms"]), index))
-        encoded = processor(images=images, return_tensors="pt")
-        encoded = {key: value.to(self.context.device) for key, value in encoded.items()}
-        with torch.inference_mode():
-            if not hasattr(model, "get_image_features"):
-                raise ModelUnavailable("locked SigLIP model has no image embedding method")
-            raw = tensor_to_numpy(model.get_image_features(**encoded))
-        vectors = normalized_vectors(raw, self.context.dimension)
+            images = [self._open_image(source["path"])]
+            encoded = processor(images=images, return_tensors="pt")
+            encoded = {key: value.to(self.context.device) for key, value in encoded.items()}
+            with torch.inference_mode():
+                if not hasattr(model, "get_image_features"):
+                    raise ModelUnavailable("locked SigLIP model has no image embedding method")
+                raw = tensor_to_numpy(model.get_image_features(**encoded))
+            vectors = normalized_vectors(raw, self.context.dimension, truncate_to=truncate_to)
+            return {"kind": "visual_embedding", "vectors": [self._record(vectors[0], "", -1, 0, 0, 0)]}
+
+        if source["kind"] != "asset":
+            raise UnsupportedInput("SigLIP requires image, text, or asset input")
         records: list[dict[str, Any]] = []
-        if source["kind"] == "image":
-            records.append(self._record(vectors[0], metadata[0][0], -1, 0, 0, 0))
-        else:
-            for vector, (shot_id, sample_index, timestamp, _) in zip(vectors, metadata):
-                records.append(self._record(vector, shot_id, sample_index, timestamp,
-                                            timestamp, timestamp))
-            pooled = normalized_vectors(vectors.mean(axis=0), self.context.dimension)[0]
-            interval = source.get("interval") or {"start_ms": 0, "end_ms": source["duration_ms"]}
-            timestamp = int(interval["start_ms"])
-            records.append(self._record(pooled, str(settings.get("shot_id", "")), -1,
-                                        timestamp, int(interval["start_ms"]), int(interval["end_ms"])))
-        self.context.progress(0.95, "encoding_complete")
+        shots = settings["shots"]
+        for shot_index, shot in enumerate(shots):
+            self.context.cancel_check()
+            images = [self._extract(source["path"], timestamp) for timestamp in shot["timestamps_ms"]]
+            encoded = processor(images=images, return_tensors="pt")
+            encoded = {key: value.to(self.context.device) for key, value in encoded.items()}
+            with torch.inference_mode():
+                if not hasattr(model, "get_image_features"):
+                    raise ModelUnavailable("locked SigLIP model has no image embedding method")
+                raw = tensor_to_numpy(model.get_image_features(**encoded))
+            vectors = normalized_vectors(raw, self.context.dimension, truncate_to=truncate_to)
+            for sample_index, (vector, timestamp) in enumerate(zip(vectors, shot["timestamps_ms"])):
+                records.append(self._record(vector, shot["shot_id"], sample_index, timestamp,
+                                            shot["start_ms"], shot["end_ms"]))
+            pooled = normalized_vectors(vectors.mean(axis=0), vectors.shape[1])[0]
+            records.append(self._record(pooled, shot["shot_id"], -1, shot["start_ms"],
+                                        shot["start_ms"], shot["end_ms"]))
+            self.context.progress(0.20 + 0.72 * (shot_index + 1) / len(shots), "encoding_shots")
         return {"kind": "visual_embedding", "vectors": records}
+
+    @staticmethod
+    def _extract(path: str, timestamp_ms: int) -> Any:
+        from .base import extract_video_frame
+        return extract_video_frame(path, timestamp_ms)
 
     @staticmethod
     def _open_image(path: str) -> Any:

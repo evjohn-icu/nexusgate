@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, BinaryIO, Mapping
 
-from .adapters.base import InvalidOutput, UnsupportedInput
+from .adapters.base import InvalidOutput, UnsupportedInput, UnsupportedOperation
 
 MAX_FRAME_BYTES = 32 * 1024 * 1024
 MAX_TEXT_BYTES = 16 * 1024
@@ -23,7 +23,7 @@ OPERATIONS = {
     "sound_events": "sound_events",
     "audio_embedding": "audio",
     "diarization": "diarization",
-    "speaker_embedding": "speaker_embedding",
+    "speaker_embedding": "speaker",
 }
 RESULT_KINDS = {
     "visual_embedding": "visual_embedding",
@@ -72,11 +72,15 @@ def validate_request(request: Mapping[str, Any]) -> dict[str, Any]:
         raise ProtocolError("unsupported request schema version")
     operation = request["operation"]
     if not isinstance(operation, str) or operation not in OPERATIONS:
-        raise ProtocolError("unknown inference operation")
-    for name in ("operation_id", "model_id", "model_revision", "space_id", "input_hash", "config_hash"):
+        raise UnsupportedOperation("unknown inference operation")
+    for name in ("operation_id", "model_id", "model_revision", "input_hash", "config_hash"):
         value = request[name]
         if not isinstance(value, str) or not value or len(value.encode("utf-8")) > 512:
             raise ProtocolError(f"invalid {name}")
+    space_id = request["space_id"]
+    needs_space = operation in {"visual_embedding", "audio_embedding", "speaker_embedding"}
+    if not isinstance(space_id, str) or len(space_id.encode("utf-8")) > 512 or (needs_space and not space_id):
+        raise ProtocolError("invalid space_id")
     if not _HASH.fullmatch(request["operation_id"]):
         raise ProtocolError("invalid operation_id")
     timeout = request["timeout_ms"]
@@ -113,7 +117,7 @@ def _local_path(value: Any, name: str) -> Path:
 
 
 def validate_input(value: Any, operation: str) -> None:
-    if not isinstance(value, dict) or value.get("kind") not in {"asset", "image", "text"}:
+    if not isinstance(value, dict) or not isinstance(value.get("kind"), str) or value.get("kind") not in {"asset", "image", "text"}:
         raise ProtocolError("unknown or invalid input kind")
     kind = value["kind"]
     if kind == "asset":
@@ -153,6 +157,13 @@ def validate_input(value: Any, operation: str) -> None:
 
 def _check_image(path: Path) -> None:
     try:
+        if path.stat().st_size > MAX_IMAGE_BYTES:
+            raise ProtocolError("image input exceeds 8 MiB")
+    except ProtocolError:
+        raise
+    except OSError as exc:
+        raise ProtocolError("image input is unavailable") from exc
+    try:
         from PIL import Image
         with Image.open(path) as image:
             if image.format not in {"JPEG", "PNG"}:
@@ -165,36 +176,55 @@ def _check_image(path: Path) -> None:
         raise
     except Exception as exc:
         raise ProtocolError("image input cannot be decoded") from exc
-    try:
-        if path.stat().st_size > MAX_IMAGE_BYTES:
-            raise ProtocolError("image input exceeds 8 MiB")
-    except OSError as exc:
-        raise ProtocolError("image input is unavailable") from exc
 
 
 def validate_settings(operation: str, settings: Mapping[str, Any], input_value: Mapping[str, Any]) -> None:
     if operation == "visual_embedding":
-        allowed = {"strategy", "shot_id", "frames", "truncate_to"}
-        if set(settings) - allowed:
-            raise ProtocolError("unknown visual settings field")
-        strategy = settings.get("strategy")
-        if strategy not in {"shot_frame_pooled", "native_video"}:
+        allowed = {"strategy", "shot_set_hash", "shots", "truncate_to"}
+        if set(settings) != allowed:
+            raise ProtocolError("visual settings must contain strategy, shot_set_hash, shots, and truncate_to")
+        strategy = settings["strategy"]
+        if not isinstance(strategy, str) or strategy not in {"shot_frame_pooled", "native_video"}:
             raise ProtocolError("unknown visual embedding strategy")
-        if "shot_id" in settings and not isinstance(settings["shot_id"], str):
-            raise ProtocolError("shot_id must be a string")
-        truncate = settings.get("truncate_to")
-        if truncate is not None:
-            _integer(truncate, "truncate_to", 1)
-        frames = settings.get("frames", [])
-        if not isinstance(frames, list):
-            raise ProtocolError("visual frames must be an array")
-        for frame in frames:
-            if not isinstance(frame, dict) or set(frame) != {"timestamp_ms", "path"}:
-                raise ProtocolError("visual frame fields are invalid")
-            _integer(frame["timestamp_ms"], "frame.timestamp_ms")
-            _local_path(frame["path"], "frame.path")
-        if input_value["kind"] == "image" and frames:
-            raise ProtocolError("image input cannot also specify frame paths")
+        shot_set_hash = settings["shot_set_hash"]
+        if not isinstance(shot_set_hash, str) or len(shot_set_hash.encode("utf-8")) > 512:
+            raise ProtocolError("invalid shot_set_hash")
+        truncate = settings["truncate_to"]
+        _integer(truncate, "truncate_to")
+        shots = settings["shots"]
+        if not isinstance(shots, list):
+            raise ProtocolError("visual shots must be an array")
+        source_kind = input_value["kind"]
+        if source_kind == "asset" and not shots:
+            raise ProtocolError("asset visual embeddings require at least one shot")
+        if source_kind != "asset" and shots:
+            raise ProtocolError("image/text queries cannot include shot records")
+        if source_kind != "asset" and strategy != "shot_frame_pooled":
+            raise ProtocolError("native_video requires an asset input")
+        if strategy == "native_video" and len(shots) != 1:
+            raise ProtocolError("native_video requires exactly one shot interval")
+        input_interval = input_value.get("interval") or {"start_ms": 0, "end_ms": input_value.get("duration_ms", 0)}
+        seen: set[str] = set()
+        for shot in shots:
+            if not isinstance(shot, dict) or set(shot) != {"shot_id", "start_ms", "end_ms", "timestamps_ms"}:
+                raise ProtocolError("visual shot fields are invalid")
+            shot_id = shot["shot_id"]
+            if not isinstance(shot_id, str) or not shot_id or shot_id in seen:
+                raise ProtocolError("visual shot IDs must be non-empty and unique")
+            seen.add(shot_id)
+            start = _integer(shot["start_ms"], "shot.start_ms")
+            end = _integer(shot["end_ms"], "shot.end_ms")
+            if end <= start or start < input_interval["start_ms"] or end > input_interval["end_ms"]:
+                raise ProtocolError("shot interval is reversed or outside the asset interval")
+            timestamps = shot["timestamps_ms"]
+            if not isinstance(timestamps, list):
+                raise ProtocolError("timestamps_ms must be an array")
+            if strategy == "shot_frame_pooled" and not timestamps:
+                raise ProtocolError("shot_frame_pooled requires at least one frame timestamp")
+            for timestamp in timestamps:
+                timestamp = _integer(timestamp, "timestamp_ms")
+                if not start <= timestamp < end:
+                    raise ProtocolError("frame timestamp is outside its shot interval")
     elif operation == "audio_embedding":
         if set(settings) - {"window_ms", "hop_ms", "pad_tail"}:
             raise ProtocolError("unknown audio settings field")
@@ -209,13 +239,15 @@ def validate_settings(operation: str, settings: Mapping[str, Any], input_value: 
         if not isinstance(segments, list) or not segments:
             raise ProtocolError("speaker embedding requires clean-speech segments")
         duration = input_value.get("duration_ms")
+        previous_end = -1
         for segment in segments:
             if not isinstance(segment, dict) or set(segment) != {"start_ms", "end_ms"}:
                 raise ProtocolError("speaker segment fields are invalid")
             start = _integer(segment["start_ms"], "segment.start_ms")
             end = _integer(segment["end_ms"], "segment.end_ms")
-            if end <= start or end - start < 3000 or end > duration:
-                raise ProtocolError("speaker segments must be at least 3000 ms within the asset")
+            if end <= start or end - start < 3000 or end > duration or start < previous_end:
+                raise ProtocolError("speaker segments must be non-overlapping 3000 ms regions within the asset")
+            previous_end = end
     elif settings:
         raise ProtocolError(f"{operation} settings must be an empty object")
 
@@ -339,26 +371,31 @@ def write_progress(operation_id: str, fraction: float, stage: str | None = None)
 
 def result_frames(operation_id: str, payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     complete = dict(payload)
-    digest = "sha256:" + hashlib.sha256(canonical_json(complete)).hexdigest()
     base = {key: value for key, value in complete.items() if not isinstance(value, list)}
     arrays = {key: value for key, value in complete.items() if isinstance(value, list)}
+    single_result = complete
     single = {"type": "result", "operation_id": operation_id, "sequence": 0, "count": 1,
-              "final": True, "digest": digest, "result": complete}
+              "final": True, "result": single_result}
     try:
         if len(canonical_json(single)) + 1 <= MAX_FRAME_BYTES:
+            digest = "sha256:" + hashlib.sha256(canonical_json(single_result)).hexdigest()
+            single["digest"] = digest
             return [single]
     except (TypeError, ValueError) as exc:
         raise InvalidOutput("result is not JSON serializable") from exc
     if not arrays:
         raise InvalidOutput("non-list result fields exceed the frame limit")
-    chunk_budget = 11 * 1024 * 1024 if len(arrays) > 1 else 27 * 1024 * 1024
+    chunk_budget = 10 * 1024 * 1024 if len(arrays) > 1 else 27 * 1024 * 1024
     chunks: dict[str, list[list[Any]]] = {}
     for key, records in arrays.items():
         pieces: list[list[Any]] = []
         current: list[Any] = []
         size = 2
         for record in records:
-            encoded_size = len(canonical_json(record)) + (1 if current else 0)
+            try:
+                encoded_size = len(canonical_json(record)) + (1 if current else 0)
+            except (TypeError, ValueError) as exc:
+                raise InvalidOutput("result record is not JSON serializable") from exc
             if encoded_size > chunk_budget:
                 raise InvalidOutput("one result record exceeds the frame budget")
             if current and size + encoded_size > chunk_budget:
@@ -370,12 +407,17 @@ def result_frames(operation_id: str, payload: Mapping[str, Any]) -> list[dict[st
             pieces.append(current)
         chunks[key] = pieces
     count = max(len(parts) for parts in chunks.values())
-    frames: list[dict[str, Any]] = []
+    partial_results: list[dict[str, Any]] = []
     for sequence in range(count):
-        result: dict[str, Any] = dict(base) if sequence == 0 else {"kind": complete.get("kind")}
+        result = dict(base)
         for key, pieces in chunks.items():
             if sequence < len(pieces):
                 result[key] = pieces[sequence]
+        partial_results.append(result)
+    digest_source = b"".join(canonical_json(result) for result in partial_results)
+    digest = "sha256:" + hashlib.sha256(digest_source).hexdigest()
+    frames: list[dict[str, Any]] = []
+    for sequence, result in enumerate(partial_results):
         frame = {"type": "result", "operation_id": operation_id, "sequence": sequence,
                  "count": count, "final": sequence == count - 1, "digest": digest, "result": result}
         if len(canonical_json(frame)) + 1 > MAX_FRAME_BYTES:
