@@ -1,0 +1,69 @@
+{
+  "schema_version": "inference.benchmark.v1",
+  "model": "speaker-campplus",
+  "device": "cpu",
+  "profiles": [
+    {
+      "schema_version": "inference.benchmark.v1",
+      "model": "speaker-campplus",
+      "device": "cpu",
+      "dtype": "float32",
+      "batch": 1,
+      "cold_start_ms": 5330.6538430006185,
+      "load_ms": 5210.26266500121,
+      "peak_vram_mib": 0.0,
+      "peak_rss_mib": 953.265625,
+      "latency_ms": {
+        "p50": 49.51895999693079,
+        "p95": 49.70563800088712
+      },
+      "checks": {
+        "finite": true,
+        "normalized": true,
+        "dimension": 192,
+        "output_records": 1,
+        "first_process_result_ms": 5330.6538430006185,
+        "resident_first_result_ms": 5337.719711998943,
+        "vram_allocated_mib": 0.0,
+        "vram_reserved_mib": 0.0,
+        "cancellation_probe": true,
+        "oom_probe": true
+      },
+      "cancelled": true,
+      "oom_code": "resource_exhausted",
+      "status": "complete",
+      "rejected": false
+    },
+    {
+      "schema_version": "inference.benchmark.v1",
+      "model": "speaker-campplus",
+      "device": "cpu",
+      "dtype": "float32",
+      "batch": 2,
+      "cold_start_ms": 5269.859037998685,
+      "load_ms": 147.09226500053774,
+      "peak_vram_mib": 0.0,
+      "peak_rss_mib": 953.265625,
+      "latency_ms": {
+        "p50": 91.35430100286612,
+        "p95": 94.86893299981602
+      },
+      "checks": {
+        "finite": true,
+        "normalized": true,
+        "dimension": 192,
+        "output_records": 2,
+        "first_process_result_ms": 5269.859037998685,
+        "resident_first_result_ms": 247.6494559996354,
+        "vram_allocated_mib": 0.0,
+        "vram_reserved_mib": 0.0,
+        "cancellation_probe": true,
+        "oom_probe": true
+      },
+      "cancelled": true,
+      "oom_code": "resource_exhausted",
+      "status": "complete",
+      "rejected": false
+    }
+  ]
+}

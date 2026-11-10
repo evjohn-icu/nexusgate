@@ -72,6 +72,22 @@
         "numpy": "2.5.4"
       },
       "device_note": "Separate WeMM environment: the model ships remote code targeting transformers 5.2.0; the SigLIP 2/CLAP environment stays on 4.57.1. Measured on the reference RTX 2070 with FP16 weights; peak 6336 MiB leaves 832 MiB under the 7168 MiB gate, so device concurrency stays 1."
+    },
+    "torch_speaker": {
+      "python": "3.12",
+      "lockfile": "inference/requirements/torch-speaker.lock",
+      "digest": "sha256:cc91abd387451d81306b5a5094cce9ab8025c25fae1473f702a3715df2ab4700",
+      "backends": [
+        "cpu",
+        "cuda"
+      ],
+      "resolved": {
+        "torch": "2.14.1+cu126",
+        "funasr": "1.4.24",
+        "kaldi-native-fbank": "1.23.0",
+        "numpy": "2.5.4"
+      },
+      "device_note": "FunASR environment layered on the torch CUDA wheels. The fbank backend is required; without it speaker inference fails with a typed model_unavailable."
     }
   },
   "models": [
@@ -732,9 +748,9 @@
           "sha256": "3388cf5fd3493c9ac9c69851d8e7a8badcfb4f3dc631020c4961371646d5ada8"
         },
         {
-          "path": "config.yaml",
-          "size": 537,
-          "sha256": "17342041bd5b22f6d7ebb3ed7824"
+          "path": "configuration.json",
+          "size": 389,
+          "sha256": "7203fc0b2b8cb37fdcfc67ebc9bbfde653f65f89efa0cfef36ad722aeb3aabf7"
         }
       ],
       "preprocessing": {
@@ -757,9 +773,54 @@
         "backend": "torch",
         "dtypes": [
           "float32"
+        ],
+        "requires": [
+          "funasr>=1.4,<2",
+          "kaldi-native-fbank>=1.23,<2",
+          "numpy>=2",
+          "soundfile>=0.13,<1"
         ]
       },
-      "measured": null
+      "measured": [
+        {
+          "device": "cpu",
+          "dtype": "float32",
+          "batch": 1,
+          "cold_start_ms": 5330.7,
+          "load_ms": 5210.3,
+          "peak_rss_mib": 953.3,
+          "peak_vram_mib": 0.0,
+          "latency_p50_ms": 49.5,
+          "latency_p95_ms": 49.7,
+          "dimension": 192,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-11",
+          "environment_file": "inference/requirements/torch-speaker.lock",
+          "environment_digest": "sha256:cc91abd387451d81306b5a5094cce9ab8025c25fae1473f702a3715df2ab4700"
+        },
+        {
+          "device": "cpu",
+          "dtype": "float32",
+          "batch": 2,
+          "cold_start_ms": 5269.9,
+          "load_ms": 147.1,
+          "peak_rss_mib": 953.3,
+          "peak_vram_mib": 0.0,
+          "latency_p50_ms": 91.4,
+          "latency_p95_ms": 94.9,
+          "dimension": 192,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-11",
+          "environment_file": "inference/requirements/torch-speaker.lock",
+          "environment_digest": "sha256:cc91abd387451d81306b5a5094cce9ab8025c25fae1473f702a3715df2ab4700"
+        }
+      ]
     },
     {
       "catalog_id": "speaker-eres2netv2",
@@ -790,8 +851,8 @@
         },
         {
           "path": "configuration.json",
-          "size": 464,
-          "sha256": "836a1a502af67e729a7703433fa0b56ecf54edefe417c1c9d18593691eba9197"
+          "size": 354,
+          "sha256": "e5f9570df8867e8a50285205ba38fb468a70aa436e5c994935986e4c435dc168"
         }
       ],
       "preprocessing": {
@@ -814,9 +875,54 @@
         "backend": "torch",
         "dtypes": [
           "float32"
+        ],
+        "requires": [
+          "funasr>=1.4,<2",
+          "kaldi-native-fbank>=1.23,<2",
+          "numpy>=2",
+          "soundfile>=0.13,<1"
         ]
       },
-      "measured": null
+      "measured": [
+        {
+          "device": "cpu",
+          "dtype": "float32",
+          "batch": 1,
+          "cold_start_ms": 5451.6,
+          "load_ms": 5184.0,
+          "peak_rss_mib": 1015.2,
+          "peak_vram_mib": 0.0,
+          "latency_p50_ms": 172.9,
+          "latency_p95_ms": 181.2,
+          "dimension": 192,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-11",
+          "environment_file": "inference/requirements/torch-speaker.lock",
+          "environment_digest": "sha256:cc91abd387451d81306b5a5094cce9ab8025c25fae1473f702a3715df2ab4700"
+        },
+        {
+          "device": "cpu",
+          "dtype": "float32",
+          "batch": 2,
+          "cold_start_ms": 5420.4,
+          "load_ms": 218.2,
+          "peak_rss_mib": 1015.2,
+          "peak_vram_mib": 0.0,
+          "latency_p50_ms": 311.9,
+          "latency_p95_ms": 325.2,
+          "dimension": 192,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-11",
+          "environment_file": "inference/requirements/torch-speaker.lock",
+          "environment_digest": "sha256:cc91abd387451d81306b5a5094cce9ab8025c25fae1473f702a3715df2ab4700"
+        }
+      ]
     }
   ],
   "selection": {

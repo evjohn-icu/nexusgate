@@ -86,7 +86,7 @@ unlicensed model.
 
 | model | revision | file | dimension | decision |
 | --- | --- | --- | --- | --- |
-| CAM++ `iic/speech_campplus_sv_zh-cn_16k-common` | file `campplus_cn_common.bin` at ModelScope revision `013c18884dff…` | 28 036 335 B, sha256 `3388cf5f…ada8` | 192 (`config.yaml: embedding_size: 192`), 16 kHz | benchmark candidate, tie-break advantage |
+| CAM++ `iic/speech_campplus_sv_zh-cn_16k-common` | file `campplus_cn_common.bin` at ModelScope revision `013c18884dff…` | 28 036 335 B, sha256 `3388cf5f…ada8` | 192 (`configuration.json: model_config.emb_size: 192`), 16 kHz | benchmark candidate, tie-break advantage |
 | ERes2NetV2 `iic/speech_eres2netv2_sv_zh-cn_16k-common` | file `pretrained_eres2netv2.ckpt` at ModelScope revision `1cf80d41fb34…` | 71 768 231 B, sha256 `0eb40571…963c` | 192 (`configuration.json: embed_dim: 192`), 16 kHz | benchmark candidate |
 
 Selection rule: highest recall among thresholds whose precision on the
@@ -129,8 +129,8 @@ pretend it exists. Absence from the lock file is the enforcement point.
 | CLAP unfused (FP32 CPU) | 3237.0 ms | n/a | 953.0 MiB | P50 293.2 / P95 328.0 ms (batch 1); P50 388.8 / P95 420.4 ms (batch 2) | 512d, finite, L2-normalized, cancellation and budget-rejection probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.14.1+cu126 (CPU device) |
 | CLAP unfused (FP16 CUDA) | 3823.8 ms | 340 MiB | 1710.3 MiB | P50 68.7 / P95 72.2 ms (batch 1); P50 98.3 / P95 99.2 ms (batch 2) | 512d, finite, L2-normalized, cancellation and budget-rejection probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.14.1+cu126 on RTX 2070 |
 | YAMNet (CPU) | pending | n/a | pending | pending | pending | — |
-| CAM++ (CPU) | pending | n/a | pending | pending | pending | — |
-| ERes2NetV2 (CPU) | pending | n/a | pending | pending | pending | — |
+| CAM++ (CPU) | 5331 ms | n/a | 953 MiB | P50 49.5 / P95 49.7 ms (batch 1); P50 91.4 / P95 94.9 ms (batch 2) | 192d, finite, L2-normalized, cancellation and budget-rejection probes returned their typed codes | 2026-11-11, `inference/benchmark.py`, torch 2.14.1+cu126 / funasr 1.4.24 / kaldi-native-fbank 1.23.0 |
+| ERes2NetV2 (CPU) | 5452 ms | n/a | 1015 MiB | P50 172.9 / P95 181.2 ms (batch 1); P50 311.9 / P95 325.2 ms (batch 2) | 192d, finite, L2-normalized, cancellation and budget-rejection probes returned their typed codes | 2026-11-11, `inference/benchmark.py`, torch 2.14.1+cu126 / funasr 1.4.24 / kaldi-native-fbank 1.23.0 |
 | Community-1 | blocked | blocked | blocked | blocked | blocked | gated, HTTP 401 |
 
 Every `pending` row is a gate that has not passed. The CUDA rows above are from

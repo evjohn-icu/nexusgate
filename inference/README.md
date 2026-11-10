@@ -26,6 +26,16 @@ uv pip install --python .venv/bin/python -r requirements/torch.in \
     --index-url https://download.pytorch.org/whl/cu126
 ```
 
+Speaker embeddings (CAM++ / ERes2NetV2) use FunASR, which needs a Kaldi fbank
+backend. The measured set is pinned in `requirements/torch-speaker.lock`:
+
+```bash
+uv venv --python 3.12 .venv-speaker
+uv pip install --python .venv-speaker/bin/python torch==2.14.1+cu126 \
+    --index-url https://download.pytorch.org/whl/cu126
+uv pip install --python .venv-speaker/bin/python -r requirements/speaker.in
+```
+
 WeMM-Embedding-2B needs its own environment because its remote code targets
 transformers 5.2.0, while the SigLIP 2/CLAP adapters are validated against
 4.57.1:

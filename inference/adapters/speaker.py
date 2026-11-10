@@ -1,6 +1,7 @@
 """FunASR-backed CAM++ and ERes2NetV2 speaker vectors."""
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 from typing import Any, Mapping
@@ -21,18 +22,36 @@ class SpeakerAdapter:
         self.context.stage(0.02, "model_loading")
         funasr = import_dependency("funasr", "FunASR/3D-Speaker")
         model_dir = checked_model_path(self.context)
-        checkpoint = next((model_dir / item["path"] for item in self.context.model.get("files", [])
-                           if str(item.get("path", "")).endswith((".bin", ".ckpt"))), None)
-        if checkpoint is None or not checkpoint.is_file():
+        configuration = model_dir / "configuration.json"
+        if not configuration.is_file():
+            raise ModelUnavailable("locked speaker configuration.json is missing")
+        try:
+            conf = json.loads(configuration.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ModelUnavailable("locked speaker configuration is unreadable") from exc
+        model_conf = conf.get("model", {})
+        class_name = {
+            "cam++-sv": "CAMPPlus",
+            "eres2netv2-sv": "ERes2NetV2",
+        }.get(str(model_conf.get("type", "")))
+        if class_name is None:
+            raise ModelUnavailable("locked speaker configuration names an unsupported model")
+        checkpoint = model_dir / str(model_conf.get("pretrained_model", ""))
+        if not checkpoint.is_file():
+            checkpoint = next((model_dir / item["path"] for item in self.context.model.get("files", [])
+                               if str(item.get("path", "")).endswith((".bin", ".ckpt"))), model_dir)
+        if not checkpoint.is_file():
             raise ModelUnavailable("locked speaker checkpoint is missing")
         auto_model = getattr(funasr, "AutoModel", None)
         if auto_model is None:
             raise ModelUnavailable("installed FunASR has no local AutoModel loader")
         try:
-            # Both arguments are local paths. No model ID or registry fallback is passed.
-            self._model = auto_model(model=str(model_dir), model_file=str(checkpoint),
-                                      device=self.context.device, disable_update=True,
-                                      disable_pbar=True)
+            # model_conf bypasses FunASR's hub download path; init_param is the
+            # verified local checkpoint. The ModelScope configuration.json is
+            # not a FunASR config.yaml, so passing the directory alone fails.
+            self._model = auto_model(model=class_name, model_conf=model_conf.get("model_config", {}),
+                                      init_param=str(checkpoint), device=self.context.device,
+                                      disable_update=True, disable_pbar=True)
         except Exception as exc:
             if "outofmemory" in type(exc).__name__.lower():
                 raise ResourceExhausted("speaker model exhausted device memory") from exc

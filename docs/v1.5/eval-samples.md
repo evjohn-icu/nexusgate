@@ -53,6 +53,27 @@ The matching annotations are in the GitHub repository under
   a real video clip usable for pipeline/visual smoke tests, but it has no
   retrieval ground truth and the test-data licence must be checked per file.
 
+## Measured speaker slice
+
+CAM++ and ERes2NetV2 were installed from their pinned ModelScope revisions and
+verified against the lock hashes. The FunASR adapter now loads the local
+`configuration.json` + checkpoint directly (the ModelScope configuration is not
+a FunASR `config.yaml`, so passing the directory alone failed).
+
+A two-speaker, 12-utterance set (speechbrain `tests/samples/ASR`, Apache-2.0)
+was padded to 3.5 s, embedded through the real `inference.dispatch`
+`speaker_embedding` boundary, and scored with
+`nexusgate-eval multimodal score`. Calibration = snt1-3, test = snt4-6; 6
+same-speaker and 9 different-speaker trials per partition.
+
+- selected threshold: 0.7064 (95% precision target)
+- test precision 1.000, recall 0.333, FAR 0.000, FRR 0.667, EER 0.000
+- 6 positive / 9 negative test trials
+
+This is an **infrastructure-valid tiny measurement**, not the plan's speaker
+gate: two speakers cannot establish a production threshold. CAM++ CPU measured
+49.5 ms P50 / 49.7 ms P95 at batch 1; ERes2NetV2 measured 172.9 / 181.2 ms.
+
 ## Remaining gate
 
 Samples are no longer the blocker for ASR/speaker work. The metrics that still
