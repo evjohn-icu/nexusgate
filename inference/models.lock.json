@@ -149,7 +149,25 @@
           "float16"
         ]
       },
-      "measured": null
+      "measured": {
+        "device": "cpu",
+        "dtype": "float32",
+        "batch": 1,
+        "cold_start_ms": 4657.6,
+        "load_ms": 4471.4,
+        "peak_rss_mib": 1325.3,
+        "peak_vram_mib": 0,
+        "latency_p50_ms": 183.4,
+        "latency_p95_ms": 184.6,
+        "dimension": 768,
+        "finite": true,
+        "normalized": true,
+        "cancelled": true,
+        "oom_code": "resource_exhausted",
+        "measured_at": "2026-11-10",
+        "environment_digest": "sha256:872964e18165fc2aec3c325470355a1faeb87204fbfc2d5d89b0c76b6cdc90af",
+        "note": "CUDA profile not measured; the reference GPU was busy."
+      }
     },
     {
       "catalog_id": "visual-wemm-embedding-2b",

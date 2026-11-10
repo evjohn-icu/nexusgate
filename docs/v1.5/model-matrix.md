@@ -121,7 +121,7 @@ pretend it exists. Absence from the lock file is the enforcement point.
 
 | model | cold start | peak VRAM | peak RSS | warm latency | output checks | measured on |
 | --- | --- | --- | --- | --- | --- | --- |
-| SigLIP 2 base (FP32 CPU) | pending | n/a | pending | pending | pending | — |
+| SigLIP 2 base (FP32 CPU) | 4657.6 ms | n/a | 1325.3 MiB | P50 183.4 / P95 184.6 ms (batch 1); P50 351.2 / P95 356.7 ms (batch 2) | 768d, finite, L2-normalized, cancellation and OOM probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.15.0+cpu |
 | SigLIP 2 base (FP16 CUDA) | pending | pending | pending | pending | pending | — |
 | WeMM-Embedding-2B (FP16 CUDA, pooled frames) | pending | pending | pending | pending | pending | — |
 | WeMM-Embedding-2B (FP16 CUDA, native video) | pending | pending | pending | pending | pending | — |
@@ -131,9 +131,11 @@ pretend it exists. Absence from the lock file is the enforcement point.
 | ERes2NetV2 (CPU) | pending | n/a | pending | pending | pending | — |
 | Community-1 | blocked | blocked | blocked | blocked | blocked | gated, HTTP 401 |
 
-Every `pending` row is a gate that has not passed. The reference GPU is busy
-with an unrelated process at implementation time, so GPU rows stay unmeasured
-until `inference/benchmark.py` can run exclusively; CPU rows are measured with
-the same tool. A row is only replaced by numbers copied from an actual run of
-`inference/benchmark.py --json <path>` against the locked revision, and the
-run's device string is recorded with it.
+Every `pending` row is a gate that has not passed. The reference GPU was busy
+with an unrelated process throughout implementation, so every CUDA row stays
+unmeasured; the CPU row above is from an actual run of
+`inference/benchmark.py` against the locked SigLIP revision with the resolved
+CPU environment (`sha256:872964e1…`). The downloaded `model.safetensors` was
+verified against the lock (`61292338…6a0b`) before the run. A row is only
+replaced by numbers copied from an actual run, and the run's device string is
+recorded with it.
