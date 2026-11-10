@@ -1025,6 +1025,15 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		if err := saveArtifact(p.repo, ctx, j.AssetID, "proxy", "proxy-720-"+proxyPlan.Profile(), proxy, j.ID, worker); err != nil {
 			return err
 		}
+		// Visual indexing is not audio-driven. A silent asset never enters the
+		// HasAudio branch below, so firing the hook only there left silent
+		// imports without detect_shots until an operator happened to save
+		// multimodal settings and trigger the backfill. Audio assets still fire
+		// the hook after the audio artifact is saved, where planning can see
+		// audioExists; calling it earlier would only duplicate the visual plan.
+		if m == nil || !m.HasAudio {
+			p.afterDeriveCompleted(ctx, j.AssetID, j.InputHash)
+		}
 		if m != nil && m.HasAudio {
 			audio := filepath.Join(base, "audio.m4a")
 			if _, err := os.Stat(audio); os.IsNotExist(err) {
