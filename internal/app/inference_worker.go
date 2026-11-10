@@ -165,6 +165,7 @@ func authorizedInferenceCapabilities(caps remote.WorkerCapabilities) []remote.In
 		seen[key] = true
 		if model, ok := inferencecatalog.LookupByModel(capability.ModelID, capability.ModelRevision); ok {
 			capability.CatalogID = model.CatalogID
+			capability.ManifestDigest = model.ManifestDigest()
 		}
 		out = append(out, capability)
 	}

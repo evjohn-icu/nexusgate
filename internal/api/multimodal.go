@@ -210,7 +210,11 @@ func (s *Server) assetTimeline(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = parsed
 	}
-	timeline, truncated, err := s.service.AssetTimeline(r.Context(), assetID, startMS, endMS, limit)
+	cursors, ok := parseTimelineCursors(w, r)
+	if !ok {
+		return
+	}
+	timeline, nextCursors, truncated, err := s.service.AssetTimeline(r.Context(), assetID, startMS, endMS, limit, cursors)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "asset not found"})
@@ -221,9 +225,47 @@ func (s *Server) assetTimeline(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"timeline":               timeline,
+		"next_cursors":           nextCursors,
 		"truncated":              truncated,
 		"processing_unavailable": len(timeline.Coverage) == 0,
 	})
+}
+
+// timelineCursorTracks is the closed set of continuation cursors. Unknown keys
+// are rejected rather than silently ignored, so a typo cannot look like "no
+// more data".
+var timelineCursorTracks = map[string]bool{
+	"shots": true, "visual_refs": true, "transcript_segments": true,
+	"transcript_words": true, "speaker_turns": true, "sound_events": true,
+	"audio_windows": true,
+}
+
+func parseTimelineCursors(w http.ResponseWriter, r *http.Request) (map[string]string, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("cursor"))
+	if raw == "" {
+		return nil, true
+	}
+	if len(raw) > 8192 {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "cursor is too large"})
+		return nil, false
+	}
+	var cursors map[string]string
+	if err := json.Unmarshal([]byte(raw), &cursors); err != nil {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "cursor must be a JSON object of track cursors"})
+		return nil, false
+	}
+	for track, value := range cursors {
+		if !timelineCursorTracks[track] {
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "unknown cursor track " + track})
+			return nil, false
+		}
+		parts := strings.SplitN(value, "|", 3)
+		if len(parts) != 3 || len(parts[0]) != 13 || len(parts[1]) != 13 {
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "malformed cursor for " + track})
+			return nil, false
+		}
+	}
+	return cursors, true
 }
 
 // parseViewport reads start_ms/end_ms, rejecting a reversed or non-numeric

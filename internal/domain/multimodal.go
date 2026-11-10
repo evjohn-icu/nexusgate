@@ -972,6 +972,9 @@ type AssetTimeline struct {
 	Events       []AudioEventRow       `json:"sound_events"`
 	AudioWindows []AudioWindowRow      `json:"audio_windows"`
 	Coverage     []ModalityCoverageRow `json:"coverage"`
+	// NextCursors carries one opaque continuation cursor per truncated track.
+	// A track absent from the map is complete for the requested viewport.
+	NextCursors map[string]string `json:"next_cursors,omitempty"`
 }
 
 // VisualRef names one stored visual vector without exposing its bytes.

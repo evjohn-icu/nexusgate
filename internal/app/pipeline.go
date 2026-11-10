@@ -1384,12 +1384,12 @@ func (p *Pipeline) leaseLocalDeviceJob(ctx context.Context, worker string, maxAs
 			slog.Warn("local inference capabilities unavailable", "error", err)
 		} else {
 			available := make([]remote.InferenceCapability, 0, len(caps))
-			seen := make(map[domain.InferenceOperation]bool, len(caps))
 			for _, capability := range caps {
-				if !capability.Available || seen[capability.Operation] {
+				if !capability.Available || !capability.Operation.Valid() ||
+					strings.TrimSpace(capability.ModelID) == "" ||
+					strings.TrimSpace(capability.ModelRevision) == "" {
 					continue
 				}
-				seen[capability.Operation] = true
 				available = append(available, capability)
 			}
 			if len(available) > 0 {

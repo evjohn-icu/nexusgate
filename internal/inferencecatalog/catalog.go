@@ -9,6 +9,8 @@
 package inferencecatalog
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 
@@ -32,6 +34,14 @@ type Model struct {
 	// NativeVideo reports whether the model has a native-video encoder, which
 	// decides whether a native-video profile is ever offered.
 	NativeVideo bool
+}
+
+// ManifestDigest is the identity the installer and the lease attestation share:
+// catalog id, immutable model identity and the lock schema. Keeping the formula
+// here means routing and installation cannot drift.
+func (m Model) ManifestDigest() string {
+	sum := sha256.Sum256([]byte(m.CatalogID + "\x1f" + m.ModelID + "\x1f" + m.Revision + "\x1f" + LockSchemaVersion))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // LookupByModel resolves the locked entry for one model identity. The lease

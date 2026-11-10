@@ -2,8 +2,6 @@ package app
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -93,8 +91,7 @@ type modelManagementRepository interface {
 // same value it read from the catalog route, so a stale page cannot install a
 // revision the operator did not see.
 func ModelManifestDigest(entry inferencecatalog.Model) string {
-	sum := sha256.Sum256([]byte(entry.CatalogID + "\x1f" + entry.ModelID + "\x1f" + entry.Revision + "\x1fmodels.lock.v1"))
-	return "sha256:" + hex.EncodeToString(sum[:])
+	return entry.ManifestDigest()
 }
 
 // QueueModelManagement validates and enqueues one install or probe unit.

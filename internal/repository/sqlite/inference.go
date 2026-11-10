@@ -169,6 +169,12 @@ func (r *Repository) StageInferenceTask(ctx context.Context, jobID, owner string
 	}
 	now := time.Now().UTC()
 	if cancelRequested != 0 {
+		if err := failCancelledInferenceTx(ctx, tx, jobID, owner); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
 		return domain.Permanent(domain.ErrInferenceCancelled)
 	}
 	if state != string(domain.JobRunning) || leaseOwner != owner {
@@ -261,6 +267,12 @@ func (r *Repository) CommitInferenceTask(ctx context.Context, jobID, owner strin
 		return leaseLostErr(jobID, owner)
 	}
 	if cancelRequested != 0 {
+		if err := failCancelledInferenceTx(ctx, tx, jobID, owner); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
 		return domain.Permanent(domain.ErrInferenceCancelled)
 	}
 	if state == string(domain.JobSucceeded) {
@@ -478,6 +490,16 @@ func (r *Repository) RenewInferenceLease(ctx context.Context, jobID, owner strin
 		return leaseLostErr(jobID, owner)
 	}
 	return nil
+}
+
+// failCancelledInferenceTx makes the cancellation terminal in the same
+// transaction that refuses the result, so the pipeline does not retry a job the
+// operator withdrew. The owner predicate keeps a stale executor from touching
+// a job another holder has since taken.
+func failCancelledInferenceTx(ctx context.Context, tx *sql.Tx, jobID, owner string) error {
+	now := formatTime(time.Now().UTC())
+	_, err := tx.ExecContext(ctx, `UPDATE jobs SET state='failed',terminal=1,last_error_code='cancelled',last_error_message='cancelled',current_stage='cancelled',lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND job_type=? AND state IN ('pending','running') AND (lease_owner IS NULL OR lease_owner=?)`, now, jobID, string(domain.JobInference), owner)
+	return err
 }
 
 func (r *Repository) CancelInferenceTask(ctx context.Context, jobID string) error {

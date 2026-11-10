@@ -96,8 +96,8 @@ func (r *Repository) leaseNextInference(ctx context.Context, worker string, leas
 		// claimed profile routable. The Hub-local runtime is verified by its
 		// own probe path and has no worker row to attest against.
 		if restrictRoots && capability.CatalogID != "" {
-			clause += ` AND EXISTS(SELECT 1 FROM model_attestations ma WHERE ma.worker_id=? AND ma.catalog_id=? AND ma.action='probe')`
-			args = append(args, worker, capability.CatalogID)
+			clause += ` AND EXISTS(SELECT 1 FROM model_attestations ma WHERE ma.worker_id=? AND ma.catalog_id=? AND ma.manifest_digest=? AND ma.action IN ('install','probe'))`
+			args = append(args, worker, capability.CatalogID, capability.ManifestDigest)
 		}
 		clauses = append(clauses, clause)
 	}

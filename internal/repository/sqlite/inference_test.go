@@ -711,12 +711,12 @@ func TestCancelledInferenceCannotStageOrCommit(t *testing.T) {
 	if staged != 0 {
 		t.Fatal("cancelled task staged a result")
 	}
-	var state string
-	if err := repo.db.QueryRow(`SELECT state FROM jobs WHERE id=?`, jobID).Scan(&state); err != nil {
+	var state, code string
+	if err := repo.db.QueryRow(`SELECT state,COALESCE(last_error_code,'') FROM jobs WHERE id=?`, jobID).Scan(&state, &code); err != nil {
 		t.Fatal(err)
 	}
-	if state != string(domain.JobRunning) {
-		t.Fatalf("cancel of a running task must leave the job for its owner to stop, state=%q", state)
+	if state != string(domain.JobFailed) || code != "cancelled" {
+		t.Fatalf("cancelled task state=%q code=%q, want failed/cancelled", state, code)
 	}
 }
 
@@ -750,7 +750,7 @@ func TestInferenceLeaseRequiresExactModelAndProbeAttestation(t *testing.T) {
 	base := remote.InferenceCapability{
 		Operation: domain.OpSoundEvents, ModelID: "fixture-model",
 		ModelRevision: "revision-1", Available: true,
-		CatalogID: "sound-yamnet",
+		CatalogID: "sound-yamnet", ManifestDigest: "sha256:manifest",
 	}
 	wrong := base
 	wrong.ModelID = "other-model"

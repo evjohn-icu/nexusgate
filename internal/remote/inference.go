@@ -79,7 +79,10 @@ type InferenceCapability struct {
 	ModelRevision string                    `json:"model_revision"`
 	// CatalogID is filled by the Hub from the locked catalog before leasing.
 	// It is never accepted from the Worker's heartbeat.
-	CatalogID       string               `json:"-"`
+	CatalogID string `json:"-"`
+	// ManifestDigest is filled by the Hub from the same catalog identity the
+	// installer records; a stale attestation for another revision never routes.
+	ManifestDigest  string               `json:"-"`
 	ConfigHash      string               `json:"config_hash"`
 	SpaceID         string               `json:"space_id,omitempty"`
 	Dimension       int                  `json:"dimension,omitempty"`

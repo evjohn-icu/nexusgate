@@ -158,3 +158,20 @@ func TestPendingReferenceSearchReturns202(t *testing.T) {
 		t.Fatalf("unexpected pending body: %+v", pending)
 	}
 }
+
+func TestTimelineCursorValidation(t *testing.T) {
+	handler, _ := newMultimodalTestStack(t)
+	for _, raw := range []string{
+		`?cursor=not-json`,
+		`?cursor={"bogus":"0000000000000|0000000000000|x"}`,
+		`?cursor={"shots":"bad"}`,
+	} {
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/assets/missing/timeline"+raw, nil)
+		request.RemoteAddr = "10.0.0.5:1234"
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("cursor %q status=%d body=%s", raw, recorder.Code, recorder.Body.String())
+		}
+	}
+}
