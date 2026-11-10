@@ -1002,3 +1002,23 @@ type SpeakerEmbeddingStaging struct {
 	ConsentGeneration int64  `json:"consent_generation"`
 	SecretRef         string `json:"-"`
 }
+
+// ModalityMatch is one row a modality channel matched, with the provenance the
+// evidence layer needs. Score is a similarity (1 - cosine distance for vectors,
+// the detector score for events); it is not a calibrated probability.
+type ModalityMatch struct {
+	RecordID       string   `json:"record_id"`
+	AssetID        string   `json:"asset_id"`
+	ShotID         string   `json:"shot_id,omitempty"`
+	Modality       Modality `json:"modality"`
+	Label          string   `json:"label,omitempty"`
+	StartMS        int64    `json:"start_ms"`
+	EndMS          int64    `json:"end_ms"`
+	Score          float64  `json:"score"`
+	EvidenceStatus string   `json:"evidence_status"`
+	Confidence     *float64 `json:"confidence"`
+	ModelID        string   `json:"model_id"`
+	ModelRevision  string   `json:"model_revision"`
+	Backend        string   `json:"backend"`
+	GenerationID   string   `json:"generation_id"`
+}

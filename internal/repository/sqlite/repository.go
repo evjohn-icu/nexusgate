@@ -27,6 +27,11 @@ import (
 	"github.com/evjohn-icu/nexusgate/internal/remote"
 	"github.com/evjohn-icu/nexusgate/internal/textindex"
 	_ "modernc.org/sqlite"
+	// The bundled sqlite-vec extension installs itself through
+	// sqlite3_auto_extension, so every connection opened after this import has
+	// vec_distance_cosine available. Importing it here, in the only package that
+	// opens connections, keeps the guarantee in one place.
+	_ "modernc.org/sqlite/vec"
 )
 
 // CreateWorkerPairing returns the raw token exactly once. Only its SHA-256
@@ -1527,7 +1532,7 @@ func (r *Repository) LeaseNextJob(ctx context.Context, worker string, ttlFor fun
 	// planner a second table to order by and could cost the ordered scan. The
 	// subquery is a primary-key lookup, and it is skipped entirely when the
 	// ceiling is zero.
-	err = tx.QueryRowContext(ctx, `SELECT id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,last_error_message FROM jobs INDEXED BY idx_jobs_lease_order WHERE state IN ('pending','failed','running') AND terminal=0 AND assigned_worker_id IS NULL AND attempt_count<max_attempts AND run_after<=? AND (lease_expires_at IS NULL OR lease_expires_at<=?) AND (?=0 OR NOT EXISTS (SELECT 1 FROM assets a WHERE a.id=jobs.asset_id AND a.file_size>?)) ORDER BY priority DESC,created_at LIMIT 1`, formatTime(now), formatTime(now), filter.MaxAssetBytes, filter.MaxAssetBytes).Scan(&j.ID, &j.AssetID, &j.Type, &j.State, &j.Priority, &j.AttemptCount, &j.MaxAttempts, &run, &j.InputHash, &last)
+	err = tx.QueryRowContext(ctx, `SELECT id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,last_error_message FROM jobs INDEXED BY idx_jobs_lease_order WHERE job_type NOT IN ('inference','model_install','model_probe') AND state IN ('pending','failed','running') AND terminal=0 AND assigned_worker_id IS NULL AND attempt_count<max_attempts AND run_after<=? AND (lease_expires_at IS NULL OR lease_expires_at<=?) AND (?=0 OR NOT EXISTS (SELECT 1 FROM assets a WHERE a.id=jobs.asset_id AND a.file_size>?)) ORDER BY priority DESC,created_at LIMIT 1`, formatTime(now), formatTime(now), filter.MaxAssetBytes, filter.MaxAssetBytes).Scan(&j.ID, &j.AssetID, &j.Type, &j.State, &j.Priority, &j.AttemptCount, &j.MaxAttempts, &run, &j.InputHash, &last)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Nothing to lease, but reclaimExhaustedLeases above may still have
 		// terminally failed an unrelated exhausted job in this same
@@ -2142,34 +2147,124 @@ func (r *Repository) CommitShotRefinement(ctx context.Context, assetID, runID st
 // Keeping validation outside the delete/insert sequence protects existing,
 // trusted rows even when a later model response is malformed.
 func (r *Repository) replaceAssetShotsTx(ctx context.Context, tx *sql.Tx, assetID, sourceRunID string, shots []domain.AssetShot) error {
+	type intervalKey struct {
+		startMS int64
+		endMS   int64
+	}
+	type existingShot struct {
+		id        string
+		createdAt string
+	}
+	byInterval := make(map[intervalKey]existingShot, len(shots))
+	oldIDs := make(map[string]struct{}, len(shots))
+	rows, err := tx.QueryContext(ctx, `SELECT id,start_ms,end_ms,created_at FROM asset_shots WHERE asset_id=? ORDER BY id`, assetID)
+	if err != nil {
+		return err
+	}
+	oldCount := 0
+	for rows.Next() {
+		var key intervalKey
+		var old existingShot
+		if err := rows.Scan(&old.id, &key.startMS, &key.endMS, &old.createdAt); err != nil {
+			rows.Close()
+			return err
+		}
+		oldCount++
+		oldIDs[old.id] = struct{}{}
+		if _, duplicate := byInterval[key]; !duplicate {
+			byInterval[key] = old
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	seenIntervals := make(map[intervalKey]struct{}, len(shots))
+	keptIDs := make(map[string]struct{}, len(shots))
+	changedIntervals := oldCount != len(shots)
+	for _, shot := range shots {
+		key := intervalKey{startMS: shot.StartMS, endMS: shot.EndMS}
+		if _, duplicate := seenIntervals[key]; duplicate {
+			return domain.Permanent(fmt.Errorf("duplicate canonical shot interval [%d,%d)", shot.StartMS, shot.EndMS))
+		}
+		seenIntervals[key] = struct{}{}
+		if old, exists := byInterval[key]; exists {
+			keptIDs[old.id] = struct{}{}
+		} else {
+			changedIntervals = true
+		}
+	}
 	if err := r.deleteFromShotSearchIndexTx(ctx, tx, assetID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM asset_shots WHERE asset_id=?`, assetID); err != nil {
-		return err
+	for id := range oldIDs {
+		if _, keep := keptIDs[id]; keep {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM asset_shots WHERE id=? AND asset_id=?`, id, assetID); err != nil {
+			return err
+		}
 	}
-	now := time.Now().UTC()
+	// Clear the unique source-run/ordinal pair before updating matched rows so
+	// a re-ordered result cannot transiently collide with another row's ordinal.
 	for i, shot := range shots {
-		id := shot.ID
-		if id == "" {
-			id = idgen.New()
+		key := intervalKey{startMS: shot.StartMS, endMS: shot.EndMS}
+		old, exists := byInterval[key]
+		if !exists {
+			continue
 		}
 		ordinal := shot.Ordinal
 		if ordinal < 0 {
 			ordinal = i
 		}
-		shotJSON := func(value []string) string {
-			if value == nil {
-				value = []string{}
-			}
-			encoded, _ := json.Marshal(value)
-			return string(encoded)
+		if _, err := tx.ExecContext(ctx, `UPDATE asset_shots SET source_run_id=NULL,ordinal=? WHERE id=? AND asset_id=?`, ordinal, old.id, assetID); err != nil {
+			return err
 		}
+	}
+	now := time.Now().UTC()
+	shotJSON := func(value []string) string {
+		if value == nil {
+			value = []string{}
+		}
+		encoded, _ := json.Marshal(value)
+		return string(encoded)
+	}
+	for i, shot := range shots {
+		key := intervalKey{startMS: shot.StartMS, endMS: shot.EndMS}
+		old, matched := byInterval[key]
+		id := shot.ID
 		created := now
-		if !shot.CreatedAt.IsZero() {
-			created = shot.CreatedAt
+		if matched {
+			id = old.id
+			created, _ = time.Parse(time.RFC3339Nano, old.createdAt)
+			if created.IsZero() {
+				created = now
+			}
+		} else {
+			if id == "" {
+				id = idgen.New()
+			} else if _, collidesWithOld := oldIDs[id]; collidesWithOld {
+				// A caller may have reused the old ID while changing its interval;
+				// changed boundaries are new canonical shots and get new identities.
+				id = idgen.New()
+			}
+			if !shot.CreatedAt.IsZero() {
+				created = shot.CreatedAt
+			}
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO asset_shots(id,asset_id,source_run_id,ordinal,start_ms,end_ms,description,tags_json,objects_json,actions_json,mood_json,confidence,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, assetID, nullString(sourceRunID), ordinal, shot.StartMS, shot.EndMS, strings.TrimSpace(shot.Description), shotJSON(shot.Tags), shotJSON(shot.Objects), shotJSON(shot.Actions), shotJSON(shot.Mood), shot.Confidence, formatTime(created)); err != nil {
+		ordinal := shot.Ordinal
+		if ordinal < 0 {
+			ordinal = i
+		}
+		if matched {
+			_, err = tx.ExecContext(ctx, `UPDATE asset_shots SET source_run_id=?,ordinal=?,start_ms=?,end_ms=?,description=?,tags_json=?,objects_json=?,actions_json=?,mood_json=?,confidence=? WHERE id=? AND asset_id=?`, nullString(sourceRunID), ordinal, shot.StartMS, shot.EndMS, strings.TrimSpace(shot.Description), shotJSON(shot.Tags), shotJSON(shot.Objects), shotJSON(shot.Actions), shotJSON(shot.Mood), shot.Confidence, id, assetID)
+		} else {
+			_, err = tx.ExecContext(ctx, `INSERT INTO asset_shots(id,asset_id,source_run_id,ordinal,start_ms,end_ms,description,tags_json,objects_json,actions_json,mood_json,confidence,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, assetID, nullString(sourceRunID), ordinal, shot.StartMS, shot.EndMS, strings.TrimSpace(shot.Description), shotJSON(shot.Tags), shotJSON(shot.Objects), shotJSON(shot.Actions), shotJSON(shot.Mood), shot.Confidence, formatTime(created))
+		}
+		if err != nil {
 			return err
 		}
 		res, err := tx.ExecContext(ctx, `INSERT INTO asset_shot_search(shot_id,asset_id,description,tags,objects,actions,mood) VALUES(?,?,?,?,?,?,?)`, id, assetID, indexText(shot.Description), indexText(strings.Join(shot.Tags, " ")), indexText(strings.Join(shot.Objects, " ")), indexText(strings.Join(shot.Actions, " ")), indexText(strings.Join(shot.Mood, " ")))
@@ -2188,7 +2283,12 @@ func (r *Repository) replaceAssetShotsTx(ctx context.Context, tx *sql.Tx, assetI
 			return err
 		}
 		sourceText := strings.Join(append([]string{shot.Description}, append(append(shot.Tags, shot.Objects...), append(shot.Actions, shot.Mood...)...)...), " ")
-		if _, err := tx.ExecContext(ctx, `INSERT INTO shot_semantic_vectors(shot_id,model,vector_json,source_text,created_at) VALUES(?,?,?,?,?)`, id, discovery.HeuristicVectorModel, string(vector), sourceText, formatTime(created)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO shot_semantic_vectors(shot_id,model,vector_json,source_text,created_at) VALUES(?,?,?,?,?) ON CONFLICT(shot_id) DO UPDATE SET model=excluded.model,vector_json=excluded.vector_json,source_text=excluded.source_text,created_at=excluded.created_at`, id, discovery.HeuristicVectorModel, string(vector), sourceText, formatTime(created)); err != nil {
+			return err
+		}
+	}
+	if changedIntervals {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM modality_heads WHERE asset_id=? AND operation=?`, assetID, string(domain.OpVisualEmbedding)); err != nil {
 			return err
 		}
 	}
