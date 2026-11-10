@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -257,5 +258,58 @@ func TestSpeakerAdminHandlersValidateInputs(t *testing.T) {
 		if rec.Code != tc.want {
 			t.Errorf("%s %s status=%d body=%s, want %d", tc.method, tc.path, rec.Code, rec.Body.String(), tc.want)
 		}
+	}
+}
+
+func TestTimelinePaginationRoundTrip(t *testing.T) {
+	handler, repo := newMultimodalTestStack(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, statement := range []string{
+		`INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES('timeline-asset','fp',100,'ready','` + now + `','` + now + `')`,
+		`INSERT INTO media_metadata(asset_id,ffprobe_json,exiftool_json,normalized_json,probe_version,updated_at,duration_ms) VALUES('timeline-asset','{}','{}','{}','test','` + now + `',10000)`,
+		`INSERT INTO asset_shots(id,asset_id,source_run_id,ordinal,start_ms,end_ms,description,tags_json,objects_json,actions_json,mood_json,confidence,created_at) VALUES('shot-1','timeline-asset',NULL,0,0,5000,'one','[]','[]','[]','[]',0.9,'` + now + `')`,
+		`INSERT INTO asset_shots(id,asset_id,source_run_id,ordinal,start_ms,end_ms,description,tags_json,objects_json,actions_json,mood_json,confidence,created_at) VALUES('shot-2','timeline-asset',NULL,1,5000,10000,'two','[]','[]','[]','[]',0.9,'` + now + `')`,
+	} {
+		if _, err := repo.DB().ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/assets/timeline-asset/timeline?start_ms=0&end_ms=10000&limit=1", nil)
+	request.RemoteAddr = "10.0.0.5:1234"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, request)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("timeline status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var page struct {
+		Timeline struct {
+			Shots []struct {
+				ID string `json:"id"`
+			} `json:"shots"`
+			NextCursors map[string]string `json:"next_cursors"`
+		} `json:"timeline"`
+		NextCursors map[string]string `json:"next_cursors"`
+		Truncated   map[string]bool   `json:"truncated"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	cursor := page.NextCursors["shots"]
+	if len(page.Timeline.Shots) != 1 || !page.Truncated["shots"] || cursor == "" || page.Timeline.NextCursors["shots"] != cursor {
+		t.Fatalf("first page = %+v", page)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/assets/timeline-asset/timeline?start_ms=0&end_ms=10000&limit=1&cursor="+url.QueryEscape(`{"shots":"`+cursor+`"}`), nil)
+	request.RemoteAddr = "10.0.0.5:1234"
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, request)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second page status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Timeline.Shots) != 1 || page.Timeline.Shots[0].ID != "shot-2" {
+		t.Fatalf("second page shots = %+v", page.Timeline.Shots)
 	}
 }

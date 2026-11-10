@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/evjohn-icu/nexusgate/internal/domain"
 	"github.com/evjohn-icu/nexusgate/internal/media"
@@ -182,5 +183,23 @@ func TestMergeDetectedCapabilitiesReportsNoHardwareForSoftwareFallback(t *testin
 
 	if len(merged.Hardware) != 0 {
 		t.Fatalf("a software fallback must not claim a hardware backend, got %v", merged.Hardware)
+	}
+}
+
+func TestRunOptionsDefaultsAndUnconfiguredRuntime(t *testing.T) {
+	defaults := (RunOptions{}).withDefaults()
+	if defaults.HeartbeatInterval != 30*time.Second || defaults.PollInterval != 2*time.Second {
+		t.Fatalf("defaults = %+v", defaults)
+	}
+	custom := (RunOptions{HeartbeatInterval: time.Minute, PollInterval: time.Second}).withDefaults()
+	if custom.HeartbeatInterval != time.Minute || custom.PollInterval != time.Second {
+		t.Fatalf("custom options changed: %+v", custom)
+	}
+	var nilRuntime *Runtime
+	if err := nilRuntime.Run(context.Background(), RunOptions{}); err == nil {
+		t.Fatal("nil runtime ran")
+	}
+	if err := (&Runtime{}).Run(context.Background(), RunOptions{}); err == nil {
+		t.Fatal("empty runtime ran")
 	}
 }
