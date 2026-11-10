@@ -26,6 +26,17 @@ uv pip install --python .venv/bin/python -r requirements/torch.in \
     --index-url https://download.pytorch.org/whl/cu126
 ```
 
+WeMM-Embedding-2B needs its own environment because its remote code targets
+transformers 5.2.0, while the SigLIP 2/CLAP adapters are validated against
+4.57.1:
+
+```bash
+uv venv --python 3.12 .venv-wemm
+uv pip install --python .venv-wemm/bin/python torch==2.14.1+cu126 \
+    torchvision==0.29.1+cu126 --index-url https://download.pytorch.org/whl/cu126
+uv pip install --python .venv-wemm/bin/python -r requirements/wemm.in
+```
+
 YAMNet needs a separate environment because its SavedModel was exported for
 Keras 2 and does not load under Keras 3 defaults:
 

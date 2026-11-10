@@ -56,6 +56,22 @@
         "numpy": "2.5.4"
       },
       "device_note": "Measured CUDA resolution on the reference RTX 2070 (driver 610.88); the cu126 index tops out at torch 2.14.1+cu126, so CUDA installs use an exclusive --index-url rather than --extra-index-url."
+    },
+    "torch_cuda_wemm": {
+      "python": "3.12",
+      "lockfile": "inference/requirements/torch-cuda-wemm.lock",
+      "digest": "sha256:97aeb6ffed72c74f7dedbff08f8fd4a96b6f8bd94681cf9770dbb6f4c31d436c",
+      "backends": [
+        "cuda"
+      ],
+      "resolved": {
+        "torch": "2.14.1+cu126",
+        "torchvision": "0.29.1+cu126",
+        "transformers": "5.2.0",
+        "qwen-vl-utils": "0.0.14",
+        "numpy": "2.5.4"
+      },
+      "device_note": "Separate WeMM environment: the model ships remote code targeting transformers 5.2.0; the SigLIP 2/CLAP environment stays on 4.57.1. Measured on the reference RTX 2070 with FP16 weights; peak 6336 MiB leaves 832 MiB under the 7168 MiB gate, so device concurrency stays 1."
     }
   },
   "models": [
@@ -365,7 +381,28 @@
         ],
         "device_note": "BF16 weights must be cast to FP16; Turing has no native BF16. Native-video frame/resolution caps stay null until the benchmark measures them."
       },
-      "measured": null
+      "measured": [
+        {
+          "device": "cuda",
+          "dtype": "float16",
+          "batch": 1,
+          "cold_start_ms": 11758.4,
+          "load_ms": 6387.4,
+          "peak_rss_mib": 11090.7,
+          "peak_vram_mib": 6336.0,
+          "latency_p50_ms": 3632.4,
+          "latency_p95_ms": 3632.4,
+          "dimension": 2048,
+          "finite": true,
+          "normalized": true,
+          "cancelled": true,
+          "oom_code": true,
+          "measured_at": "2026-11-10",
+          "environment_file": "inference/requirements/torch-cuda-wemm.lock",
+          "environment_digest": "sha256:97aeb6ffed72c74f7dedbff08f8fd4a96b6f8bd94681cf9770dbb6f4c31d436c",
+          "note": "Pooled-frame strategy only; native-video encoding was not benchmarked."
+        }
+      ]
     },
     {
       "catalog_id": "audio-clap-htsat-unfused",

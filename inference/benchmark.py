@@ -14,6 +14,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import wave
 from pathlib import Path
@@ -157,6 +158,22 @@ def _run_child(request: Mapping[str, Any], model_dir: Path, device: str,
     assert process.stdin is not None and process.stdout is not None
     process.stdin.write(payload)
     process.stdin.close()
+    # Transformers writes per-parameter load progress to stderr. Draining it
+    # only after exit deadlocks once the pipe buffer fills (observed with the
+    # 2B WeMM checkpoint), so consume it concurrently and keep a bounded tail.
+    stderr_chunks: list[bytes] = []
+    stderr_size = 0
+
+    def drain_stderr() -> None:
+        nonlocal stderr_size
+        assert process.stderr is not None
+        for chunk in iter(lambda: process.stderr.read(8192), b""):
+            if stderr_size < 65536:
+                stderr_chunks.append(chunk)
+                stderr_size += len(chunk)
+
+    stderr_reader = threading.Thread(target=drain_stderr, daemon=True)
+    stderr_reader.start()
     first_result_ms: float | None = None
     load_started: float | None = None
     load_done: float | None = None
@@ -182,8 +199,9 @@ def _run_child(request: Mapping[str, Any], model_dir: Path, device: str,
             frames.append(frame)
         elif frame.get("type") == "error":
             frames.append(frame)
-    stderr = process.stderr.read() if process.stderr else b""
     returncode = process.wait()
+    stderr_reader.join(timeout=5.0)
+    stderr = b"".join(stderr_chunks)
     # The Go-compatible result digest is validated by the protocol tests/integration owner.
     result_frame = next((item for item in frames if item.get("type") == "result"), None)
     error_frame = next((item for item in frames if item.get("type") == "error"), None)

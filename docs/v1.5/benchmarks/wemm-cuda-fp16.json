@@ -1,0 +1,31 @@
+{
+  "schema_version": "inference.benchmark.v1",
+  "model": "visual-wemm-embedding-2b",
+  "device": "cuda",
+  "dtype": "float16",
+  "batch": 1,
+  "cold_start_ms": 11758.421168000496,
+  "load_ms": 6387.421878000168,
+  "peak_vram_mib": 6336.0,
+  "peak_rss_mib": 11090.7109375,
+  "latency_ms": {
+    "p50": 3632.362925000052,
+    "p95": 3632.362925000052
+  },
+  "checks": {
+    "finite": true,
+    "normalized": true,
+    "dimension": 2048,
+    "output_records": 2,
+    "first_process_result_ms": 11758.421168000496,
+    "resident_first_result_ms": 10896.302834997186,
+    "vram_allocated_mib": 5853.65869140625,
+    "vram_reserved_mib": 6336.0,
+    "cancellation_probe": true,
+    "oom_probe": true
+  },
+  "cancelled": true,
+  "oom_code": "resource_exhausted",
+  "status": "complete",
+  "rejected": false
+}
