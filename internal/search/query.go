@@ -107,10 +107,15 @@ type SearchRequest struct {
 	Diversity       float64            `json:"diversity"`
 	IncludeEvidence bool               `json:"include_evidence"`
 	IncludeContext  bool               `json:"include_context"`
-	Facets          domain.FacetFilter `json:"facets,omitempty"`
+	Facets         domain.FacetFilter `json:"facets,omitempty"`
 	// AssetFilter narrows by the owning asset's capture/session/status
 	// context. A nil or all-empty filter matches everything.
-	AssetFilter *domain.AssetContextFilter `json:"asset_filter,omitempty"`
+	AssetFilter    *domain.AssetContextFilter `json:"asset_filter,omitempty"`
+	Modalities     []string                   `json:"modalities,omitempty"`
+	ReferenceID    string                     `json:"reference_id,omitempty"`
+	VisualShotID   string                     `json:"visual_shot_id,omitempty"`
+	Temporal       *TemporalQuery             `json:"temporal,omitempty"`
+	SpeakerFilter  *SpeakerFilter             `json:"speaker_filter,omitempty"`
 }
 
 // DefaultLimit applies when SearchRequest.Limit is <= 0.
@@ -132,6 +137,12 @@ type Options struct {
 	// like the transcript channel without aligned words — recall keeps
 	// working, the channel just has nothing to say.
 	Embedder TextEmbedder
+	// ModalityStore is the optional read-only store for visual/audio/event/speaker
+	// retrieval. Requests that explicitly select a missing modality fail clearly.
+	ModalityStore ModalityStore
+	// ModalityEncoder creates query vectors in the exact embedding space queried
+	// by visual and audio retrieval.
+	ModalityEncoder ModalityQueryEncoder
 	// ProfileVersion is stamped into query_hash so a vocabulary or profile
 	// change invalidates cached feedback keys. Bump it on any change to
 	// vocabulary.go, profile.go or the router.
@@ -150,8 +161,9 @@ func DefaultOptions() Options {
 
 // SearchQueryInfo is the echo of how the query was understood.
 type SearchQueryInfo struct {
-	Raw    string       `json:"raw"`
-	Intent SearchIntent `json:"intent"`
+ Raw      string       `json:"raw"`
+ Intent   SearchIntent `json:"intent"`
+ Temporal string       `json:"temporal,omitempty"`
 }
 
 // SearchResponse is the structured v2 search response. SearchID and QueryHash
@@ -195,9 +207,11 @@ type ResultItem struct {
 	// Scores carries the per-signal scores (lexical, heuristic_semantic,
 	// transcript, metadata) plus the fused value under the fusion strategy's
 	// name ("blend" or "rrf").
-	Scores   map[string]float64 `json:"scores,omitempty"`
-	Evidence []Evidence         `json:"evidence,omitempty"`
-	Context  *ShotContext       `json:"context,omitempty"`
+ Scores   map[string]float64 `json:"scores,omitempty"`
+ Evidence []Evidence         `json:"evidence,omitempty"`
+ Context  *ShotContext       `json:"context,omitempty"`
+ Matches  []Match            `json:"matches,omitempty"`
+ Coverage []Coverage         `json:"coverage,omitempty"`
 }
 
 // ShotContext carries the neighbouring shots of a matched shot. Neighbour

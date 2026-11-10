@@ -541,7 +541,7 @@ func (r *Repository) CompleteWorkerJob(ctx context.Context, jobID, workerID stri
 	// expiry here means a lapsed Worker now fails instead of silently
 	// succeeding, and the widened reclaim predicates in LeaseNextJob /
 	// LeaseNextWorkerDerive pick the job back up for a real attempt.
-	err = tx.QueryRowContext(ctx, `SELECT asset_id,job_type,input_hash,current_stage,attempt_count,max_attempts FROM jobs WHERE id=? AND lease_owner=? AND state='running' AND lease_expires_at>?`, jobID, workerID, formatTime(now)).Scan(&assetID, &jobType, &inputHash, &currentStage, &attemptCount, &maxAttempts)
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(asset_id,''),job_type,input_hash,current_stage,attempt_count,max_attempts FROM jobs WHERE id=? AND lease_owner=? AND state='running' AND lease_expires_at>?`, jobID, workerID, formatTime(now)).Scan(&assetID, &jobType, &inputHash, &currentStage, &attemptCount, &maxAttempts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return leaseLostErr(jobID, workerID)
 	}

@@ -412,6 +412,13 @@ func (s *Server) assetWaveform(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusNotFound, APIError{Code: "waveform_unavailable", Message: "no waveform has been generated for this asset"})
 		return
 	}
+	// Defence in depth: the row is Hub-written, but a corrupted or hand-edited
+	// path must not let this route read outside the managed roots.
+	allowed := pathInsideRoot(artifact.LocalPath, s.service.DataDir()) || pathInsideRoot(artifact.LocalPath, s.service.CacheDir())
+	if !allowed {
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "waveform_unavailable", Message: "waveform artifact is outside the managed cache"})
+		return
+	}
 	manifestRaw, err := os.ReadFile(artifact.LocalPath)
 	if err != nil {
 		writeAPIError(w, http.StatusNotFound, APIError{Code: "waveform_unavailable", Message: "waveform manifest is unreadable"})

@@ -75,6 +75,17 @@ type MultimodalRequest struct {
 
 var ErrConflictingReferences = errors.New("search: reference_id and visual_shot_id conflict")
 
+var ErrInvalidMultimodal = errors.New("search: invalid multimodal request")
+
+// ErrModalitiesUnavailable identifies an explicitly requested channel that
+// cannot be queried with the configured search capabilities.
+var ErrModalitiesUnavailable = errors.New("search: requested modality is not available")
+
+// ModalityQueryEncoder creates a query vector in a modality-specific space.
+type ModalityQueryEncoder interface {
+	Encode(ctx context.Context, modality, text, referenceID string) (spaceID string, vector []float32, err error)
+}
+
 // ConflictingReferencesError is a typed request error so an HTTP layer can map
 // conflicting reference selectors to 400. Both selectors may be absent; when
 // supplied together, they identify competing visual references and are rejected.
@@ -103,6 +114,24 @@ func ValidateMultimodal(req MultimodalRequest) error {
 			return fmt.Errorf("search: unknown modality %q", modality)
 		}
 	}
+	needsSpeakerFilter := false
+	for _, modality := range req.Modalities {
+		if modality == ModalitySpeaker {
+			needsSpeakerFilter = true
+			break
+		}
+	}
+	if req.Temporal != nil {
+		for _, condition := range req.Temporal.Conditions {
+			if condition.Modality == ModalitySpeaker {
+				needsSpeakerFilter = true
+				break
+			}
+		}
+	}
+	if needsSpeakerFilter && req.SpeakerFilter == nil {
+		return errors.New("search: speaker modality requires speaker_filter")
+	}
 	if req.Temporal != nil {
 		if err := validateTemporalQuery(*req.Temporal); err != nil {
 			return err
@@ -130,6 +159,9 @@ func validateTemporalQuery(query TemporalQuery) error {
 	if len(query.Predicates) > 16 {
 		return fmt.Errorf("search: temporal query has %d predicates; maximum is 16", len(query.Predicates))
 	}
+	// Identity errors come first: a duplicate condition or predicate id is a
+	// structural mistake, and reporting "query must not be empty" for it hides
+	// the actual problem.
 	conditions := make(map[string]struct{}, len(query.Conditions))
 	for _, condition := range query.Conditions {
 		if strings.TrimSpace(condition.ID) == "" {
@@ -137,9 +169,6 @@ func validateTemporalQuery(query TemporalQuery) error {
 		}
 		if _, exists := conditions[condition.ID]; exists {
 			return fmt.Errorf("search: duplicate temporal condition ID %q", condition.ID)
-		}
-		if !validModality(condition.Modality) {
-			return fmt.Errorf("search: unknown temporal condition modality %q", condition.Modality)
 		}
 		conditions[condition.ID] = struct{}{}
 	}
@@ -152,6 +181,16 @@ func validateTemporalQuery(query TemporalQuery) error {
 			return fmt.Errorf("search: duplicate temporal predicate ID %q", predicate.ID)
 		}
 		predicateIDs[predicate.ID] = struct{}{}
+	}
+	for _, condition := range query.Conditions {
+		if !validModality(condition.Modality) {
+			return fmt.Errorf("search: unknown temporal condition modality %q", condition.Modality)
+		}
+		if strings.TrimSpace(condition.Query) == "" {
+			return fmt.Errorf("search: temporal condition %q query must not be empty", condition.ID)
+		}
+	}
+	for _, predicate := range query.Predicates {
 		if _, exists := conditions[predicate.LeftID]; !exists {
 			return fmt.Errorf("search: temporal predicate %q has unknown left condition %q", predicate.ID, predicate.LeftID)
 		}
@@ -219,6 +258,8 @@ type ModalityRetriever struct {
 	Vector        []float32
 	SoundLabels   []string
 	SpeakerFilter SpeakerFilter
+	Universe      map[string]bool
+	UniverseReady bool
 }
 
 var _ CandidateRetriever = (*ModalityRetriever)(nil)
@@ -262,9 +303,15 @@ func (r *ModalityRetriever) RetrieveWithWindows(ctx context.Context, query Searc
 	if (r.Modality == ModalityVisual || r.Modality == ModalityAudio) && (r.SpaceID == "" || len(r.Vector) == 0) {
 		return nil, nil, fmt.Errorf("search: %s retrieval requires a space ID and query vector", r.Modality)
 	}
-	universe, err := r.Store.FilteredShotUniverse(ctx, query.Filters.Facets, query.Filters.AssetFilter)
-	if err != nil {
-		return nil, nil, err
+	var err error
+	var universe map[string]bool
+	if r.UniverseReady {
+		universe = r.Universe
+	} else {
+		universe, err = r.Store.FilteredShotUniverse(ctx, query.Filters.Facets, query.Filters.AssetFilter)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	var windows []ModalityWindow
 	switch r.Modality {
@@ -526,7 +573,7 @@ func BuildMatches(conditionID string, windows []ModalityWindow) []Match {
 			ModelVersion:    window.ModelVersion,
 			AnalysisRunID:   window.AnalysisRunID,
 		}
-		key := match.RecordID
+		key := conditionID + "\x00" + match.Modality + "\x00" + match.RecordID
 		old, exists := best[key]
 		if !exists || match.RetrievalScore > old.RetrievalScore || (match.RetrievalScore == old.RetrievalScore && matchLess(match, old)) {
 			best[key] = match

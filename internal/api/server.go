@@ -2075,7 +2075,8 @@ func (s *Server) searchShotsV2(w http.ResponseWriter, r *http.Request) {
 	if !decodeStrictJSON(w, r, &req, 1<<20) {
 		return
 	}
-	if strings.TrimSpace(req.Query) == "" {
+	multimodal := len(req.Modalities) > 0 || req.ReferenceID != "" || req.VisualShotID != "" || req.Temporal != nil || req.SpeakerFilter != nil
+	if strings.TrimSpace(req.Query) == "" && !multimodal {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "missing query"})
 		return
 	}
@@ -2101,7 +2102,16 @@ func (s *Server) searchShotsV2(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := s.service.SearchV2(r.Context(), req)
 	if err != nil {
-		writeError(w, err)
+		switch {
+		case errors.Is(err, search.ErrInvalidMultimodal), errors.Is(err, search.ErrConflictingReferences):
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
+		case errors.Is(err, search.ErrModalitiesUnavailable):
+			// The request named a channel this Hub cannot serve. Saying so is
+			// the point: a 200 with fewer channels would look like an answer.
+			writeAPIError(w, http.StatusServiceUnavailable, APIError{Code: "modality_unavailable", Message: clipText(err.Error(), 300), Action: "configure_the_inference_runtime"})
+		default:
+			writeError(w, err)
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, response)

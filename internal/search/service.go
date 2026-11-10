@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -62,7 +63,8 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 	}
 	raw := strings.TrimSpace(req.Query)
 	response.Query.Raw = raw
-	if raw == "" {
+	hasMultimodal := hasMultimodalRequest(req)
+	if raw == "" && !hasMultimodal {
 		response.Query.Intent = IntentAuto
 		return response, nil
 	}
@@ -73,6 +75,24 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 	limit, target, err := normalizePagination(req.Limit, req.Offset)
 	if err != nil {
 		return nil, err
+	}
+	if err := ValidateMultimodal(MultimodalRequest{
+		Modalities: req.Modalities, ReferenceID: req.ReferenceID, VisualShotID: req.VisualShotID,
+		Temporal: req.Temporal, SpeakerFilter: req.SpeakerFilter,
+	}); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidMultimodal, err)
+	}
+	var temporal *TemporalQuery
+	if req.Temporal != nil {
+		copy := *req.Temporal
+		temporal = &copy
+		if len(temporal.Conditions) == 0 {
+			if compiled, recognized := CompileTemporalQuery(raw); recognized {
+				temporal = compiled
+			} else {
+				temporal = nil
+			}
+		}
 	}
 	pageOffset := req.Offset
 	if pageOffset < 0 {
@@ -96,7 +116,7 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 	// list is retrieved at most MaxSearchWindow wide, and when a facet or
 	// asset-context filter is set it is intersected with the same v2 universe
 	// the semantic channel defines — asset_filter is never silently ignored.
-	if q.Intent == IntentSimilar {
+	if q.Intent == IntentSimilar && !hasMultimodal {
 		candidates, err := s.SimilarByText(ctx, q.Raw, MaxSearchWindow)
 		if errors.Is(err, ErrNoEmbeddingSearch) {
 			candidates, err = s.SimilarByHeuristic(ctx, q.Raw, MaxSearchWindow)
@@ -137,8 +157,11 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 		response.NextOffset = nextOffset
 		response.WindowExhausted = windowExhausted
 		response.Query.Intent = q.Intent
+		if req.Temporal != nil {
+			response.Query.Temporal = req.Temporal.Interpretation
+		}
 		response.SearchID = randomHex(8)
-		response.QueryHash = queryProfileFingerprint(q, req.Mode, s.opts.ProfileVersion)
+		response.QueryHash = requestQueryFingerprint(q, req, s.opts.ProfileVersion)
 		for i, candidate := range page {
 			item := ResultItem{
 				ShotID:      candidate.ShotID,
@@ -158,6 +181,8 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 			for signal, value := range candidate.Signals {
 				item.Scores[signal] = value
 			}
+			item.Matches = nil
+			item.Coverage = nil
 			response.Results = append(response.Results, item)
 		}
 		return response, nil
@@ -179,6 +204,28 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 	// embedding channel needs a configured provider AND a positive profile
 	// weight. Auto/fact keep the full silent-channel set so the default path
 	// ranks exactly as v0.27's plain RRF did.
+	// New modality channels run only when explicitly requested. Their universe
+	// is computed once from the same facet predicates the browse surface uses,
+	// so an ineligible shot cannot enter through a modality channel.
+	var modalityUniverse map[string]bool
+	modalityUniverseReady := false
+	if hasMultimodal && s.opts.ModalityStore != nil && hasAnySearchFilter(q.Filters.Facets, q.Filters.AssetFilter) {
+		computed, err := s.opts.ModalityStore.FilteredShotUniverse(ctx, q.Filters.Facets, q.Filters.AssetFilter)
+		if err != nil {
+			return nil, err
+		}
+		modalityUniverse = computed
+		modalityUniverseReady = true
+	}
+	modalityBundles, err := s.retrieveModalities(ctx, req, q, recallLimit, modalityUniverse, modalityUniverseReady)
+	if err != nil {
+		return nil, err
+	}
+	temporalAssets, temporalMatches, err := s.temporalEvidence(ctx, req, q, recallLimit, modalityUniverse, modalityUniverseReady)
+	if err != nil {
+		return nil, err
+	}
+
 	channels := []CandidateRetriever{}
 	if profile.ChannelWeights[SignalLexical] > 0 {
 		channels = append(channels, NewLexicalRetriever(s.store, profile.FieldWeights))
@@ -215,6 +262,9 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 		}
 		results = append(results, ChannelResult{Signal: channel.Name(), Candidates: candidates})
 	}
+	for _, bundle := range modalityBundles {
+		results = append(results, ChannelResult{Signal: bundle.signal, Candidates: bundle.candidates})
+	}
 
 	// Fusion is per-intent: auto/fact keep the plain RRF (k=60) so the default
 	// path is byte-identical to the pre-weights engine; the differentiated
@@ -230,6 +280,18 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 		kept := fused[:0]
 		for _, c := range fused {
 			if universe[c.ShotID] {
+				kept = append(kept, c)
+			}
+		}
+		fused = kept
+	}
+	// A temporal query is an asset-level constraint: a shot belongs to an
+	// asset whose conditions actually satisfy every predicate. Shot-level
+	// sub-intervals are reported as matches, never used to widen the claim.
+	if temporalAssets != nil {
+		kept := fused[:0]
+		for _, c := range fused {
+			if temporalAssets[c.AssetID] {
 				kept = append(kept, c)
 			}
 		}
@@ -323,7 +385,7 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 
 	response.Query.Intent = q.Intent
 	response.SearchID = randomHex(8)
-	response.QueryHash = queryProfileFingerprint(q, req.Mode, s.opts.ProfileVersion)
+	response.QueryHash = requestQueryFingerprint(q, req, s.opts.ProfileVersion)
 	for i, candidate := range selected {
 		item := ResultItem{
 			ShotID:      candidate.ShotID,
@@ -344,6 +406,8 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 			item.Scores[signal] = value
 		}
 		item.Scores[fusion.Name()] = candidate.Score
+		item.Matches = matchesForCandidate(candidate, modalityBundles, temporalMatches)
+		item.Coverage = coverageForBundles(modalityBundles)
 		if needEvidence {
 			item.Evidence = evidenceByID[candidate.ShotID]
 		}
@@ -418,6 +482,26 @@ func hasAnySearchFilter(f domain.FacetFilter, a domain.AssetContextFilter) bool 
 	return a.CapturedFrom != nil || a.CapturedTo != nil ||
 		strings.TrimSpace(a.RegionLabel) != "" || strings.TrimSpace(a.CameraModel) != "" ||
 		strings.TrimSpace(a.SessionID) != "" || a.Status != ""
+}
+
+func hasMultimodalRequest(req SearchRequest) bool {
+	return len(req.Modalities) > 0 || req.ReferenceID != "" || req.VisualShotID != "" || req.Temporal != nil || req.SpeakerFilter != nil
+}
+
+func requestQueryFingerprint(q SearchQuery, req SearchRequest, profileVersion string) string {
+	legacy := queryProfileFingerprint(q, req.Mode, profileVersion)
+	if !hasMultimodalRequest(req) {
+		return legacy
+	}
+	newFields, _ := json.Marshal(struct {
+		Modalities    []string       `json:"modalities,omitempty"`
+		ReferenceID   string         `json:"reference_id,omitempty"`
+		VisualShotID  string         `json:"visual_shot_id,omitempty"`
+		Temporal      *TemporalQuery `json:"temporal,omitempty"`
+		SpeakerFilter *SpeakerFilter `json:"speaker_filter,omitempty"`
+	}{req.Modalities, req.ReferenceID, req.VisualShotID, req.Temporal, req.SpeakerFilter})
+	sum := sha256.Sum256(append([]byte(legacy+"|"), newFields...))
+	return hex.EncodeToString(sum[:8])
 }
 
 // defaultFusion picks the fusion strategy for the default (unset) options

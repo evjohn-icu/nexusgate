@@ -2,11 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -118,6 +124,8 @@ func run() error {
 	case "serve":
 		fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 		addr := fs.String("addr", cfg.ListenAddress, "HTTP listen address")
+		readyFile := fs.String("ready-file", "", "write a ready JSON {url,fingerprint,pid} after the listener is bound (desktop launcher)")
+		shutdownOnEOF := fs.Bool("shutdown-on-stdin-eof", false, "shut down when stdin closes (desktop child process)")
 		if err := fs.Parse(os.Args[2:]); err != nil {
 			return err
 		}
@@ -198,6 +206,44 @@ func run() error {
 		}
 		server := api.NewTLSServer(*addr, service, certificate, key)
 		setupWebDAVDelivery(service, server, repo, cfg.DataDir)
+		if *shutdownOnEOF {
+			// The desktop launcher owns this child's lifetime through stdin:
+			// closing the pipe is the graceful stop, and anything else would
+			// leave an orphan after a parent crash.
+			go func() {
+				_, _ = io.Copy(io.Discard, os.Stdin)
+				stop()
+			}()
+		}
+		if *readyFile != "" {
+			listener, err := net.Listen("tcp", *addr)
+			if err != nil {
+				return fmt.Errorf("bind desktop listener: %w", err)
+			}
+			fingerprint, err := certificateFingerprint(certificate)
+			if err != nil {
+				listener.Close()
+				return err
+			}
+			payload, err := json.Marshal(map[string]any{
+				"url":         "https://" + listener.Addr().String(),
+				"fingerprint": fingerprint,
+				"pid":         os.Getpid(),
+			})
+			if err != nil {
+				listener.Close()
+				return err
+			}
+			if err := writeReadyFile(*readyFile, payload); err != nil {
+				listener.Close()
+				return err
+			}
+			serveErr := server.RunListener(ctx, listener)
+			if serveErr != nil && !errors.Is(serveErr, context.Canceled) {
+				return serveErr
+			}
+			return nil
+		}
 		serveErr := server.Run(ctx)
 		// A listen failure does not cancel the signal context. Cancel it here as
 		// well so background Pipeline work cannot outlive the failed server.
@@ -910,4 +956,63 @@ func runRebuildVisualCommand(service *app.Service, repo *sqliterepo.Repository, 
 		return errors.New("one or more visual rebuilds could not be queued")
 	}
 	return nil
+}
+
+// writeReadyFile publishes the launcher handshake atomically: the parent must
+// never read a half-written JSON object, and a file that exists must already
+// describe a bound listener.
+func writeReadyFile(path string, payload []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".ready-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(payload); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(name, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
+}
+
+// certificateFingerprint is the SHA-256 of the leaf DER, the same form the Hub
+// prints and a Worker pins. It parses the certificate file directly so a
+// key/certificate pair is not required just to compute the pin.
+func certificateFingerprint(certificatePath string) (string, error) {
+	if strings.TrimSpace(certificatePath) == "" {
+		return "", fmt.Errorf("desktop mode requires TLS")
+	}
+	raw, err := os.ReadFile(certificatePath)
+	if err != nil {
+		return "", err
+	}
+	for {
+		block, rest := pem.Decode(raw)
+		if block == nil {
+			return "", fmt.Errorf("certificate is not PEM")
+		}
+		if block.Type == "CERTIFICATE" {
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				return "", err
+			}
+			sum := sha256.Sum256(cert.Raw)
+			return hex.EncodeToString(sum[:]), nil
+		}
+		raw = rest
+	}
 }

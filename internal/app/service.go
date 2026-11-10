@@ -500,6 +500,10 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 			// instead of a failed search (see searchEmbedderAdapter).
 			opts.Embedder = searchEmbedderAdapter{embedder: service.embedder}
 		}
+		// The modality store is nil when the repository cannot answer
+		// multimodal queries (test fakes, pre-V1.5 schemas); every modality
+		// channel then stays unavailable instead of failing legacy search.
+		opts.ModalityStore = NewModalityStore(repo)
 		service.searchV2 = search.NewService(store, opts)
 	}
 	// The canonical-shot moment triggers both derived layers. One hook keeps
