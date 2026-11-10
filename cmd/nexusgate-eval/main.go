@@ -35,6 +35,8 @@ func main() {
 		err = runCmd(ctx, os.Args[2:])
 	case "score":
 		err = scoreCmd(ctx, os.Args[2:])
+	case "multimodal":
+		err = multimodalCmd(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 		return
@@ -54,6 +56,7 @@ func usage() {
 Usage:
   nexusgate-eval run --corpus <dir> --data-dir <dir> --label <name>
   nexusgate-eval score --corpus <dir> --data-dir <dir> --labels <a,b,...>
+  nexusgate-eval multimodal score --manifest <file> --results <file> [--out <file>]
 
 The data dir holds the providers config.json (the same file a nexusgate Hub
 uses) and receives its own nexusgate.db. Set NEXUSGATE_DATA_DIR instead of
