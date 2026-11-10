@@ -468,7 +468,15 @@ func Load() (Config, error) {
 		cfg.Inference.ScratchDir = filepath.Join(cfg.CacheDir, "inference")
 	}
 	if strings.TrimSpace(cfg.Inference.LockPath) == "" && strings.TrimSpace(cfg.Inference.ModuleDir) != "" {
-		cfg.Inference.LockPath = filepath.Join(cfg.Inference.ModuleDir, "models.lock.json")
+		// ModuleDir contains the `inference` Python package. The repository and
+		// the documented bundle keep the lock beside that package; older flat
+		// bundles keep it at ModuleDir itself.
+		nested := filepath.Join(cfg.Inference.ModuleDir, "inference", "models.lock.json")
+		if _, err := os.Stat(nested); err == nil {
+			cfg.Inference.LockPath = nested
+		} else {
+			cfg.Inference.LockPath = filepath.Join(cfg.Inference.ModuleDir, "models.lock.json")
+		}
 	}
 	if err := cfg.Inference.Validate(); err != nil {
 		return Config{}, err
