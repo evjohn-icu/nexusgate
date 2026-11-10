@@ -36,11 +36,28 @@ func (r *Runtime) WithInferenceExecutor(exec InferenceExecutor) *Runtime {
 	return r
 }
 
-// inferenceRenewEvery is the progress/renewal cadence during a model run. The
+// WithInferenceRenewInterval overrides the progress/renewal cadence. Tests use
+// a short interval; production keeps the 30-second default, which bounds how
+// long a lost lease can keep a subprocess alive.
+func (r *Runtime) WithInferenceRenewInterval(interval time.Duration) *Runtime {
+	if interval > 0 {
+		r.inferenceRenew = interval
+	}
+	return r
+}
+
+func (r *Runtime) renewInterval() time.Duration {
+	if r.inferenceRenew > 0 {
+		return r.inferenceRenew
+	}
+	return inferenceRenewDefault
+}
+
+// inferenceRenewDefault is the progress/renewal cadence during a model run. The
 // Hub grants a ten-minute lease and cancels execution when a renewal is
 // rejected, so this interval is the upper bound on how long a lost lease can
 // keep a subprocess alive.
-const inferenceRenewEvery = 30 * time.Second
+const inferenceRenewDefault = 30 * time.Second
 
 func (r *Runtime) processInference(ctx context.Context, job remote.WorkerJob) error {
 	if r.executor == nil {
@@ -95,7 +112,7 @@ func (r *Runtime) processInference(ctx context.Context, job remote.WorkerJob) er
 // answer. A rejected renewal cancels the operation immediately: continuing
 // would burn device time on a result that the commit guard must reject.
 func (r *Runtime) renewInferenceLease(ctx context.Context, cancel context.CancelFunc, jobID string, stop <-chan struct{}, reporter progressStateReporter) {
-	ticker := time.NewTicker(inferenceRenewEvery)
+	ticker := time.NewTicker(r.renewInterval())
 	defer ticker.Stop()
 	for {
 		select {

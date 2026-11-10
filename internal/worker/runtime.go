@@ -31,6 +31,9 @@ type Runtime struct {
 	config   Config
 	deriver  Deriver
 	executor InferenceExecutor
+	// inferenceRenew is the progress/renewal cadence during a model run; zero
+	// means inferenceRenewDefault.
+	inferenceRenew time.Duration
 	// capabilities is what heartbeats actually send. It starts as whatever
 	// was declared at `worker enroll` time but is meant to be replaced with
 	// MergeDetectedCapabilities' output at `worker run` startup, so a
