@@ -396,7 +396,7 @@ func TestSemanticSearchFiltersVectorsFromSupersededModel(t *testing.T) {
 	}
 	if err := repo.ReplaceAssetShots(ctx, "asset-scheme", "", []domain.AssetShot{
 		{ID: "shot-valid", StartMS: 0, EndMS: 6000, Description: "雨天的城市夜街和湿地反光", Tags: []string{"rain", "urban_night", "street"}, Mood: []string{"cinematic"}},
-		{ID: "shot-stale", StartMS: 0, EndMS: 6000, Description: "雨天的城市夜街和湿地反光", Tags: []string{"rain", "urban_night", "street"}, Mood: []string{"cinematic"}},
+		{ID: "shot-stale", StartMS: 6000, EndMS: 12000, Description: "雨天的城市夜街和湿地反光", Tags: []string{"rain", "urban_night", "street"}, Mood: []string{"cinematic"}},
 	}, "", ""); err != nil {
 		t.Fatal(err)
 	}

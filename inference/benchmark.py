@@ -235,6 +235,10 @@ def _cancellation_probe(request: Mapping[str, Any], model_dir: Path, device: str
             process.send_signal(signal.SIGTERM)
         except OSError:
             return False
+    # communicate() flushes stdin if it is still attached; the request was
+    # already written and stdin closed above, so detach it first instead of
+    # letting subprocess raise ValueError on a closed file.
+    process.stdin = None
     try:
         rest, stderr = process.communicate(timeout=5.0)
     except subprocess.TimeoutExpired:
