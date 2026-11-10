@@ -54,6 +54,10 @@ GET /api/v1/admin/multimodal/settings
 PUT /api/v1/admin/multimodal/settings
 POST /api/v1/admin/assets/{id}/modalities/{operation}/rebuild
 POST /api/v1/admin/inference/jobs/{id}/cancel
+GET /api/v1/admin/inference/catalog
+POST /api/v1/admin/inference/models/{catalog_id}/install
+POST /api/v1/admin/inference/models/{catalog_id}/probe
+GET /api/v1/admin/inference/operations/{id}
 POST /api/v1/admin/search-references
 GET /api/v1/admin/search-references/{id}
 DELETE /api/v1/admin/search-references/{id}
@@ -268,6 +272,10 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 		{http.MethodPost, "/api/v1/admin/inference/jobs/x/cancel", "admin", "none", http.StatusUnauthorized},
 		{http.MethodPost, "/api/v1/worker/jobs/x/inference-result", "worker", "JSON", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/worker/jobs/x/input", "worker", "none", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/admin/inference/catalog", "admin", "none", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/admin/inference/models/visual-siglip2-base/install", "admin", "JSON", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/admin/inference/models/visual-siglip2-base/probe", "admin", "JSON", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/admin/inference/operations/x", "admin", "none", http.StatusUnauthorized},
 		{http.MethodPost, "/api/v1/admin/search-references", "admin", "raw", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/admin/search-references/x", "admin", "none", http.StatusUnauthorized},
 		{http.MethodDelete, "/api/v1/admin/search-references/x", "admin", "none", http.StatusUnauthorized},
@@ -292,7 +300,7 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 func TestAPIRouteInventoryIsComplete(t *testing.T) {
 	server := NewServer("admin-token", newErrorEnvelopeTestService(t, "route-inventory"))
 	specs := server.routeInventory()
-	if got, want := len(specs), 133; got != want {
+	if got, want := len(specs), 137; got != want {
 		t.Fatalf("route inventory contains %d routes, want %d", got, want)
 	}
 	expected := strings.Split(expectedRouteInventoryPatterns, "\n")

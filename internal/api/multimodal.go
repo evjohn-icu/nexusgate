@@ -29,6 +29,10 @@ func (s *Server) multimodalRouteSpecs() []routeSpec {
 		newRouteSpec("multimodal-settings-put", "PUT /api/v1/admin/multimodal/settings", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.saveMultimodalSettings))),
 		newRouteSpec("modality-rebuild", "POST /api/v1/admin/assets/{id}/modalities/{operation}/rebuild", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.rebuildAssetModality))),
 		newRouteSpec("inference-job-cancel", "POST /api/v1/admin/inference/jobs/{id}/cancel", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.cancelInferenceJob))),
+		newRouteSpec("inference-catalog", "GET /api/v1/admin/inference/catalog", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.inferenceCatalog))),
+		newRouteSpec("inference-model-install", "POST /api/v1/admin/inference/models/{catalog_id}/install", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.installInferenceModel))),
+		newRouteSpec("inference-model-probe", "POST /api/v1/admin/inference/models/{catalog_id}/probe", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.probeInferenceModel))),
+		newRouteSpec("inference-operation-status", "GET /api/v1/admin/inference/operations/{id}", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.inferenceOperationStatus))),
 		newRouteSpec("search-reference-create", "POST /api/v1/admin/search-references", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.createSearchReference))),
 		newRouteSpec("search-reference-get", "GET /api/v1/admin/search-references/{id}", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.getSearchReference))),
 		newRouteSpec("search-reference-delete", "DELETE /api/v1/admin/search-references/{id}", routeAuthHubAdmin, http.HandlerFunc(s.requireHubAdmin(s.deleteSearchReference))),
@@ -437,4 +441,60 @@ func (s *Server) assetWaveform(w http.ResponseWriter, r *http.Request) {
 		"duration_ms": manifest.DurationMS,
 		"buckets":     buckets,
 	})
+}
+
+func (s *Server) inferenceCatalog(w http.ResponseWriter, r *http.Request) {
+	entries := inferencecatalog.All()
+	models := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		models = append(models, map[string]any{
+			"catalog_id":      entry.CatalogID,
+			"model_id":        entry.ModelID,
+			"revision":        entry.Revision,
+			"operations":      entry.Operations,
+			"dimension":       entry.Dimension,
+			"native_video":    entry.NativeVideo,
+			"matryoshka":      entry.Matryoshka,
+			"manifest_digest": app.ModelManifestDigest(entry),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"schema_version": inferencecatalog.LockSchemaVersion,
+		"models":         models,
+		"local_runtime":  map[string]any{"available": s.service.InferenceExecutorStatus()},
+	})
+}
+
+func (s *Server) installInferenceModel(w http.ResponseWriter, r *http.Request) {
+	s.queueModelManagement(w, r, "install")
+}
+
+func (s *Server) probeInferenceModel(w http.ResponseWriter, r *http.Request) {
+	s.queueModelManagement(w, r, "probe")
+}
+
+func (s *Server) queueModelManagement(w http.ResponseWriter, r *http.Request, action string) {
+	var body struct {
+		WorkerID        string `json:"worker_id"`
+		ManifestDigest  string `json:"manifest_digest"`
+		LicenseAccepted bool   `json:"license_accepted"`
+	}
+	if !decodeStrictJSON(w, r, &body, 8<<10) {
+		return
+	}
+	jobID, err := s.service.QueueModelManagement(r.Context(), action, r.PathValue("catalog_id"), body.WorkerID, body.ManifestDigest, body.LicenseAccepted)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 300)})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "pending", "job_id": jobID})
+}
+
+func (s *Server) inferenceOperationStatus(w http.ResponseWriter, r *http.Request) {
+	status, err := s.service.ModelManagementStatus(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "operation not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
 }
