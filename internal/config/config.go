@@ -219,6 +219,10 @@ type InferenceConfig struct {
 	// Device is auto, cpu or cuda. Dtype is auto, float32 or float16.
 	Device string `json:"device,omitempty"`
 	Dtype  string `json:"dtype,omitempty"`
+	// LockPath is the shipped model lock. It defaults to models.lock.json
+	// beside the Python package directory, which is how the repository and the
+	// deployed inference bundle are laid out.
+	LockPath string `json:"lock_path,omitempty"`
 	// MaxFrameBytes bounds one result frame; zero means 32 MiB.
 	MaxFrameBytes int64 `json:"max_frame_bytes,omitempty"`
 }
@@ -462,6 +466,9 @@ func Load() (Config, error) {
 	}
 	if strings.TrimSpace(cfg.Inference.ScratchDir) == "" {
 		cfg.Inference.ScratchDir = filepath.Join(cfg.CacheDir, "inference")
+	}
+	if strings.TrimSpace(cfg.Inference.LockPath) == "" && strings.TrimSpace(cfg.Inference.ModuleDir) != "" {
+		cfg.Inference.LockPath = filepath.Join(cfg.Inference.ModuleDir, "models.lock.json")
 	}
 	if err := cfg.Inference.Validate(); err != nil {
 		return Config{}, err

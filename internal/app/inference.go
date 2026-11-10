@@ -208,3 +208,12 @@ func (s *Service) AttachInferenceExecutor(exec InferenceExecutor) {
 func (s *Service) InferenceExecutorStatus() bool {
 	return s != nil && s.inferenceExec != nil
 }
+
+// AttachModelManager binds the local installer/prober to the pipeline. A Hub
+// without one still queues maintenance work for a Worker that has the runtime.
+func (s *Service) AttachModelManager(manager ModelManager) {
+	if s == nil || s.pipeline == nil {
+		return
+	}
+	s.pipeline.WithModelManager(manager)
+}

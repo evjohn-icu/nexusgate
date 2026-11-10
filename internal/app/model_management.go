@@ -58,6 +58,11 @@ func (p *Pipeline) executeModelManagement(ctx context.Context, j domain.Job, own
 	if err != nil {
 		return err
 	}
+	// An attestation is the Hub's record that a locked profile was verified on
+	// this Worker. Routing reads it; the Worker's own claim is never enough.
+	if err := repo.RecordModelAttestation(ctx, unit.TargetWorkerID, unit.CatalogID, unit.ManifestDigest, unit.Action, "{}"); err != nil {
+		return err
+	}
 	if err := p.repo.CompleteJob(ctx, j.ID, owner, domain.JobSucceeded, ""); err != nil {
 		return err
 	}
@@ -69,4 +74,5 @@ func (p *Pipeline) executeModelManagement(ctx context.Context, j domain.Job, own
 // implement the installer.
 type ModelManagementRepository interface {
 	GetModelManagementTask(ctx context.Context, jobID string) (domain.ModelManagementTask, error)
+	RecordModelAttestation(ctx context.Context, workerID, catalogID, manifestDigest, action, detailJSON string) error
 }

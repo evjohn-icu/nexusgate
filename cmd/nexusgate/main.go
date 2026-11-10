@@ -24,6 +24,7 @@ import (
 	"github.com/evjohn-icu/nexusgate/internal/hubtls"
 	"github.com/evjohn-icu/nexusgate/internal/media"
 	"github.com/evjohn-icu/nexusgate/internal/providers"
+	"github.com/evjohn-icu/nexusgate/internal/providers/localinference"
 	"github.com/evjohn-icu/nexusgate/internal/remote"
 	sqliterepo "github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 	"github.com/evjohn-icu/nexusgate/internal/secretstore"
@@ -146,6 +147,32 @@ func run() error {
 		// local leases immediately instead of waiting out the lease TTL.
 		if err := service.HealOnStartup(ctx); err != nil {
 			slog.Warn("self-heal sweep failed; stale running jobs will be reclaimed on the next lease attempt", "error", err)
+		}
+		// Attach the local model runtime only when an operator has pointed the
+		// Hub at a locked environment. A stock install has no Python runtime and
+		// must not start one: inference jobs then wait for a paired Worker, and
+		// the admin settings route reports the local runtime unavailable.
+		if cfg.Inference.LocalRuntimeConfigured() {
+			executor, err := localinference.New(localinference.Config{
+				PythonPath:    cfg.Inference.PythonPath,
+				ModuleDir:     cfg.Inference.ModuleDir,
+				ModelDir:      cfg.Inference.ModelDir,
+				Device:        cfg.Inference.Device,
+				Dtype:         cfg.Inference.Dtype,
+				ScratchDir:    cfg.Inference.ScratchDir,
+				MaxFrameBytes: cfg.Inference.MaxFrameBytes,
+			})
+			if err != nil {
+				slog.Warn("local inference runtime unavailable", "error", err)
+			} else {
+				service.AttachInferenceExecutor(executor)
+				if manager, err := app.NewLocalModelManager(cfg.Inference.LockPath, cfg.Inference.ModelDir, executor); err != nil {
+					slog.Warn("model manager unavailable", "error", err)
+				} else {
+					service.AttachModelManager(manager)
+				}
+				fmt.Printf("Inference runtime: %s (%s/%s)\n", cfg.Inference.PythonPath, cfg.Inference.Device, cfg.Inference.Dtype)
+			}
 		}
 		certificate, key, err := hubTLSFiles(cfg)
 		if err != nil {
@@ -615,6 +642,11 @@ func runWorkerCommand(cfg config.Config) error {
 		fs := flag.NewFlagSet("worker run", flag.ContinueOnError)
 		configPath := fs.String("config", defaultWorkerConfigPath(), "worker config path")
 		tray := fs.Bool("tray", false, "show a notification-area icon with a settings link and a quit item (Windows)")
+		inferencePython := fs.String("inference-python", "", "locked Python interpreter for local inference (empty: derive-only Worker)")
+		inferenceModule := fs.String("inference-module", "", "directory containing the inference Python package")
+		inferenceModels := fs.String("inference-models", "", "locked model directory")
+		inferenceDevice := fs.String("inference-device", "auto", "auto, cpu or cuda")
+		inferenceDtype := fs.String("inference-dtype", "auto", "auto, float32 or float16")
 		if err := fs.Parse(os.Args[3:]); err != nil {
 			return err
 		}
@@ -635,6 +667,22 @@ func runWorkerCommand(cfg config.Config) error {
 		capabilities := worker.MergeDetectedCapabilities(config.Registration.Capabilities, hardwareReport)
 		deriver := worker.NewFFmpegDeriver(plan).WithPreviewLUT(config.PreviewLUTPath)
 		runtime := worker.NewRuntime(client, config, deriver, capabilities)
+		if strings.TrimSpace(*inferencePython) != "" {
+			executor, err := localinference.New(localinference.Config{
+				PythonPath: *inferencePython,
+				ModuleDir:  *inferenceModule,
+				ModelDir:   *inferenceModels,
+				Device:     *inferenceDevice,
+				Dtype:      *inferenceDtype,
+				ScratchDir: filepath.Join(config.CachePath(), "inference"),
+			})
+			if err != nil {
+				slog.Warn("local inference runtime unavailable; continuing derive-only", "error", err)
+			} else {
+				runtime = runtime.WithInferenceExecutor(executor)
+				fmt.Printf("Inference runtime: %s (%s/%s)\n", *inferencePython, *inferenceDevice, *inferenceDtype)
+			}
+		}
 		if !*tray {
 			return runtime.Run(ctx, worker.RunOptions{})
 		}
