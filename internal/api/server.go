@@ -726,6 +726,17 @@ func (s *Server) workerLease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if job == nil {
+		// Derive work comes first: it is the library chain every Worker
+		// understands. Inference and maintenance are reached only by Workers
+		// whose enrollment granted the matching operations, so an unmodified
+		// Worker never receives a job it cannot run.
+		job, err = s.service.LeaseNextWorkerInference(r.Context(), worker, app.InferenceLease, domain.LeaseFilter{})
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+	}
+	if job == nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -776,6 +787,16 @@ func (s *Server) workerProgress(w http.ResponseWriter, r *http.Request) {
 	if !decodeStrictJSON(w, r, &request, 16<<10) {
 		return
 	}
+	// Inference jobs answer with the lease/cancellation state a long model run
+	// needs; derive jobs keep the legacy 204, so an older Worker is unaffected.
+	if state, inference, err := s.service.WorkerInferenceProgress(r.Context(), worker.ID, r.PathValue("id"), strings.TrimSpace(request.Stage), request.Progress, strings.TrimSpace(request.Event), strings.TrimSpace(request.Message)); inference {
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "worker progress rejected"})
+			return
+		}
+		writeJSON(w, http.StatusOK, state)
+		return
+	}
 	if err := s.service.RecordWorkerJobProgress(r.Context(), r.PathValue("id"), worker.ID, strings.TrimSpace(request.Stage), request.Progress, strings.TrimSpace(request.Event), strings.TrimSpace(request.Message)); err != nil {
 		if errors.Is(err, domain.ErrJobLeaseLost) {
 			status, apiErr := apiErrorFromError(err)
@@ -786,6 +807,29 @@ func (s *Server) workerProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// workerInferenceResult accepts a validated inference result. The Hub owns the
+// canonical write and the job's terminal transition; the ordinary complete
+// endpoint is not a way to mark inference work succeeded.
+func (s *Server) workerInferenceResult(w http.ResponseWriter, r *http.Request) {
+	worker, ok := s.authenticatedWorker(w, r)
+	if !ok {
+		return
+	}
+	var submission remote.InferenceResultSubmission
+	if !decodeStrictJSON(w, r, &submission, 32<<20) {
+		return
+	}
+	err := s.service.SubmitWorkerInferenceResult(r.Context(), worker.ID, r.PathValue("id"), submission)
+	switch {
+	case err == nil, errors.Is(err, app.ErrInferenceAlreadyCommitted):
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, domain.ErrJobLeaseLost):
+		writeAPIError(w, http.StatusConflict, APIError{Code: "lease_lost", Message: "inference lease is no longer held by this worker"})
+	default:
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_output", Message: clipText(err.Error(), 300)})
+	}
 }
 
 func (s *Server) workerCredential(w http.ResponseWriter, r *http.Request) {

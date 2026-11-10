@@ -14,10 +14,12 @@
 package domain
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sort"
 	"strings"
+	"time"
 )
 
 // InferenceSchemaVersion is the wire schema of every inference request and
@@ -845,3 +847,27 @@ func minInt64(a, b int64) int64 {
 	}
 	return b
 }
+
+// SearchReference is a Hub-managed query image. The caller never sees or
+// supplies a path: the Hub decodes, re-encodes to strip metadata, stores the
+// bytes under a generated name and hands back this opaque identity.
+type SearchReference struct {
+	ID                string    `json:"id"`
+	ContentHash       string    `json:"content_hash"`
+	MediaType         string    `json:"media_type"`
+	RelativeCachePath string    `json:"-"`
+	Width             int       `json:"width"`
+	Height            int       `json:"height"`
+	CreatedAt         time.Time `json:"created_at"`
+	ExpiresAt         time.Time `json:"expires_at"`
+}
+
+// ErrSearchReferenceExpired reports a reference whose lifetime ended but whose
+// row has not been swept yet. It is distinct from "never existed" so the API
+// can answer 410 instead of 404.
+var ErrSearchReferenceExpired = errors.New("search reference expired")
+
+// SearchReferenceTTL is the lifetime of a query image. A reference exists to
+// serve one search round-trip; keeping the pixels longer would turn a transient
+// query into an undeclared image library.
+const SearchReferenceTTL = 24 * time.Hour

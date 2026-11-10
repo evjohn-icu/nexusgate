@@ -46,11 +46,16 @@ GET /api/v1/admin/multimodal/settings
 PUT /api/v1/admin/multimodal/settings
 POST /api/v1/admin/assets/{id}/modalities/{operation}/rebuild
 POST /api/v1/admin/inference/jobs/{id}/cancel
+POST /api/v1/admin/search-references
+GET /api/v1/admin/search-references/{id}
+DELETE /api/v1/admin/search-references/{id}
 POST /api/v1/worker/enroll
 POST /api/v1/worker/heartbeat
 POST /api/v1/worker/lease
 POST /api/v1/worker/jobs/{id}/complete
 POST /api/v1/worker/jobs/{id}/progress
+POST /api/v1/worker/jobs/{id}/inference-result
+GET /api/v1/worker/jobs/{id}/input
 POST /api/v1/worker/jobs/{id}/credentials/{operation}
 POST /api/v1/worker/jobs/{id}/provider/{operation}
 POST /api/v1/worker/jobs/{id}/artifacts
@@ -243,6 +248,11 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 		{http.MethodPut, "/api/v1/admin/multimodal/settings", "admin", "JSON", http.StatusUnauthorized},
 		{http.MethodPost, "/api/v1/admin/assets/x/modalities/visual_embedding/rebuild", "admin", "none", http.StatusUnauthorized},
 		{http.MethodPost, "/api/v1/admin/inference/jobs/x/cancel", "admin", "none", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/worker/jobs/x/inference-result", "worker", "JSON", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/worker/jobs/x/input", "worker", "none", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/admin/search-references", "admin", "raw", http.StatusUnauthorized},
+		{http.MethodGet, "/api/v1/admin/search-references/x", "admin", "none", http.StatusUnauthorized},
+		{http.MethodDelete, "/api/v1/admin/search-references/x", "admin", "none", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/unknown", "catch-all", "none", http.StatusNotFound},
 		{http.MethodPost, "/api/v1/unknown", "catch-all", "none", http.StatusNotFound},
 	}
@@ -262,7 +272,7 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 func TestAPIRouteInventoryIsComplete(t *testing.T) {
 	server := NewServer("admin-token", newErrorEnvelopeTestService(t, "route-inventory"))
 	specs := server.routeInventory()
-	if got, want := len(specs), 118; got != want {
+	if got, want := len(specs), 123; got != want {
 		t.Fatalf("route inventory contains %d routes, want %d", got, want)
 	}
 	expected := strings.Split(expectedRouteInventoryPatterns, "\n")

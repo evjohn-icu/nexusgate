@@ -27,9 +27,10 @@ type Deriver interface {
 }
 
 type Runtime struct {
-	client  RuntimeClient
-	config  Config
-	deriver Deriver
+	client   RuntimeClient
+	config   Config
+	deriver  Deriver
+	executor InferenceExecutor
 	// capabilities is what heartbeats actually send. It starts as whatever
 	// was declared at `worker enroll` time but is meant to be replaced with
 	// MergeDetectedCapabilities' output at `worker run` startup, so a
@@ -77,7 +78,7 @@ func MergeDetectedCapabilities(declared remote.WorkerCapabilities, report media.
 // job. It is intentionally small so the long-running loop and integration
 // tests share exactly the same lease/derive/upload/complete behavior.
 func (r *Runtime) RunOnce(ctx context.Context) (bool, error) {
-	if r == nil || r.client == nil || r.deriver == nil {
+	if r == nil || r.client == nil || (r.deriver == nil && r.executor == nil) {
 		return false, fmt.Errorf("worker runtime is not configured")
 	}
 	if err := r.client.Heartbeat(ctx, r.config.Token, buildinfo.VersionString(), r.capabilities); err != nil {
@@ -91,11 +92,17 @@ func (r *Runtime) RunOnce(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	if err := r.process(ctx, *job); err != nil {
+		if isCommittedResult(err) {
+			return true, nil
+		}
 		completeErr := r.client.Complete(ctx, r.config.Token, job.JobID, domain.JobFailed, err.Error())
 		if completeErr != nil {
 			return true, fmt.Errorf("process job: %w; report failure: %v", err, completeErr)
 		}
 		return true, err
+	}
+	if job.JobType == domain.JobInference {
+		return true, fmt.Errorf("inference job finished without a committed result")
 	}
 	if err := r.client.Complete(ctx, r.config.Token, job.JobID, domain.JobSucceeded, ""); err != nil {
 		return true, err
@@ -122,7 +129,7 @@ func (o RunOptions) withDefaults() RunOptions {
 // separate cadence and keeps leasing after the first heartbeat. A transient
 // Hub error is returned to the service manager, which can restart the Worker.
 func (r *Runtime) Run(ctx context.Context, options RunOptions) error {
-	if r == nil || r.client == nil || r.deriver == nil {
+	if r == nil || r.client == nil || (r.deriver == nil && r.executor == nil) {
 		return fmt.Errorf("worker runtime is not configured")
 	}
 	options = options.withDefaults()
@@ -162,17 +169,32 @@ func (r *Runtime) Run(ctx context.Context, options RunOptions) error {
 
 func (r *Runtime) processAndComplete(ctx context.Context, job remote.WorkerJob) error {
 	if err := r.process(ctx, job); err != nil {
+		if isCommittedResult(err) {
+			return nil
+		}
 		if completeErr := r.client.Complete(ctx, r.config.Token, job.JobID, domain.JobFailed, err.Error()); completeErr != nil {
 			return fmt.Errorf("process job: %w; report failure: %v", err, completeErr)
 		}
 		return nil
 	}
+	if job.JobType == domain.JobInference {
+		// Inference commits its own terminal transition. Reaching here would
+		// mean the executor returned without a result; failing loudly is better
+		// than marking an uncommitted job succeeded.
+		return fmt.Errorf("inference job finished without a committed result")
+	}
 	return r.client.Complete(ctx, r.config.Token, job.JobID, domain.JobSucceeded, "")
 }
 
 func (r *Runtime) process(ctx context.Context, job remote.WorkerJob) error {
+	if job.JobType == domain.JobInference {
+		return r.processInference(ctx, job)
+	}
 	if job.JobType != domain.JobDerive {
 		return fmt.Errorf("worker cannot execute job type %q", job.JobType)
+	}
+	if r.deriver == nil {
+		return fmt.Errorf("worker has no derive runtime")
 	}
 	r.reportProgress(ctx, job.JobID, "staging", 5, "started", "准备原始素材")
 	source, err := r.config.ResolveSourcePath(job.RootID, job.RelativePath)
