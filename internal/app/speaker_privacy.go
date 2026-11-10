@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -35,6 +36,7 @@ type speakerPrivacyRepository interface {
 	RecordPurgeFailure(ctx context.Context, secretRef, code string) error
 	PutSpeakerEmbeddingStaging(ctx context.Context, staging domain.SpeakerEmbeddingStaging) error
 	GetSpeakerEmbeddingStaging(ctx context.Context, operationID string) (domain.SpeakerEmbeddingStaging, error)
+	CommitSpeakerEmbedding(ctx context.Context, jobID, owner string, consentGeneration, profileGeneration int64, records []domain.SpeakerEmbedding) error
 	GenerationExists(ctx context.Context, generationID string) (bool, error)
 	ListSpeakerTurnsForGeneration(ctx context.Context, generationID string) ([]domain.SpeakerTurnRow, error)
 }
@@ -82,20 +84,27 @@ func (s *Service) SetSpeakerConsent(ctx context.Context, enabled bool) (domain.S
 		if err != nil {
 			return consent, err
 		}
+		var failures []error
 		for _, profile := range profiles {
 			refs, err := repo.DeleteSpeakerProfile(ctx, profile.ID)
 			if err != nil {
-				slog.Warn("speaker profile purge failed", "profile_id", profile.ID, "error", err)
+				// The profile may have been deleted concurrently. Do not turn
+				// that into a silent success: the caller must know some
+				// biometric data could still be live.
+				failures = append(failures, fmt.Errorf("delete speaker profile %s: %w", profile.ID, err))
 				continue
 			}
 			for _, ref := range refs {
 				if err := s.deleteBiometricRef(ref); err != nil {
-					slog.Warn("biometric secret purge failed", "error", err)
+					failures = append(failures, fmt.Errorf("purge biometric secret: %w", err))
 				}
 			}
 		}
 		if err := s.DrainBiometricPurge(ctx); err != nil {
-			slog.Warn("biometric purge drain incomplete", "error", err)
+			failures = append(failures, fmt.Errorf("drain biometric purge: %w", err))
+		}
+		if len(failures) != 0 {
+			return consent, errors.Join(failures...)
 		}
 	}
 	return consent, nil
@@ -233,8 +242,9 @@ func (s *Service) queueSpeakerExtraction(ctx context.Context, repo speakerPrivac
 				DurationMS: meta.DurationMS,
 			},
 			Speaker: &domain.SpeakerSettings{
-				Interval:  &domain.TimeInterval{StartMS: turn.StartMS, EndMS: turn.EndMS},
-				ProfileID: profile.ID,
+				Interval:                &domain.TimeInterval{StartMS: turn.StartMS, EndMS: turn.EndMS},
+				ProfileID:               profile.ID,
+				DiarizationGenerationID: generationID,
 			},
 		}
 		if err := request.Validate(); err != nil {
@@ -242,7 +252,7 @@ func (s *Service) queueSpeakerExtraction(ctx context.Context, repo speakerPrivac
 		}
 		key, err := (InferenceTaskKey{
 			Operation:         domain.OpSpeakerEmbedding,
-			SourceIdentity:    fmt.Sprintf("%s:%s:%d-%d", assetID, profile.ID, turn.StartMS, turn.EndMS),
+			SourceIdentity:    fmt.Sprintf("%s:%s:%s:%d-%d", assetID, profile.ID, generationID, turn.StartMS, turn.EndMS),
 			ModelID:           model.ModelID,
 			ModelRevision:     model.Revision,
 			ConfigHash:        request.ConfigHash,

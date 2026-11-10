@@ -73,18 +73,21 @@ func (f *InferenceFailure) Error() string {
 // InferenceCapability describes one operation a Worker can actually execute.
 // It carries no credential and no filesystem path.
 type InferenceCapability struct {
-	Operation       domain.InferenceOperation `json:"operation"`
-	SchemaVersion   string                    `json:"schema_version"`
-	ModelID         string                    `json:"model_id"`
-	ModelRevision   string                    `json:"model_revision"`
-	ConfigHash      string                    `json:"config_hash"`
-	SpaceID         string                    `json:"space_id,omitempty"`
-	Dimension       int                       `json:"dimension,omitempty"`
-	Backend         string                    `json:"backend"`
-	Available       bool                      `json:"available"`
-	UnavailableCode InferenceFailureCode      `json:"unavailable_code,omitempty"`
-	MaxBatch        int                       `json:"max_batch,omitempty"`
-	VRAMBudgetMiB   int                       `json:"vram_budget_mib,omitempty"`
+	Operation     domain.InferenceOperation `json:"operation"`
+	SchemaVersion string                    `json:"schema_version"`
+	ModelID       string                    `json:"model_id"`
+	ModelRevision string                    `json:"model_revision"`
+	// CatalogID is filled by the Hub from the locked catalog before leasing.
+	// It is never accepted from the Worker's heartbeat.
+	CatalogID       string               `json:"-"`
+	ConfigHash      string               `json:"config_hash"`
+	SpaceID         string               `json:"space_id,omitempty"`
+	Dimension       int                  `json:"dimension,omitempty"`
+	Backend         string               `json:"backend"`
+	Available       bool                 `json:"available"`
+	UnavailableCode InferenceFailureCode `json:"unavailable_code,omitempty"`
+	MaxBatch        int                  `json:"max_batch,omitempty"`
+	VRAMBudgetMiB   int                  `json:"vram_budget_mib,omitempty"`
 	// ModelManagement is true only when the Worker was granted install/probe
 	// permission at enrollment. A heartbeat can never set it.
 	ModelManagement bool `json:"model_management,omitempty"`

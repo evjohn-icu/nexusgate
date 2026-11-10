@@ -290,7 +290,7 @@ func (r *ModalityRetriever) RetrieveWithWindows(ctx context.Context, query Searc
 	if !isRetrievableModality(r.Modality) {
 		return nil, nil, fmt.Errorf("search: modality %q is not a multimodal retrieval channel", r.Modality)
 	}
-	if limit <= 0 {
+	if limit == 0 {
 		return []Candidate{}, []ModalityWindow{}, nil
 	}
 	labels := []string(nil)
@@ -364,7 +364,7 @@ func deduplicateModalityWindows(windows []ModalityWindow, modality string, limit
 		})
 	}
 	sortCandidates(candidates)
-	if len(candidates) > limit {
+	if limit > 0 && len(candidates) > limit {
 		candidates = candidates[:limit]
 	}
 	selected := make(map[string]bool, len(candidates))

@@ -158,6 +158,10 @@ type Pipeline struct {
 	// inferenceRepo persists tasks, staged results and canonical generations.
 	// nil in minimal test pipelines, where inference dispatch is skipped.
 	inferenceRepo InferenceRepository
+	// speakerCommit publishes a biometric result through the Hub secret
+	// boundary. It is nil in minimal pipelines that have no secret store;
+	// speaker tasks then fail permanently instead of writing plaintext.
+	speakerCommit func(ctx context.Context, jobID, owner string, request domain.InferenceRequest, result domain.InferenceResult) error
 	// modelManager installs/probes locked artifacts. nil on a Hub that only
 	// routes maintenance jobs to Workers.
 	modelManager ModelManager
@@ -1362,7 +1366,7 @@ func hashStrings(v ...string) string {
 // local runtime needs. Asserted rather than embedded so minimal repositories
 // keep compiling.
 type localDeviceLeaseRepository interface {
-	LeaseNextLocalInference(ctx context.Context, worker string, lease time.Duration, ops []string, maxAssetBytes int64, now time.Time) (*remote.WorkerJob, error)
+	LeaseNextLocalInference(ctx context.Context, worker string, lease time.Duration, caps []remote.InferenceCapability, maxAssetBytes int64, now time.Time) (*remote.WorkerJob, error)
 	LeaseNextModelManagement(ctx context.Context, worker string, lease time.Duration, now time.Time) (*remote.WorkerJob, error)
 }
 
@@ -1379,17 +1383,17 @@ func (p *Pipeline) leaseLocalDeviceJob(ctx context.Context, worker string, maxAs
 		if err != nil {
 			slog.Warn("local inference capabilities unavailable", "error", err)
 		} else {
-			ops := make([]string, 0, len(caps))
+			available := make([]remote.InferenceCapability, 0, len(caps))
 			seen := make(map[domain.InferenceOperation]bool, len(caps))
 			for _, capability := range caps {
 				if !capability.Available || seen[capability.Operation] {
 					continue
 				}
 				seen[capability.Operation] = true
-				ops = append(ops, string(capability.Operation))
+				available = append(available, capability)
 			}
-			if len(ops) > 0 {
-				leased, err := repo.LeaseNextLocalInference(ctx, worker, InferenceLease, ops, maxAssetBytes, now)
+			if len(available) > 0 {
+				leased, err := repo.LeaseNextLocalInference(ctx, worker, InferenceLease, available, maxAssetBytes, now)
 				if err != nil || leased != nil {
 					if leased == nil {
 						return nil, err

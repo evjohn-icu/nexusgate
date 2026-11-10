@@ -355,7 +355,18 @@ func (e *Executor) wireRequest(req domain.InferenceRequest) ([]byte, error) {
 	case domain.OpDiarization:
 		settings = map[string]any{"diarization": req.Diarization}
 	case domain.OpSpeakerEmbedding:
-		settings = map[string]any{"speaker": req.Speaker}
+		// The Python protocol names the eligible clean-speech regions
+		// "segments"; the domain keeps the request interval plus profile
+		// identity. Send only what the model process is allowed to see.
+		if req.Speaker == nil || req.Speaker.Interval == nil {
+			return nil, failure(remote.FailureUnsupportedInput, "speaker embedding request has no interval")
+		}
+		settings = map[string]any{"speaker": map[string]any{
+			"segments": []map[string]int64{{
+				"start_ms": req.Speaker.Interval.StartMS,
+				"end_ms":   req.Speaker.Interval.EndMS,
+			}},
+		}}
 	default:
 		return nil, failure(remote.FailureUnsupportedOperation, "operation is not supported by the Python dispatcher")
 	}

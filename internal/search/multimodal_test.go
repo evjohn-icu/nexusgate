@@ -13,6 +13,7 @@ type testModalityStore struct {
 	visual       []ModalityWindow
 	audio        []ModalityWindow
 	soundEvents  []ModalityWindow
+	soundByLabel map[string][]ModalityWindow
 	speakerTurns []ModalityWindow
 	gotSpace     string
 	gotVector    []float32
@@ -38,6 +39,14 @@ func (s *testModalityStore) AudioWindows(_ context.Context, spaceID string, vect
 
 func (s *testModalityStore) SoundEvents(_ context.Context, labels []string, universe map[string]bool, limit int) ([]ModalityWindow, error) {
 	s.gotLabels, s.gotUniverse, s.gotLimit = labels, universe, limit
+	if s.soundByLabel != nil {
+		for _, label := range labels {
+			if windows, ok := s.soundByLabel[label]; ok {
+				return windows, nil
+			}
+		}
+		return nil, nil
+	}
 	return s.soundEvents, nil
 }
 
@@ -170,5 +179,28 @@ func TestMultimodalMergeCoverageNormalizesAndSorts(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("MergeCoverage() = %+v, want %+v", got, want)
+	}
+}
+
+func TestTemporalConditionsAreConjunctiveWithoutPredicates(t *testing.T) {
+	store := &testModalityStore{soundByLabel: map[string][]ModalityWindow{
+		"/m/06mb1":  {{AssetID: "asset-a", ShotID: "shot-a", RecordID: "rain-a", StartMS: 0, EndMS: 1000, Score: 0.9}},
+		"/m/0912c9": {{AssetID: "asset-b", ShotID: "shot-b", RecordID: "horn-b", StartMS: 0, EndMS: 1000, Score: 0.9}},
+	}}
+	opts := DefaultOptions()
+	opts.ModalityStore = store
+	svc := NewService(&fakeStore{}, opts)
+	response, err := svc.Search(context.Background(), SearchRequest{
+		Query: "rain horn", Modalities: []string{ModalitySoundEvent},
+		Temporal: &TemporalQuery{Conditions: []TemporalCondition{
+			{ID: "rain", Modality: ModalitySoundEvent, Query: "rain"},
+			{ID: "horn", Modality: ModalitySoundEvent, Query: "horn"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 0 {
+		t.Fatalf("conditions satisfied in different assets must not match: %+v", response.Results)
 	}
 }

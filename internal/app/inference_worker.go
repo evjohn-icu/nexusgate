@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/inferencecatalog"
 	"github.com/evjohn-icu/nexusgate/internal/remote"
 )
 
@@ -33,11 +35,15 @@ func (s *Service) SubmitWorkerInferenceResult(ctx context.Context, workerID, job
 		return err
 	}
 	if task.StagedJSON != "" {
-		// Already staged by an earlier attempt of this same submission. Compare
-		// digests rather than overwriting: a different result under one
+		// Already staged by an earlier attempt of this same submission. Decode
+		// the stored envelope (vectors live beside the result JSON), then
+		// compare digests rather than overwriting: a different result under one
 		// operation id is a protocol violation, not a retry.
-		var staged domain.InferenceResult
-		if err := json.Unmarshal([]byte(task.StagedJSON), &staged); err == nil {
+		staged, ok, err := s.inferenceRepo.GetStagedInferenceResult(ctx, jobID)
+		if err != nil {
+			return err
+		}
+		if ok {
 			if existing, err := remote.DigestResult(staged); err == nil && existing == submission.Digest {
 				return s.inferenceRepo.CommitInferenceTask(ctx, jobID, workerID)
 			}
@@ -66,6 +72,9 @@ func (s *Service) SubmitWorkerInferenceResult(ctx context.Context, workerID, job
 	}
 	if err := submission.Result.ValidateFor(request, request.Input.DurationMS, dimension); err != nil {
 		return fmt.Errorf("inference result is invalid: %w", err)
+	}
+	if request.Operation == domain.OpSpeakerEmbedding {
+		return s.commitSpeakerInferenceResult(ctx, jobID, workerID, request, submission.Result)
 	}
 	if err := s.inferenceRepo.StageInferenceTask(ctx, jobID, workerID, submission.Result); err != nil {
 		if errors.Is(err, domain.ErrJobLeaseLost) {
@@ -106,7 +115,7 @@ func (s *Service) WorkerInferenceProgress(ctx context.Context, workerID, jobID, 
 // Worker needs. It is asserted rather than embedded so test repositories that
 // only implement the derive contract keep compiling.
 type inferenceLeaseRepository interface {
-	LeaseNextWorkerInference(ctx context.Context, worker string, lease time.Duration, roots []string, ops []string, maxAssetBytes int64, now time.Time) (*remote.WorkerJob, error)
+	LeaseNextWorkerInference(ctx context.Context, worker string, lease time.Duration, roots []string, caps []remote.InferenceCapability, maxAssetBytes int64, now time.Time) (*remote.WorkerJob, error)
 	LeaseNextModelManagement(ctx context.Context, worker string, lease time.Duration, now time.Time) (*remote.WorkerJob, error)
 }
 
@@ -118,12 +127,12 @@ func (s *Service) LeaseNextWorkerInference(ctx context.Context, worker remote.Wo
 	if !ok {
 		return nil, nil
 	}
-	ops := authorizedInferenceOperations(worker.Capabilities)
-	if len(ops) == 0 {
+	caps := authorizedInferenceCapabilities(worker.Capabilities)
+	if len(caps) == 0 {
 		return nil, nil
 	}
 	now := time.Now().UTC()
-	job, err := repo.LeaseNextWorkerInference(ctx, worker.ID, lease, worker.Capabilities.LibraryRoots, ops, filter.MaxAssetBytes, now)
+	job, err := repo.LeaseNextWorkerInference(ctx, worker.ID, lease, worker.Capabilities.LibraryRoots, caps, filter.MaxAssetBytes, now)
 	if err != nil || job != nil {
 		return job, err
 	}
@@ -133,24 +142,31 @@ func (s *Service) LeaseNextWorkerInference(ctx context.Context, worker remote.Wo
 	return repo.LeaseNextModelManagement(ctx, worker.ID, lease, now)
 }
 
-// authorizedInferenceOperations intersects what the Worker claims with what its
-// enrollment granted. A heartbeat can narrow availability but can never add an
-// operation, so a compromised or misconfigured Worker cannot widen its own
-// access by editing its heartbeat body.
-func authorizedInferenceOperations(caps remote.WorkerCapabilities) []string {
+// authorizedInferenceCapabilities intersects what the Worker claims with what
+// its enrollment granted. A heartbeat can narrow availability but can never add
+// an operation, and the lease selector also requires the exact model identity:
+// a Worker that only installed SigLIP must never receive a WeMM task.
+func authorizedInferenceCapabilities(caps remote.WorkerCapabilities) []remote.InferenceCapability {
 	granted := make(map[string]bool, len(caps.InferenceOperations))
 	for _, op := range caps.InferenceOperations {
 		granted[op] = true
 	}
 	seen := make(map[string]bool)
-	out := make([]string, 0, len(caps.Inference))
+	out := make([]remote.InferenceCapability, 0, len(caps.Inference))
 	for _, capability := range caps.Inference {
-		operation := string(capability.Operation)
-		if !granted[operation] || seen[operation] {
+		if !capability.Available || !granted[string(capability.Operation)] || capability.Validate() != nil {
 			continue
 		}
-		seen[operation] = true
-		out = append(out, operation)
+		key := strings.Join([]string{string(capability.Operation), capability.ModelID,
+			capability.ModelRevision, capability.ConfigHash, capability.SpaceID}, "\x1f")
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if model, ok := inferencecatalog.LookupByModel(capability.ModelID, capability.ModelRevision); ok {
+			capability.CatalogID = model.CatalogID
+		}
+		out = append(out, capability)
 	}
 	return out
 }

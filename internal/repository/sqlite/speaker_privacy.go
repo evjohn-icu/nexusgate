@@ -151,6 +151,30 @@ func (r *Repository) DeleteSpeakerProfile(ctx context.Context, profileID string)
 	if err != nil {
 		return nil, err
 	}
+	// Capture the tasks before their staging rows are deleted: the old
+	// cancellation subquery ran after the DELETE and could never match.
+	jobRows, err := tx.QueryContext(ctx, `
+		SELECT job_id FROM inference_tasks
+		WHERE operation='speaker_embedding'
+		  AND (json_extract(request_json,'$.speaker.profile_id')=? OR job_id IN
+		       (SELECT job_id FROM speaker_embedding_staging WHERE profile_id=?))`, profileID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	var jobIDs []string
+	for jobRows.Next() {
+		var jobID string
+		if err := jobRows.Scan(&jobID); err != nil {
+			jobRows.Close()
+			return nil, err
+		}
+		jobIDs = append(jobIDs, jobID)
+	}
+	if err := jobRows.Err(); err != nil {
+		jobRows.Close()
+		return nil, err
+	}
+	jobRows.Close()
 	for _, ref := range append(refs, staged...) {
 		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO biometric_purge_refs(secret_ref,created_at) VALUES(?,?)`, ref, now); err != nil {
 			return nil, err
@@ -170,12 +194,15 @@ func (r *Repository) DeleteSpeakerProfile(ctx context.Context, profileID string)
 			return nil, err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE jobs SET state='failed',terminal=1,last_error_code='cancelled',last_error_message='speaker profile deleted',updated_at=?
-		WHERE id IN (SELECT job_id FROM inference_tasks WHERE operation='speaker_embedding')
-		  AND state IN ('pending','running')
-		  AND id IN (SELECT job_id FROM speaker_embedding_staging WHERE profile_id=?)`, now, profileID); err != nil {
-		return nil, err
+	for _, jobID := range jobIDs {
+		if _, err := tx.ExecContext(ctx, `UPDATE inference_tasks SET cancel_requested=1,updated_at=? WHERE job_id=?`, now, jobID); err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE jobs SET state='failed',terminal=1,last_error_code='cancelled',last_error_message='speaker profile deleted',updated_at=?
+			WHERE id=? AND job_type='inference' AND state IN ('pending','running')`, now, jobID); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err

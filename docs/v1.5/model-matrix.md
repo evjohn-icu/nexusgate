@@ -35,10 +35,11 @@ dtype.
 
 WeMM is `bfloat16` in `config.json` and ships a custom `Qwen3_5` video/vision
 stack (`transformers >= 5.2.0`, `qwen-vl-utils`). Turing has no native BF16, so
-the only viable device profile is FP16; whether the hybrid linear-attention
-stack runs at all in FP16 on this GPU is an unresolved measurement. The adapter
-must therefore report `model_unavailable` — never silently fall back to
-SigLIP dims or another space — when the WeMM profile is absent or over budget.
+the only viable device profile is FP16. The FP16 pooled-frame profile now runs
+and is measured (6336 MiB peak, 2048d finite/L2 vectors); the native-video
+profile remains unmeasured. The adapter reports `model_unavailable` — never
+silently falls back to SigLIP dims or another space — when the WeMM profile is
+absent or over budget.
 
 Frame-pooled and native-video encodings are **different spaces** and get
 different `space_id`s: pooled frames store per-frame vectors plus a normalized
@@ -121,12 +122,12 @@ pretend it exists. Absence from the lock file is the enforcement point.
 
 | model | cold start | peak VRAM | peak RSS | warm latency | output checks | measured on |
 | --- | --- | --- | --- | --- | --- | --- |
-| SigLIP 2 base (FP32 CPU) | 4927.0 ms | n/a | 1597.2 MiB | P50 190.8 / P95 192.0 ms (batch 1); P50 360.4 / P95 380.4 ms (batch 2) | 768d, finite, L2-normalized, cancellation and OOM probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.14.1+cu126 (CPU device) |
-| SigLIP 2 base (FP16 CUDA) | 5553.0 ms | 762 MiB | 2848.9 MiB | P50 67.6 / P95 73.3 ms (batch 1); P50 132.9 / P95 133.2 ms (batch 2) | 768d, finite, L2-normalized, cancellation and OOM probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.14.1+cu126 on RTX 2070 |
-| WeMM-Embedding-2B (FP16 CUDA, pooled frames) | 11758.4 ms | 6336 MiB | 11090.7 MiB | P50 / P95 3632.4 ms (batch 1) | 2048d, finite, L2-normalized, cancellation and OOM probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.14.1+cu126 / transformers 5.2.0 on RTX 2070 |
+| SigLIP 2 base (FP32 CPU) | 4927.0 ms | n/a | 1597.2 MiB | P50 190.8 / P95 192.0 ms (batch 1); P50 360.4 / P95 380.4 ms (batch 2) | 768d, finite, L2-normalized, cancellation and budget-rejection probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.14.1+cu126 (CPU device) |
+| SigLIP 2 base (FP16 CUDA) | 5553.0 ms | 762 MiB | 2848.9 MiB | P50 67.6 / P95 73.3 ms (batch 1); P50 132.9 / P95 133.2 ms (batch 2) | 768d, finite, L2-normalized, cancellation and budget-rejection probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.14.1+cu126 on RTX 2070 |
+| WeMM-Embedding-2B (FP16 CUDA, pooled frames) | 11758.4 ms | 6336 MiB | 11090.7 MiB | P50 / P95 3632.4 ms (batch 1) | 2048d, finite, L2-normalized, cancellation and budget-rejection probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.14.1+cu126 / transformers 5.2.0 on RTX 2070 |
 | WeMM-Embedding-2B (FP16 CUDA, native video) | not measured | — | — | — | adapter path implemented; pooled profile fits the gate | — |
-| CLAP unfused (FP32 CPU) | 3237.0 ms | n/a | 953.0 MiB | P50 293.2 / P95 328.0 ms (batch 1); P50 388.8 / P95 420.4 ms (batch 2) | 512d, finite, L2-normalized, cancellation and OOM probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.14.1+cu126 (CPU device) |
-| CLAP unfused (FP16 CUDA) | 3823.8 ms | 340 MiB | 1710.3 MiB | P50 68.7 / P95 72.2 ms (batch 1); P50 98.3 / P95 99.2 ms (batch 2) | 512d, finite, L2-normalized, cancellation and OOM probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.14.1+cu126 on RTX 2070 |
+| CLAP unfused (FP32 CPU) | 3237.0 ms | n/a | 953.0 MiB | P50 293.2 / P95 328.0 ms (batch 1); P50 388.8 / P95 420.4 ms (batch 2) | 512d, finite, L2-normalized, cancellation and budget-rejection probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.14.1+cu126 (CPU device) |
+| CLAP unfused (FP16 CUDA) | 3823.8 ms | 340 MiB | 1710.3 MiB | P50 68.7 / P95 72.2 ms (batch 1); P50 98.3 / P95 99.2 ms (batch 2) | 512d, finite, L2-normalized, cancellation and budget-rejection probes returned their typed codes | 2026-11-10, `inference/benchmark.py`, torch 2.14.1+cu126 on RTX 2070 |
 | YAMNet (CPU) | pending | n/a | pending | pending | pending | — |
 | CAM++ (CPU) | pending | n/a | pending | pending | pending | — |
 | ERes2NetV2 (CPU) | pending | n/a | pending | pending | pending | — |
@@ -144,4 +145,6 @@ GPU memory is shared with any co-resident CUDA process. All profiles name their
 environment digest in `inference/models.lock.json`. The downloaded
 `model.safetensors` was verified against the lock (`61292338…6a0b`) before the
 run. A row is only replaced by numbers copied from an actual run, and the
-run's device string is recorded with it.
+run's device string is recorded with it. The OOM probe is a deliberate
+1,048,576 MiB request that must be rejected with `resource_exhausted`; it
+proves the budget gate, not the behavior of a real near-exhaustion allocation.

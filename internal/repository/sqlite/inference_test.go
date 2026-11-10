@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/remote"
 )
 
 func newInferenceRepository(t *testing.T) (*Repository, string) {
@@ -502,14 +503,18 @@ func TestAssetlessInferenceLeaseAndFailureAreNullSafe(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	first, err := repo.LeaseNextWorkerInference(context.Background(), "worker-a", time.Minute, nil, []string{string(domain.OpVisualEmbedding)}, 0, now)
+	caps := []remote.InferenceCapability{{
+		Operation: domain.OpVisualEmbedding, ModelID: "fixture-model",
+		ModelRevision: "revision-1", SpaceID: space.ID, Available: true,
+	}}
+	first, err := repo.LeaseNextWorkerInference(context.Background(), "worker-a", time.Minute, nil, caps, 0, now)
 	if err != nil || first == nil {
 		t.Fatalf("assetless no-root worker lease=%+v err=%v", first, err)
 	}
 	if first.AssetID != "" || first.RootID != "" || first.Inference == nil {
 		t.Fatalf("assetless lease has asset data: %+v", first)
 	}
-	second, err := repo.LeaseNextWorkerInference(context.Background(), "worker-b", time.Minute, nil, []string{string(domain.OpVisualEmbedding)}, 0, now.Add(time.Second))
+	second, err := repo.LeaseNextWorkerInference(context.Background(), "worker-b", time.Minute, nil, caps, 0, now.Add(time.Second))
 	if err != nil || second == nil {
 		t.Fatalf("second assetless worker lease=%+v err=%v", second, err)
 	}
@@ -532,7 +537,9 @@ func TestLeaseNextLocalInferenceUsesUsableAssetLocation(t *testing.T) {
 	repo, assetID := newInferenceRepository(t)
 	request := inferenceTestRequest(domain.OpSoundEvents, assetID, "", "local-asset-lease")
 	jobID := enqueueInferenceTestTask(t, repo, request, "task-key-local-asset-lease")
-	job, err := repo.LeaseNextLocalInference(context.Background(), "hub-local-inference", time.Minute, []string{string(domain.OpSoundEvents)}, 0, time.Now().UTC())
+	job, err := repo.LeaseNextLocalInference(context.Background(), "hub-local-inference", time.Minute, []remote.InferenceCapability{{
+		Operation: domain.OpSoundEvents, ModelID: "fixture-model", ModelRevision: "revision-1", Available: true,
+	}}, 0, time.Now().UTC())
 	if err != nil || job == nil {
 		t.Fatalf("local inference lease=%+v err=%v", job, err)
 	}
@@ -683,4 +690,97 @@ func TestCommitSpeakerEmbeddingFencesConsentProfileAndLease(t *testing.T) {
 			t.Fatalf("lost lease published %d speaker embedding rows", got)
 		}
 	})
+}
+
+func TestCancelledInferenceCannotStageOrCommit(t *testing.T) {
+	repo, assetID := newInferenceRepository(t)
+	req := inferenceTestRequest(domain.OpSoundEvents, assetID, "", "cancelled-fence")
+	jobID := enqueueInferenceTestTask(t, repo, req, "cancelled-fence")
+	leaseInferenceTestJob(t, repo, jobID, "owner", time.Now().UTC().Add(time.Minute))
+	if err := repo.CancelInferenceTask(context.Background(), jobID); err != nil {
+		t.Fatal(err)
+	}
+	err := repo.StageInferenceTask(context.Background(), jobID, "owner", inferenceTestResult(req))
+	if !errors.Is(err, domain.ErrInferenceCancelled) || !errors.Is(err, domain.ErrPermanentFailure) {
+		t.Fatalf("stage after cancel = %v, want permanent ErrInferenceCancelled", err)
+	}
+	var staged int
+	if err := repo.db.QueryRow(`SELECT COUNT(*) FROM inference_tasks WHERE job_id=? AND staged_json IS NOT NULL`, jobID).Scan(&staged); err != nil {
+		t.Fatal(err)
+	}
+	if staged != 0 {
+		t.Fatal("cancelled task staged a result")
+	}
+	var state string
+	if err := repo.db.QueryRow(`SELECT state FROM jobs WHERE id=?`, jobID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(domain.JobRunning) {
+		t.Fatalf("cancel of a running task must leave the job for its owner to stop, state=%q", state)
+	}
+}
+
+func TestStagedInferenceResultKeepsVectorsForRetryDigest(t *testing.T) {
+	repo, assetID := newInferenceRepository(t)
+	space := inferenceTestSpace(t, repo, domain.ModalityAudio)
+	req := inferenceTestRequest(domain.OpAudioEmbedding, assetID, space.ID, "staged-vectors")
+	jobID := enqueueInferenceTestTask(t, repo, req, "staged-vectors")
+	leaseInferenceTestJob(t, repo, jobID, "owner", time.Now().UTC().Add(time.Minute))
+	result := inferenceTestResult(req)
+	if err := repo.StageInferenceTask(context.Background(), jobID, "owner", result); err != nil {
+		t.Fatal(err)
+	}
+	staged, ok, err := repo.GetStagedInferenceResult(context.Background(), jobID)
+	if err != nil || !ok {
+		t.Fatalf("GetStagedInferenceResult ok=%v err=%v", ok, err)
+	}
+	if len(staged.Embeddings) != 1 || len(staged.Embeddings[0].Vector) != 2 || staged.Embeddings[0].Vector[0] != 1 {
+		t.Fatalf("staged vectors were dropped: %+v", staged.Embeddings)
+	}
+}
+
+func TestInferenceLeaseRequiresExactModelAndProbeAttestation(t *testing.T) {
+	repo, assetID := newInferenceRepository(t)
+	request := inferenceTestRequest(domain.OpSoundEvents, assetID, "", "routing")
+	jobID := enqueueInferenceTestTask(t, repo, request, "task-key-routing")
+	now := time.Now().UTC()
+	if _, err := repo.db.Exec(`INSERT INTO workers(id,name,platform,token_hash,status,capabilities_json,last_seen_at,created_at) VALUES('worker-routing','w','linux','token','online','{}',?,?)`, formatTime(now), formatTime(now)); err != nil {
+		t.Fatal(err)
+	}
+	base := remote.InferenceCapability{
+		Operation: domain.OpSoundEvents, ModelID: "fixture-model",
+		ModelRevision: "revision-1", Available: true,
+		CatalogID: "sound-yamnet",
+	}
+	wrong := base
+	wrong.ModelID = "other-model"
+	job, err := repo.LeaseNextWorkerInference(context.Background(), "worker-routing", time.Minute, []string{"root-inference"}, []remote.InferenceCapability{wrong}, 0, now)
+	if err != nil || job != nil {
+		t.Fatalf("wrong-model capability leased job=%+v err=%v", job, err)
+	}
+	job, err = repo.LeaseNextWorkerInference(context.Background(), "worker-routing", time.Minute, []string{"root-inference"}, []remote.InferenceCapability{base}, 0, now)
+	if err != nil || job != nil {
+		t.Fatalf("unattested capability leased job=%+v err=%v", job, err)
+	}
+	if err := repo.RecordModelAttestation(context.Background(), "worker-routing", base.CatalogID, "sha256:manifest", "probe", "{}"); err != nil {
+		t.Fatal(err)
+	}
+	job, err = repo.LeaseNextWorkerInference(context.Background(), "worker-routing", time.Minute, []string{"root-inference"}, []remote.InferenceCapability{base}, 0, now)
+	if err != nil || job == nil || job.JobID != jobID {
+		t.Fatalf("attested capability lease=%+v err=%v", job, err)
+	}
+}
+
+func TestLocalInferenceLeaseDoesNotRequireWorkerAttestation(t *testing.T) {
+	repo, assetID := newInferenceRepository(t)
+	request := inferenceTestRequest(domain.OpSoundEvents, assetID, "", "local-routing")
+	jobID := enqueueInferenceTestTask(t, repo, request, "task-key-local-routing")
+	job, err := repo.LeaseNextLocalInference(context.Background(), "hub-local", time.Minute, []remote.InferenceCapability{{
+		Operation: domain.OpSoundEvents, ModelID: "fixture-model",
+		ModelRevision: "revision-1", Available: true,
+		CatalogID: "sound-yamnet",
+	}}, 0, time.Now().UTC())
+	if err != nil || job == nil || job.JobID != jobID {
+		t.Fatalf("local lease=%+v err=%v", job, err)
+	}
 }

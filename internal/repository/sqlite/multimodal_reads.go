@@ -283,7 +283,7 @@ func (r *Repository) VisualWindowMatches(ctx context.Context, spaceID string, qu
 	if err != nil {
 		return nil, err
 	}
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 200
 	}
 	sqlText := `
@@ -300,8 +300,11 @@ func (r *Repository) VisualWindowMatches(ctx context.Context, spaceID string, qu
 		sqlText += ` AND v.shot_id IN (SELECT value FROM json_each(?))`
 		args = append(args, universeJSON(universe))
 	}
-	sqlText += ` ORDER BY distance ASC, v.shot_id ASC, v.sample_index ASC, v.id ASC LIMIT ?`
-	args = append(args, limit)
+	sqlText += ` ORDER BY distance ASC, v.shot_id ASC, v.sample_index ASC, v.id ASC`
+	if limit > 0 {
+		sqlText += ` LIMIT ?`
+		args = append(args, limit)
+	}
 	rows, err := r.db.QueryContext(ctx, sqlText, args...)
 	if err != nil {
 		return nil, err
@@ -347,7 +350,7 @@ func (r *Repository) AudioWindowMatches(ctx context.Context, spaceID string, que
 	if err != nil {
 		return nil, err
 	}
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 200
 	}
 	sqlText := `
@@ -363,8 +366,11 @@ func (r *Repository) AudioWindowMatches(ctx context.Context, spaceID string, que
 		sqlText += ` AND e.asset_id IN (SELECT s.asset_id FROM asset_shots s WHERE s.id IN (SELECT value FROM json_each(?)))`
 		args = append(args, universeJSON(universe))
 	}
-	sqlText += ` ORDER BY distance ASC, e.asset_id ASC, e.start_ms ASC, e.id ASC LIMIT ?`
-	args = append(args, limit)
+	sqlText += ` ORDER BY distance ASC, e.asset_id ASC, e.start_ms ASC, e.id ASC`
+	if limit > 0 {
+		sqlText += ` LIMIT ?`
+		args = append(args, limit)
+	}
 	rows, err := r.db.QueryContext(ctx, sqlText, args...)
 	if err != nil {
 		return nil, err
@@ -402,7 +408,7 @@ func (r *Repository) SoundEventMatches(ctx context.Context, labels []string, uni
 	if len(labels) == 0 {
 		return []domain.ModalityMatch{}, nil
 	}
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 200
 	}
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(labels)), ",")
@@ -421,8 +427,11 @@ func (r *Repository) SoundEventMatches(ctx context.Context, labels []string, uni
 		sqlText += ` AND e.asset_id IN (SELECT s.asset_id FROM asset_shots s WHERE s.id IN (SELECT value FROM json_each(?)))`
 		args = append(args, universeJSON(universe))
 	}
-	sqlText += ` ORDER BY e.raw_score DESC, e.asset_id ASC, e.start_ms ASC, e.id ASC LIMIT ?`
-	args = append(args, limit)
+	sqlText += ` ORDER BY e.raw_score DESC, e.asset_id ASC, e.start_ms ASC, e.id ASC`
+	if limit > 0 {
+		sqlText += ` LIMIT ?`
+		args = append(args, limit)
+	}
 	rows, err := r.db.QueryContext(ctx, sqlText, args...)
 	if err != nil {
 		return nil, err
@@ -459,7 +468,7 @@ func (r *Repository) SoundEventMatches(ctx context.Context, labels []string, uni
 
 // SpeakerTurnMatches returns active turns for one local speaker identity.
 func (r *Repository) SpeakerTurnMatches(ctx context.Context, assetID, generationID, localSpeakerID string, universe map[string]bool, limit int) ([]domain.ModalityMatch, error) {
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 200
 	}
 	sqlText := `
@@ -478,8 +487,11 @@ func (r *Repository) SpeakerTurnMatches(ctx context.Context, assetID, generation
 		sqlText += ` AND t.asset_id IN (SELECT s.asset_id FROM asset_shots s WHERE s.id IN (SELECT value FROM json_each(?)))`
 		args = append(args, universeJSON(universe))
 	}
-	sqlText += ` ORDER BY t.asset_id ASC, t.start_ms ASC, t.id ASC LIMIT ?`
-	args = append(args, limit)
+	sqlText += ` ORDER BY t.asset_id ASC, t.start_ms ASC, t.id ASC`
+	if limit > 0 {
+		sqlText += ` LIMIT ?`
+		args = append(args, limit)
+	}
 	rows, err := r.db.QueryContext(ctx, sqlText, args...)
 	if err != nil {
 		return nil, err

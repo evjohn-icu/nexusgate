@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/evjohn-icu/nexusgate/internal/domain"
-	"github.com/evjohn-icu/nexusgate/internal/inferencecatalog"
 	"github.com/evjohn-icu/nexusgate/internal/search"
 )
 
@@ -43,7 +42,17 @@ func (e *modalityQueryEncoder) Encode(ctx context.Context, modality, text, refer
 	default:
 		return "", nil, fmt.Errorf("%w: %s has no text/image encoder", search.ErrModalitiesUnavailable, modality)
 	}
-	model, ok := inferencecatalog.DefaultFor(operation)
+	settings, err := e.service.inferenceRepo.GetMultimodalSettings(ctx)
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: multimodal settings are unreadable", search.ErrModalitiesUnavailable)
+	}
+	if !settings.Enabled[operation] {
+		return "", nil, fmt.Errorf("%w: %s is not enabled", search.ErrModalitiesUnavailable, modality)
+	}
+	// The selected profile must match the one that encoded the reference at
+	// upload time; falling back to the catalog default would query a different
+	// embedding space and silently never find the image.
+	model, ok := e.service.modelForOperation(settings, operation)
 	if !ok {
 		return "", nil, fmt.Errorf("%w: no locked model for %s", search.ErrModalitiesUnavailable, modality)
 	}

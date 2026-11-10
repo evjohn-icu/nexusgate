@@ -528,6 +528,12 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 	// commit; the wrapper swallows errors so a ledger hiccup can never fail
 	// an analysis job (see recordAnalysisCostEstimate).
 	service.pipeline.SetCostEstimator(service.recordAnalysisCostEstimate)
+	// A crash between ciphertext creation and metadata publication leaves a
+	// durable deletion obligation. Drain it before the Hub accepts new
+	// speaker work; failure keeps the worklist for the next attempt.
+	if err := service.DrainBiometricPurge(context.Background()); err != nil {
+		slog.Warn("biometric purge recovery incomplete", "error", err)
+	}
 	return service, nil
 }
 

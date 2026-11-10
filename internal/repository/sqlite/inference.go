@@ -127,6 +127,28 @@ func getInferenceTask(ctx context.Context, q inferenceTaskQueryer, jobID string)
 	return task, nil
 }
 
+// GetStagedInferenceResult decodes the stored envelope rather than the raw
+// JSON: embeddings live in a sibling vectors array, so json.Unmarshal into
+// domain.InferenceResult alone would silently drop every vector.
+func (r *Repository) GetStagedInferenceResult(ctx context.Context, jobID string) (domain.InferenceResult, bool, error) {
+	var raw sql.NullString
+	err := r.db.QueryRowContext(ctx, `SELECT staged_json FROM inference_tasks WHERE job_id=?`, jobID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.InferenceResult{}, false, sql.ErrNoRows
+	}
+	if err != nil {
+		return domain.InferenceResult{}, false, err
+	}
+	if !raw.Valid || raw.String == "" {
+		return domain.InferenceResult{}, false, nil
+	}
+	result, err := unmarshalStoredInferenceResult(raw.String)
+	if err != nil {
+		return domain.InferenceResult{}, false, domain.Permanent(fmt.Errorf("staged inference result is unreadable: %w", err))
+	}
+	return result, true, nil
+}
+
 func (r *Repository) StageInferenceTask(ctx context.Context, jobID, owner string, result domain.InferenceResult) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -137,7 +159,8 @@ func (r *Repository) StageInferenceTask(ctx context.Context, jobID, owner string
 	var task domain.InferenceTask
 	var operation, state, leaseOwner, leaseExpires string
 	var assetID string
-	err = tx.QueryRowContext(ctx, `SELECT t.job_id,COALESCE(j.asset_id,''),t.task_key,t.operation,t.request_json,t.config_hash,t.model_revision,j.state,COALESCE(j.lease_owner,''),COALESCE(j.lease_expires_at,'') FROM inference_tasks t JOIN jobs j ON j.id=t.job_id WHERE t.job_id=? AND j.job_type=?`, jobID, string(domain.JobInference)).Scan(&task.JobID, &assetID, &task.TaskKey, &operation, &task.RequestJSON, &task.ConfigHash, &task.ModelRevision, &state, &leaseOwner, &leaseExpires)
+	var cancelRequested int
+	err = tx.QueryRowContext(ctx, `SELECT t.job_id,COALESCE(j.asset_id,''),t.task_key,t.operation,t.request_json,t.config_hash,t.model_revision,t.cancel_requested,j.state,COALESCE(j.lease_owner,''),COALESCE(j.lease_expires_at,'') FROM inference_tasks t JOIN jobs j ON j.id=t.job_id WHERE t.job_id=? AND j.job_type=?`, jobID, string(domain.JobInference)).Scan(&task.JobID, &assetID, &task.TaskKey, &operation, &task.RequestJSON, &task.ConfigHash, &task.ModelRevision, &cancelRequested, &state, &leaseOwner, &leaseExpires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return leaseLostErr(jobID, owner)
 	}
@@ -145,6 +168,9 @@ func (r *Repository) StageInferenceTask(ctx context.Context, jobID, owner string
 		return err
 	}
 	now := time.Now().UTC()
+	if cancelRequested != 0 {
+		return domain.Permanent(domain.ErrInferenceCancelled)
+	}
 	if state != string(domain.JobRunning) || leaseOwner != owner {
 		return leaseLostErr(jobID, owner)
 	}
@@ -184,7 +210,7 @@ func (r *Repository) StageInferenceTask(ctx context.Context, jobID, owner string
 		return err
 	}
 	stageNow := time.Now().UTC()
-	res, err := tx.ExecContext(ctx, `UPDATE inference_tasks SET staged_json=?,updated_at=? WHERE job_id=? AND operation=? AND config_hash=? AND model_revision=? AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=inference_tasks.job_id AND j.job_type=? AND j.state='running' AND j.lease_owner=? AND j.lease_expires_at>?)`, staged, formatTime(stageNow), jobID, string(request.Operation), request.ConfigHash, request.ModelRevision, string(domain.JobInference), owner, formatTime(stageNow))
+	res, err := tx.ExecContext(ctx, `UPDATE inference_tasks SET staged_json=?,updated_at=? WHERE job_id=? AND operation=? AND config_hash=? AND model_revision=? AND cancel_requested=0 AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=inference_tasks.job_id AND j.job_type=? AND j.state='running' AND j.lease_owner=? AND j.lease_expires_at>?)`, staged, formatTime(stageNow), jobID, string(request.Operation), request.ConfigHash, request.ModelRevision, string(domain.JobInference), owner, formatTime(stageNow))
 	if err != nil {
 		return err
 	}
@@ -211,7 +237,8 @@ func (r *Repository) CommitInferenceTask(ctx context.Context, jobID, owner strin
 	var staged sql.NullString
 	var modelRun sql.NullString
 	var assetID string
-	err = tx.QueryRowContext(ctx, `SELECT t.job_id,COALESCE(j.asset_id,''),t.task_key,t.operation,t.request_json,t.model_run_id,t.staged_json,t.config_hash,t.model_revision,j.state,COALESCE(j.lease_owner,''),j.lease_expires_at FROM inference_tasks t JOIN jobs j ON j.id=t.job_id WHERE t.job_id=? AND j.job_type=?`, jobID, string(domain.JobInference)).Scan(&task.JobID, &task.AssetID, &task.TaskKey, &operation, &task.RequestJSON, &modelRun, &staged, &task.ConfigHash, &task.ModelRevision, &state, &leaseOwner, &expires)
+	var cancelRequested int
+	err = tx.QueryRowContext(ctx, `SELECT t.job_id,COALESCE(j.asset_id,''),t.task_key,t.operation,t.request_json,t.model_run_id,t.staged_json,t.config_hash,t.model_revision,t.cancel_requested,j.state,COALESCE(j.lease_owner,''),j.lease_expires_at FROM inference_tasks t JOIN jobs j ON j.id=t.job_id WHERE t.job_id=? AND j.job_type=?`, jobID, string(domain.JobInference)).Scan(&task.JobID, &task.AssetID, &task.TaskKey, &operation, &task.RequestJSON, &modelRun, &staged, &task.ConfigHash, &task.ModelRevision, &cancelRequested, &state, &leaseOwner, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return leaseLostErr(jobID, owner)
 	}
@@ -232,6 +259,9 @@ func (r *Repository) CommitInferenceTask(ctx context.Context, jobID, owner strin
 	}
 	if !storedTaskMatchesRequest(task, request) || (request.Input.Kind == domain.InputKindAsset && request.Input.AssetID != assetID) || (request.Input.Kind != domain.InputKindAsset && assetID != "") {
 		return leaseLostErr(jobID, owner)
+	}
+	if cancelRequested != 0 {
+		return domain.Permanent(domain.ErrInferenceCancelled)
 	}
 	if state == string(domain.JobSucceeded) {
 		// Commit's job transition and canonical writes are one transaction, so
@@ -306,7 +336,7 @@ func (r *Repository) CommitInferenceTask(ctx context.Context, jobID, owner strin
 			return err
 		}
 		failureJSON := []byte("[]")
-		_, err = tx.ExecContext(ctx, `INSERT INTO modality_generations(id,asset_id,operation,model_run_id,input_hash,config_hash,space_id,shot_set_hash,state,processed_intervals_json,failure_intervals_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?, 'committed',?,?,?,?)`, generationID, assetID, string(request.Operation), nullString(modelRunID), request.InputHash, request.ConfigHash, nullString(request.SpaceID), nullString(shotSetHash), string(processedJSON), string(failureJSON), formatTime(now), formatTime(now))
+		_, err = tx.ExecContext(ctx, `INSERT INTO modality_generations(id,asset_id,operation,model_run_id,input_hash,config_hash,space_id,shot_set_hash,model_id,model_revision,backend,state,processed_intervals_json,failure_intervals_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?, 'committed',?,?,?,?)`, generationID, assetID, string(request.Operation), nullString(modelRunID), request.InputHash, request.ConfigHash, nullString(request.SpaceID), nullString(shotSetHash), request.ModelID, request.ModelRevision, result.Backend, string(processedJSON), string(failureJSON), formatTime(now), formatTime(now))
 		if err != nil {
 			return err
 		}
@@ -430,6 +460,26 @@ func (r *Repository) CommitSpeakerEmbedding(ctx context.Context, jobID, owner st
 	}
 	return tx.Commit()
 }
+
+// RenewInferenceLease extends the lease of a still-running, non-cancelled
+// inference task. The executor calls it every 30 seconds so a long model run
+// does not outlive the initial 10-minute window.
+func (r *Repository) RenewInferenceLease(ctx context.Context, jobID, owner string, until time.Time) error {
+	now := time.Now().UTC()
+	res, err := r.db.ExecContext(ctx, `UPDATE jobs SET lease_expires_at=?,updated_at=? WHERE id=? AND job_type=? AND state='running' AND lease_owner=? AND EXISTS(SELECT 1 FROM inference_tasks t WHERE t.job_id=jobs.id AND t.cancel_requested=0)`, formatTime(until.UTC()), formatTime(now), jobID, string(domain.JobInference), owner)
+	if err != nil {
+		return err
+	}
+	count, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return leaseLostErr(jobID, owner)
+	}
+	return nil
+}
+
 func (r *Repository) CancelInferenceTask(ctx context.Context, jobID string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {

@@ -282,3 +282,9 @@ var ErrPairingTokenInvalid = errors.New("pairing token is invalid or already red
 // client-side bug), never a server fault, so the API maps it to 409 Conflict
 // and the caller refreshes the basket.
 var ErrReorderInvalid = errors.New("collection shot reorder does not match the current pins")
+
+// ErrInferenceCancelled reports that an administrator cancelled an inference
+// task before its result was staged or committed. It is distinct from a lost
+// lease: the task's owner may still hold a valid lease, but the canonical
+// commit must refuse to publish a result the operator withdrew.
+var ErrInferenceCancelled = errors.New("inference cancelled")

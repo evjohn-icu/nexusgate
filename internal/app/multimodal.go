@@ -39,6 +39,14 @@ func (p *Pipeline) WithInference(exec InferenceExecutor, repo InferenceRepositor
 	return p
 }
 
+// WithSpeakerCommit attaches the encrypted biometric publication path. It is
+// separate from WithInference because the secret store belongs to the Hub
+// service, not to the queue.
+func (p *Pipeline) WithSpeakerCommit(commit func(context.Context, string, string, domain.InferenceRequest, domain.InferenceResult) error) *Pipeline {
+	p.speakerCommit = commit
+	return p
+}
+
 // inferenceConfigHash names the exact configuration that produced a
 // generation. Thresholds, preprocessing and runtime identity are part of it,
 // so changing a detector threshold produces a new generation instead of
@@ -440,8 +448,18 @@ func (p *Pipeline) executeInference(ctx context.Context, j domain.Job, owner str
 			Message: fmt.Sprintf("no available model for %s at revision %s", req.ModelID, req.ModelRevision),
 		})
 	}
-	result, err := p.inferenceExec.Execute(ctx, req)
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	watchDone := make(chan struct{})
+	defer close(watchDone)
+	go p.watchInferenceLease(runCtx, stop, j.ID, owner, watchDone)
+	result, err := p.inferenceExec.Execute(runCtx, req)
 	if err != nil {
+		if errors.Is(err, context.Canceled) && ctx.Err() == nil {
+			if task, readErr := p.inferenceRepo.GetInferenceTask(ctx, j.ID); readErr == nil && task.CancelRequested {
+				return domain.Permanent(&remote.InferenceFailure{Code: remote.FailureCancelled, Message: "cancelled during execution"})
+			}
+		}
 		return classifyInferenceError(err)
 	}
 	dimension := 0
@@ -453,13 +471,58 @@ func (p *Pipeline) executeInference(ctx context.Context, j domain.Job, owner str
 	if err := result.ValidateFor(req, req.Input.DurationMS, dimension); err != nil {
 		return domain.Permanent(&remote.InferenceFailure{Code: remote.FailureInvalidOutput, Message: err.Error()})
 	}
+	if req.Operation == domain.OpSpeakerEmbedding {
+		if p.speakerCommit == nil {
+			return domain.Permanent(errors.New("speaker embedding needs the Hub service secret boundary"))
+		}
+		if err := p.speakerCommit(ctx, j.ID, owner, req, result); err != nil {
+			return inferenceCommitError(err)
+		}
+		return ErrJobCommittedEarly
+	}
 	if err := p.inferenceRepo.StageInferenceTask(ctx, j.ID, owner, result); err != nil {
-		return err
+		return inferenceCommitError(err)
 	}
 	if err := p.inferenceRepo.CommitInferenceTask(ctx, j.ID, owner); err != nil {
-		return err
+		return inferenceCommitError(err)
 	}
 	return ErrJobCommittedEarly
+}
+
+// watchInferenceLease keeps a long Hub-local model run alive and propagates an
+// operator cancellation into the executor's context. Lease loss also cancels:
+// publishing afterwards would be rejected by the commit fence, so stopping the
+// device work is strictly better than finishing it.
+func (p *Pipeline) watchInferenceLease(ctx context.Context, cancel context.CancelFunc, jobID, owner string, done <-chan struct{}) {
+	ticker := time.NewTicker(inferenceRenewEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			task, err := p.inferenceRepo.GetInferenceTask(ctx, jobID)
+			if err != nil || task.CancelRequested {
+				cancel()
+				return
+			}
+			if err := p.inferenceRepo.RenewInferenceLease(ctx, jobID, owner, time.Now().Add(InferenceLease)); err != nil {
+				cancel()
+				return
+			}
+		}
+	}
+}
+
+// inferenceCommitError maps the cancellation sentinel onto the typed failure
+// the job layer records; a plain lease loss keeps its existing meaning.
+func inferenceCommitError(err error) error {
+	if errors.Is(err, domain.ErrInferenceCancelled) {
+		return domain.Permanent(&remote.InferenceFailure{Code: remote.FailureCancelled, Message: "cancelled before commit"})
+	}
+	return err
 }
 
 // classifyInferenceError maps a typed failure onto the job layer's retry

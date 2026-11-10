@@ -34,6 +34,18 @@ type Model struct {
 	NativeVideo bool
 }
 
+// LookupByModel resolves the locked entry for one model identity. The lease
+// selector uses it to attach the catalog id an attestation is keyed by; a
+// Worker cannot invent that mapping in its heartbeat.
+func LookupByModel(modelID, revision string) (Model, bool) {
+	for _, model := range models {
+		if model.ModelID == modelID && model.Revision == revision {
+			return model, true
+		}
+	}
+	return Model{}, false
+}
+
 // LockSchemaVersion is the schema of the file this package mirrors.
 const LockSchemaVersion = "inference.models.lock.v1"
 

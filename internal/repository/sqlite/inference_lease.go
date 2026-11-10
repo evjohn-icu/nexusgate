@@ -13,15 +13,36 @@ import (
 	"github.com/evjohn-icu/nexusgate/internal/remote"
 )
 
-func (r *Repository) LeaseNextWorkerInference(ctx context.Context, worker string, lease time.Duration, roots []string, ops []string, maxAssetBytes int64, now time.Time) (*remote.WorkerJob, error) {
-	return r.leaseNextInference(ctx, worker, lease, roots, true, ops, maxAssetBytes, now)
+func (r *Repository) LeaseNextWorkerInference(ctx context.Context, worker string, lease time.Duration, roots []string, caps []remote.InferenceCapability, maxAssetBytes int64, now time.Time) (*remote.WorkerJob, error) {
+	return r.leaseNextInference(ctx, worker, lease, roots, true, caps, maxAssetBytes, now)
 }
 
-func (r *Repository) LeaseNextLocalInference(ctx context.Context, worker string, lease time.Duration, ops []string, maxAssetBytes int64, now time.Time) (*remote.WorkerJob, error) {
-	return r.leaseNextInference(ctx, worker, lease, nil, false, ops, maxAssetBytes, now)
+func (r *Repository) LeaseNextLocalInference(ctx context.Context, worker string, lease time.Duration, caps []remote.InferenceCapability, maxAssetBytes int64, now time.Time) (*remote.WorkerJob, error) {
+	return r.leaseNextInference(ctx, worker, lease, nil, false, caps, maxAssetBytes, now)
 }
 
-func (r *Repository) leaseNextInference(ctx context.Context, worker string, lease time.Duration, roots []string, restrictRoots bool, ops []string, maxAssetBytes int64, now time.Time) (*remote.WorkerJob, error) {
+// normalizeInferenceCapabilities keeps only identities the selector can match.
+// The app layer already intersects them with the enrollment grant; this is the
+// last line of defence for direct repository callers.
+func normalizeInferenceCapabilities(caps []remote.InferenceCapability) []remote.InferenceCapability {
+	out := make([]remote.InferenceCapability, 0, len(caps))
+	seen := make(map[string]struct{}, len(caps))
+	for _, cap := range caps {
+		if !cap.Operation.Valid() || strings.TrimSpace(cap.ModelID) == "" || strings.TrimSpace(cap.ModelRevision) == "" {
+			continue
+		}
+		key := strings.Join([]string{string(cap.Operation), cap.ModelID, cap.ModelRevision,
+			cap.ConfigHash, cap.SpaceID, cap.CatalogID}, "\x1f")
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, cap)
+	}
+	return out
+}
+
+func (r *Repository) leaseNextInference(ctx context.Context, worker string, lease time.Duration, roots []string, restrictRoots bool, caps []remote.InferenceCapability, maxAssetBytes int64, now time.Time) (*remote.WorkerJob, error) {
 	if strings.TrimSpace(worker) == "" {
 		return nil, errors.New("inference lease owner is required")
 	}
@@ -36,19 +57,7 @@ func (r *Repository) leaseNextInference(ctx context.Context, worker string, leas
 	if maxAssetBytes <= 0 {
 		maxAssetBytes = 0
 	}
-	operations := make([]string, 0, len(ops))
-	seen := make(map[string]struct{}, len(ops))
-	for _, operation := range ops {
-		op := domain.InferenceOperation(operation)
-		if !op.Valid() {
-			continue
-		}
-		if _, exists := seen[operation]; exists {
-			continue
-		}
-		seen[operation] = struct{}{}
-		operations = append(operations, operation)
-	}
+	capabilities := normalizeInferenceCapabilities(caps)
 
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -58,12 +67,12 @@ func (r *Repository) leaseNextInference(ctx context.Context, worker string, leas
 	if err := reclaimExhaustedLeases(ctx, tx, now); err != nil {
 		return nil, err
 	}
-	if len(operations) == 0 {
+	if len(capabilities) == 0 {
 		return nil, tx.Commit()
 	}
 
 	rootFilter := ""
-	args := make([]any, 0, len(roots)+len(operations)+10)
+	args := make([]any, 0, len(roots)+len(capabilities)*4+10)
 	if restrictRoots {
 		if len(roots) == 0 {
 			rootFilter = " AND 0"
@@ -74,26 +83,30 @@ func (r *Repository) leaseNextInference(ctx context.Context, worker string, leas
 			}
 		}
 	}
-	for _, operation := range operations {
-		args = append(args, operation)
+	args = append(args, string(domain.JobInference))
+	clauses := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		clause := `(t.operation=? AND t.model_revision=? AND json_extract(t.request_json,'$.model_id')=?)`
+		args = append(args, string(capability.Operation), capability.ModelRevision, capability.ModelID)
+		if capability.SpaceID != "" {
+			clause += ` AND COALESCE(json_extract(t.request_json,'$.space_id'),'')=?`
+			args = append(args, capability.SpaceID)
+		}
+		// Only a Hub-verified probe attestation makes a paired Worker's
+		// claimed profile routable. The Hub-local runtime is verified by its
+		// own probe path and has no worker row to attest against.
+		if restrictRoots && capability.CatalogID != "" {
+			clause += ` AND EXISTS(SELECT 1 FROM model_attestations ma WHERE ma.worker_id=? AND ma.catalog_id=? AND ma.action='probe')`
+			args = append(args, worker, capability.CatalogID)
+		}
+		clauses = append(clauses, clause)
 	}
 	args = append(args, worker, formatTime(now), formatTime(now), maxAssetBytes, maxAssetBytes, worker)
-	query := `SELECT j.id,COALESCE(j.asset_id,''),COALESCE(al.root_id,''),COALESCE(al.relative_path,''),COALESCE(al.modified_ns,0),j.job_type,j.attempt_count,j.max_attempts,j.current_stage,j.progress,COALESCE(j.preferred_worker_id,''),COALESCE(j.assigned_worker_id,''),COALESCE((SELECT a.file_size FROM assets a WHERE a.id=j.asset_id),0),t.operation,t.request_json FROM jobs j JOIN inference_tasks t ON t.job_id=j.id LEFT JOIN asset_locations al ON al.id=(SELECT el.id FROM asset_locations el JOIN library_roots lr ON lr.id=el.root_id WHERE el.asset_id=j.asset_id AND el.exists_now=1 AND lr.health_state<>'unavailable'` + rootFilter + ` ORDER BY el.is_primary DESC,el.last_seen_at DESC,lr.created_at,lr.id,el.relative_path,el.id LIMIT 1) WHERE j.job_type=? AND t.operation IN (` + placeholders(len(operations)) + `) AND t.cancel_requested=0 AND (j.assigned_worker_id IS NULL OR j.assigned_worker_id=?) AND j.state IN ('pending','failed','running') AND j.terminal=0 AND j.attempt_count<j.max_attempts AND j.run_after<=? AND (j.lease_expires_at IS NULL OR j.lease_expires_at<=?) AND (j.asset_id IS NULL OR al.id IS NOT NULL) AND (j.asset_id IS NULL OR ?=0 OR COALESCE((SELECT a.file_size FROM assets a WHERE a.id=j.asset_id),0)<=?) ORDER BY CASE WHEN j.preferred_worker_id=? THEN 0 ELSE 1 END,j.priority DESC,j.created_at,j.id LIMIT 1`
-	// The first bound value is the job type; it follows any root parameters but
-	// precedes the operation list in the SQL text.
-	queryArgs := make([]any, 0, len(args)+1)
-	rootCount := 0
-	if restrictRoots && len(roots) != 0 {
-		rootCount = len(roots)
-	}
-	queryArgs = append(queryArgs, args[:rootCount]...)
-	queryArgs = append(queryArgs, string(domain.JobInference))
-	queryArgs = append(queryArgs, args[rootCount:rootCount+len(operations)]...)
-	queryArgs = append(queryArgs, args[rootCount+len(operations):]...)
+	query := `SELECT j.id,COALESCE(j.asset_id,''),COALESCE(al.root_id,''),COALESCE(al.relative_path,''),COALESCE(al.modified_ns,0),j.job_type,j.attempt_count,j.max_attempts,j.current_stage,j.progress,COALESCE(j.preferred_worker_id,''),COALESCE(j.assigned_worker_id,''),COALESCE((SELECT a.file_size FROM assets a WHERE a.id=j.asset_id),0),t.operation,t.request_json FROM jobs j JOIN inference_tasks t ON t.job_id=j.id LEFT JOIN asset_locations al ON al.id=(SELECT el.id FROM asset_locations el JOIN library_roots lr ON lr.id=el.root_id WHERE el.asset_id=j.asset_id AND el.exists_now=1 AND lr.health_state<>'unavailable'` + rootFilter + ` ORDER BY el.is_primary DESC,el.last_seen_at DESC,lr.created_at,lr.id,el.relative_path,el.id LIMIT 1) WHERE j.job_type=? AND (` + strings.Join(clauses, ` OR `) + `) AND t.cancel_requested=0 AND (j.assigned_worker_id IS NULL OR j.assigned_worker_id=?) AND j.state IN ('pending','failed','running') AND j.terminal=0 AND j.attempt_count<j.max_attempts AND j.run_after<=? AND (j.lease_expires_at IS NULL OR j.lease_expires_at<=?) AND (j.asset_id IS NULL OR al.id IS NOT NULL) AND (j.asset_id IS NULL OR ?=0 OR COALESCE((SELECT a.file_size FROM assets a WHERE a.id=j.asset_id),0)<=?) ORDER BY CASE WHEN j.preferred_worker_id=? THEN 0 ELSE 1 END,j.priority DESC,j.created_at,j.id LIMIT 1`
 
 	var job remote.WorkerJob
 	var operation, requestJSON string
-	err = tx.QueryRowContext(ctx, query, queryArgs...).Scan(&job.JobID, &job.AssetID, &job.RootID, &job.RelativePath, &job.ModifiedNS, &job.JobType, &job.AttemptCount, &job.MaxAttempts, &job.CurrentStage, &job.Progress, &job.PreferredWorkerID, &job.AssignedWorkerID, &job.SourceBytes, &operation, &requestJSON)
+	err = tx.QueryRowContext(ctx, query, args...).Scan(&job.JobID, &job.AssetID, &job.RootID, &job.RelativePath, &job.ModifiedNS, &job.JobType, &job.AttemptCount, &job.MaxAttempts, &job.CurrentStage, &job.Progress, &job.PreferredWorkerID, &job.AssignedWorkerID, &job.SourceBytes, &operation, &requestJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, tx.Commit()
 	}

@@ -197,8 +197,8 @@
           "cancelled": true,
           "oom_code": true,
           "measured_at": "2026-11-10",
-          "environment_file": "inference/requirements/torch.lock",
-          "environment_digest": "sha256:872964e18165fc2aec3c325470355a1faeb87204fbfc2d5d89b0c76b6cdc90af"
+          "environment_file": "inference/requirements/torch-cuda.lock",
+          "environment_digest": "sha256:b4517d1813ef0adf44c0379fde8cdc9a314528d286a159ea4042af47c8822d81"
         },
         {
           "device": "cpu",
@@ -216,8 +216,8 @@
           "cancelled": true,
           "oom_code": true,
           "measured_at": "2026-11-10",
-          "environment_file": "inference/requirements/torch.lock",
-          "environment_digest": "sha256:872964e18165fc2aec3c325470355a1faeb87204fbfc2d5d89b0c76b6cdc90af"
+          "environment_file": "inference/requirements/torch-cuda.lock",
+          "environment_digest": "sha256:b4517d1813ef0adf44c0379fde8cdc9a314528d286a159ea4042af47c8822d81"
         },
         {
           "device": "cuda",
@@ -513,8 +513,8 @@
           "cancelled": true,
           "oom_code": true,
           "measured_at": "2026-11-10",
-          "environment_file": "inference/requirements/torch.lock",
-          "environment_digest": "sha256:872964e18165fc2aec3c325470355a1faeb87204fbfc2d5d89b0c76b6cdc90af"
+          "environment_file": "inference/requirements/torch-cuda.lock",
+          "environment_digest": "sha256:b4517d1813ef0adf44c0379fde8cdc9a314528d286a159ea4042af47c8822d81"
         },
         {
           "device": "cpu",
@@ -532,8 +532,8 @@
           "cancelled": true,
           "oom_code": true,
           "measured_at": "2026-11-10",
-          "environment_file": "inference/requirements/torch.lock",
-          "environment_digest": "sha256:872964e18165fc2aec3c325470355a1faeb87204fbfc2d5d89b0c76b6cdc90af"
+          "environment_file": "inference/requirements/torch-cuda.lock",
+          "environment_digest": "sha256:b4517d1813ef0adf44c0379fde8cdc9a314528d286a159ea4042af47c8822d81"
         },
         {
           "device": "cuda",

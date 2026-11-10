@@ -319,6 +319,10 @@ type SpeakerSettings struct {
 	// ProfileID is the eligible-profile identity a biometric extraction is
 	// bound to. Empty for anonymous local comparison.
 	ProfileID string `json:"profile_id,omitempty"`
+	// DiarizationGenerationID records which diarization produced the turn this
+	// extraction came from, so the published vector keeps its provenance even
+	// after the profile is edited. Optional for older requests.
+	DiarizationGenerationID string `json:"diarization_generation_id,omitempty"`
 }
 
 // SoundEventSettings is reserved for detector overrides. It is deliberately

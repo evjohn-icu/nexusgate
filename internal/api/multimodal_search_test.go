@@ -15,6 +15,7 @@ import (
 
 	"github.com/evjohn-icu/nexusgate/internal/app"
 	"github.com/evjohn-icu/nexusgate/internal/config"
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 	"github.com/evjohn-icu/nexusgate/internal/media"
 	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
@@ -99,6 +100,13 @@ func TestSearchRejectsInvalidTemporalBeforeRetrieval(t *testing.T) {
 // missing.
 func TestPendingReferenceSearchReturns202(t *testing.T) {
 	handler, repo := newMultimodalTestStack(t)
+	// The query encoder reads the operator-selected profile, so visual must be
+	// enabled for the pending-channel path to be reachable.
+	settings := domain.DefaultMultimodalSettings()
+	settings.Enabled[domain.OpVisualEmbedding] = true
+	if err := repo.PutMultimodalSettings(context.Background(), settings); err != nil {
+		t.Fatal(err)
+	}
 	// A 1x1 PNG is enough to create the reference; the encoder never runs.
 	var encoded bytes.Buffer
 	if err := png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil {

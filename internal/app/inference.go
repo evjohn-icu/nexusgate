@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/evjohn-icu/nexusgate/internal/domain"
 	"github.com/evjohn-icu/nexusgate/internal/remote"
@@ -53,7 +54,12 @@ type InferenceRepository interface {
 	EnqueueInferenceTask(ctx context.Context, jobID *string, task domain.InferenceTask, priority int) (string, error)
 	GetInferenceTask(ctx context.Context, jobID string) (domain.InferenceTask, error)
 	StageInferenceTask(ctx context.Context, jobID, owner string, result domain.InferenceResult) error
+	// GetStagedInferenceResult returns the validated staged payload, including
+	// vectors that the JSON envelope carries out of band. It is the only safe
+	// way to compare a retried submission with what was already staged.
+	GetStagedInferenceResult(ctx context.Context, jobID string) (domain.InferenceResult, bool, error)
 	CommitInferenceTask(ctx context.Context, jobID, owner string) error
+	RenewInferenceLease(ctx context.Context, jobID, owner string, until time.Time) error
 	CancelInferenceTask(ctx context.Context, jobID string) error
 
 	GetMultimodalSettings(ctx context.Context) (domain.MultimodalSettings, error)
@@ -167,6 +173,7 @@ func (s *Service) AttachInferenceExecutor(exec InferenceExecutor) {
 	s.inferenceExec = exec
 	if s.pipeline != nil {
 		s.pipeline.WithInference(exec, s.inferenceRepo)
+		s.pipeline.WithSpeakerCommit(s.commitSpeakerInferenceResult)
 	}
 }
 

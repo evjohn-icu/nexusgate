@@ -474,3 +474,33 @@ func waitProcessGone(t *testing.T, pid int) {
 	}
 	t.Fatalf("process %d survived process-tree termination", pid)
 }
+
+func TestWireRequestSendsSpeakerSegmentsNotProfileIdentity(t *testing.T) {
+	executor, _ := testExecutor(t, "#!/bin/sh\nexit 0\n", time.Second, nil)
+	request := testRequest()
+	request.Operation = domain.OpSpeakerEmbedding
+	request.SoundEvent = nil
+	request.Speaker = &domain.SpeakerSettings{
+		ProfileID: "profile-secret",
+		Interval:  &domain.TimeInterval{StartMS: 1000, EndMS: 4500},
+	}
+	encoded, err := executor.wireRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Settings map[string]struct {
+			Segments []map[string]int64 `json:"segments"`
+		} `json:"settings"`
+	}
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatal(err)
+	}
+	segments := wire.Settings["speaker"].Segments
+	if len(segments) != 1 || segments[0]["start_ms"] != 1000 || segments[0]["end_ms"] != 4500 {
+		t.Fatalf("speaker wire settings = %+v", wire.Settings)
+	}
+	if strings.Contains(string(encoded), "profile-secret") {
+		t.Fatal("profile identity must not cross the model process boundary")
+	}
+}

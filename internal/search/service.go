@@ -276,6 +276,13 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 		fusion = defaultFusion(q.Intent)
 	}
 	fused := fusion.Fuse(results)
+	// An explicit multimodal request has its own canonical-shot universe,
+	// computed from the same facet predicates as browse. The legacy semantic
+	// pool is only a top-K heuristic and would drop a visual-only shot that
+	// legitimately matched the filter but had no semantic vector.
+	if hasMultimodal && modalityUniverseReady {
+		universe = modalityUniverse
+	}
 	if universe != nil {
 		kept := fused[:0]
 		for _, c := range fused {

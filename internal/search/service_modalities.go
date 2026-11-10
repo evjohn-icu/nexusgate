@@ -160,17 +160,36 @@ func (s *Service) temporalEvidence(ctx context.Context, req SearchRequest, q Sea
 		default:
 			return nil, nil, fmt.Errorf("%w: temporal condition %q uses unsupported modality %q", ErrInvalidMultimodal, condition.ID, condition.Modality)
 		}
-		_, windows, err := retriever.RetrieveWithWindows(ctx, q, limit)
+		// Predicates must see the complete condition set: a supporting pair
+		// beyond the response top-K is still a valid temporal fact. The final
+		// matches are truncated to limit after the asset-level join.
+		_, windows, err := retriever.RetrieveWithWindows(ctx, q, -1)
 		if err != nil {
 			return nil, nil, err
 		}
 		windowsByCondition[condition.ID] = windows
 	}
 
-	// Every predicate must hold somewhere in an asset; the allowed set is the
-	// intersection of the assets each predicate can be satisfied in. With no
-	// predicates there is no temporal constraint, so every asset stays eligible.
+	// Every condition is conjunctive: an asset must contain a match for all of
+	// them, even when no predicate references a condition. Start from the
+	// intersection of the per-condition asset sets, then require every
+	// predicate to hold in the same asset.
 	var allowed map[string]bool
+	for _, condition := range query.Conditions {
+		conditionAssets := make(map[string]bool)
+		for _, window := range windowsByCondition[condition.ID] {
+			conditionAssets[window.AssetID] = true
+		}
+		if allowed == nil {
+			allowed = conditionAssets
+			continue
+		}
+		for assetID := range allowed {
+			if !conditionAssets[assetID] {
+				delete(allowed, assetID)
+			}
+		}
+	}
 	for _, predicate := range query.Predicates {
 		satisfied := map[string]bool{}
 		for _, left := range windowsByCondition[predicate.LeftID] {
@@ -202,11 +221,16 @@ func (s *Service) temporalEvidence(ctx context.Context, req SearchRequest, q Sea
 
 	var matches []Match
 	for _, condition := range query.Conditions {
+		perCondition := 0
 		for _, window := range windowsByCondition[condition.ID] {
 			if allowed != nil && !allowed[window.AssetID] {
 				continue
 			}
+			if limit > 0 && perCondition >= limit {
+				break
+			}
 			matches = append(matches, BuildMatches(condition.ID, []ModalityWindow{window})...)
+			perCondition++
 		}
 	}
 	return allowed, dedupeMatches(matches), nil
