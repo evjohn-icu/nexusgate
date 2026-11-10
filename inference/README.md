@@ -37,6 +37,10 @@ uv pip install --python .venv-wemm/bin/python torch==2.14.1+cu126 \
 uv pip install --python .venv-wemm/bin/python -r requirements/wemm.in
 ```
 
+The WeMM environment includes `decord`; native-video decoding fails with a
+typed `model_unavailable` without it because torchvision 0.29 removed the
+reader qwen-vl-utils falls back to.
+
 YAMNet needs a separate environment because its SavedModel was exported for
 Keras 2 and does not load under Keras 3 defaults:
 

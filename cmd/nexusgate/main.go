@@ -157,38 +157,7 @@ func run() error {
 		if err := service.HealOnStartup(ctx); err != nil {
 			slog.Warn("self-heal sweep failed; stale running jobs will be reclaimed on the next lease attempt", "error", err)
 		}
-		// Attach the local model runtime only when an operator has pointed the
-		// Hub at a locked environment. A stock install has no Python runtime and
-		// must not start one: inference jobs then wait for a paired Worker, and
-		// the admin settings route reports the local runtime unavailable.
-		if cfg.Inference.LocalRuntimeConfigured() {
-			executor, err := localinference.New(localinference.Config{
-				PythonPath:    cfg.Inference.PythonPath,
-				ModuleDir:     cfg.Inference.ModuleDir,
-				ModelDir:      cfg.Inference.ModelDir,
-				Device:        cfg.Inference.Device,
-				Dtype:         cfg.Inference.Dtype,
-				ScratchDir:    cfg.Inference.ScratchDir,
-				MaxFrameBytes: cfg.Inference.MaxFrameBytes,
-				ResolveAssetPath: func(input domain.InferenceInput) (string, error) {
-					return service.ResolveInferenceAssetPath(ctx, input)
-				},
-				ResolveImagePath: func(referenceID, digest string) (string, error) {
-					return service.ResolveInferenceImagePath(ctx, referenceID, digest)
-				},
-			})
-			if err != nil {
-				slog.Warn("local inference runtime unavailable", "error", err)
-			} else {
-				service.AttachInferenceExecutor(executor)
-				if manager, err := app.NewLocalModelManager(cfg.Inference.LockPath, cfg.Inference.ModelDir, executor); err != nil {
-					slog.Warn("model manager unavailable", "error", err)
-				} else {
-					service.AttachModelManager(manager)
-				}
-				fmt.Printf("Inference runtime: %s (%s/%s)\n", cfg.Inference.PythonPath, cfg.Inference.Device, cfg.Inference.Dtype)
-			}
-		}
+		attachLocalInference(ctx, service, cfg)
 		certificate, key, err := hubTLSFiles(cfg)
 		if err != nil {
 			return err
@@ -289,6 +258,10 @@ func run() error {
 			if err := service.HealOnStartup(ctx); err != nil {
 				slog.Warn("self-heal sweep failed; stale running jobs will be reclaimed on the next lease attempt", "error", err)
 			}
+			// A separate pipeline process must attach the same local runtime as
+			// serve; otherwise inference jobs are never leasable by it and wait
+			// for a scan-triggered pass inside the HTTP process.
+			attachLocalInference(ctx, service, cfg)
 			return service.RunPipeline(ctx)
 		case "retry-failed":
 			requeued, err := service.RequeueFailedJobs(context.Background())
@@ -408,6 +381,43 @@ func detectContainer() bool {
 // analysis must be refreshable without deleting the database. Old model runs
 // stay immutable and auditable; the new run switches the canonical analysis
 // and rebuilds search when it lands.
+// attachLocalInference binds the locked Python runtime and model manager to a
+// service when the operator configured one. Both `serve` and `pipeline run`
+// need it: inference jobs are leased by whichever process runs the pipeline,
+// so attaching only in serve left them pending forever in the documented
+// separate-pipeline deployment.
+func attachLocalInference(ctx context.Context, service *app.Service, cfg config.Config) {
+	if !cfg.Inference.LocalRuntimeConfigured() {
+		return
+	}
+	executor, err := localinference.New(localinference.Config{
+		PythonPath:    cfg.Inference.PythonPath,
+		ModuleDir:     cfg.Inference.ModuleDir,
+		ModelDir:      cfg.Inference.ModelDir,
+		Device:        cfg.Inference.Device,
+		Dtype:         cfg.Inference.Dtype,
+		ScratchDir:    cfg.Inference.ScratchDir,
+		MaxFrameBytes: cfg.Inference.MaxFrameBytes,
+		ResolveAssetPath: func(input domain.InferenceInput) (string, error) {
+			return service.ResolveInferenceAssetPath(ctx, input)
+		},
+		ResolveImagePath: func(referenceID, digest string) (string, error) {
+			return service.ResolveInferenceImagePath(ctx, referenceID, digest)
+		},
+	})
+	if err != nil {
+		slog.Warn("local inference runtime unavailable", "error", err)
+		return
+	}
+	service.AttachInferenceExecutor(executor)
+	if manager, err := app.NewLocalModelManager(cfg.Inference.LockPath, cfg.Inference.ModelDir, executor); err != nil {
+		slog.Warn("model manager unavailable", "error", err)
+	} else {
+		service.AttachModelManager(manager)
+	}
+	fmt.Printf("Inference runtime: %s (%s/%s)\n", cfg.Inference.PythonPath, cfg.Inference.Device, cfg.Inference.Dtype)
+}
+
 func runReanalyzeCommand(service *app.Service, args []string) error {
 	flags := flag.NewFlagSet("reanalyze", flag.ContinueOnError)
 	assetID := flags.String("asset", "", "reanalyze a single asset by id")

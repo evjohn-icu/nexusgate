@@ -399,8 +399,8 @@
           "oom_code": true,
           "measured_at": "2026-11-10",
           "environment_file": "inference/requirements/torch-cuda-wemm.lock",
-          "environment_digest": "sha256:97aeb6ffed72c74f7dedbff08f8fd4a96b6f8bd94681cf9770dbb6f4c31d436c",
-          "note": "Pooled-frame strategy only; native-video encoding was not benchmarked."
+          "environment_digest": "sha256:ddf9cd7f11b19684457a1777c6c85a8bc9500ca16ca508fb29925808f83314be",
+          "note": "Pooled-frame strategy. The environment lock also carries decord for native decode; decord is not used by this profile."
         },
         {
           "device": "cuda",
