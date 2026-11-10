@@ -175,3 +175,87 @@ func TestTimelineCursorValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestMultimodalAdminReadAndValidationHandlers(t *testing.T) {
+	handler, _ := newMultimodalTestStack(t)
+	request := func(method, path string, body string) *httptest.ResponseRecorder {
+		var reader *strings.Reader
+		if body == "" {
+			reader = strings.NewReader("")
+		} else {
+			reader = strings.NewReader(body)
+		}
+		req := httptest.NewRequest(method, path, reader)
+		req.RemoteAddr = "10.0.0.5:1234"
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := request(http.MethodGet, "/api/v1/admin/inference/catalog", ""); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "visual-siglip2-base") {
+		t.Fatalf("catalog status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := request(http.MethodGet, "/api/v1/admin/search-references/missing", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("missing reference status=%d", rec.Code)
+	}
+	if rec := request(http.MethodDelete, "/api/v1/admin/search-references/missing", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("delete missing reference status=%d", rec.Code)
+	}
+	if rec := request(http.MethodGet, "/api/v1/assets/missing/timeline", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("missing timeline status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := request(http.MethodGet, "/api/v1/assets/missing/waveform", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("missing waveform status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := request(http.MethodPost, "/api/v1/admin/assets/missing/modalities/visual_embedding/rebuild", ""); rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing rebuild status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := request(http.MethodGet, "/api/v1/admin/inference/operations/missing", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("missing operation status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := request(http.MethodPost, "/api/v1/admin/inference/models/visual-siglip2-base/install", `{}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid install status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := request(http.MethodGet, "/api/v1/admin/speaker-profiles", ""); rec.Code != http.StatusOK {
+		t.Fatalf("speaker profiles status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := request(http.MethodGet, "/api/v1/admin/speaker-profiles/missing/matches", ""); rec.Code != http.StatusNotFound {
+		t.Fatalf("missing speaker matches status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSpeakerAdminHandlersValidateInputs(t *testing.T) {
+	handler, _ := newMultimodalTestStack(t)
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.RemoteAddr = "10.0.0.5:1234"
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	cases := []struct {
+		method, path, body string
+		want               int
+	}{
+		{http.MethodPut, "/api/v1/admin/speaker-consent", `{`, http.StatusBadRequest},
+		{http.MethodPost, "/api/v1/admin/speaker-profiles", `{`, http.StatusBadRequest},
+		{http.MethodDelete, "/api/v1/admin/speaker-profiles/missing", "", http.StatusBadRequest},
+		{http.MethodGet, "/api/v1/admin/speaker-profiles/missing/matches", "", http.StatusNotFound},
+		{http.MethodPatch, "/api/v1/admin/speaker-associations/missing", `{`, http.StatusBadRequest},
+		{http.MethodPost, "/api/v1/admin/speaker-clusters/missing/split", `{`, http.StatusBadRequest},
+		{http.MethodPost, "/api/v1/admin/inference/models/visual-siglip2-base/probe", `{}`, http.StatusAccepted},
+		{http.MethodPost, "/api/v1/admin/inference/jobs/missing/cancel", "", http.StatusNotFound},
+	}
+	for _, tc := range cases {
+		rec := request(tc.method, tc.path, tc.body)
+		if rec.Code != tc.want {
+			t.Errorf("%s %s status=%d body=%s, want %d", tc.method, tc.path, rec.Code, rec.Body.String(), tc.want)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -92,6 +93,10 @@ func (s *Server) cancelInferenceJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.service.CancelInferenceTask(r.Context(), jobID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "inference job not found"})
+			return
+		}
 		writeError(w, err)
 		return
 	}
