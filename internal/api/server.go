@@ -101,14 +101,7 @@ func newServer(address string, service *app.Service, certificateFile, keyFile st
 }
 
 func (s *Server) Run(ctx context.Context) error {
-	server := &http.Server{
-		Addr:              s.address,
-		Handler:           s.Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       5 * time.Minute,
-		WriteTimeout:      5 * time.Minute,
-		IdleTimeout:       60 * time.Second,
-	}
+	server := s.newHTTPServer()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -130,6 +123,50 @@ func (s *Server) Run(ctx context.Context) error {
 			return nil
 		}
 		return err
+	}
+}
+
+// RunListener serves on a listener the caller already bound. The desktop
+// launcher needs this: it asks the kernel for a free loopback port, writes the
+// ready file with that exact address, and only then starts accepting, so there
+// is no window in which the client can dial a port that nothing is listening
+// on. TLS and shutdown behaviour are identical to Run.
+func (s *Server) RunListener(ctx context.Context, listener net.Listener) error {
+	if listener == nil {
+		return fmt.Errorf("run listener: nil listener")
+	}
+	server := s.newHTTPServer()
+	errCh := make(chan error, 1)
+	go func() {
+		slog.Info("local API started", "address", listener.Addr().String())
+		if s.tlsCert != "" && s.tlsKey != "" {
+			errCh <- server.ServeTLS(listener, s.tlsCert, s.tlsKey)
+			return
+		}
+		errCh <- server.Serve(listener)
+	}()
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return server.Shutdown(shutdownCtx)
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
+}
+
+// newHTTPServer carries the timeouts and handler every serve path shares.
+func (s *Server) newHTTPServer() *http.Server {
+	return &http.Server{
+		Addr:              s.address,
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       5 * time.Minute,
+		WriteTimeout:      5 * time.Minute,
+		IdleTimeout:       60 * time.Second,
 	}
 }
 

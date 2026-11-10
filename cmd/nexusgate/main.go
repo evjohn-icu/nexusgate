@@ -277,8 +277,10 @@ func run() error {
 			}
 			fmt.Printf("rebuilt %d shot text embedding(s); run `nexusgate pipeline run` if jobs are queued\n", rebuilt)
 			return nil
+		case "rebuild-visual":
+			return runRebuildVisualCommand(service, repo, os.Args[3:])
 		default:
-			return errors.New("usage: nexusgate search rebuild|rebuild-embeddings")
+			return errors.New("usage: nexusgate search rebuild|rebuild-embeddings|rebuild-visual")
 		}
 
 	case "doctor":
@@ -843,4 +845,68 @@ func hostname() string {
 		return "nexusgate-worker"
 	}
 	return value
+}
+
+// runRebuildVisualCommand queues visual indexing for one asset, one library
+// root or the whole library. It never enqueues a VLM or ASR pass: a rebuild
+// reuses canonical shots (or asks the deterministic detector for bare ones), so
+// paying a provider to re-describe the footage is not part of the command.
+func runRebuildVisualCommand(service *app.Service, repo *sqliterepo.Repository, args []string) error {
+	fs := flag.NewFlagSet("search rebuild-visual", flag.ContinueOnError)
+	asset := fs.String("asset", "", "asset id to rebuild")
+	root := fs.String("root", "", "library root id to rebuild")
+	all := fs.Bool("all", false, "rebuild every asset")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	selected := 0
+	for _, value := range []string{*asset, *root} {
+		if strings.TrimSpace(value) != "" {
+			selected++
+		}
+	}
+	if *all {
+		selected++
+	}
+	if selected != 1 {
+		return errors.New("exactly one of --asset, --root or --all is required")
+	}
+	ctx := context.Background()
+	queued := 0
+	var failures []string
+	queue := func(assetID string) {
+		if _, err := service.RebuildAssetModality(ctx, assetID, domain.OpVisualEmbedding); err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", assetID, err))
+			return
+		}
+		queued++
+	}
+	switch {
+	case strings.TrimSpace(*asset) != "":
+		queue(strings.TrimSpace(*asset))
+	case strings.TrimSpace(*root) != "":
+		assets, err := repo.ListAssetsByRoot(ctx, strings.TrimSpace(*root))
+		if err != nil {
+			return err
+		}
+		for _, id := range assets {
+			queue(id)
+		}
+	default:
+		assets, err := repo.ListAssets(ctx, 1<<31-1, 0)
+		if err != nil {
+			return err
+		}
+		for _, a := range assets {
+			queue(a.ID)
+		}
+	}
+	for _, failure := range failures {
+		fmt.Printf("failed: %s\n", failure)
+	}
+	fmt.Printf("queued visual rebuild for %d asset(s); %d failure(s)\n", queued, len(failures))
+	if len(failures) > 0 {
+		return errors.New("one or more visual rebuilds could not be queued")
+	}
+	return nil
 }
