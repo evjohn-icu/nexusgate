@@ -81,7 +81,11 @@ const maxErrorBodyBytes = 2048
 
 // maxProviderBodyBytes prevents a successful relay response from turning into
 // an unbounded allocation before its diagnostic or raw response is redacted.
-const maxProviderBodyBytes = 4 << 20
+// It is not a wire-size assumption: a 64-item 4096-dimension embedding batch
+// serialises to about 5.6 MiB, so a 4 MiB cut silently truncated a valid
+// response and failed JSON decoding. 16 MiB keeps the ceiling finite while
+// accepting the largest batch the embedding pipeline sends.
+const maxProviderBodyBytes = 16 << 20
 
 // StatusError carries the upstream HTTP status alongside the message so the
 // pipeline can classify a failure without matching on error text. Most 4xx are

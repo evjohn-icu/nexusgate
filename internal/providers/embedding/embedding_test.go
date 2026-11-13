@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,6 +42,54 @@ func TestOpenAICompatibleEmbeddingFixture(t *testing.T) {
 	}
 	if len(vectors) != 2 || len(vectors[1]) != 2 {
 		t.Fatalf("vectors=%v", vectors)
+	}
+}
+
+func TestOpenAIEmbeddingReadsResponsesLargerThanFourMiB(t *testing.T) {
+	const inputs = 64
+	const dimension = 4096
+	vector := make([]float64, dimension)
+	for i := range vector {
+		vector[i] = math.Pi
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Input []string `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body.Input) != inputs {
+			t.Fatalf("input count=%d, want %d", len(body.Input), inputs)
+		}
+		type item struct {
+			Index     int       `json:"index"`
+			Embedding []float64 `json:"embedding"`
+		}
+		out := struct {
+			Data []item `json:"data"`
+		}{Data: make([]item, inputs)}
+		for i := range out.Data {
+			out.Data[i] = item{Index: i, Embedding: vector}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(out); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer server.Close()
+
+	provider := &Provider{Endpoint: common.Endpoint{BaseURL: server.URL}, ModelName: "embed-large"}
+	texts := make([]string, inputs)
+	for i := range texts {
+		texts[i] = "text"
+	}
+	vectors, err := provider.Embed(context.Background(), texts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vectors) != inputs || len(vectors[0]) != dimension {
+		t.Fatalf("vectors=%d dimensions=%d", len(vectors), len(vectors[0]))
 	}
 }
 
