@@ -17,6 +17,7 @@ import (
 
 	"github.com/evjohn-icu/nexusgate/internal/credentials"
 	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/providerchannels"
 	"github.com/evjohn-icu/nexusgate/internal/remote"
 	"github.com/evjohn-icu/nexusgate/internal/secretredact"
 )
@@ -108,15 +109,21 @@ type ProviderChannelTestResult struct {
 	HTTPStatus   int    `json:"http_status,omitempty"`
 	LatencyMS    int64  `json:"latency_ms,omitempty"`
 	Message      string `json:"message,omitempty"`
-	// ModelResponded and SchemaOK are the capability-probe verdicts: whether
-	// the endpoint answered a non-billed model-listing request and whether
-	// that listing had the expected shape. SchemaOK=false covers both "no
-	// /models here" (404) and "the response was not a model list"; it is a
+	// ModelListResponded and SchemaOK are the capability-probe verdicts:
+	// whether the endpoint answered a non-billed model-listing request and
+	// whether that listing had the expected shape. SchemaOK=false covers both
+	// "no /models here" (404) and "the response was not a model list"; it is a
 	// schema note, not a hard failure — the channel may still work for its
 	// capability.
-	ModelResponded bool   `json:"model_responded"`
-	ModelName      string `json:"model_name,omitempty"`
-	SchemaOK       bool   `json:"schema_ok"`
+	//
+	// There is deliberately no model name here. A listing is an advertisement
+	// of what the endpoint serves, not evidence that this channel's configured
+	// model works: taking the first id made a gateway's unrelated chat model
+	// look like the model that had just been tested. Proving the configured
+	// model answers is what TestProviderChannelEmbedding is for, and it is a
+	// separate, explicitly billed operation.
+	ModelListResponded bool `json:"model_list_responded"`
+	SchemaOK           bool `json:"schema_ok"`
 }
 
 // UpdateProviderChannel merges an admin patch with the persisted channel.
@@ -369,27 +376,33 @@ const maxProbeModelNameBytes = 128
 // a key through the result. 404 is a schema mismatch (the endpoint is
 // reachable, it just exposes no model list), not a failure; 401/403 name the
 // key as the problem.
-func probeProviderModels(ctx context.Context, client *http.Client, endpoint, key string) (modelResponded bool, modelName string, schemaOK bool, message string, httpStatus int, latencyMS int64) {
+//
+// It reports only whether a usable listing came back. Model ids are not
+// returned: the listing answers "does this endpoint serve models", never
+// "does the model configured on this channel work", and the first listed id
+// was routinely an unrelated model (a gateway's chat default) presented as
+// the tested one. The result type carries no model name for the same reason.
+func probeProviderModels(ctx context.Context, client *http.Client, endpoint, key string) (modelListResponded bool, schemaOK bool, message string, httpStatus int, latencyMS int64) {
 	started := time.Now()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, providerChannelModelsURL(endpoint), nil)
 	if err != nil {
-		return false, "", false, "Endpoint 可达；模型探测请求无效", 0, time.Since(started).Milliseconds()
+		return false, false, "Endpoint 可达；模型探测请求无效", 0, time.Since(started).Milliseconds()
 	}
 	request.Header.Set("Authorization", "Bearer "+key)
 	response, err := client.Do(request)
 	latency := time.Since(started).Milliseconds()
 	if err != nil {
-		return false, "", false, "Endpoint 可达；模型探测失败", 0, latency
+		return false, false, "Endpoint 可达；模型探测失败", 0, latency
 	}
 	defer response.Body.Close()
 	switch response.StatusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return false, "", false, fmt.Sprintf("Endpoint 可达；API Key 无效或已被拒绝 (HTTP %d)", response.StatusCode), response.StatusCode, latency
+		return false, false, fmt.Sprintf("Endpoint 可达；API Key 无效或已被拒绝 (HTTP %d)", response.StatusCode), response.StatusCode, latency
 	case http.StatusNotFound:
-		return false, "", false, "Endpoint 可达；未发现模型列表端点（schema 未知），未执行计费模型调用", response.StatusCode, latency
+		return false, false, "Endpoint 可达；未发现模型列表端点（schema 未知），未执行计费模型调用", response.StatusCode, latency
 	}
 	if response.StatusCode != http.StatusOK {
-		return false, "", false, fmt.Sprintf("Endpoint 可达；模型列表请求失败 (HTTP %d)", response.StatusCode), response.StatusCode, latency
+		return false, false, fmt.Sprintf("Endpoint 可达；模型列表请求失败 (HTTP %d)", response.StatusCode), response.StatusCode, latency
 	}
 	var listing struct {
 		Data []struct {
@@ -397,16 +410,15 @@ func probeProviderModels(ctx context.Context, client *http.Client, endpoint, key
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&listing); err != nil {
-		return false, "", false, "Endpoint 可达；模型列表返回无法解析（schema 未知）", response.StatusCode, latency
+		return false, false, "Endpoint 可达；模型列表返回无法解析（schema 未知）", response.StatusCode, latency
 	}
 	for _, m := range listing.Data {
-		name := redactString(strings.TrimSpace(m.ID), key)
-		if name == "" {
+		if strings.TrimSpace(m.ID) == "" {
 			continue
 		}
-		return true, clipProbeText(name, maxProbeModelNameBytes), true, "模型已响应", response.StatusCode, latency
+		return true, true, "模型列表已响应；未执行模型推理", response.StatusCode, latency
 	}
-	return false, "", true, "Endpoint 可达；模型列表为空", response.StatusCode, latency
+	return false, true, "Endpoint 可达；模型列表为空", response.StatusCode, latency
 }
 
 // clipProbeText truncates s to at most n bytes without splitting a UTF-8
@@ -520,8 +532,7 @@ func (s *Service) ProbeProviderModelList(ctx context.Context, providerName, endp
 		result.Message = "请先在表单中填写一个 API Key"
 		return result, nil
 	}
-	parsed, err := url.Parse(strings.TrimSpace(endpoint))
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+	if !providerEndpointHTTP(endpoint) {
 		result.Status = "invalid_endpoint"
 		result.Message = "Provider Endpoint 无效"
 		return result, nil
@@ -554,25 +565,16 @@ func (s *Service) TestProviderChannel(ctx context.Context, id string) (ProviderC
 		return ProviderChannelTestResult{}, err
 	}
 	result := ProviderChannelTestResult{ChannelID: channel.ID, ProviderName: channel.ProviderName, Status: "not_ready"}
-	secretRef := ""
-	for _, member := range channel.Members {
-		if member.Enabled && member.SecretRef != "" {
-			ready, resolveErr := s.secrets.Has(ctx, member.SecretRef)
-			if resolveErr != nil {
-				return ProviderChannelTestResult{}, errors.New("provider channel secret store unavailable")
-			}
-			if ready {
-				result.SecretReady = true
-				secretRef = member.SecretRef
-				break
-			}
-		}
+	member, memberOK, memberErr := s.firstReadyProviderChannelMember(ctx, channel)
+	if memberErr != nil {
+		return ProviderChannelTestResult{}, memberErr
 	}
-	if !result.SecretReady {
+	result.SecretReady = memberOK
+	if !memberOK {
 		result.Message = "没有可用的 Provider Key"
 		return result, nil
 	}
-	key, keyOK, resolveErr := s.secrets.Resolve(secretRef)
+	key, keyOK, resolveErr := s.secrets.Resolve(member.SecretRef)
 	if resolveErr != nil {
 		return ProviderChannelTestResult{}, errors.New("provider channel secret store unavailable")
 	}
@@ -580,8 +582,7 @@ func (s *Service) TestProviderChannel(ctx context.Context, id string) (ProviderC
 		result.Message = "没有可用的 Provider Key"
 		return result, nil
 	}
-	parsed, err := url.Parse(strings.TrimSpace(channel.Endpoint))
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+	if !providerEndpointHTTP(channel.Endpoint) {
 		result.Status = "invalid_endpoint"
 		result.Message = "Provider Endpoint 无效"
 		return result, nil
@@ -590,7 +591,7 @@ func (s *Service) TestProviderChannel(ctx context.Context, id string) (ProviderC
 	defer cancel()
 	client := &http.Client{Timeout: providerChannelTestBudget}
 	started := time.Now()
-	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, parsed.String(), nil)
+	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, strings.TrimSpace(channel.Endpoint), nil)
 	if err != nil {
 		result.Status = "invalid_endpoint"
 		result.Message = "Provider Endpoint 无效"
@@ -611,8 +612,8 @@ func (s *Service) TestProviderChannel(ctx context.Context, id string) (ProviderC
 		result.Message = "Endpoint 可达；未执行计费模型调用"
 		return result, nil
 	}
-	modelResponded, modelName, schemaOK, message, probeStatus, probeLatency := probeProviderModels(probeCtx, client, channel.Endpoint, key)
-	result.ModelResponded, result.ModelName, result.SchemaOK, result.Message = modelResponded, modelName, schemaOK, message
+	modelListResponded, schemaOK, message, probeStatus, probeLatency := probeProviderModels(probeCtx, client, channel.Endpoint, key)
+	result.ModelListResponded, result.SchemaOK, result.Message = modelListResponded, schemaOK, message
 	// A transport failure inside the model probe returns HTTP 0 — it never
 	// reached the endpoint — so it must not erase the reachability probe's
 	// real status above: the page would show "可达" with HTTP 0. Only a
@@ -622,6 +623,223 @@ func (s *Service) TestProviderChannel(ctx context.Context, id string) (ProviderC
 		result.LatencyMS = probeLatency
 	}
 	return result, nil
+}
+
+// providerChannelEmbeddingBudget bounds the one explicit embedding-inference
+// probe. It is deliberately not providerChannelTestBudget: the connectivity
+// test is one cheap non-billed GET, while this call is a real, possibly
+// billed inference request that a large remote model can take seconds to
+// answer on a cold gateway. One attempt, no retry, its own deadline.
+const providerChannelEmbeddingBudget = 30 * time.Second
+
+// providerChannelEmbeddingProbeInput is the only text this probe ever sends.
+// A fixed, one-word input keeps the billed call as small and as predictable as
+// possible: the probe answers "does the configured model reply", not "how good
+// is this provider at embedding arbitrary content".
+const providerChannelEmbeddingProbeInput = "连接测试"
+
+// Fixed probe messages. They are literals rather than wrapped provider error
+// text on purpose: a provider error body can echo the API key or relay
+// internals, and this result is rendered in the operator's browser.
+const (
+	providerChannelEmbeddingUnsupportedMessage = "此通道不支持文本向量实测"
+	providerChannelEmbeddingConfigMessage      = "文本向量通道配置无效"
+	providerChannelEmbeddingNotReadyMessage    = "没有可用的文本向量服务或密钥"
+	providerChannelEmbeddingTimeoutMessage     = "文本向量实测超时或已取消"
+	providerChannelEmbeddingFailedMessage      = "文本向量实测失败，请检查模型、凭据和服务状态"
+	providerChannelEmbeddingSuccessMessage     = "文本向量实测成功"
+)
+
+// ProviderChannelEmbeddingTestResult is the answer to the explicit "does the
+// configured embedding model actually work" probe. Unlike
+// ProviderChannelTestResult it makes no reachability claim: it reports one
+// inference call against exactly one channel.
+//
+// Model is the model this Hub asked for, copied from the channel row — it is
+// not a claim about upstream identity, which the provider never returns. No
+// vector, credential, secret reference, upstream body or raw error text is
+// ever carried here.
+type ProviderChannelEmbeddingTestResult struct {
+	ChannelID    string `json:"channel_id"`
+	ProviderName string `json:"provider_name"`
+	Model        string `json:"model"`
+	// Status is one of ok, not_ready, unsupported, invalid_config, timeout or
+	// failed. Every one of them is a diagnostic answer, not a transport
+	// failure: the service returns no error for these, so the API renders the
+	// message instead of a generic rejection.
+	Status     string `json:"status"`
+	Dimensions int    `json:"dimensions,omitempty"`
+	LatencyMS  int64  `json:"latency_ms"`
+	Message    string `json:"message"`
+}
+
+// providerEndpointHTTP reports whether endpoint is an absolute http(s) URL,
+// the only shape both the connectivity probe and the embedding probe can call.
+// It is shared by the three points that need the same verdict so they cannot
+// drift about what "invalid endpoint" means.
+func providerEndpointHTTP(endpoint string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		return false
+	}
+	return parsed.Host != "" && (parsed.Scheme == "http" || parsed.Scheme == "https")
+}
+
+// TestProviderChannelEmbedding performs exactly one embedding inference
+// against the named channel and reports what came back. It is the billed
+// counterpart of TestProviderChannel: connectivity proves the endpoint answers
+// a non-billed listing, this proves the configured model produces a usable
+// vector.
+//
+// The channel is addressed directly rather than through the routed embedder
+// wrapper: the wrapper picks the highest-priority embedding channel, which is
+// not necessarily the card the operator clicked. Nothing is persisted — no
+// vector, no index write, no job — and the selected member is the first
+// enabled member whose secret exists, the same choice TestProviderChannel
+// makes. A disabled channel can still be probed: the operator is asking
+// whether the key and model work, which is exactly what they need to know
+// before re-enabling it.
+func (s *Service) TestProviderChannelEmbedding(ctx context.Context, id string) (ProviderChannelEmbeddingTestResult, error) {
+	channel, err := s.providerChannelByID(ctx, id)
+	if err != nil {
+		return ProviderChannelEmbeddingTestResult{}, err
+	}
+	result := ProviderChannelEmbeddingTestResult{
+		ChannelID:    channel.ID,
+		ProviderName: clipProbeText(strings.TrimSpace(channel.ProviderName), maxProbeModelNameBytes),
+		Model:        clipProbeText(strings.TrimSpace(channel.Model), maxProbeModelNameBytes),
+		Status:       "not_ready",
+	}
+	if strings.TrimSpace(channel.Capability) != string(providerchannels.CapabilityEmbedding) {
+		result.Status = "unsupported"
+		result.Message = providerChannelEmbeddingUnsupportedMessage
+		return result, nil
+	}
+	if strings.TrimSpace(channel.Model) == "" || !providerEndpointHTTP(channel.Endpoint) {
+		result.Status = "invalid_config"
+		result.Message = providerChannelEmbeddingConfigMessage
+		return result, nil
+	}
+	if s.channelRuntime == nil {
+		result.Message = providerChannelEmbeddingNotReadyMessage
+		return result, nil
+	}
+	member, ok, err := s.firstReadyProviderChannelMember(ctx, channel)
+	if err != nil {
+		return ProviderChannelEmbeddingTestResult{}, err
+	}
+	if !ok {
+		result.Message = providerChannelEmbeddingNotReadyMessage
+		return result, nil
+	}
+	key, keyOK, err := s.secrets.Resolve(member.SecretRef)
+	if err != nil {
+		return ProviderChannelEmbeddingTestResult{}, errors.New("provider channel secret store unavailable")
+	}
+	if !keyOK {
+		result.Message = providerChannelEmbeddingNotReadyMessage
+		return result, nil
+	}
+	// Metadata is upstream- and operator-controlled text that now travels next
+	// to a resolved key; redact it against that key before it can reach the
+	// response.
+	result.ProviderName = clipProbeText(redactString(strings.TrimSpace(channel.ProviderName), key), maxProbeModelNameBytes)
+	result.Model = clipProbeText(redactString(strings.TrimSpace(channel.Model), key), maxProbeModelNameBytes)
+
+	invocation := providerchannels.Invocation{
+		Capability:   providerchannels.CapabilityEmbedding,
+		ChannelID:    channel.ID,
+		ChannelLabel: channel.Label,
+		Provider:     channel.ProviderName,
+		ProviderName: channel.ProviderName,
+		Protocol:     channel.Protocol,
+		Endpoint:     channel.Endpoint,
+		Model:        channel.Model,
+		MemberID:     member.ID,
+		MemberLabel:  member.Label,
+		SecretRef:    member.SecretRef,
+	}
+	provider, buildErr := s.channelRuntime.buildEmbedderProvider(invocation, key)
+	if buildErr != nil {
+		// The error text names provider/config internals and can quote the
+		// provider name; the operator gets the fixed config verdict instead.
+		result.Status = "invalid_config"
+		result.Message = providerChannelEmbeddingConfigMessage
+		return result, nil
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, providerChannelEmbeddingBudget)
+	defer cancel()
+	started := time.Now()
+	vectors, embedErr := provider.Embed(probeCtx, []string{providerChannelEmbeddingProbeInput})
+	result.LatencyMS = time.Since(started).Milliseconds()
+	if embedErr != nil {
+		if errors.Is(embedErr, context.DeadlineExceeded) || errors.Is(embedErr, context.Canceled) || probeCtx.Err() != nil {
+			result.Status = "timeout"
+			result.Message = providerChannelEmbeddingTimeoutMessage
+			return result, nil
+		}
+		result.Status = "failed"
+		result.Message = providerChannelEmbeddingFailedMessage
+		return result, nil
+	}
+	vector, ok := singleEmbeddingVector(vectors)
+	if !ok {
+		result.Status = "failed"
+		result.Message = providerChannelEmbeddingFailedMessage
+		return result, nil
+	}
+	result.Status = "ok"
+	result.Dimensions = len(vector)
+	result.Message = providerChannelEmbeddingSuccessMessage
+	return result, nil
+}
+
+// firstReadyProviderChannelMember resolves the member this probe would use:
+// the first enabled member whose secret exists in the store. It is the same
+// selection TestProviderChannel makes, kept as one helper so a future change
+// cannot make the connectivity probe and the inference probe disagree about
+// which key they tested.
+func (s *Service) firstReadyProviderChannelMember(ctx context.Context, channel domain.ProviderChannel) (domain.ProviderChannelMember, bool, error) {
+	for _, member := range channel.Members {
+		if !member.Enabled || strings.TrimSpace(member.SecretRef) == "" {
+			continue
+		}
+		ready, err := s.secrets.Has(ctx, member.SecretRef)
+		if err != nil {
+			return domain.ProviderChannelMember{}, false, errors.New("provider channel secret store unavailable")
+		}
+		if ready {
+			return member, true, nil
+		}
+	}
+	return domain.ProviderChannelMember{}, false, nil
+}
+
+// singleEmbeddingVector applies the service-side shape rule to a probe
+// response: exactly one vector, non-empty, finite and not all zeros. The
+// adapters already reject mismatched counts and invalid entries, but a probe
+// result of "ok, 0 dimensions" must not be reachable through any adapter —
+// including a plan-provider adapter that skips the shared validation.
+func singleEmbeddingVector(vectors [][]float64) ([]float64, bool) {
+	if len(vectors) != 1 {
+		return nil, false
+	}
+	vector := vectors[0]
+	if len(vector) == 0 {
+		return nil, false
+	}
+	var norm float64
+	for _, value := range vector {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return nil, false
+		}
+		norm += value * value
+	}
+	if norm == 0 {
+		return nil, false
+	}
+	return vector, true
 }
 
 type ProviderProxyResult struct {

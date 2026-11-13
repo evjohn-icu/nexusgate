@@ -40,6 +40,7 @@ POST /api/v1/admin/provider-channels/{id}/enable
 POST /api/v1/admin/provider-channels/{id}/disable
 DELETE /api/v1/admin/provider-channels/{id}
 POST /api/v1/admin/provider-channels/{id}/test
+POST /api/v1/admin/provider-channels/{id}/test-embedding
 POST /api/v1/admin/provider-channels/probe-models
 GET /api/v1/admin/assets/{id}/capture-location
 GET /api/v1/admin/speaker-consent
@@ -183,6 +184,7 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 		{http.MethodPost, "/api/v1/admin/provider-channels/x/disable", "admin", "none", http.StatusUnauthorized},
 		{http.MethodDelete, "/api/v1/admin/provider-channels/x", "admin", "none", http.StatusUnauthorized},
 		{http.MethodPost, "/api/v1/admin/provider-channels/x/test", "admin", "none", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/admin/provider-channels/x/test-embedding", "admin", "none", http.StatusUnauthorized},
 		{http.MethodPost, "/api/v1/admin/provider-channels/probe-models", "admin", "JSON", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/admin/assets/x/capture-location", "admin", "none", http.StatusUnauthorized},
 		{http.MethodPost, "/api/v1/worker/enroll", "worker", "JSON", http.StatusBadRequest},
@@ -300,7 +302,7 @@ func TestAPIRouteInventoryGuardMatrix(t *testing.T) {
 func TestAPIRouteInventoryIsComplete(t *testing.T) {
 	server := NewServer("admin-token", newErrorEnvelopeTestService(t, "route-inventory"))
 	specs := server.routeInventory()
-	if got, want := len(specs), 137; got != want {
+	if got, want := len(specs), 138; got != want {
 		t.Fatalf("route inventory contains %d routes, want %d", got, want)
 	}
 	expected := strings.Split(expectedRouteInventoryPatterns, "\n")

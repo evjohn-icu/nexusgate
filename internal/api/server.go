@@ -658,6 +658,22 @@ func (s *Server) testProviderChannel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// testProviderChannelEmbedding is the billed sibling of testProviderChannel:
+// the operator explicitly asked for one inference call against this channel's
+// configured embedding model. There is no request payload — the input text is
+// fixed by the service — and the route writes no vector and touches no index.
+// Expected diagnostic outcomes are HTTP 200 with a status/message pair; only a
+// lookup or secret-store failure becomes the safe 400 envelope, so a channel
+// that cannot work never looks like a broken route.
+func (s *Server) testProviderChannelEmbedding(w http.ResponseWriter, r *http.Request) {
+	result, err := s.service.TestProviderChannelEmbedding(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "provider channel embedding test rejected"})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 // probeProviderModelList is the one-click model-list read for the channel
 // dialog. The operator has not saved the channel yet, so the endpoint and key
 // come from the still-open form rather than from a persisted channel or the

@@ -600,8 +600,11 @@ func probeTestChannel(t *testing.T, server *httptest.Server) (*Service, string, 
 // TestProviderChannelTestProbesModelsEndpoint pins the C2 upgrade: after the
 // reachability GET, an OpenAI-compatible channel gets one non-billed GET
 // {endpoint}/models carrying its resolved key, and a non-empty listing
-// reports the first model id. The key must ride in the Authorization header
-// and nowhere in the result.
+// reports model-list availability only. The fixture lists a chat model first
+// on purpose: no id may reach the result, because the first listed model of a
+// gateway is not the configured inference model and used to be rendered as if
+// it had been tested. The key must ride in the Authorization header and
+// nowhere in the result.
 func TestProviderChannelTestProbesModelsEndpoint(t *testing.T) {
 	var gotAuth string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -623,11 +626,18 @@ func TestProviderChannelTestProbesModelsEndpoint(t *testing.T) {
 	if !result.SecretReady || !result.Reachable {
 		t.Fatalf("secret_ready=%v reachable=%v; want both true: %+v", result.SecretReady, result.Reachable, result)
 	}
-	if !result.ModelResponded || !result.SchemaOK {
-		t.Fatalf("model_responded=%v schema_ok=%v; want both true: %+v", result.ModelResponded, result.SchemaOK, result)
+	if !result.ModelListResponded || !result.SchemaOK {
+		t.Fatalf("model_list_responded=%v schema_ok=%v; want both true: %+v", result.ModelListResponded, result.SchemaOK, result)
 	}
-	if result.ModelName != "probe-model-a" {
-		t.Fatalf("model_name=%q; want probe-model-a", result.ModelName)
+	if !strings.Contains(result.Message, "模型列表已响应") {
+		t.Fatalf("message=%q; want model-list wording", result.Message)
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "probe-model-a") || strings.Contains(string(raw), "model_name") {
+		t.Fatalf("test result names a listed model: %s", raw)
 	}
 	if result.Status != "reachable" {
 		t.Fatalf("status=%q; want reachable", result.Status)
@@ -660,8 +670,8 @@ func TestProviderChannelTestReportsRejectedKey(t *testing.T) {
 	if !result.Reachable {
 		t.Fatalf("reachable=%v; want true: %+v", result.Reachable, result)
 	}
-	if result.ModelResponded || result.SchemaOK {
-		t.Fatalf("model_responded=%v schema_ok=%v; want both false: %+v", result.ModelResponded, result.SchemaOK, result)
+	if result.ModelListResponded || result.SchemaOK {
+		t.Fatalf("model_list_responded=%v schema_ok=%v; want both false: %+v", result.ModelListResponded, result.SchemaOK, result)
 	}
 	if !strings.Contains(result.Message, "API Key 无效") {
 		t.Fatalf("message=%q; want key-rejection wording", result.Message)
@@ -689,8 +699,8 @@ func TestProviderChannelTestReportsSchemaUnknownOn404(t *testing.T) {
 	if !result.Reachable {
 		t.Fatalf("reachable=%v; want true: %+v", result.Reachable, result)
 	}
-	if result.ModelResponded || result.SchemaOK {
-		t.Fatalf("model_responded=%v schema_ok=%v; want both false: %+v", result.ModelResponded, result.SchemaOK, result)
+	if result.ModelListResponded || result.SchemaOK {
+		t.Fatalf("model_list_responded=%v schema_ok=%v; want both false: %+v", result.ModelListResponded, result.SchemaOK, result)
 	}
 	if !strings.Contains(result.Message, "schema 未知") || !strings.Contains(result.Message, "未执行计费模型调用") {
 		t.Fatalf("message=%q; want schema-unknown + no-billed-call wording", result.Message)
@@ -733,8 +743,8 @@ func TestProviderChannelTestSkipsModelsProbeForGemini(t *testing.T) {
 	if modelsHits != 0 {
 		t.Fatalf("gemini channel hit /models %d times; want 0", modelsHits)
 	}
-	if !result.Reachable || result.ModelResponded || result.SchemaOK {
-		t.Fatalf("reachable=%v model_responded=%v schema_ok=%v; want reachable only: %+v", result.Reachable, result.ModelResponded, result.SchemaOK, result)
+	if !result.Reachable || result.ModelListResponded || result.SchemaOK {
+		t.Fatalf("reachable=%v model_list_responded=%v schema_ok=%v; want reachable only: %+v", result.Reachable, result.ModelListResponded, result.SchemaOK, result)
 	}
 	if !strings.Contains(result.Message, "未执行计费模型调用") {
 		t.Fatalf("message=%q; want no-billed-call wording", result.Message)
@@ -744,7 +754,7 @@ func TestProviderChannelTestSkipsModelsProbeForGemini(t *testing.T) {
 
 func assertTestResultHasNoKey(t *testing.T, result ProviderChannelTestResult, key string) {
 	t.Helper()
-	if strings.Contains(result.Message, key) || strings.Contains(result.ModelName, key) {
+	if strings.Contains(result.Message, key) {
 		t.Fatalf("test result leaked the key: %+v", result)
 	}
 	raw, err := json.Marshal(result)

@@ -216,23 +216,34 @@ func TestProvidersPageRendersPerMemberHealth(t *testing.T) {
 
 // Each channel card carries a test button that POSTs
 // /api/v1/admin/provider-channels/{id}/test with the admin token and renders
-// the extended result inline under a channel-scoped id. The result span must
-// be per-channel (test-result-<channelId>) so two cards never fight over one
+// the result inline under a channel-scoped id. The result span must be
+// per-channel (test-result-<channelId>) so two cards never fight over one
 // element, and the call must go through adminHeaders() so the in-memory token
-// is what authenticates it.
+// is what authenticates it. The billed embedding probe is wired the same way
+// but only on embedding cards, through its own result node.
 func TestProvidersPageHasTestChannelButton(t *testing.T) {
 	body := providersHTML
 	for _, marker := range []string{
 		`data-act="test-channel"`,
 		`tdT('providers.testChannel')`,
 		`test-result-'+esc(c.id)`,
-		`model_responded`,
-		`tdT('providers.testOk'`,
 		`encodeURIComponent(channel.id)+'/test'`,
+		`data-act="embedding-test"`,
+		`c.capability==='embedding'?'<button type="button" class="ghost" data-act="embedding-test">`,
+		`embedding-test-result-'+esc(c.id)`,
+		`encodeURIComponent(channel.id)+'/test-embedding'`,
+		`tdT('providers.embeddingTestConfirm')`,
 		"adminHeaders()",
 	} {
 		if !strings.Contains(body, marker) {
 			t.Fatalf("providers page missing test marker %q", marker)
+		}
+	}
+	// Connectivity must not claim a tested model: the removed field and the
+	// copy that named a listed model must not come back.
+	for _, gone := range []string{"model_responded", "model_name", "providers.testOk", "providers.unknownModel"} {
+		if strings.Contains(body, gone) {
+			t.Fatalf("providers page still references removed connectivity field or copy %q", gone)
 		}
 	}
 }

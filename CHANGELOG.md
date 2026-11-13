@@ -45,6 +45,58 @@
   the inventory on purpose — nothing produces it any more, but historical
   rows still carry it, and the issues view must keep labelling those rows.
 
+- **The provider-channel test button stopped claiming it had tested a model,
+  and proving that now costs an explicit, separate click.** `POST
+  /api/v1/admin/provider-channels/{id}/test` is non-billed by design: one
+  reachability GET, then one authenticated GET `{endpoint}/models`. It used
+  to return the first listed model id as `model_name` and the page rendered
+  it as "模型已响应 · <model>", so a gateway whose listing starts with an
+  unrelated chat model told the operator their embedding model had responded
+  when no inference had run at all. The connectivity result now carries
+  `model_list_responded` and no model name; listing success renders
+  "模型列表可用；未执行模型推理", a reachable-but-unlisted endpoint stays
+  informational, and a rejected key or unreachable endpoint stays a failure.
+  `providers.testOk` / `providers.unknownModel` are retired in all five
+  catalogs.
+
+  Proving the configured model works is now `POST
+  /api/v1/admin/provider-channels/{id}/test-embedding`
+  (`Service.TestProviderChannelEmbedding`): it addresses exactly the named
+  channel (not the routed embedder, which would pick the highest-priority
+  embedding channel), builds its provider through the same
+  `buildEmbedderProvider` path runtime construction uses, sends one fixed
+  input (`连接测试`) with a 30 s deadline and no retry, and reports
+  `status`/`dimensions`/`latency_ms` plus a fixed message. It writes no
+  vector, queues no job and touches no index; unsupported capability,
+  missing model/endpoint, missing key and missing runtime answer without a
+  network call, and every failure path returns fixed copy so no provider
+  body, key or upstream text reaches the browser. The page gates the button
+  to embedding cards, confirms a possible charge before sending, disables it
+  until the request settles, and never retries.
+
+  The same dialog gained an explicit **硅基流动预设** button, visible only for
+  a new `embedding` / `openai_embeddings` channel: it fills
+  `https://api.siliconflow.cn/v1` and clears the model and key after a
+  confirmation, leaving model choice to the operator's own model list and
+  never rewriting an existing channel. `docs/v0.21-provider-deployment.md`
+  now documents the portable procedure for standing the same embedding
+  channel up on another Hub — gateway-prefixed model ids versus direct
+  provider ids, loopback meaning the Hub's own host/container, which probe
+  proves what, comparing dimensions before
+  `search rebuild-embeddings`, and never copying databases or
+  `provider-secrets/` between Hubs.
+
+  Verified on a fresh build: a four-second silent clip scanned with visual
+  embedding enabled before any root existed produced derive/detect_shots/
+  inference success, one canonical `[0,4000)` shot, a committed
+  `visual-siglip2-base` generation (revision `75de2d55…`, 5
+  `shot_frame_pooled` 768-d refs, `[0,4000)` processed, no failures) and a
+  `detect_shots` input hash derived from `derive`'s, not the backfill hash;
+  the browser run rendered model-list-only connectivity, sent zero requests
+  on a cancelled charge confirmation and exactly one on a confirmed one, and
+  returned 4096 dimensions for the existing Magpie gateway channel without
+  rebuilding the library.
+
 ## v0.31.0-alpha — 2026-09-09（NAS 发现与挂载向导、界面多语言、检索分页、Provider 一键配置）
 
 - **Apple Log previews could never render, because the LUT the renderer

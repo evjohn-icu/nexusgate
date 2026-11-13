@@ -14,8 +14,10 @@ import (
 // check for POST /api/v1/admin/provider-channels/{id}/test: after the
 // reachability GET, the Hub resolves the stored key and makes one non-billed
 // GET {endpoint}/models against the fixture, and the route returns the
-// extended shape (model_responded / model_name / schema_ok) alongside the
-// original fields. The fixture proves the key was actually used by refusing
+// extended shape (model_list_responded / schema_ok) alongside the original
+// fields. The listing deliberately offers two ids and the response must name
+// neither: connectivity reports that a listing exists, not that the channel's
+// configured model was exercised. The fixture proves the key was actually used by refusing
 // anything but the exact Bearer value stored in the secret store. The test
 // drives the real Handler() as an authenticated Hub admin, exactly like the
 // provider-channel runtime status tests.
@@ -64,16 +66,15 @@ func TestProviderChannelTestEndpointReturnsExtendedShape(t *testing.T) {
 		t.Fatalf("test channel status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var result struct {
-		ChannelID      string `json:"channel_id"`
-		Status         string `json:"status"`
-		SecretReady    bool   `json:"secret_ready"`
-		Reachable      bool   `json:"reachable"`
-		HTTPStatus     int    `json:"http_status"`
-		LatencyMS      int64  `json:"latency_ms"`
-		Message        string `json:"message"`
-		ModelResponded bool   `json:"model_responded"`
-		ModelName      string `json:"model_name"`
-		SchemaOK       bool   `json:"schema_ok"`
+		ChannelID          string `json:"channel_id"`
+		Status             string `json:"status"`
+		SecretReady        bool   `json:"secret_ready"`
+		Reachable          bool   `json:"reachable"`
+		HTTPStatus         int    `json:"http_status"`
+		LatencyMS          int64  `json:"latency_ms"`
+		Message            string `json:"message"`
+		ModelListResponded bool   `json:"model_list_responded"`
+		SchemaOK           bool   `json:"schema_ok"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
 		t.Fatalf("decode test result: %v\nbody=%s", err, rec.Body.String())
@@ -84,11 +85,8 @@ func TestProviderChannelTestEndpointReturnsExtendedShape(t *testing.T) {
 	if !result.SecretReady || !result.Reachable || result.Status != "reachable" {
 		t.Fatalf("secret_ready=%v reachable=%v status=%q; want reachable channel: %+v", result.SecretReady, result.Reachable, result.Status, result)
 	}
-	if !result.ModelResponded || !result.SchemaOK {
-		t.Fatalf("model_responded=%v schema_ok=%v; want both true: %+v", result.ModelResponded, result.SchemaOK, result)
-	}
-	if result.ModelName != "api-probe-model" {
-		t.Fatalf("model_name=%q; want api-probe-model", result.ModelName)
+	if !result.ModelListResponded || !result.SchemaOK {
+		t.Fatalf("model_list_responded=%v schema_ok=%v; want both true: %+v", result.ModelListResponded, result.SchemaOK, result)
 	}
 	if result.HTTPStatus != http.StatusOK {
 		t.Fatalf("http_status=%d; want 200", result.HTTPStatus)
@@ -97,9 +95,9 @@ func TestProviderChannelTestEndpointReturnsExtendedShape(t *testing.T) {
 		t.Fatalf("latency_ms=%d; want non-negative", result.LatencyMS)
 	}
 	body := rec.Body.String()
-	for _, secret := range []string{probeKey, "Bearer " + probeKey} {
+	for _, secret := range []string{probeKey, "Bearer " + probeKey, "api-probe-model", "model_name"} {
 		if strings.Contains(body, secret) {
-			t.Fatalf("test route response leaked a provider key: contains %q\nbody=%s", secret, body)
+			t.Fatalf("test route response contains %q\nbody=%s", secret, body)
 		}
 	}
 }
