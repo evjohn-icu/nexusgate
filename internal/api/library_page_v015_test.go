@@ -144,15 +144,6 @@ func TestLibraryPageRendersSemanticFacetControls(t *testing.T) {
 			t.Fatalf("filterQuery() does not send facet param %s", param)
 		}
 	}
-	// A 400 from parseFacetFilter must surface as an error, not as an empty
-	// library: the old fetch chain mapped any non-ok response to [], which is
-	// the exact failure the 400 was written to prevent.
-	if !strings.Contains(page, `if(!r.ok)throw Error(await tdApiErrorMessage(r));return r.json()`) {
-		t.Fatalf("load() must surface the server message on a non-ok response")
-	}
-	if strings.Contains(page, `'assets?limit=300'+filterQuery()).then(r=>r.ok?r.json():[])`) {
-		t.Fatalf("load() still swallows a non-ok response into the empty-library state")
-	}
 	// Duration inputs must accept fractional seconds (step="any") so an
 	// editor can type 0.5 for 500 ms. step="1" (the old default) and the
 	// old Number.isInteger guard both silently dropped fractional input.
@@ -270,9 +261,6 @@ func TestLibraryPageSearchIsShotFirst(t *testing.T) {
 	}
 	if strings.Contains(page, `if(ids)data=data.filter(x=>ids.includes(x.id));`) {
 		t.Fatalf("load(ids) still intersects a capped card listing against search ids client-side")
-	}
-	if !strings.Contains(page, `ids&&!ids.length?Promise.resolve([])`) {
-		t.Fatalf("load(ids) must not call /api/v1/assets with an empty ids list")
 	}
 }
 

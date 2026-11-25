@@ -135,6 +135,9 @@ var libraryPagePatches = []pagePatch{
 		replacement: `
 let activeCollection='';let shotPage={query:'',offset:0,limit:40,items:[],hasMore:false,nextOffset:null,windowExhausted:false,loading:false};const filterControls=[['date_from','date-from'],['date_to','date-to'],['region','region-filter'],['camera','camera-filter'],['session','session-filter'],['status','status-filter'],['collection','collection-filter'],['asset_type','asset-type-select'],['asset_shot_size','shot-size-select'],['asset_camera_motion','camera-motion-select'],['asset_audio_type','audio-type-select'],['asset_quality','quality-select'],['asset_usable_as','usable-as-select'],['min_duration_ms','min-duration'],['max_duration_ms','max-duration']];let pendingSession='';function collectFilterParams(includeQ){const values={date_from:document.getElementById('date-from').value,date_to:document.getElementById('date-to').value,region:document.getElementById('region-filter').value.trim(),camera:document.getElementById('camera-filter').value,session:document.getElementById('session-filter').value,status:document.getElementById('status-filter').value};const query=new URLSearchParams();if(includeQ){const q=document.getElementById('q').value.trim();if(q)query.set('q',q)}Object.entries(values).forEach(([key,value])=>{if(value)query.set(key,value)});[['asset-type-select','asset_type']].forEach(([id,param])=>{const value=document.getElementById(id).value;if(value)query.set(param,value)});[['shot-size-select','asset_shot_size'],['camera-motion-select','asset_camera_motion'],['audio-type-select','asset_audio_type'],['quality-select','asset_quality'],['usable-as-select','asset_usable_as']].forEach(([id,param])=>{const sel=document.getElementById(id);const vals=Array.from(sel.selectedOptions).map(o=>o.value).filter(Boolean);if(vals.length)query.set(param,vals.join(','))});[['min-duration','min_duration_ms'],['max-duration','max_duration_ms']].forEach(([id,param])=>{const raw=document.getElementById(id).value.trim();if(raw==='')return;const sec=Number(raw);if(!Number.isFinite(sec)||sec<0)return;query.set(param,String(Math.round(sec*1000)))});return query}function filterQuery(){const query=collectFilterParams(false);return query.toString()?'&'+query.toString():''}function refreshResults(){const q=document.getElementById('q').value.trim();return q?search():load()}function syncURL(){const query=collectFilterParams(true);if(activeCollection)query.set('collection',activeCollection);history.replaceState(null,'','?'+query.toString())}function restoreFromURL(){try{const params=new URLSearchParams(location.search);const setVal=function(id,v){const el=document.getElementById(id);if(el&&v!=null)el.value=v};setVal('q',params.get('q'));activeCollection=params.get('collection')||'';setVal('date-from',params.get('date_from')||'');setVal('date-to',params.get('date_to')||'');setVal('region-filter',params.get('region')||'');setVal('camera-filter',params.get('camera')||'');setVal('status-filter',params.get('status')||'');pendingSession=params.get('session')||'';setVal('asset-type-select',params.get('asset_type')||'');[['asset_shot_size','shot-size-select'],['asset_camera_motion','camera-motion-select'],['asset_audio_type','audio-type-select'],['asset_quality','quality-select'],['asset_usable_as','usable-as-select']].forEach(function(pair){const v=params.get(pair[0]);if(!v)return;const sel=document.getElementById(pair[1]);if(!sel)return;const values=v.split(',').map(function(s){return s.trim()}).filter(Boolean);Array.from(sel.options).forEach(function(o){if(o.value)o.selected=values.indexOf(o.value)!==-1})});[['min_duration_ms','min-duration'],['max_duration_ms','max-duration']].forEach(function(pair){const v=params.get(pair[0]);if(!v)return;const sec=Number(v)/1000;if(Number.isFinite(sec)&&sec>=0)setVal(pair[1],String(sec))})}catch(_){}}function filterCount(){let n=0;filterControls.forEach(function(c){const el=document.getElementById(c[1]);if(el&&String(el.value||'').trim()!=='')n++});return n}function updateFiltersToggle(){const btn=document.getElementById('filters-toggle');if(!btn)return;const n=filterCount();btn.textContent=n?tdT('library.filter.filtersCount',{count:n}):tdT('library.filter.filters')}function filterChips(){const chips=[];filterControls.forEach(function(c){const el=document.getElementById(c[1]);if(!el)return;const addChip=function(label){chips.push('<span class="chip" data-filter-chip="'+c[0]+'">'+esc(label)+' <button type="button" class="chip-remove" data-param="'+esc(c[0])+'" aria-label="'+esc(tdT('library.filter.removeChip',{label:label}))+'" onclick="removeFilterChip(this.dataset.param)">×</button></span>')};if(el.multiple&&el.tagName==='SELECT'){Array.from(el.selectedOptions).forEach(function(o){if(o.value)addChip(o.textContent.trim())})}else{const value=el.value||'';if(String(value).trim())addChip(el.tagName==='SELECT'&&el.selectedOptions&&el.selectedOptions.length?el.selectedOptions[0].textContent.trim():value)}});return chips}function refreshFilterUI(){const box=document.getElementById('active-chips');if(box){const chips=filterChips();if(chips.length){box.hidden=false;box.innerHTML=chips.join('')+' <button type="button" class="chip chip-clear-all" onclick="clearFilters()">'+esc(tdT('library.filter.clear'))+'</button>'}else{box.hidden=true;box.innerHTML=''}}updateFiltersToggle()}function removeFilterChip(param){if(param==='collection'){const sel=document.getElementById('collection-filter');if(sel)sel.value='';activeCollection='';load();syncURL();return}const entry=filterControls.filter(function(c){return c[0]===param})[0];if(!entry)return;const el=document.getElementById(entry[1]);if(!el)return;if(el.multiple&&el.tagName==='SELECT'){el.selectedIndex=-1}else{el.value=''}refreshResults();syncURL()}function openFilterDrawer(){tdOpenSurface('filter-drawer',document.getElementById('filters-toggle'),'select')}function closeFilterDrawer(){tdCloseSurface('filter-drawer')}function applyFilters(){closeFilterDrawer();refreshResults();syncURL()}function filterFacets(){const facets={};const pick=(id,key)=>{const sel=document.getElementById(id);const vals=Array.from(sel.selectedOptions).map(o=>o.value).filter(Boolean);if(vals.length)facets[key]=vals};pick('asset-type-select','asset_types');pick('shot-size-select','shot_sizes');pick('camera-motion-select','camera_motions');pick('audio-type-select','audio_types');pick('quality-select','qualities');pick('usable-as-select','usable_as');[['min-duration','min_duration_ms'],['max-duration','max_duration_ms']].forEach(([id,key])=>{const raw=document.getElementById(id).value.trim();if(raw==='')return;const sec=Number(raw);if(!Number.isFinite(sec)||sec<0)return;facets[key]=Math.round(sec*1000)});return facets}function clearFilters(){activeCollection='';['date-from','date-to','region-filter','camera-filter'].forEach(id=>document.getElementById(id).value='');document.getElementById('session-filter').value='';document.getElementById('status-filter').value='';document.getElementById('collection-filter').value='';document.getElementById('asset-type-select').value='';['shot-size-select','camera-motion-select','audio-type-select','quality-select','usable-as-select'].forEach(id=>document.getElementById(id).selectedIndex=-1);document.getElementById('min-duration').value='';document.getElementById('max-duration').value='';refreshResults();syncURL()}function groupKey(x){const date=x.captured_at?String(x.captured_at).slice(0,10):tdT('library.groupDateUnknown');return [date,x.region_label||tdT('library.groupRegionUnknown'),x.camera_model||tdT('library.groupCameraUnknown'),x.session_id||tdT('library.groupSessionUnknown')].join(' · ')}async function loadSessions(){const select=document.getElementById('session-filter');try{const response=await fetch('/api/v1/shoot-sessions?limit=500');if(!response.ok)throw Error('sessions unavailable');const sessions=await response.json();(Array.isArray(sessions)?sessions:[]).forEach(s=>{const option=document.createElement('option');option.value=s.id;const date=s.starts_at?String(s.starts_at).slice(0,10):tdT('library.groupDateUnknown');const details=[date,s.camera_label,s.region_label].filter(Boolean).join(' · ');option.textContent=(s.title||s.id)+(details?' · '+details:'');select.appendChild(option)});if(pendingSession&&select.querySelector('option[value="'+pendingSession+'"]'))select.value=pendingSession}catch(_){select.innerHTML='<option value="">'+tdT('library.sessionsUnavailable')+'</option>'}}function collectionsHint(text,warn){const el=document.getElementById('collections-hint');if(!el)return;el.hidden=!text;el.textContent=text||'';el.classList.toggle('warn',!!warn)}function hasMeaningfulFilter(f){f=f||{};return !!(f.captured_from||f.captured_to||f.region_label||f.camera_model||f.session_id||f.status||(f.asset_types&&f.asset_types.length)||(f.shot_sizes&&f.shot_sizes.length)||(f.camera_motions&&f.camera_motions.length)||(f.audio_types&&f.audio_types.length)||(f.qualities&&f.qualities.length)||(f.usable_as&&f.usable_as.length)||f.min_duration_ms||f.max_duration_ms)}async function loadCollections(){const select=document.getElementById('collection-filter');try{const r=await fetch('/api/v1/collections');if(!r.ok)throw Error('HTTP '+r.status);const items=await r.json();const views=(Array.isArray(items)?items:[]).filter(c=>hasMeaningfulFilter(c&&c.filter));views.forEach(item=>{const option=document.createElement('option');option.value=item.id;option.textContent=item.name;select.appendChild(option)});if(activeCollection&&select.querySelector('option[value="'+activeCollection+'"]'))select.value=activeCollection;collectionsHint(views.length?'':tdT('library.filter.collectionsHint'),false)}catch(_){collectionsHint(tdT('library.filter.collectionsHintWarn'),true)}}async function loadSummary(){try{const data=await fetch('/api/v1/library/processing-summary?limit=300'+filterQuery()).then(r=>r.ok?r.json():null);if(!data)return;const labels={ready:tdT('status.ready'),processing:tdT('status.processing'),queued:tdT('status.queued'),failed:tdT('status.failed'),discovered:tdT('status.discovered'),missing:tdT('status.missing')};document.getElementById('processing-summary').innerHTML=Object.entries(labels).map(([key,label])=>'<span class="status-pill">'+label+' <b>'+esc((data.by_status||{})[key]||0)+'</b></span>').join('')}catch(_){}}function adminToken(){const el=document.getElementById('admin-token');return el?el.value.trim():''}function authHeaders(base){const headers=new Headers(base||{});const csrf=csrfToken();if(csrf)headers.set('X-CSRF-Token',csrf);const token=adminToken();if(token)headers.set('Authorization','Bearer '+token);return headers}function fmtHealthTime(v){if(!v)return'—';const t=new Date(v);return isNaN(t.getTime())?esc(v):tdFormatDateTime(t)}// Root health rides the same load() flow as the processing summary: /api/v1/roots/health is admin-only, so without a token this fetch 401s and the strip stays empty rather than nagging. When a root is unavailable the reconciliation gate is paused server-side; this line is the library page's answer to "why is nothing marked missing".
 async function loadRootHealth(){const el=document.getElementById('root-health');if(!el)return;try{const list=await fetch('/api/v1/roots/health',{headers:authHeaders()}).then(r=>r.ok?r.json():null);if(!list)return;const down=list.filter(h=>h.state==='unavailable');el.innerHTML=down.length?down.map(h=>'<div class="root-health-warn">'+esc(tdT('library.rootHealthWarn',{path:h.path,time:fmtHealthTime(h.last_healthy_at)}))+'</div>').join(''):''}catch(_){}}async function loadCollection(id){activeCollection=id||'';return clearSearch()}async function loadLibrary(){restoreFromURL();const restored=document.getElementById('q').value.trim();const ready=Promise.all([loadSessions(),loadCollections()]);if(!restored){refreshFilterUI();return load()}await ready;refreshFilterUI();search()}document.querySelectorAll('[data-filter-drawer-close]').forEach(function(el){el.addEventListener('click',closeFilterDrawer)});document.addEventListener('keydown',function(e){if(e.key==='Escape')closeFilterDrawer()});async function load(ids,append)`},
+	{anchor: `activeCollection='';load();syncURL();return}`, replacement: `loadCollection('');return}`},
+	{anchor: `async function loadSummary(){`, replacement: `async function loadSummary(isCurrent){`},
+	{anchor: `if(!data)return;const labels=`, replacement: `if(!data||!isCurrent())return;const labels=`},
 	// Browse pagination state. The pre-v0.18 page fetched one capped window of
 	// 300 cards and silently dropped everything past it: a 301-card library
 	// showed 300 cards with no way to reach the rest, and a saved view with
@@ -150,10 +153,46 @@ async function loadRootHealth(){const el=document.getElementById('root-health');
 	// complete result, so paging it would only re-request the same rows.
 	{anchor: `async function load(ids,append)`,
 		replacement: `
-let browsePage={key:'',ids:null,offset:0,items:[],hasMore:false,generation:0,loading:false};
+let browsePage={key:'',ids:null,offset:0,items:[],hasMore:false,loading:false};
+let browseGeneration=0;
 function parseIntHeader(v,fallback){const n=parseInt(v,10);return Number.isFinite(n)&&n>=0?n:fallback}
-async function fetchBrowseCards(ids,append){if(ids&&!ids.length)return[];if(ids)return fetch('/api/v1/assets?ids='+ids.map(encodeURIComponent).join(',')).then(async r=>{if(!r.ok)throw Error(await tdApiErrorMessage(r));return r.json()});const key=activeCollection+'|'+filterQuery();if(!append||browsePage.key!==key)browsePage={key:key,offset:0,items:[],hasMore:false,generation:browsePage.generation+1,loading:false};browsePage.ids=null;const generation=++browsePage.generation;const limit=300,offset=browsePage.offset;const path=activeCollection?'/api/v1/collections/'+encodeURIComponent(activeCollection)+'/assets?limit='+limit+'&offset='+offset:'/api/v1/assets?limit='+limit+'&offset='+offset+filterQuery();const r=await fetch(path);if(generation!==browsePage.generation)return null;if(!r.ok)throw Error(await tdApiErrorMessage(r));let page=await r.json();if(generation!==browsePage.generation)return null;if(!Array.isArray(page))page=[];const limitHeader=parseIntHeader(r.headers.get('X-NexusGate-Limit'),limit),offsetHeader=parseIntHeader(r.headers.get('X-NexusGate-Offset'),offset);let hasMore=null;const rawHasMore=r.headers.get('X-NexusGate-Has-More');if(rawHasMore!=null)hasMore=rawHasMore==='true';const seen=new Set(browsePage.items.map(x=>x.id));page.forEach(x=>{if(x&&x.id&&!seen.has(x.id)){browsePage.items.push(x);seen.add(x.id)}});browsePage.offset=offsetHeader+page.length;browsePage.hasMore=hasMore==null?page.length>=limitHeader:hasMore;return browsePage.items}
-async function loadMoreAssets(){if(!browsePage.hasMore||browsePage.loading)return;browsePage.loading=true;const btn=document.getElementById('browse-more-btn');if(btn){btn.disabled=true;btn.textContent=tdT('library.loadingMore')}try{await load(undefined,true)}finally{browsePage.loading=false}}
+async function fetchBrowseCards(ids,append,isCurrent){
+  const filter=filterQuery();
+  const key=activeCollection+'|'+filter;
+  if(!append||browsePage.key!==key)browsePage={key,ids:ids||null,offset:0,items:[],hasMore:false,loading:false};
+  if(ids){
+    if(!ids.length)return [];
+    const response=await fetch('/api/v1/assets?ids='+ids.map(encodeURIComponent).join(','));
+    if(!response.ok)throw Error(await tdApiErrorMessage(response));
+    return response.json();
+  }
+  const limit=300,offset=browsePage.offset;
+  const path=activeCollection?'/api/v1/collections/'+encodeURIComponent(activeCollection)+'/assets?limit='+limit+'&offset='+offset:'/api/v1/assets?limit='+limit+'&offset='+offset+filter;
+  const response=await fetch(path);
+  if(!isCurrent())return null;
+  if(!response.ok)throw Error(await tdApiErrorMessage(response));
+  const data=await response.json();
+  if(!isCurrent())return null;
+  const page=Array.isArray(data)?data:[];
+  const pageLimit=parseIntHeader(response.headers.get('X-NexusGate-Limit'),limit);
+  const pageOffset=parseIntHeader(response.headers.get('X-NexusGate-Offset'),offset);
+  const hasMore=response.headers.get('X-NexusGate-Has-More');
+  const seen=new Set(browsePage.items.map(x=>x.id));
+  for(const x of page){
+    if(x&&x.id&&!seen.has(x.id)){browsePage.items.push(x);seen.add(x.id)}
+  }
+  browsePage.offset=pageOffset+page.length;
+  browsePage.hasMore=hasMore===null?page.length>=pageLimit:hasMore==='true';
+  return browsePage.items;
+}
+async function loadMoreAssets(){
+  const pageState=browsePage;
+  if(!pageState.hasMore||pageState.loading)return;
+  pageState.loading=true;
+  const btn=document.getElementById('browse-more-btn');
+  if(btn){btn.disabled=true;btn.textContent=tdT('library.loadingMore')}
+  try{await load(undefined,true)}finally{pageState.loading=false}
+}
 function browseFooterHTML(error){const st=browsePage;if(st.ids!==null)return'';let html='<div class="browse-foot" data-browse-foot>';if(error)html+='<span class="muted" data-browse-error>'+esc(tdT('library.browseLoadError',{message:String((error&&error.message)||error)}))+'</span>';if(st.hasMore&&st.items.length)html+='<button type="button" class="btn" id="browse-more-btn" onclick="loadMoreAssets()">'+esc(tdT('library.loadMore'))+'</button>';return html+'</div>'}
 async function load(ids,append)`},
 	// The test-drive section and the shot drawer need module-level state: the
@@ -178,9 +217,16 @@ async function load(ids,append)`},
 	// results with asset cards. The query box is re-read at each checkpoint,
 	// because the operator can fill it while the first page is in flight.
 	{anchor: `{library.innerHTML='<div class="loading">'+tdT('library.loadingTimeline')+'</div>';`,
-		replacement: `{refreshFilterUI();syncURL();const queryBox=document.getElementById('q');const browsing=!ids&&!append;if(browsing&&queryBox&&queryBox.value.trim())return;if(browsing&&typeof imageSearchReference==='string'&&imageSearchReference)return;if(!append)library.innerHTML='<div class="loading">'+tdT('library.loadingTimeline')+'</div>';`},
+		replacement: `{
+  refreshFilterUI();syncURL();
+  const queryBox=document.getElementById('q');
+  const searchOwnsView=()=>!ids&&!append&&(queryBox.value.trim()||imageSearchReference);
+  if(searchOwnsView())return;
+  const generation=++browseGeneration;
+  const isCurrent=()=>generation===browseGeneration&&!searchOwnsView();
+  if(!append)library.innerHTML='<div class="loading">'+tdT('library.loadingTimeline')+'</div>';`},
 	{anchor: `if(!data.length){library.innerHTML='<div class="empty">'+esc(tdT('library.emptyTitle'))`,
-		replacement: `if(data===null)return;if(browsing&&queryBox&&(queryBox.value.trim()||imageSearchReference))return;if(!data.length){library.innerHTML='<div class="empty">'+esc(tdT('library.emptyTitle'))`},
+		replacement: `if(!data.length){lastLoadedAssets=[];library.innerHTML='<div class="empty">'+esc(tdT('library.emptyTitle'))`},
 	// The pre-facet page fetched up to 300 cards and, when ids came from a
 	// search, intersected them client-side (see the anchor removed just
 	// below) — two independently capped windows whose overlap silently
@@ -197,9 +243,9 @@ async function load(ids,append)`},
 	// prevent — so this throws with the server's message instead, same as
 	// the existing catch already renders.
 	{anchor: `fetch('/api/v1/assets?limit=300').then(r=>r.ok?r.json():[])`,
-		replacement: `(ids&&!ids.length?Promise.resolve([]):fetchBrowseCards(ids,append))`},
+		replacement: `fetchBrowseCards(ids,append,isCurrent)`},
 	{anchor: `data=Array.isArray(data)?data:[];`,
-		replacement: `if(data===null)return;data=Array.isArray(data)?data:[];`},
+		replacement: `if(data===null||!isCurrent())return;data=Array.isArray(data)?data:[];`},
 	// The fetch above already returns exactly the requested ids (or [] before
 	// it is even called), so re-filtering the result by ids here would only
 	// be the client-side intersection this task removes, now redundant
@@ -214,14 +260,21 @@ async function load(ids,append)`},
 	// fetchBrowseCards. A fresh load that fails has nothing to retain, so it
 	// keeps the empty/error state.
 	{anchor: `catch(e){library.innerHTML='<div class="empty error">'+esc(tdT('library.loadFailed'))+esc(e.message)+'</div>'}`,
-		replacement: `catch(e){if(append&&browsePage.items.length){const old=document.querySelector('[data-browse-foot]');if(old)old.remove();library.insertAdjacentHTML('beforeend',browseFooterHTML(e))}else{library.innerHTML='<div class="empty error">'+esc(tdT('library.loadFailed'))+esc(e.message)+'</div>'}}`},
+		replacement: `catch(e){if(!isCurrent())return;if(append&&browsePage.items.length){const old=document.querySelector('[data-browse-foot]');if(old)old.remove();library.insertAdjacentHTML('beforeend',browseFooterHTML(e))}else{library.innerHTML='<div class="empty error">'+esc(tdT('library.loadFailed'))+esc(e.message)+'</div>'}}`},
 	{anchor: `const rows=await Promise.all(data.map(async x=>row(x,await loadShots(x.id))));library.innerHTML=rows.join('')`,
-		replacement: `await loadSummary();loadRootHealth();const groups=new Map();data.forEach(x=>{const key=groupKey(x);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(x)});const sections=[];for(const [key,items] of groups){const rows=await Promise.all(items.map(async x=>row(x,await loadShots(x.id))));sections.push('<section class="asset-group" data-group="'+encodeURIComponent(key)+'"><div class="group-title">'+esc(key)+'</div>'+rows.join('')+'</section>')}if(browsing&&queryBox&&(queryBox.value.trim()||imageSearchReference))return;library.innerHTML=sections.join('')+browseFooterHTML(null)`},
-	// load() knows the ids of the asset cards it just rendered; remembering
-	// them lets the search-empty and timeline-empty states offer 开始测试分析
-	// without a second round trip for the sample set.
-	{anchor: `await loadSummary();loadRootHealth();const groups=new Map();`,
-		replacement: `await loadSummary();loadRootHealth();lastLoadedAssets=data.map(x=>x.id);delete lastLoadedAssets.__searchOwned;const groups=new Map();`},
+		replacement: `await loadSummary(isCurrent);
+  if(!isCurrent())return;
+  loadRootHealth();
+  const groups=new Map();
+  data.forEach(x=>{const key=groupKey(x);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(x)});
+  const sections=[];
+  for(const [key,items] of groups){
+    const rows=await Promise.all(items.map(async x=>row(x,await loadShots(x.id))));
+    if(!isCurrent())return;
+    sections.push('<section class="asset-group" data-group="'+encodeURIComponent(key)+'"><div class="group-title">'+esc(key)+'</div>'+rows.join('')+'</section>');
+  }
+  lastLoadedAssets=data.map(x=>x.id);
+  library.innerHTML=sections.join('')+browseFooterHTML(null)`},
 	{anchor: `@media(max-width:720px){`,
 		replacement: `.asset-group{display:grid;gap:13px}.browse-foot{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:2px 0 6px}@media(max-width:980px){.filters{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:900px){.shot-drawer-panel{width:100vw}.filter-drawer-panel{width:100vw}}@media(max-width:720px){.filters{grid-template-columns:repeat(2,minmax(0,1fr))}#filters-toggle{grid-column:1/-1}.filter-group{grid-template-columns:1fr}`},
 	// search() sent a bare q= with no facets, so /api/v1/search — the only
@@ -252,7 +305,7 @@ async function runShotSearch(append){
   const pageState=shotPage;
   if(pageState.loading)return;
   pageState.loading=true;
-  browsePage.generation++;
+  browseGeneration++;
   const requestGeneration=imageSearchGeneration;
   const reference=imageSearchReference;
   const isCurrent=()=>pageState===shotPage&&requestGeneration===imageSearchGeneration;

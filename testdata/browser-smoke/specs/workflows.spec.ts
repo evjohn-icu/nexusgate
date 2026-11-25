@@ -304,6 +304,42 @@ test.describe('browse and saved-view pagination (partition 18)', () => {
     await expect(page.locator('[data-asset-timeline="asset-card-0301"]')).toHaveCount(0);
     await expect(page.locator('#status-filter')).toHaveValue('queued');
   });
+
+  test('a late browse failure leaves search results free of browse controls', async ({ page }) => {
+    await page.goto('/');
+    await browseReady(page);
+    const continuation = Promise.withResolvers<Route>();
+    await page.route('**/api/v1/assets?limit=300&offset=300*', (route) => continuation.resolve(route));
+    await page.locator('#browse-more-btn').click();
+    const route = await continuation.promise;
+    await page.locator('#q').fill('camera');
+    await page.locator('#q').press('Enter');
+    await expect(page.locator('.shot-result').first()).toBeVisible();
+    const failed = page.waitForEvent('requestfailed', (request) => request === route.request());
+    await route.abort('failed');
+    await failed;
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(page.locator('.shot-result').first()).toBeVisible();
+    await expect(page.locator('[data-browse-error], #browse-more-btn')).toHaveCount(0);
+  });
+
+  test('an older card render cannot replace a filtered browse page', async ({ page }) => {
+    await page.route('**/api/v1/assets?limit=300&offset=0', (route) => route.fulfill({
+      json: [{ id: 'stale-asset', filename: 'stale-browse.mp4', duration_ms: 1000 }],
+    }));
+    const shots = Promise.withResolvers<Route>();
+    await page.route('**/api/v1/assets/stale-asset/shots', (route) => shots.resolve(route));
+    await page.goto('/');
+    const route = await shots.promise;
+    await page.locator('#status-filter').selectOption('queued');
+    await expect(page.locator('[data-asset-timeline="asset-fixture"]')).toBeVisible();
+    const completed = page.waitForResponse((response) => response.request() === route.request());
+    await route.fulfill({ json: [] });
+    await (await completed).finished();
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(page.locator('[data-asset-timeline="asset-fixture"]')).toBeVisible();
+    await expect(page.locator('[data-asset-timeline="stale-asset"]')).toHaveCount(0);
+  });
 });
 
 test.describe('timeline continuation and invalidation (partition 18)', () => {
@@ -404,6 +440,19 @@ test.describe('browse and search view ownership (partition 18 review)', () => {
     await expect(page.locator('[data-asset-timeline]').first()).toBeVisible();
     await expect(page.locator('.shot-result')).toHaveCount(0);
     expect(await page.locator('#q').inputValue()).toBe('');
+  });
+
+  test('removing a saved-view chip during search returns to browse', async ({ page }) => {
+    await page.goto('/?collection=view-discovered');
+    const chip = page.locator('[data-filter-chip="collection"]');
+    await page.locator('#q').fill('camera');
+    await page.locator('#q').press('Enter');
+    await expect(page.locator('.shot-result').first()).toBeVisible();
+    await chip.getByRole('button').click();
+    await browseReady(page);
+    await expect(chip).toHaveCount(0);
+    await expect(page.locator('#q')).toBeEmpty();
+    expect(new URL(page.url()).searchParams.has('collection')).toBe(false);
   });
 
   test('Back to browse discards a pending image search', async ({ page }) => {
