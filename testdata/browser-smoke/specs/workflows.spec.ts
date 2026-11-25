@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, test, type Page, type Request, type Route } from '@playwright/test';
 
 // Partition 18 browser workflows: required-auth reference upload with CSRF,
 // browse/saved-view pagination, timeline continuation and invalidation. The
@@ -74,6 +74,10 @@ const zh = {
 
 async function login(page: Page) {
   await page.goto('/');
+  await signIn(page);
+}
+
+async function signIn(page: Page) {
   const trigger = page.locator('#admin-trigger');
   if (!(await trigger.isVisible())) {
     const toggle = page.locator('#shell-menu-toggle');
@@ -467,4 +471,77 @@ test.describe('browse and search view ownership (partition 18 review)', () => {
     await expect(page.locator('.shot-result-file')).toHaveCount(1);
     await expect(page.locator('#image-search-status')).toContainText(zh.imageSearchReady);
   });
+
+  for (const status of [200, 500]) {
+    test(`a late image search (${status}) leaves newer text results visible`, async ({ page }) => {
+      await login(page);
+      await page.goto('/');
+      await browseReady(page);
+      const imageRequest = Promise.withResolvers<Route>();
+      await page.route('**/api/v1/search/shots', async (route) => {
+        const body = JSON.parse(route.request().postData() ?? '{}');
+        if (!body.query) {
+          imageRequest.resolve(route);
+          return;
+        }
+        await route.fulfill({ json: { results: [{ shot_id: 'text', asset_id: 'asset-fixture', filename: 'text-result.mp4', start_ms: 0, end_ms: 5000, description: 'fixture', score: 0.9 }] } });
+      });
+      await page.setInputFiles('#image-search', { name: 'probe.png', mimeType: 'image/png', buffer: nextProbePng() });
+      const imageRoute = await imageRequest.promise;
+      try {
+        expect(JSON.parse(imageRoute.request().postData() ?? '{}').reference_id).toBeTruthy();
+        const textStarted = page.waitForRequest((request) => request.url().endsWith('/api/v1/search/shots'));
+        await page.locator('#q').fill('camera');
+        await page.locator('#q').press('Enter');
+        const textBody = JSON.parse((await textStarted).postData() ?? '{}');
+        expect(textBody).toMatchObject({ query: 'camera' });
+        expect(textBody).not.toHaveProperty('reference_id');
+        await expect(page.locator('.shot-result-file')).toHaveText('text-result.mp4');
+      } finally {
+        const imageFinished = page.waitForResponse((response) => response.request() === imageRoute.request(), { timeout: 5000 });
+        await imageRoute.fulfill({
+          status,
+          json: status === 200
+            ? { results: [{ shot_id: 'image', asset_id: 'asset-fixture', filename: 'stale-image.mp4', start_ms: 0, end_ms: 5000, description: 'fixture', score: 0.9 }] }
+            : { error: { code: 'internal_error', message: 'stale image failure' } },
+        });
+        await (await imageFinished).finished();
+      }
+      await page.evaluate(() => {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        return promise;
+      });
+      await expect(page.locator('.shot-result-file')).toHaveText('text-result.mp4');
+      await expect(page.locator('#image-search-status')).toBeEmpty();
+    });
+  }
+
+  for (const action of ['Clear', 'saved view']) {
+    test(`${action} discards the image awaiting sign-in`, async ({ page }) => {
+      await page.goto('/');
+      let uploads = 0;
+      const isUpload = (request: Request) =>
+        request.url().endsWith('/api/v1/admin/search-references') && request.method() === 'POST';
+      page.on('request', (request) => { if (isUpload(request)) uploads++; });
+      const denied = page.waitForResponse((response) => isUpload(response.request()));
+      await page.setInputFiles('#image-search', { name: 'probe.png', mimeType: 'image/png', buffer: nextProbePng() });
+      expect((await denied).status()).toBe(401);
+      const status = page.locator('#image-search-status');
+      await expect(status.getByRole('button')).toBeVisible();
+      await page.keyboard.press('Escape');
+      if (action === 'Clear') {
+        await page.locator('.search-clear').click();
+      } else {
+        const assets = page.waitForResponse((response) => response.url().includes('/api/v1/collections/view-discovered/assets'));
+        await page.locator('#collection-filter').selectOption('view-discovered');
+        expect((await assets).ok()).toBe(true);
+      }
+      await expect(status).toBeEmpty();
+      await signIn(page);
+      await expect(page.locator('[data-asset-timeline="asset-card-0300"]')).toBeVisible();
+      await expect(status).toBeEmpty();
+      expect(uploads).toBe(1);
+    });
+  }
 });

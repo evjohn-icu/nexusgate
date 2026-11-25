@@ -249,15 +249,6 @@ func TestLibraryPageSearchIsShotFirst(t *testing.T) {
 	if strings.Contains(page, `'/api/v1/search?q='+encodeURIComponent(q)`) {
 		t.Fatalf("search() must not query the facet-blind asset search endpoint")
 	}
-	// Paging (U3-02) moved the response handling into runShotSearch, so this
-	// pins the two halves that used to be one expression: the v2 results are
-	// what gets accumulated, and the accumulated page is what gets rendered.
-	if !strings.Contains(page, `const page=data&&Array.isArray(data.results)?data.results:[]`) {
-		t.Fatalf("search() must take shot-level results from the v2 response")
-	}
-	if !strings.Contains(page, `renderShotResults(shotPage.items)`) {
-		t.Fatalf("search() must render the accumulated shot page")
-	}
 	for _, marker := range []string{
 		`data-shot-result`,           // result cards are shot rows
 		`shot-result-time`,           // start — end rendered

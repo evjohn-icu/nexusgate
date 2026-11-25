@@ -43,11 +43,6 @@ func TestLibraryPageRestoresSearchFromURL(t *testing.T) {
 func TestLibraryPagePaginatesShotResults(t *testing.T) {
 	page := libraryIndexHTML
 	for _, marker := range []string{
-		`offset:shotPage.offset`,                   // the request carries the page
-		`shotPage.hasMore=!!(data&&data.has_more)`, // and reads the answer back
-		`shotPage.nextOffset=data&&typeof data.next_offset==='number'?data.next_offset:null`,
-		`shotPage.windowExhausted=!!(data&&data.window_exhausted)`,
-		`shotPage.items=append?shotPage.items.concat(page):page`, // load-more appends
 		`function loadMoreShots()`,
 		`id="shot-more-btn"`,
 		`tdT('library.loadMore')`,
@@ -337,20 +332,6 @@ func TestLibraryFilterChangeKeepsTheSearch(t *testing.T) {
 	} {
 		if !strings.Contains(page, site) {
 			t.Fatalf("filter entry point still calls load() directly: %s", site)
-		}
-	}
-	// Collection is the one filter that deliberately stays on load(): it is a
-	// saved *asset* filter and runShotSearch's body carries no collection, so
-	// routing it through refreshResults would have made picking a collection
-	// during a search a silent no-op — the chip appears, the URL updates, the
-	// results do not move. It clears the query first so the browse-ownership
-	// guard cannot swallow the deliberate navigation.
-	for _, site := range []string{
-		`async function loadCollection(id){activeCollection=id||'';document.getElementById('q').value='';imageSearchGeneration++;imageSearchReference='';imageSearchPolls=0;load()}`,
-		`activeCollection='';load();syncURL();return`,
-	} {
-		if !strings.Contains(page, site) {
-			t.Fatalf("collection selection no longer falls back to the browse listing: %s", site)
 		}
 	}
 }

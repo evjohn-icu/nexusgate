@@ -23,6 +23,9 @@
 - The library page pages 300-card browse and saved views, continues long
   timelines with Load more, and uploads image-search references with the
   administrator session.
+- Text searches keep their results when an earlier image search finishes.
+  Clearing search or choosing a saved view cancels any image upload waiting
+  for administrator sign-in.
 - Eval runs use separate databases and caches per label. To score a report from
   the shared-database layout, rerun its label. Multimodal scoring reads recorded
   predictions and computes event macro F1 across labels.
