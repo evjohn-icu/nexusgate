@@ -672,6 +672,40 @@ test.describe('usability repair (2026-08-29 audit, tranche 2)', () => {
     await expect(page.locator('.shot-results-foot')).not.toContainText('已经是全部结果');
   });
 
+  test('a failed shot continuation retains the current page and retries the same offset', async ({ page }) => {
+    const offsets: number[] = [];
+    await page.route('**/api/v1/search/shots', async (route) => {
+      const { offset } = route.request().postDataJSON();
+      offsets.push(offset);
+      if (offset === 40 && offsets.length === 2) {
+        await route.fulfill({ status: 503, json: { error: { code: 'unavailable', message: 'temporarily unavailable' } } });
+        return;
+      }
+      const filename = offset === 0 ? 'first-page.mp4' : 'second-page.mp4';
+      await route.fulfill({ json: {
+        results: [{ shot_id: filename, asset_id: 'asset-fixture', filename, start_ms: 0, end_ms: 1000 }],
+        has_more: offset === 0,
+        ...(offset === 0 ? { next_offset: 40 } : {}),
+      } });
+    });
+    await page.goto('/');
+    await page.locator('#q').fill('camera');
+    await page.locator('#q').press('Enter');
+    const files = page.locator('.shot-result-file');
+    await expect(files).toHaveText(['first-page.mp4']);
+
+    const more = page.locator('#shot-more-btn');
+    await more.click();
+    await expect(page.locator('[data-shot-page-error]')).toBeVisible();
+    await expect(files).toHaveText(['first-page.mp4']);
+    await expect(more).toHaveText('重试');
+
+    await more.click();
+    await expect(files).toHaveText(['first-page.mp4', 'second-page.mp4']);
+    await expect(page.locator('[data-shot-page-error]')).toHaveCount(0);
+    expect(offsets).toEqual([0, 40, 40]);
+  });
+
   test('/library-roots offers a way in when the Hub answers 401 (U2-01)', async ({ page }) => {
     await page.goto('/library-roots');
     const notice = page.locator('#root-health-wrap .callout');

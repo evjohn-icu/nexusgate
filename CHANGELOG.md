@@ -30,6 +30,8 @@
   Removing a saved view returns to ordinary asset browsing.
 - Changing filters during image search refreshes the first results page
   with the same reference image.
+- Failed shot-search continuations preserve the displayed results and let
+  users retry the same page.
 - Eval runs use separate databases and caches per label. To score a report from
   the shared-database layout, rerun its label. Multimodal scoring reads recorded
   predictions and computes event macro F1 across labels.

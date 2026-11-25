@@ -205,8 +205,8 @@ async function load(ids,append)`},
 	// samples without a round trip), the shot currently open in the drawer,
 	// and the button that opened the collections modal (so a successful add
 	// can flip that exact button to ✓ 已加入).
-	{anchor: `let activeCollection='';`,
-		replacement: `let activeCollection='',lastLoadedAssets=[],currentShot=null,addShotSourceBtn=null;`},
+	{anchor: `let activeCollection='';let shotPage={query:'',offset:0,limit:40,items:[],hasMore:false,nextOffset:null,windowExhausted:false,loading:false};`,
+		replacement: `let activeCollection='',lastLoadedAssets=[],currentShot=null,addShotSourceBtn=null,shotPage;`},
 	// Every load() refreshes the URL-synced filter state: the active-filter
 	// chips row and the filters-toggle count re-derive from the current
 	// control values, and syncURL() rewrites the address bar so a reload
@@ -307,7 +307,7 @@ async function load(ids,append)`},
 function startShotSearch(query){
   imageSearchPolls=0;
   refreshFilterUI();syncURL();
-  shotPage={query,offset:0,limit:40,items:[],hasMore:false,nextOffset:null,windowExhausted:false,loading:false};
+  shotPage={query,limit:40,items:[],hasMore:false,nextOffset:null,windowExhausted:false,loading:false};
   return runShotSearch(false);
 }
 async function runShotSearch(append){
@@ -322,7 +322,7 @@ async function runShotSearch(append){
   const hasAssetFilter=assetFilter.captured_from||assetFilter.captured_to||assetFilter.region_label||assetFilter.camera_model||assetFilter.session_id||assetFilter.status;
   const status=document.getElementById('image-search-status');
   try{
-    const response=await fetch('/api/v1/search/shots',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:pageState.query,mode:'auto',limit:pageState.limit,offset:pageState.offset,diversity:0.2,include_evidence:true,include_context:false,facets:filterFacets(),...(hasAssetFilter?{asset_filter:assetFilter}:{}),...(reference?{modalities:['visual'],reference_id:reference}:{})})});
+    const response=await fetch('/api/v1/search/shots',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:pageState.query,mode:'auto',limit:pageState.limit,offset:append?pageState.nextOffset:0,diversity:0.2,include_evidence:true,include_context:false,facets:filterFacets(),...(hasAssetFilter?{asset_filter:assetFilter}:{}),...(reference?{modalities:['visual'],reference_id:reference}:{})})});
     if(!response.ok)throw Error(await tdApiErrorMessage(response));
     const data=await response.json();
     if(!isCurrent())return;
@@ -331,6 +331,8 @@ async function runShotSearch(append){
       imageSearchPolls++;
       if(imageSearchPolls<15){
         setTimeout(function(){if(isCurrent())runShotSearch(append)},2000);
+      }else if(append){
+        throw Error(tdT('library.imageSearchPending'));
       }else if(status){status.textContent=tdT('library.imageSearchError')}
       return;
     }
@@ -345,16 +347,34 @@ async function runShotSearch(append){
     lastLoadedAssets=[];lastLoadedAssets.__searchOwned=true;
   }catch(e){
     if(!isCurrent())return;
+    if(append){
+      imageSearchPolls=0;
+      const error=library.querySelector('[data-shot-page-error]');
+      const retry=library.querySelector('#shot-more-btn');
+      error.textContent=tdT('library.searchFailed')+e.message;
+      error.hidden=false;
+      retry.textContent=tdT('common.retry');
+      retry.disabled=false;
+      return;
+    }
     if(status&&reference)status.textContent=tdT('library.imageSearchError')+e.message;
     library.innerHTML='<div class="empty error">'+tdT('library.searchFailed')+esc(e.message)+'</div>';
   }finally{pageState.loading=false}
 }
-async function loadMoreShots(){if(!shotPage.hasMore||shotPage.nextOffset==null)return;const btn=document.getElementById('shot-more-btn');if(btn){btn.disabled=true;btn.textContent=tdT('library.loadingMore')}shotPage.offset=shotPage.nextOffset;await runShotSearch(true)}
+async function loadMoreShots(){
+  if(!shotPage?.hasMore||shotPage.nextOffset==null||shotPage.loading)return;
+  const btn=library.querySelector('#shot-more-btn');
+  if(!btn||btn.disabled)return;
+  btn.disabled=true;
+  btn.textContent=tdT('library.loadingMore');
+  library.querySelector('[data-shot-page-error]').hidden=true;
+  await runShotSearch(true);
+}
 // window_exhausted is a different sentence from "that is everything": the page
 // ended exactly on MaxSearchWindow, so more may exist beyond a boundary one
 // request cannot cross. Saying "全部结果" there would be a claim the engine
 // never made.
-function shotPageFooter(){const shown=shotPage.items.length;if(!shown)return'';let html='<div class="shot-results-foot"><span class="muted">'+esc(tdPlural('library.shotResultsShown',shown))+'</span>';if(shotPage.hasMore){html+='<button type="button" class="btn" id="shot-more-btn" onclick="loadMoreShots()">'+esc(tdT('library.loadMore'))+'</button>'}else if(shotPage.windowExhausted){html+='<span class="muted">'+esc(tdT('library.windowExhausted'))+'</span>'}else{html+='<span class="muted">'+esc(tdT('library.allShown'))+'</span>'}return html+'</div>'}
+function shotPageFooter(){const shown=shotPage.items.length;if(!shown)return'';let html='<div class="shot-results-foot"><span class="muted">'+esc(tdPlural('library.shotResultsShown',shown))+'</span>';if(shotPage.hasMore){html+='<span class="muted" data-shot-page-error hidden></span><button type="button" class="btn" id="shot-more-btn" onclick="loadMoreShots()">'+esc(tdT('library.loadMore'))+'</button>'}else if(shotPage.windowExhausted){html+='<span class="muted">'+esc(tdT('library.windowExhausted'))+'</span>'}else{html+='<span class="muted">'+esc(tdT('library.allShown'))+'</span>'}return html+'</div>'}
 function clearSearch(){document.getElementById('q').value='';resetImageSearch();return load()}`},
 	{anchor: `async function loadMoreShots(){`, replacement: `let imageSearchReference='';let imageSearchPolls=0;let imageSearchGeneration=0;let imageSearchPendingFile=null;
 function resetImageSearch(){
