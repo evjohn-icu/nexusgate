@@ -521,6 +521,54 @@ test.describe('browse and search view ownership (partition 18 review)', () => {
     await expect(page.locator('#image-search-status')).toContainText(zh.imageSearchReady);
   });
 
+  test('image filters restart at page one and discard an older continuation', async ({ page }) => {
+    await login(page);
+    await page.goto('/');
+    await browseReady(page);
+    const continuation = Promise.withResolvers<Route>();
+    const requests: Array<{ reference_id: string; query: string; offset: number; asset_filter?: { status?: string } }> = [];
+    await page.route('**/api/v1/search/shots', async (route) => {
+      const body = route.request().postDataJSON();
+      requests.push(body);
+      if (body.offset === 40) {
+        continuation.resolve(route);
+        return;
+      }
+      const filtered = body.asset_filter?.status === 'queued';
+      const filename = filtered ? 'filtered-image.mp4' : 'unfiltered-image.mp4';
+      await route.fulfill({ json: {
+        results: [{ shot_id: filename, asset_id: 'asset-fixture', filename, start_ms: 0, end_ms: 5000 }],
+        has_more: !filtered,
+        next_offset: filtered ? null : 40,
+      } });
+    });
+    await page.setInputFiles('#image-search', { name: 'probe.png', mimeType: 'image/png', buffer: nextProbePng() });
+    const files = page.locator('.shot-result-file');
+    await expect(files).toHaveText('unfiltered-image.mp4');
+    const reference = requests[0].reference_id;
+    expect(reference).toBeTruthy();
+
+    await page.locator('#shot-more-btn').click();
+    const route = await continuation.promise;
+    try {
+      await page.locator('#status-filter').selectOption('queued');
+      await expect(files).toHaveText('filtered-image.mp4');
+      expect(requests[2]).toMatchObject({ query: '', reference_id: reference, offset: 0, asset_filter: { status: 'queued' } });
+      expect(new URL(page.url()).searchParams.get('status')).toBe('queued');
+    } finally {
+      const completed = page.waitForResponse((response) => response.request() === route.request());
+      await route.fulfill({ json: { results: [{ shot_id: 'old', asset_id: 'asset-fixture', filename: 'old-page.mp4' }] } });
+      await (await completed).finished();
+    }
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(files).toHaveText('filtered-image.mp4');
+
+    await page.locator('[data-filter-chip="status"] button').click();
+    await expect(files).toHaveText('unfiltered-image.mp4');
+    expect(requests[3]).toMatchObject({ reference_id: reference, offset: 0 });
+    expect(requests[3]).not.toHaveProperty('asset_filter');
+  });
+
   for (const status of [200, 500]) {
     test(`a late image search (${status}) leaves newer text results visible`, async ({ page }) => {
       await login(page);

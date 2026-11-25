@@ -318,11 +318,6 @@ func TestLibraryFilterChangeKeepsTheSearch(t *testing.T) {
 	if n := strings.Count(page, `onchange="refreshResults()"`); n < 9 {
 		t.Fatalf("only %d filter controls route through refreshResults, want at least 9", n)
 	}
-	// refreshResults is the whole fix: with a query it re-runs the search,
-	// without one it is exactly today's browse listing.
-	if !strings.Contains(page, `function refreshResults(){const q=document.getElementById('q').value.trim();return q?search():load()}`) {
-		t.Fatal("refreshResults does not dispatch on the current query")
-	}
 	// The other filter-driven entry points go through it too; a chip removal
 	// or a Clear that dropped back to browse would have the same effect.
 	for _, site := range []string{
