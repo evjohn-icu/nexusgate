@@ -390,3 +390,15 @@ func TestEndpointClientAppliesSameOriginPolicy(t *testing.T) {
 		t.Fatal("the original supplied client must not be mutated")
 	}
 }
+
+func TestEndpointRedactionCoversExtraHeaders(t *testing.T) {
+	const headerSecret = "header-secret-value"
+	endpoint := Endpoint{APIKey: "api-key-value", ExtraHeaders: map[string]string{"X-Custom": headerSecret}, BaseURL: "https://provider.invalid"}
+	if got := endpoint.RedactString("echo " + headerSecret); strings.Contains(got, headerSecret) {
+		t.Fatalf("RedactString leaked an extra header: %q", got)
+	}
+	err := endpoint.Errorf("decode failed: %s", headerSecret)
+	if strings.Contains(err.Error(), headerSecret) {
+		t.Fatalf("Errorf leaked an extra header: %v", err)
+	}
+}

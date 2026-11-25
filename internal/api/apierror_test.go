@@ -76,6 +76,7 @@ func TestAPIErrorFromErrorSentinelClasses(t *testing.T) {
 		{"plan revision not found -> 404", fmt.Errorf("lookup: %w", domain.ErrPlanRevisionNotFound), "not_found", false, false},
 		{"shot vector not found -> 404", fmt.Errorf("lookup: %w", domain.ErrShotVectorNotFound), "not_found", false, false},
 		{"webdav space not found -> 404", fmt.Errorf("lookup: %w", app.ErrWebDAVSpaceNotFound), "not_found", false, false},
+		{"worker not found -> 404", fmt.Errorf("heartbeat: %w", domain.ErrWorkerNotFound), "not_found", false, false},
 		{"collection exists -> 409 already_exists", fmt.Errorf("save: %w", domain.ErrCollectionExists), "already_exists", false, false},
 		{"webdav account exists -> 409 already_exists", fmt.Errorf("create: %w", app.ErrWebDAVAccountExists), "already_exists", false, false},
 		{"route exhausted -> 503 retryable", fmt.Errorf("%w: %w", providerchannels.ErrRouteExhausted, errors.New("last non-terminal failure")), "provider_route_exhausted", true, true},

@@ -100,7 +100,7 @@ func (a *ASR) Transcribe(ctx context.Context, req common.TranscribeRequest) (dom
 			if event.Message == "" {
 				event.Message = "unknown provider error"
 			}
-			return domain.Transcript{}, common.Errorf(a.Endpoint.APIKey, "stepfun SSE error: %s", event.Message)
+			return domain.Transcript{}, a.Endpoint.Errorf("stepfun SSE error: %s", event.Message)
 		default:
 			var value any
 			if json.Unmarshal([]byte(payload), &value) == nil {
@@ -124,7 +124,7 @@ func (a *ASR) Transcribe(ctx context.Context, req common.TranscribeRequest) (dom
 	if len(segments) == 0 {
 		segments = []domain.TranscriptSegment{{Text: text}}
 	}
-	return domain.Transcript{Language: req.Language, Text: text, Segments: segments, RawResponse: common.RedactString(strings.Join(rawLines, "\n"), a.Endpoint.APIKey)}, nil
+	return domain.Transcript{Language: req.Language, Text: text, Segments: segments, RawResponse: a.Endpoint.RedactString(strings.Join(rawLines, "\n"))}, nil
 }
 func collectText(v any, out *[]string) {
 	switch x := v.(type) {

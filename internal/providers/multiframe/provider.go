@@ -201,9 +201,9 @@ func (p *Provider) chat(ctx context.Context, content []any) (string, string, err
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(raw, &response); err != nil || len(response.Choices) == 0 || strings.TrimSpace(response.Choices[0].Message.Content) == "" {
-		return "", common.RedactString(string(raw), p.Endpoint.APIKey), common.Errorf(p.Endpoint.APIKey, "decode OpenAI-compatible multiframe response: missing choices: %s", string(raw))
+		return "", p.Endpoint.RedactString(string(raw)), p.Endpoint.Errorf("decode OpenAI-compatible multiframe response: missing choices: %s", string(raw))
 	}
-	return response.Choices[0].Message.Content, common.RedactString(string(raw), p.Endpoint.APIKey), nil
+	return response.Choices[0].Message.Content, p.Endpoint.RedactString(string(raw)), nil
 }
 
 // summaryPrompt asks for the asset-level analysis object. The model sees a

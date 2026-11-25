@@ -104,6 +104,7 @@ func apiErrorFromError(err error) (int, APIError) {
 		errors.Is(err, domain.ErrShotVectorNotFound),
 		errors.Is(err, domain.ErrShotNotFound),
 		errors.Is(err, domain.ErrWorkerJobNotFound),
+		errors.Is(err, domain.ErrWorkerNotFound),
 		errors.Is(err, app.ErrCollectionNotFound),
 		errors.Is(err, app.ErrWebDAVSpaceNotFound),
 		errors.Is(err, app.ErrTranscriptNotFound):

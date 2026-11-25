@@ -143,7 +143,7 @@ func (p *Provider) completeJSON(ctx context.Context, system, user string) (strin
 			} `json:"candidates"`
 		}
 		if err := json.Unmarshal(raw, &envelope); err != nil || len(envelope.Candidates) == 0 {
-			return "", common.Errorf(p.Endpoint.APIKey, "decode Gemini tag curator response: missing candidates: %s", string(raw))
+			return "", p.Endpoint.Errorf("decode Gemini tag curator response: missing candidates: %s", string(raw))
 		}
 		for _, part := range envelope.Candidates[0].Content.Parts {
 			text += part.Text
@@ -157,7 +157,7 @@ func (p *Provider) completeJSON(ctx context.Context, system, user string) (strin
 			} `json:"choices"`
 		}
 		if err := json.Unmarshal(raw, &envelope); err != nil || len(envelope.Choices) == 0 {
-			return "", common.Errorf(p.Endpoint.APIKey, "decode tag curator response: missing choices: %s", string(raw))
+			return "", p.Endpoint.Errorf("decode tag curator response: missing choices: %s", string(raw))
 		}
 		text = envelope.Choices[0].Message.Content
 	}

@@ -272,13 +272,13 @@ func (v *Vision) analyzeNative(ctx context.Context, req videoanalysis.Input, pro
 		} `json:"candidates"`
 	}
 	if err := json.Unmarshal(raw, &x); err != nil || len(x.Candidates) == 0 {
-		return videoanalysis.Result{}, common.RedactString(string(raw), v.Endpoint.APIKey), common.Errorf(v.Endpoint.APIKey, "invalid Gemini response: %s", string(raw))
+		return videoanalysis.Result{}, v.Endpoint.RedactString(string(raw)), v.Endpoint.Errorf("invalid Gemini response: %s", string(raw))
 	}
 	var text string
 	for _, p := range x.Candidates[0].Content.Parts {
 		text += p.Text
 	}
-	return decodeAnalysis(text, raw, v.Endpoint.APIKey)
+	return decodeAnalysis(text, raw, &v.Endpoint)
 }
 
 func (v *Vision) analyzeOpenAI(ctx context.Context, req videoanalysis.Input, prompt string) (videoanalysis.Result, string, error) {
@@ -315,17 +315,25 @@ func (v *Vision) analyzeOpenAI(ctx context.Context, req videoanalysis.Input, pro
 		} `json:"choices"`
 	}
 	if json.Unmarshal(raw, &x) != nil || len(x.Choices) == 0 {
-		return videoanalysis.Result{}, common.RedactString(string(raw), v.Endpoint.APIKey), common.Errorf(v.Endpoint.APIKey, "invalid OpenAI-compatible response: %s", string(raw))
+		return videoanalysis.Result{}, v.Endpoint.RedactString(string(raw)), v.Endpoint.Errorf("invalid OpenAI-compatible response: %s", string(raw))
 	}
-	return decodeAnalysis(x.Choices[0].Message.Content, raw, v.Endpoint.APIKey)
+	return decodeAnalysis(x.Choices[0].Message.Content, raw, &v.Endpoint)
 }
 
-func decodeAnalysis(text string, raw []byte, secrets ...string) (videoanalysis.Result, string, error) {
-	secret := ""
-	if len(secrets) > 0 {
-		secret = secrets[0]
+func decodeAnalysis(text string, raw []byte, endpoint *common.Endpoint) (videoanalysis.Result, string, error) {
+	redact := func(value string) string {
+		if endpoint != nil {
+			return endpoint.RedactString(value)
+		}
+		return common.BoundedString(value)
 	}
-	redactedRaw := common.RedactString(string(raw), secret)
+	fail := func(format string, args ...any) error {
+		if endpoint != nil {
+			return endpoint.Errorf(format, args...)
+		}
+		return fmt.Errorf(format, args...)
+	}
+	redactedRaw := redact(string(raw))
 	text = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(text), "```json"), "```"))
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(text), &fields); err != nil {
@@ -344,7 +352,7 @@ func decodeAnalysis(text string, raw []byte, secrets ...string) (videoanalysis.R
 	if err := json.Unmarshal([]byte(text), &out); err == nil && (out.Summary != "" || len(out.Scenes) > 0 || len(out.RawTags) > 0) {
 		return out, redactedRaw, nil
 	}
-	return out, redactedRaw, common.Errorf(secret, "decode structured video analysis: response has no unified fields; response: %s", redactedRaw)
+	return out, redactedRaw, fail("decode structured video analysis: response has no unified fields; response: %s", redactedRaw)
 }
 
 func (v *Vision) applyAuth(req *http.Request) {

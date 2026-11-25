@@ -158,7 +158,7 @@ func TestPurgeExpiredSearchReferencesRemovalPolicy(t *testing.T) {
 	if job == nil || job.JobID != expiredJob {
 		t.Fatalf("first lease = %+v, want the expired reference's pending job %s", job, expiredJob)
 	}
-	if _, err := repo.DB().ExecContext(ctx, `UPDATE search_references SET expires_at=? WHERE id IN (?,?)`, now.Add(-time.Minute).Format(time.RFC3339), expired.ID, missing.ID); err != nil {
+	if _, err := repo.DB().ExecContext(ctx, `UPDATE search_references SET expires_at=? WHERE id IN (?,?)`, now.Add(-time.Minute).UTC().Format("2006-01-02T15:04:05.000000000Z"), expired.ID, missing.ID); err != nil {
 		t.Fatal(err)
 	}
 

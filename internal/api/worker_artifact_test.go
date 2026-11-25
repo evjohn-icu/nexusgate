@@ -186,6 +186,37 @@ func TestWorkerArtifactUploadPersistsOnHubAndRejectsNonOwner(t *testing.T) {
 		t.Fatalf("artifact rows=%d err=%v", count, err)
 	}
 
+	// A derive that ran locally commits its row under the Hub cache. A later
+	// Worker attempt for the same artifact key must reuse that row instead of
+	// rejecting it as outside Worker-managed storage.
+	localDir := filepath.Join(service.CacheDir(), assetID)
+	if err := os.MkdirAll(localDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	localAudio := filepath.Join(localDir, "audio-16k-v1.wav")
+	if err := os.WriteFile(localAudio, []byte("local-audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.DB().ExecContext(ctx, `INSERT INTO derived_artifacts(id,asset_id,artifact_type,profile_hash,local_path,size_bytes,created_at) VALUES(?,?,?,?,?,?,?)`,
+		"hub-local-audio", assetID, "audio", "audio-16k-v1", localAudio, len("local-audio"), time.Now().UTC().Format("2006-01-02T15:04:05.000000000Z")); err != nil {
+		t.Fatal(err)
+	}
+	localReuse := httptest.NewRecorder()
+	localRequest := httptest.NewRequest(http.MethodPut, "/api/v1/worker/jobs/"+job.JobID+"/artifacts/audio?profile=audio-16k-v1", bytes.NewReader([]byte("worker-audio")))
+	localRequest.Header.Set("Authorization", "Bearer "+workerToken)
+	localRequest.Header.Set("Content-Type", "audio/wav")
+	handler.ServeHTTP(localReuse, localRequest)
+	if localReuse.Code != http.StatusAccepted || !strings.Contains(localReuse.Body.String(), `"reused":true`) {
+		t.Fatalf("committed local artifact was not reused: status=%d body=%s", localReuse.Code, localReuse.Body.String())
+	}
+	committed, err := repo.GetArtifact(ctx, assetID, "audio")
+	if err != nil || committed == nil || committed.LocalPath != localAudio {
+		t.Fatalf("committed local artifact=%+v err=%v, want path %s", committed, err, localAudio)
+	}
+	if content, err := os.ReadFile(localAudio); err != nil || string(content) != "local-audio" {
+		t.Fatalf("committed local artifact was rewritten: %q err=%v", content, err)
+	}
+
 	unauthorized := httptest.NewRecorder()
 	unauthorizedRequest := httptest.NewRequest(http.MethodPut, "/api/v1/worker/jobs/"+job.JobID+"/artifacts/proxy?profile=proxy-v1", bytes.NewReader([]byte("mp4")))
 	unauthorizedRequest.Header.Set("Authorization", "Bearer "+otherToken)

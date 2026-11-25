@@ -227,9 +227,24 @@ func ReadErrorWithSecret(resp *http.Response, secret string) error {
 }
 
 func (e Endpoint) ReadError(resp *http.Response) error {
-	return redactProviderError(ReadError(resp), secretredact.New(secretredact.Material{
-		APIKey: e.APIKey, ExtraHeaders: e.ExtraHeaders, BaseURL: e.BaseURL,
-	}))
+	return redactProviderError(ReadError(resp), secretredact.New(e.redactionMaterial()))
+}
+
+// redactionMaterial covers every configured credential surface, including
+// ExtraHeaders, so response text echoed back by a provider cannot persist a
+// header value in a job error.
+func (e Endpoint) redactionMaterial() secretredact.Material {
+	return secretredact.Material{APIKey: e.APIKey, ExtraHeaders: e.ExtraHeaders, BaseURL: e.BaseURL}
+}
+
+// RedactString redacts value against this endpoint's configured credentials.
+func (e Endpoint) RedactString(value string) string {
+	return BoundedString(secretredact.New(e.redactionMaterial()).Diagnostic(value))
+}
+
+// Errorf constructs an endpoint-redacted error safe to persist and display.
+func (e Endpoint) Errorf(format string, args ...any) error {
+	return redactProviderError(fmt.Errorf(format, args...), secretredact.New(e.redactionMaterial()))
 }
 
 // BoundedString is the persistence bound shared by provider and pipeline errors.

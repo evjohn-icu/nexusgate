@@ -90,5 +90,5 @@ func (a *ASR) Transcribe(ctx context.Context, req common.TranscribeRequest) (dom
 		return domain.Transcript{}, fmt.Errorf("qwen response has no choices")
 	}
 	text := strings.TrimSpace(out.Choices[0].Message.Content)
-	return domain.Transcript{Language: req.Language, Text: text, Segments: []domain.TranscriptSegment{{StartMS: 0, EndMS: 0, Text: text}}, RawResponse: common.RedactString(string(raw), a.Endpoint.APIKey)}, nil
+	return domain.Transcript{Language: req.Language, Text: text, Segments: []domain.TranscriptSegment{{StartMS: 0, EndMS: 0, Text: text}}, RawResponse: a.Endpoint.RedactString(string(raw))}, nil
 }

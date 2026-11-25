@@ -203,6 +203,12 @@ func TestScoreRequiresIsolatedDatabase(t *testing.T) {
 	if err := os.WriteFile(shared, []byte("shared"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(dir, "runs", "legacy"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "runs", "legacy", "nexusgate.db"), []byte("legacy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Score(context.Background(), dir, "legacy", &Corpus{}); err == nil || !strings.Contains(err.Error(), "run has no isolated database") {
 		t.Fatalf("legacy score returned %v", err)
 	}

@@ -164,13 +164,13 @@ func (p *Provider) Analyze(ctx context.Context, input videoanalysis.Input) (vide
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(raw, &response); err != nil || len(response.Choices) == 0 {
-		return videoanalysis.Result{}, common.RedactString(string(raw), p.Endpoint.APIKey), common.Errorf(p.Endpoint.APIKey, "decode OpenAI-compatible video response: missing choices: %s", string(raw))
+		return videoanalysis.Result{}, p.Endpoint.RedactString(string(raw)), p.Endpoint.Errorf("decode OpenAI-compatible video response: missing choices: %s", string(raw))
 	}
 	result, err := decodeUnified(response.Choices[0].Message.Content)
 	if err != nil {
-		return videoanalysis.Result{}, common.RedactString(string(raw), p.Endpoint.APIKey), common.RedactError(err, p.Endpoint.APIKey)
+		return videoanalysis.Result{}, p.Endpoint.RedactString(string(raw)), p.Endpoint.Errorf("decode unified video analysis: %s", err)
 	}
-	return result, common.RedactString(string(raw), p.Endpoint.APIKey), nil
+	return result, p.Endpoint.RedactString(string(raw)), nil
 }
 
 func inputVideoURL(input videoanalysis.Input) (string, error) {

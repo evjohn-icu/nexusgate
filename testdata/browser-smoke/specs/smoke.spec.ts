@@ -416,9 +416,14 @@ test.describe('usability repair (2026-08-28 audit)', () => {
     await page.locator('#channel-form button[type="submit"]').click();
     expect((await patched).ok()).toBeTruthy();
     // The empty edit removed the anchor row; the manual create dialog must
-    // put a fresh one back.
+    // put a fresh one back, and a later edit of a member-bearing channel must
+    // still find an anchor to bind.
     await page.locator('#advanced-btn').click();
     await expect(rows).toHaveCount(1);
+    await page.keyboard.press('Escape');
+    await page.locator('[data-channel="channel-fixture"] [data-act="edit-channel"]').click();
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toHaveAttribute('data-member-id', 'member-fixture');
     await page.keyboard.press('Escape');
   });
 

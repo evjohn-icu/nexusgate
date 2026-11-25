@@ -241,8 +241,8 @@ func (r *Repository) ListAssetCardsFiltered(ctx context.Context, filter domain.A
 // PagedAssetCardsFiltered is the paged form of ListAssetCardsFiltered: the
 // same filter and ordering, but one probe row past the requested page so the
 // caller can tell "this page is full" from "this is the last page" without a
-// second query. The API list handler is its only consumer; ListAssetCards and
-// ListAssetCardsInCollection keep using the un-paged form.
+// second query. The browse handler and ListAssetCardsInCollection both use
+// it; ListAssetCards keeps the un-paged form for callers that want it all.
 func (r *Repository) PagedAssetCardsFiltered(ctx context.Context, filter domain.AssetCardFilter) ([]domain.AssetCard, bool, error) {
 	if filter.Limit <= 0 {
 		filter.Limit = 100

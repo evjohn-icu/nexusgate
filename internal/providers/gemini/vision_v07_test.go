@@ -60,7 +60,7 @@ func TestVideoProviderDecodesUnifiedGeminiResponse(t *testing.T) {
 
 func TestDecodeAnalysisPreservesLegacyFlatResponse(t *testing.T) {
 	text := `{"asset_type":"architecture","scene_tags":["city"],"summary":"旧格式响应","quality":"usable"}`
-	result, _, err := decodeAnalysis(text, []byte(text))
+	result, _, err := decodeAnalysis(text, []byte(text), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -402,6 +402,33 @@ test.describe('browse and search view ownership (partition 18 review)', () => {
     expect(await page.locator('#q').inputValue()).toBe('');
   });
 
+  test('Back to browse discards a pending image search', async ({ page }) => {
+    await login(page);
+    await page.goto('/');
+    await page.locator('#q').fill('camera');
+    await page.locator('#q').press('Enter');
+    await expect(page.locator('.shot-result').first()).toBeVisible();
+    await page.route('**/api/v1/search/shots', async (route: Route) => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 1200);
+      await promise;
+      await route.fulfill({
+        json: {
+          results: [{ shot_id: 'shot-late', asset_id: 'asset-fixture', filename: 'late-image.mp4', start_ms: 0, end_ms: 5000, description: 'fixture', score: 0.9 }],
+          has_more: false,
+        },
+      });
+    });
+    const search = page.waitForRequest((request) => request.url().endsWith('/api/v1/search/shots'));
+    await page.setInputFiles('#image-search', { name: 'late.png', mimeType: 'image/png', buffer: nextProbePng() });
+    await search;
+    await page.locator('.shot-results-head .link-button').click();
+    await expect(page.locator('[data-asset-timeline]').first()).toBeVisible();
+    await page.waitForTimeout(2200);
+    await expect(page.locator('[data-asset-timeline]').first()).toBeVisible();
+    await expect(page.locator('.shot-result')).toHaveCount(0);
+  });
+
   test('an older image search cannot replace a newer selection', async ({ page }) => {
     await login(page);
     await page.goto('/');
@@ -411,7 +438,11 @@ test.describe('browse and search view ownership (partition 18 review)', () => {
       const first = searches === 1;
       // The first reference's search answers slowly with a shot that would be
       // visibly wrong if it replaced the second reference's result.
-      if (first) await new Promise((resolve) => setTimeout(resolve, 1500));
+      if (first) {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 1500);
+        await promise;
+      }
       await route.fulfill({
         json: {
           results: [{
@@ -424,12 +455,16 @@ test.describe('browse and search view ownership (partition 18 review)', () => {
       });
     });
     const input = page.locator('#image-search');
+    const firstSearch = page.waitForRequest((request) => request.url().endsWith('/api/v1/search/shots'));
     await input.setInputFiles({ name: 'a.png', mimeType: 'image/png', buffer: nextProbePng() });
-    await expect(page.locator('.shot-result-file')).toHaveText(/older-image|newer-image/);
+    await firstSearch;
+    // Select B while A's search is still delayed: only the generation guard
+    // keeps A's late response from replacing B's result.
     await input.setInputFiles({ name: 'b.png', mimeType: 'image/png', buffer: nextProbePng() });
     await expect(page.locator('.shot-result-file')).toHaveText('newer-image.mp4', { timeout: 10000 });
     await page.waitForTimeout(2000);
     await expect(page.locator('.shot-result-file')).toHaveText('newer-image.mp4');
+    await expect(page.locator('.shot-result-file')).toHaveCount(1);
     await expect(page.locator('#image-search-status')).toContainText(zh.imageSearchReady);
   });
 });

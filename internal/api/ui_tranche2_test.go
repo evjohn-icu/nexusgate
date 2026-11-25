@@ -346,7 +346,7 @@ func TestLibraryFilterChangeKeepsTheSearch(t *testing.T) {
 	// results do not move. It clears the query first so the browse-ownership
 	// guard cannot swallow the deliberate navigation.
 	for _, site := range []string{
-		`async function loadCollection(id){activeCollection=id||'';document.getElementById('q').value='';imageSearchReference='';load()}`,
+		`async function loadCollection(id){activeCollection=id||'';document.getElementById('q').value='';imageSearchGeneration++;imageSearchReference='';imageSearchPolls=0;load()}`,
 		`activeCollection='';load();syncURL();return`,
 	} {
 		if !strings.Contains(page, site) {
