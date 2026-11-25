@@ -373,7 +373,13 @@ func (s *Server) requireAgentOrAdmin(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) createWorkerPairing(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	pairing, err := s.service.CreateWorkerPairing(r.Context(), 15*time.Minute)
+	var req struct {
+		Grants remote.WorkerGrants `json:"grants"`
+	}
+	if _, ok := decodeOptionalStrictJSON(w, r, &req, 8<<10); !ok {
+		return
+	}
+	pairing, err := s.service.CreateWorkerPairingWithGrants(r.Context(), 15*time.Minute, req.Grants)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1029,16 +1035,27 @@ type workerArtifactResponse struct {
 	SizeBytes    int64  `json:"size_bytes"`
 }
 
+func allowWorkerArtifactTransfer(w http.ResponseWriter) {
+	// The request still has a byte ceiling and a live Worker lease. Override
+	// the short server deadlines for this large, authenticated transfer.
+	end := time.Now().Add(30 * time.Minute)
+	controller := http.NewResponseController(w)
+	_ = controller.SetReadDeadline(end)
+	_ = controller.SetWriteDeadline(end)
+}
+
 func (s *Server) workerUploadArtifactMultipart(w http.ResponseWriter, r *http.Request) {
 	worker, ok := s.authenticatedWorker(w, r)
 	if !ok {
 		return
 	}
+	allowWorkerArtifactTransfer(w)
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<30+1<<20)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid artifact multipart body"})
 		return
 	}
+	defer r.MultipartForm.RemoveAll()
 	artifactType := strings.TrimSpace(r.FormValue("type"))
 	profileHash := strings.TrimSpace(r.FormValue("profile_hash"))
 	file, header, err := r.FormFile("artifact")
@@ -1060,6 +1077,7 @@ func (s *Server) workerUploadArtifactRaw(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	allowWorkerArtifactTransfer(w)
 	profileHash := strings.TrimSpace(r.URL.Query().Get("profile_hash"))
 	if profileHash == "" {
 		profileHash = strings.TrimSpace(r.URL.Query().Get("profile"))
@@ -2422,7 +2440,12 @@ func (s *Server) listCollectionAssets(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "not found", Action: "check_the_identifier"})
 		return
 	}
-	items, err := s.service.ListAssetCardsInCollection(r.Context(), r.PathValue("id"), parseInt(r.URL.Query().Get("limit"), 100), parseInt(r.URL.Query().Get("offset"), 0))
+	limit, offset, err := parseListPagination(r.URL.Query(), 100, legacyLimitMax)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: "invalid pagination", Action: "check_the_request"})
+		return
+	}
+	items, hasMore, err := s.service.ListAssetCardsInCollectionPage(r.Context(), r.PathValue("id"), limit, offset)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -2430,6 +2453,7 @@ func (s *Server) listCollectionAssets(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []domain.AssetCard{}
 	}
+	writeListPaginationHeaders(w, limit, offset, hasMore)
 	writeJSON(w, http.StatusOK, items)
 }
 

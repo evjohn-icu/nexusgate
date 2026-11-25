@@ -1,0 +1,53 @@
+# Opt-in inference Compose override.
+#
+# Layer on top of docker-compose.yml:
+#
+#   NEXUSGATE_MEDIA_ROOT=/path/to/footage \
+#     docker compose -f docker-compose.yml -f deploy/docker-compose.inference.yml up -d hub
+#
+# Both services switch to the `nexusgate:inference` image (build target
+# `inference`, see Dockerfile). The default image stays lean -- no Python
+# interpreter, no torch wheels -- and the default Compose file is unchanged;
+# inference is enabled only through this override. The Hub gets the locked CPU
+# environment through the NEXUSGATE_INFERENCE_* configuration, and the Worker
+# command gains the matching --inference-* flags. Nothing downloads weights at
+# runtime: model artifacts arrive through the Hub's hash-verified install path
+# (docs/v1.5/inference.md), each side keeping its own directory in its own
+# volume -- /var/lib/nexusgate/models for the Hub, /var/lib/nexusgate-worker/
+# models for the Worker.
+
+services:
+  hub:
+    image: nexusgate:inference
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: inference
+    environment:
+      NEXUSGATE_INFERENCE_ENABLED: "true"
+      NEXUSGATE_INFERENCE_PYTHON: /opt/nexusgate-venv/bin/python
+      NEXUSGATE_INFERENCE_MODULE_DIR: /opt/nexusgate
+      # The model directory defaults to <NEXUSGATE_DATA_DIR>/models, which is
+      # exactly /var/lib/nexusgate/models inside the Hub's own volume.
+      NEXUSGATE_INFERENCE_DEVICE: cpu
+
+  worker:
+    image: nexusgate:inference
+    command:
+      [
+        "worker",
+        "run",
+        "--config",
+        "/var/lib/nexusgate-worker/worker.json",
+        "--inference-python",
+        "/opt/nexusgate-venv/bin/python",
+        "--inference-module",
+        "/opt/nexusgate",
+        "--inference-device",
+        "cpu",
+        # Inside the Worker's own volume; defaults to the data directory's
+        # models path, spelled out here so the Hub and Worker layouts read
+        # side by side.
+        "--inference-models",
+        "/var/lib/nexusgate-worker/models",
+      ]

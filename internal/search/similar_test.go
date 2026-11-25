@@ -258,3 +258,32 @@ func TestSimilarFallbackFlow(t *testing.T) {
 		t.Fatalf("fallback Score = %v, want SemanticScore 0.7", fallback[0].Score)
 	}
 }
+
+// TestSimilarByTextReadsOnlyReturnedSpace: similar mode embeds the query and
+// scans the space the embedding batch reported, never another space's rows.
+func TestSimilarByTextReadsOnlyReturnedSpace(t *testing.T) {
+	store := &spaceRecordingStore{fakeEmbeddingStore: fakeEmbeddingStore{
+		embeddingRows: map[string][]ShotEmbeddingRow{
+			"text-space-v1:routed": {
+				{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "s-car", AssetID: "a1", Ordinal: 0, StartMS: 0, EndMS: 10_000, Description: "car crossing the street"}}, Model: "text-space-v1:routed", Vector: fakeVector32("car crossing the street", 4), SourceTextHash: "h1"},
+			},
+			"text-space-v1:other": {
+				{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "s-other", AssetID: "a2", Ordinal: 0, StartMS: 0, EndMS: 10_000, Description: "car crossing the street"}}, Model: "text-space-v1:other", Vector: fakeVector32("car crossing the street", 4), SourceTextHash: "h2"},
+			},
+		},
+	}}
+	opts := DefaultOptions()
+	opts.Embedder = &identifiedFakeEmbedder{dim: 4, space: "text-space-v1:routed"}
+	svc := NewService(store, opts)
+
+	candidates, err := svc.SimilarByText(context.Background(), "car", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].ShotID != "s-car" {
+		t.Fatalf("only the serving space's rows may be scored, got %+v", candidates)
+	}
+	if len(store.queried) != 1 || store.queried[0] != "text-space-v1:routed" {
+		t.Fatalf("read must name exactly the served space, got %v", store.queried)
+	}
+}

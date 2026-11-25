@@ -64,9 +64,9 @@ func TestSpeakerCommitEncryptsBeforePublishing(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile := domain.SpeakerProfile{ID: "profile-1", Generation: 1, State: "active", AssetID: "asset"}
-	if err := repo.CreateSpeakerProfile(ctx, profile, []domain.SpeakerProfileSource{{
+	if _, err := repo.CreateSpeakerProfileWithTasks(ctx, profile, []domain.SpeakerProfileSource{{
 		ProfileID: profile.ID, AssetID: "asset", DiarizationGenerationID: "diarization-1", LocalSpeakerID: "spk-1",
-	}}); err != nil {
+	}}, nil, 40, consent.Generation); err != nil {
 		t.Fatal(err)
 	}
 	request := domain.InferenceRequest{

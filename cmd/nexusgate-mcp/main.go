@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -57,6 +56,10 @@ func newHubClient() (*hubClient, error) {
 		// to an unpinned Hub identity over plaintext.
 		baseURL = "https://127.0.0.1:8787"
 	}
+	hubURL, err := url.Parse(baseURL)
+	if err != nil || hubURL.Hostname() == "" || hubURL.User != nil || hubURL.RawQuery != "" || hubURL.ForceQuery || hubURL.Fragment != "" || (hubURL.Scheme != "http" && hubURL.Scheme != "https") {
+		return nil, fmt.Errorf("NEXUSGATE_BASE_URL must be an HTTP or HTTPS base URL")
+	}
 	fingerprint := strings.TrimSpace(os.Getenv("NEXUSGATE_HUB_FINGERPRINT"))
 	if fingerprint != "" && !ValidFingerprint(fingerprint) {
 		return nil, fmt.Errorf("NEXUSGATE_HUB_FINGERPRINT must be a 64-character SHA-256 hex fingerprint")
@@ -78,10 +81,10 @@ func newHubClient() (*hubClient, error) {
 			},
 		}
 	}
-	if strings.HasPrefix(strings.ToLower(baseURL), "https://") && fingerprint == "" {
-		return nil, fmt.Errorf("NEXUSGATE_HUB_FINGERPRINT is not set: the Hub base URL is https (%s) and accepting an unpinned certificate would silently trust any attacker in the path; set NEXUSGATE_HUB_FINGERPRINT, or use an explicit loopback http:// base URL for TLS-off development", baseURL)
+	if hubURL.Scheme == "https" && fingerprint == "" {
+		return nil, fmt.Errorf("NEXUSGATE_HUB_FINGERPRINT is not set for the HTTPS Hub; set its SHA-256 certificate fingerprint or use an explicit loopback HTTP URL for local development")
 	}
-	if strings.HasPrefix(strings.ToLower(baseURL), "http://") && !httpAllowedForLocalDevelopment(hostFromBaseURL(baseURL)) {
+	if hubURL.Scheme == "http" && !httpAllowedForLocalDevelopment(hubURL.Hostname()) {
 		return nil, fmt.Errorf("NEXUSGATE_BASE_URL is http:// and the host is not loopback or link-local: refusing to send the agent token in cleartext to a remote Hub; use https://")
 	}
 	return &hubClient{
@@ -91,16 +94,6 @@ func newHubClient() (*hubClient, error) {
 	}, nil
 }
 
-// hostFromBaseURL returns the host portion (with any port) of a base URL, or
-// "" when the URL does not parse.
-func hostFromBaseURL(baseURL string) string {
-	u, err := url.Parse(baseURL)
-	if err != nil {
-		return ""
-	}
-	return u.Host
-}
-
 // httpAllowedForLocalDevelopment reports whether an http:// Hub base URL may
 // carry the agent token in cleartext: only loopback (127.0.0.0/8, ::1, plus
 // the "localhost" hostname) and link-local (169.254.0.0/16, fe80::/10)
@@ -108,31 +101,15 @@ func hostFromBaseURL(baseURL string) string {
 // https with a pinned fingerprint, matching the worker CLI's https-only
 // enrollment stance.
 func httpAllowedForLocalDevelopment(host string) bool {
-	if host == "" {
-		return false
+	if strings.EqualFold(host, "localhost") {
+		return true
 	}
 	addr, err := netip.ParseAddr(host)
 	if err != nil {
-		h, _, err := net.SplitHostPort(host)
-		if err != nil {
-			return false
-		}
-		addr, err = netip.ParseAddr(h)
-		if err != nil {
-			return strings.EqualFold(h, "localhost")
-		}
+		return false
 	}
-	for _, prefix := range []netip.Prefix{
-		netip.MustParsePrefix("127.0.0.0/8"),
-		netip.MustParsePrefix("::1/128"),
-		netip.MustParsePrefix("169.254.0.0/16"),
-		netip.MustParsePrefix("fe80::/10"),
-	} {
-		if prefix.Contains(addr) {
-			return true
-		}
-	}
-	return false
+	addr = addr.Unmap()
+	return addr.IsLoopback() || addr.IsLinkLocalUnicast()
 }
 
 // ValidFingerprint accepts only the canonical 64-character SHA-256 hex form.
@@ -538,7 +515,12 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 			mcp.WithNumber("limit", mcp.Description("Maximum number of shots (default 20)")),
 			mcp.WithNumber("offset", mcp.Description("Optional zero-based offset into the full result list for pagination (default 0)")),
 			mcp.WithString("filters", mcp.Description("Optional facet filters, as a JSON object or as a JSON object encoded in a string (both are accepted). Supported keys: asset_types, shot_sizes, camera_motions, audio_types, qualities, usable_as (each a JSON array of strings), min_duration_ms, max_duration_ms (integers). Example: '{\"asset_types\":[\"broll\"]}'. An unknown key is rejected with an error rather than ignored, because an ignored filter returns a wider result set that looks correct.")),
-			mcp.WithString("modalities", mcp.Description("Optional comma-separated channels to search in addition to the legacy ones: lexical,transcript,visual,audio,sound_event,speaker. A requested channel the Hub cannot serve returns a typed error, never a silently narrower result set.")),
+			mcp.WithAny("modalities", mcp.Description("Optional channels to search: lexical, transcript, visual, audio, sound_event, speaker. Accepts an array of channel names or a comma-separated string."), func(property map[string]any) {
+				property["anyOf"] = []map[string]any{
+					{"type": "array", "items": map[string]string{"type": "string"}},
+					{"type": "string"},
+				}
+			}),
 			mcp.WithString("reference_id", mcp.Description("Optional Hub-issued query-image reference id (from an admin upload). Local image paths are never accepted.")),
 			mcp.WithString("visual_shot_id", mcp.Description("Optional shot id to restrict visual matching to one canonical shot")),
 			mcp.WithString("temporal", mcp.Description("Optional temporal query as a JSON object (conditions + predicates) or a JSON object encoded in a string. Relations: simultaneous, before, after, during, starts_within, ends_within. A before/after predicate requires max_gap_ms.")),
@@ -657,19 +639,53 @@ func registerTools(srv *server.MCPServer, client *hubClient) {
 // temporal object is an error, not a query that quietly loses its constraint.
 func parseSearchOptions(args map[string]any) (searchOptions, error) {
 	var options searchOptions
-	if raw, ok := args["modalities"].(string); ok && strings.TrimSpace(raw) != "" {
-		for _, value := range strings.Split(raw, ",") {
-			value = strings.TrimSpace(value)
-			if value != "" {
-				options.Modalities = append(options.Modalities, value)
+	appendModality := func(value string) error {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return fmt.Errorf("modalities array entries must be nonempty strings")
+		}
+		options.Modalities = append(options.Modalities, value)
+		return nil
+	}
+	if raw, present := args["modalities"]; present {
+		switch values := raw.(type) {
+		case string:
+			for _, value := range strings.Split(values, ",") {
+				if value = strings.TrimSpace(value); value != "" {
+					options.Modalities = append(options.Modalities, value)
+				}
 			}
+		case []string:
+			for _, value := range values {
+				if err := appendModality(value); err != nil {
+					return searchOptions{}, err
+				}
+			}
+		case []any:
+			for _, entry := range values {
+				value, ok := entry.(string)
+				if !ok {
+					return searchOptions{}, fmt.Errorf("modalities array entries must be strings")
+				}
+				if err := appendModality(value); err != nil {
+					return searchOptions{}, err
+				}
+			}
+		default:
+			return searchOptions{}, fmt.Errorf("modalities must be an array or a comma-separated string")
 		}
 	}
-	if raw, ok := args["reference_id"].(string); ok {
-		options.ReferenceID = strings.TrimSpace(raw)
-	}
-	if raw, ok := args["visual_shot_id"].(string); ok {
-		options.VisualShotID = strings.TrimSpace(raw)
+	for _, selector := range []struct {
+		name string
+		dest *string
+	}{{"reference_id", &options.ReferenceID}, {"visual_shot_id", &options.VisualShotID}} {
+		if raw, present := args[selector.name]; present {
+			value, ok := raw.(string)
+			if !ok {
+				return searchOptions{}, fmt.Errorf("%s must be a string", selector.name)
+			}
+			*selector.dest = strings.TrimSpace(value)
+		}
 	}
 	if raw, present := args["temporal"]; present && raw != nil {
 		switch value := raw.(type) {
@@ -680,6 +696,9 @@ func parseSearchOptions(args map[string]any) (searchOptions, error) {
 			var decoded map[string]any
 			if err := json.Unmarshal([]byte(value), &decoded); err != nil {
 				return searchOptions{}, fmt.Errorf("temporal must be a JSON object: %w", err)
+			}
+			if decoded == nil {
+				return searchOptions{}, fmt.Errorf("temporal must be a JSON object")
 			}
 			options.Temporal = decoded
 		case map[string]any:

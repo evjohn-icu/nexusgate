@@ -162,20 +162,6 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		// The supervisor gets its own cancel rather than only the signal
-		// context: a listen failure returns from Run without the signal ever
-		// firing, and `serve` must not then block forever joining a loop that
-		// nothing will ever stop.
-		supervisorCtx, stopSupervisor := context.WithCancel(ctx)
-		defer stopSupervisor()
-		service.SetPipelineContext(ctx)
-		supervisorDone := make(chan struct{})
-		go func() {
-			defer close(supervisorDone)
-			if err := service.RunLibrarySupervisor(supervisorCtx); err != nil {
-				slog.Error("library supervisor stopped", "error", err)
-			}
-		}()
 		if status := service.LibrarySupervisorStatus(); status.Enabled {
 			fmt.Printf("Library supervisor: rescanning every root every %s\n", (time.Duration(status.IntervalSeconds) * time.Second).String())
 		}
@@ -190,47 +176,7 @@ func run() error {
 				stop()
 			}()
 		}
-		if *readyFile != "" {
-			listener, err := net.Listen("tcp", *addr)
-			if err != nil {
-				return fmt.Errorf("bind desktop listener: %w", err)
-			}
-			fingerprint, err := certificateFingerprint(certificate)
-			if err != nil {
-				listener.Close()
-				return err
-			}
-			payload, err := json.Marshal(map[string]any{
-				"url":         "https://" + listener.Addr().String(),
-				"fingerprint": fingerprint,
-				"pid":         os.Getpid(),
-			})
-			if err != nil {
-				listener.Close()
-				return err
-			}
-			if err := writeReadyFile(*readyFile, payload); err != nil {
-				listener.Close()
-				return err
-			}
-			serveErr := server.RunListener(ctx, listener)
-			if serveErr != nil && !errors.Is(serveErr, context.Canceled) {
-				return serveErr
-			}
-			return nil
-		}
-		serveErr := server.Run(ctx)
-		// A listen failure does not cancel the signal context. Cancel it here as
-		// well so background Pipeline work cannot outlive the failed server.
-		stop()
-		// Joined, not abandoned: the supervisor may be mid-pass, and the point
-		// of running the pipeline inline in it is that this wait is what makes
-		// "the process exited" mean "no job and no Provider call is still
-		// running".
-		stopSupervisor()
-		<-supervisorDone
-		service.WaitPipeline()
-		return serveErr
+		return serveHub(ctx, service, server, *addr, certificate, *readyFile)
 
 	case "root":
 		if len(os.Args) < 3 {
@@ -257,6 +203,9 @@ func run() error {
 			// a crashed process before the pipeline can lease or reclaim.
 			if err := service.HealOnStartup(ctx); err != nil {
 				slog.Warn("self-heal sweep failed; stale running jobs will be reclaimed on the next lease attempt", "error", err)
+			}
+			if err := service.DrainBiometricPurge(ctx); err != nil {
+				slog.Warn("biometric purge recovery incomplete", "error", err)
 			}
 			// A separate pipeline process must attach the same local runtime as
 			// serve; otherwise inference jobs are never leasable by it and wait
@@ -359,6 +308,57 @@ func run() error {
 	}
 }
 
+type servingHubTasks interface {
+	SetPipelineContext(context.Context)
+	RunLibrarySupervisor(context.Context) error
+	StartServingMaintenance(context.Context) func()
+	WaitPipeline()
+}
+
+func serveHub(ctx context.Context, tasks servingHubTasks, server *api.Server, address, certificate, readyFile string) error {
+	serveCtx, stopServing := context.WithCancel(ctx)
+	tasks.SetPipelineContext(serveCtx)
+	supervisorDone := make(chan struct{})
+	go func() {
+		defer close(supervisorDone)
+		if err := tasks.RunLibrarySupervisor(serveCtx); err != nil {
+			slog.Error("library supervisor stopped", "error", err)
+		}
+	}()
+	stopMaintenance := tasks.StartServingMaintenance(serveCtx)
+	defer func() {
+		stopServing()
+		<-supervisorDone
+		stopMaintenance()
+		tasks.WaitPipeline()
+	}()
+	if readyFile == "" {
+		return server.Run(serveCtx)
+	}
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return fmt.Errorf("bind desktop listener: %w", err)
+	}
+	defer listener.Close()
+	fingerprint, err := certificateFingerprint(certificate)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(map[string]any{
+		"url": "https://" + listener.Addr().String(), "fingerprint": fingerprint, "pid": os.Getpid(),
+	})
+	if err != nil {
+		return err
+	}
+	if err := writeReadyFile(readyFile, payload); err != nil {
+		return err
+	}
+	if err := server.RunListener(serveCtx, listener); err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+	return nil
+}
+
 // detectContainer reports whether this process is running inside a container.
 // It uses the cheap, dependency-free checks: the presence of /.dockerenv, or a
 // cgroup hierarchy naming docker/containerd. The result only feeds
@@ -401,7 +401,7 @@ func attachLocalInference(ctx context.Context, service *app.Service, cfg config.
 		ResolveAssetPath: func(input domain.InferenceInput) (string, error) {
 			return service.ResolveInferenceAssetPath(ctx, input)
 		},
-		ResolveImagePath: func(referenceID, digest string) (string, error) {
+		ResolveImagePath: func(ctx context.Context, referenceID, digest string) (string, error) {
 			return service.ResolveInferenceImagePath(ctx, referenceID, digest)
 		},
 	})
@@ -654,6 +654,9 @@ func runWorkerCommand(cfg config.Config) error {
 		if !strings.HasPrefix(strings.ToLower(*hub), "https://") {
 			return errors.New("Worker enrollment requires an https Hub URL")
 		}
+		if err := worker.PrepareConfigPath(*configPath); err != nil {
+			return err
+		}
 		report, _ := media.DetectHardware(context.Background(), media.HardwareConfig{Mode: "auto", AllowFallback: true})
 		capabilities := remote.WorkerCapabilities{Proxy: report.FFmpegFound, Thumbnail: report.FFmpegFound, AudioExtract: report.FFmpegFound, MaxParallelProxyJobs: 1, MaxProxyHeight: 720, SpeedClass: "standard", Hardware: report.SelectedBackends()}
 		if runtime.GOARCH == "arm64" {
@@ -688,6 +691,7 @@ func runWorkerCommand(cfg config.Config) error {
 		if err != nil {
 			return err
 		}
+		registration.Capabilities = enrollment.Worker.Capabilities
 		if strings.TrimSpace(*cacheDir) == "" {
 			*cacheDir = filepath.Join(filepath.Dir(*configPath), "cache")
 		}
@@ -707,7 +711,7 @@ func runWorkerCommand(cfg config.Config) error {
 		fs := flag.NewFlagSet("worker run", flag.ContinueOnError)
 		configPath := fs.String("config", defaultWorkerConfigPath(), "worker config path")
 		tray := fs.Bool("tray", false, "show a notification-area icon with a settings link and a quit item (Windows)")
-		inferencePython := fs.String("inference-python", "", "locked Python interpreter for local inference (empty: derive-only Worker)")
+		inferencePython := fs.String("inference-python", "", "locked Python interpreter for Worker inference")
 		inferenceModule := fs.String("inference-module", "", "directory containing the inference Python package")
 		inferenceModels := fs.String("inference-models", "", "locked model directory")
 		inferenceDevice := fs.String("inference-device", "auto", "auto, cpu or cuda")
@@ -732,6 +736,13 @@ func runWorkerCommand(cfg config.Config) error {
 		capabilities := worker.MergeDetectedCapabilities(config.Registration.Capabilities, hardwareReport)
 		deriver := worker.NewFFmpegDeriver(plan).WithPreviewLUT(config.PreviewLUTPath)
 		runtime := worker.NewRuntime(client, config, deriver, capabilities)
+		var modelExecutor app.InferenceExecutor
+		if *inferenceModels == "" && *inferenceModule != "" {
+			*inferenceModels, err = filepath.Abs(filepath.Join(filepath.Dir(*configPath), "models"))
+			if err != nil {
+				return err
+			}
+		}
 		if strings.TrimSpace(*inferencePython) != "" {
 			executor, err := localinference.New(localinference.Config{
 				PythonPath: *inferencePython,
@@ -743,15 +754,26 @@ func runWorkerCommand(cfg config.Config) error {
 				ResolveAssetPath: func(input domain.InferenceInput) (string, error) {
 					return config.ResolveSourcePath(input.RootID, input.RelativePath)
 				},
-				ResolveImagePath: func(referenceID, digest string) (string, error) {
-					return "", fmt.Errorf("worker image inputs require the lease-bound fetch, which this runtime does not perform")
-				},
+				ResolveImagePath: worker.ResolveInferenceImage,
 			})
 			if err != nil {
-				slog.Warn("local inference runtime unavailable; continuing derive-only", "error", err)
+				slog.Warn("Worker inference runtime unavailable", "error", err)
 			} else {
 				runtime = runtime.WithInferenceExecutor(executor)
+				modelExecutor = executor
 				fmt.Printf("Inference runtime: %s (%s/%s)\n", *inferencePython, *inferenceDevice, *inferenceDtype)
+			}
+		}
+		if *inferenceModule != "" && *inferenceModels != "" {
+			lockPath := filepath.Join(*inferenceModule, "inference", "models.lock.json")
+			if _, err := os.Stat(lockPath); errors.Is(err, os.ErrNotExist) {
+				lockPath = filepath.Join(*inferenceModule, "models.lock.json")
+			}
+			manager, err := app.NewLocalModelManager(lockPath, *inferenceModels, modelExecutor)
+			if err != nil {
+				slog.Warn("Worker model manager unavailable", "error", err)
+			} else {
+				runtime.WithModelManager(manager)
 			}
 		}
 		if !*tray {

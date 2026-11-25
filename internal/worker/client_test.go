@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/evjohn-icu/nexusgate/internal/apiclient"
 	"github.com/evjohn-icu/nexusgate/internal/credentials"
@@ -769,5 +770,272 @@ func TestClientSubmitInferenceResultTreatsCommittedRetryAsSuccess(t *testing.T) 
 	})
 	if err != nil {
 		t.Fatalf("already-committed retry = %v", err)
+	}
+}
+
+// pacedBody slows every chunk boundary so an upload exchange lasts long past
+// a tiny timeout while still making steady progress — the miniature of a
+// real NAS-streamed derived file.
+type pacedBody struct {
+	io.ReadCloser
+	chunk int
+	delay time.Duration
+	since int
+}
+
+func (p *pacedBody) Read(buf []byte) (int, error) {
+	if p.since >= p.chunk {
+		time.Sleep(p.delay)
+		p.since = 0
+	}
+	n, err := p.ReadCloser.Read(buf)
+	p.since += n
+	return n, err
+}
+
+// TestUploadArtifactOutlivesControlTimeout proves the upload does not ride
+// the 30-second control client: with the control timeout shrunk to 10ms, a
+// delayed but continuously progressing localhost upload still succeeds
+// because it streams through the separate 30-minute upload client.
+func TestUploadArtifactOutlivesControlTimeout(t *testing.T) {
+	const artifactSize = 1 << 20
+	artifactPath := filepath.Join(t.TempDir(), "proxy.mp4")
+	artifact := make([]byte, artifactSize)
+	for i := range artifact {
+		artifact[i] = byte(i)
+	}
+	if err := os.WriteFile(artifactPath, artifact, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotProfile, gotType string
+	var payloadDigest [sha256.Size]byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/worker/jobs/job-1/artifacts" {
+			t.Errorf("unexpected upload path: %s", r.URL.Path)
+			return
+		}
+		// Pace every 32 KiB by 10ms: ~320ms total, far above the neutered
+		// control timeout below, far below the upload lifetime.
+		r.Body = struct {
+			io.Reader
+			io.Closer
+		}{&pacedBody{ReadCloser: r.Body, chunk: 32 << 10, delay: 10 * time.Millisecond}, r.Body}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("multipart parse failed: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		gotType = r.FormValue("type")
+		gotProfile = r.FormValue("profile_hash")
+		file, _, err := r.FormFile("artifact")
+		if err != nil {
+			t.Errorf("artifact part missing: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+		payloadDigest = sha256.Sum256(mustReadAll(file))
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	// Shrink the control timeout so any upload still bound to the control
+	// client cannot survive the paced exchange.
+	client.http = &http.Client{Transport: client.http.Transport, Timeout: 10 * time.Millisecond}
+
+	err := client.UploadArtifact(context.Background(), "worker-token", "job-1", ArtifactUpload{Type: "proxy", ProfileHash: "proxy-v1", Path: artifactPath})
+	if err != nil {
+		t.Fatalf("delayed but progressing upload failed: %v", err)
+	}
+	if gotType != "proxy" || gotProfile != "proxy-v1" {
+		t.Fatalf("upload metadata type=%q profile=%q", gotType, gotProfile)
+	}
+	if payloadDigest != sha256.Sum256(artifact) {
+		t.Fatal("uploaded artifact bytes do not match the source file")
+	}
+}
+
+func mustReadAll(r io.Reader) []byte {
+	data, _ := io.ReadAll(r)
+	return data
+}
+
+// TestClientUploadAndControlClientsSharePinnedTransport locks the transport
+// topology: artifact uploads use the same pinned transport as the control
+// client, with the 30-minute upload lifetime replacing the 30-second control
+// timeout, and control timeout/redirect behavior untouched.
+func TestClientUploadAndControlClientsSharePinnedTransport(t *testing.T) {
+	client := NewClient("https://hub.example", strings.Repeat("ab", 32))
+	if client.http.Timeout != 30*time.Second {
+		t.Fatalf("control timeout = %v, want 30s", client.http.Timeout)
+	}
+	if client.upload.Timeout != 30*time.Minute {
+		t.Fatalf("upload timeout = %v, want 30m", client.upload.Timeout)
+	}
+	if client.upload.Transport != client.http.Transport {
+		t.Fatal("upload client must share the control client's pinned transport")
+	}
+	// The same topology holds without a fingerprint: same transport object.
+	unpinned := NewClient("https://hub.example", "")
+	if unpinned.upload.Transport != unpinned.http.Transport {
+		t.Fatal("unpinned upload client must share the control transport")
+	}
+}
+
+// TestUploadArtifactCancelsWriterAndRequestMidStream cancels an upload while
+// the Hub holds the connection without consuming the stream. UploadArtifact
+// must return promptly with a context error, which also proves the multipart
+// writer goroutine was closed and joined: the call joins it on every return.
+func TestUploadArtifactCancelsWriterAndRequestMidStream(t *testing.T) {
+	artifactPath := filepath.Join(t.TempDir(), "large.bin")
+	if err := os.WriteFile(artifactPath, make([]byte, 4<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	released := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Consume a little so the request is live mid-stream, then hold
+		// without reading until the test finishes cancelling the Worker.
+		buf := make([]byte, 64<<10)
+		for range 2 {
+			if _, err := r.Body.Read(buf); err != nil {
+				break
+			}
+		}
+		close(started)
+		<-released
+	}))
+	defer server.Close()
+	// LIFO: release the handler before server.Close waits on it.
+	defer close(released)
+
+	client := NewClient(server.URL, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- client.UploadArtifact(ctx, "worker-token", "job-1", ArtifactUpload{Type: "proxy", ProfileHash: "proxy-v1", Path: artifactPath})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("upload never reached the Hub")
+	}
+	// Let the writer stream some more so cancellation lands mid-flight.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected the cancelled upload to fail")
+		}
+		if !strings.Contains(strings.ToLower(err.Error()), "context") {
+			t.Fatalf("cancellation error should mention the context, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("UploadArtifact did not return after cancellation: request or multipart writer still running")
+	}
+}
+
+// TestUploadArtifactRetainsCertificatePinning checks that the upload client
+// still enforces the pinned fingerprint even though it uses a separate
+// client with its own lifetime.
+func TestUploadArtifactRetainsCertificatePinning(t *testing.T) {
+	artifactPath := filepath.Join(t.TempDir(), "thumb.jpg")
+	if err := os.WriteFile(artifactPath, []byte("thumbnail-bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	sum := sha256.Sum256(server.Certificate().Raw)
+	fingerprint := hex.EncodeToString(sum[:])
+
+	if err := NewClient(server.URL, fingerprint).UploadArtifact(context.Background(), "worker-token", "job-1", ArtifactUpload{Type: "thumbnail", ProfileHash: "thumb-software-v1", Path: artifactPath}); err != nil {
+		t.Fatalf("upload rejected the matching fingerprint: %v", err)
+	}
+	if err := NewClient(server.URL, strings.Repeat("a", 64)).UploadArtifact(context.Background(), "worker-token", "job-1", ArtifactUpload{Type: "thumbnail", ProfileHash: "thumb-software-v1", Path: artifactPath}); err == nil || !strings.Contains(err.Error(), "fingerprint") {
+		t.Fatalf("upload ignored the certificate pin: %v", err)
+	}
+}
+
+// TestClientFetchesBoundInferenceInputWithTypedErrors covers the authenticated
+// GET /api/v1/worker/jobs/{id}/input lease-input endpoint: method, bearer
+// auth, returned bytes, and the Hub error envelope decoded into a typed
+// *apiclient.Error for lease loss and unbound inputs.
+func TestClientFetchesBoundInferenceInputWithTypedErrors(t *testing.T) {
+	payload := []byte("query-image-bytes")
+	digest := sha256.Sum256(payload)
+	var gotMethod, gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		switch r.URL.Path {
+		case "/api/v1/worker/jobs/job-1/input":
+			gotAuth = r.Header.Get("Authorization")
+			w.Header().Set("X-Content-Digest", "sha256:"+hex.EncodeToString(digest[:]))
+			_, _ = w.Write(payload)
+		case "/api/v1/worker/jobs/job-2/input":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":{"code":"lease_lost","message":"inference lease is no longer held by this worker","retryable":true,"action":"reacquire_lease"}}`))
+		case "/api/v1/worker/jobs/job-3/input":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"no input is bound to this job"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, "")
+	ctx := context.Background()
+
+	body, err := client.FetchInferenceInput(ctx, "worker-token", "job-1")
+	if err != nil {
+		t.Fatalf("input fetch failed: %v", err)
+	}
+	if gotMethod != http.MethodGet || gotAuth != "Bearer worker-token" {
+		t.Fatalf("input request method=%q auth=%q", gotMethod, gotAuth)
+	}
+	if string(body) != "query-image-bytes" {
+		t.Fatalf("input body = %q", body)
+	}
+
+	_, err = client.FetchInferenceInput(ctx, "worker-token", "job-2")
+	var apiErr *apiclient.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("lease-lost fetch error = %T, want *apiclient.Error", err)
+	}
+	if apiErr.StatusCode != http.StatusConflict || apiErr.Code != "lease_lost" || !apiErr.Retryable || apiErr.Action != "reacquire_lease" {
+		t.Fatalf("lease-lost envelope = %+v", apiErr)
+	}
+
+	_, err = client.FetchInferenceInput(ctx, "worker-token", "job-3")
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("unbound-input fetch error = %T, want *apiclient.Error", err)
+	}
+	if apiErr.StatusCode != http.StatusNotFound || apiErr.Code != "not_found" {
+		t.Fatalf("unbound-input envelope = %+v", apiErr)
+	}
+}
+
+// TestClientFetchInferenceInputRejectsOversizedBody bounds the response read
+// at the Hub's lease-input ceiling, so a misbehaving response cannot make the
+// Worker allocate without bound.
+func TestClientFetchInferenceInputRejectsOversizedBody(t *testing.T) {
+	oversized := make([]byte, maxInferenceInputBytes+2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(oversized)
+	}))
+	defer server.Close()
+
+	_, err := NewClient(server.URL, "").FetchInferenceInput(context.Background(), "worker-token", "job-1")
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized inference input error = %v, want the lease-input bound message", err)
 	}
 }

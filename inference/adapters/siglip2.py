@@ -19,6 +19,10 @@ class Siglip2Adapter:
             self.context.stage(0.18, "model_loaded")
         return self._loaded
 
+    def load(self) -> None:
+        """Load-only probe hook: verify paths and load without running inference."""
+        self._model()
+
     def infer(self, request: Mapping[str, Any]) -> dict[str, Any]:
         torch, model, processor = self._model()
         source = request["input"]

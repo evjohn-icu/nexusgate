@@ -219,6 +219,12 @@ func validSpeakerFilter(filter SpeakerFilter) bool {
 func nonblank(value string) bool { return strings.TrimSpace(value) != "" }
 
 // ModalityWindow is one matching timeline record returned by a modality store.
+// A window may be joined to a canonical shot: audio windows, sound events and
+// speaker turns span real shot intervals, so the store returns one window per
+// (record, overlapping shot) pair. StartMS/EndMS keep the record's own
+// interval as match evidence; ShotStartMS/ShotEndMS carry the canonical shot
+// bounds when a join produced the pair (zero when the record is its own shot,
+// e.g. pooled visual frames).
 type ModalityWindow struct {
 	AssetID        string   `json:"asset_id"`
 	ShotID         string   `json:"shot_id"`
@@ -226,6 +232,8 @@ type ModalityWindow struct {
 	Modality       string   `json:"modality"`
 	StartMS        int64    `json:"start_ms"`
 	EndMS          int64    `json:"end_ms"`
+	ShotStartMS    int64    `json:"shot_start_ms,omitempty"`
+	ShotEndMS      int64    `json:"shot_end_ms,omitempty"`
 	Score          float64  `json:"score"`
 	Label          string   `json:"label,omitempty"`
 	EvidenceStatus string   `json:"evidence_status,omitempty"`
@@ -276,32 +284,39 @@ func (r *ModalityRetriever) Name() string {
 }
 
 func (r *ModalityRetriever) Retrieve(ctx context.Context, query SearchQuery, limit int) ([]Candidate, error) {
-	candidates, _, err := r.RetrieveWithWindows(ctx, query, limit)
+	candidates, _, _, err := r.RetrieveWithWindows(ctx, query, limit)
 	return candidates, err
 }
 
-// RetrieveWithWindows returns one maximum-score candidate per shot and every
-// fetched matching interval for those returned shots. The interval list stays
-// one record per matching window, including multiple records from one shot.
-func (r *ModalityRetriever) RetrieveWithWindows(ctx context.Context, query SearchQuery, limit int) ([]Candidate, []ModalityWindow, error) {
+// RetrieveWithWindows returns one maximum-score candidate per shot, every
+// fetched matching interval for those returned shots, and whether the storage
+// pool was truncated. The interval list stays one record per matching window,
+// including multiple records from one shot.
+//
+// Truncation is honest storage truncation, not candidate-count truncation: the
+// retriever asks the store for limit+1 rows, discards the probe row, and
+// reports truncated=true when the store returned it. One shot with many
+// matching windows therefore still reports a truncated pool. limit<=0
+// retrieves the complete pool and never truncates.
+func (r *ModalityRetriever) RetrieveWithWindows(ctx context.Context, query SearchQuery, limit int) ([]Candidate, []ModalityWindow, bool, error) {
 	if r == nil || r.Store == nil {
-		return nil, nil, errors.New("search: modality store not wired")
+		return nil, nil, false, errors.New("search: modality store not wired")
 	}
 	if !isRetrievableModality(r.Modality) {
-		return nil, nil, fmt.Errorf("search: modality %q is not a multimodal retrieval channel", r.Modality)
+		return nil, nil, false, fmt.Errorf("search: modality %q is not a multimodal retrieval channel", r.Modality)
 	}
 	if limit == 0 {
-		return []Candidate{}, []ModalityWindow{}, nil
+		return []Candidate{}, []ModalityWindow{}, false, nil
 	}
 	labels := []string(nil)
 	if r.Modality == ModalitySoundEvent {
 		labels = soundEventLabels(query.Raw, r.SoundLabels)
 		if len(labels) == 0 {
-			return []Candidate{}, []ModalityWindow{}, nil
+			return []Candidate{}, []ModalityWindow{}, false, nil
 		}
 	}
 	if (r.Modality == ModalityVisual || r.Modality == ModalityAudio) && (r.SpaceID == "" || len(r.Vector) == 0) {
-		return nil, nil, fmt.Errorf("search: %s retrieval requires a space ID and query vector", r.Modality)
+		return nil, nil, false, fmt.Errorf("search: %s retrieval requires a space ID and query vector", r.Modality)
 	}
 	var err error
 	var universe map[string]bool
@@ -310,25 +325,35 @@ func (r *ModalityRetriever) RetrieveWithWindows(ctx context.Context, query Searc
 	} else {
 		universe, err = r.Store.FilteredShotUniverse(ctx, query.Filters.Facets, query.Filters.AssetFilter)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, false, err
 		}
+	}
+	probeLimit := limit
+	if probeLimit > 0 {
+		// One extra row proves whether the pool was cut without inflating the
+		// returned window set.
+		probeLimit = limit + 1
 	}
 	var windows []ModalityWindow
 	switch r.Modality {
 	case ModalityVisual:
-		windows, err = r.Store.VisualWindows(ctx, r.SpaceID, r.Vector, universe, limit)
+		windows, err = r.Store.VisualWindows(ctx, r.SpaceID, r.Vector, universe, probeLimit)
 	case ModalityAudio:
-		windows, err = r.Store.AudioWindows(ctx, r.SpaceID, r.Vector, universe, limit)
+		windows, err = r.Store.AudioWindows(ctx, r.SpaceID, r.Vector, universe, probeLimit)
 	case ModalitySoundEvent:
-		windows, err = r.Store.SoundEvents(ctx, labels, universe, limit)
+		windows, err = r.Store.SoundEvents(ctx, labels, universe, probeLimit)
 	case ModalitySpeaker:
-		windows, err = r.Store.SpeakerTurns(ctx, r.SpeakerFilter, universe, limit)
+		windows, err = r.Store.SpeakerTurns(ctx, r.SpeakerFilter, universe, probeLimit)
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
+	}
+	truncated := limit > 0 && len(windows) > limit
+	if truncated {
+		windows = windows[:limit]
 	}
 	candidates, matchingWindows := deduplicateModalityWindows(windows, r.Modality, limit)
-	return candidates, matchingWindows, nil
+	return candidates, matchingWindows, truncated, nil
 }
 
 func isRetrievableModality(modality string) bool {
@@ -354,11 +379,17 @@ func deduplicateModalityWindows(windows []ModalityWindow, modality string, limit
 	candidates := make([]Candidate, 0, len(bestByShot))
 	for shotID, window := range bestByShot {
 		signal := modality
+		// Candidate bounds are the canonical shot bounds, never a matching
+		// window subinterval: a result must describe the shot it claims.
+		startMS, endMS := window.StartMS, window.EndMS
+		if window.ShotStartMS > 0 || window.ShotEndMS > 0 {
+			startMS, endMS = window.ShotStartMS, window.ShotEndMS
+		}
 		candidates = append(candidates, Candidate{
 			ShotID:  shotID,
 			AssetID: window.AssetID,
-			StartMS: window.StartMS,
-			EndMS:   window.EndMS,
+			StartMS: startMS,
+			EndMS:   endMS,
 			Signals: map[string]float64{signal: window.Score},
 			Score:   window.Score,
 		})

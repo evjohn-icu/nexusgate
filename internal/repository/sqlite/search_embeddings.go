@@ -13,12 +13,18 @@ import (
 )
 
 // Text-embedding storage. These rows are the derived retrieval layer (see the
-// migration's doc comment): rebuildable from canonical shot text, replaceable
-// by model. Vectors are float32 little-endian blobs because embedding
-// dimensions make JSON storage too slow for a full-library cosine scan.
+// migration's doc comment): rebuildable from canonical shot text, keyed by
+// (shot_id, space). The `model` column carries the text-space identity —
+// `text-space-v1:` + SHA-256 of the backend tuple — of the backend that
+// actually produced a vector, never a display name. Vectors are float32
+// little-endian blobs because embedding dimensions make JSON storage too slow
+// for a full-library cosine scan.
 
-// UpsertShotTextEmbeddings writes the batch under each row's model,
-// replacing any prior vector for the same shot.
+// UpsertShotTextEmbeddings writes the batch under each row's space (the
+// `model` column carries the text-space identity, not a display name),
+// replacing any prior vector for the same (shot, space) pair. Rows of other
+// spaces — a fallback backend's vectors — are never touched: one shot can
+// legitimately carry one vector per space.
 func (r *Repository) UpsertShotTextEmbeddings(ctx context.Context, rows []search.ShotEmbeddingRow) error {
 	if len(rows) == 0 {
 		return nil
@@ -29,7 +35,7 @@ func (r *Repository) UpsertShotTextEmbeddings(ctx context.Context, rows []search
 		return err
 	}
 	defer tx.Rollback()
-	stmt, err := tx.PrepareContext(ctx, `INSERT INTO shot_text_embeddings(shot_id,model,vector_blob,source_text_hash,created_at) VALUES(?,?,?,?,?) ON CONFLICT(shot_id) DO UPDATE SET model=excluded.model,vector_blob=excluded.vector_blob,source_text_hash=excluded.source_text_hash,created_at=excluded.created_at`)
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO shot_text_embeddings(shot_id,model,vector_blob,source_text_hash,created_at) VALUES(?,?,?,?,?) ON CONFLICT(shot_id,model) DO UPDATE SET vector_blob=excluded.vector_blob,source_text_hash=excluded.source_text_hash,created_at=excluded.created_at`)
 	if err != nil {
 		return err
 	}
@@ -45,11 +51,17 @@ func (r *Repository) UpsertShotTextEmbeddings(ctx context.Context, rows []search
 	return tx.Commit()
 }
 
-// ListShotTextEmbeddings returns every vector of one model joined with its
-// full shot row, in deterministic (shot_id) order, for the engine's cosine
-// scan. The model filter is the replacement boundary: vectors written under a
-// superseded model never get scored against a query embedded by the current
-// one.
+// ListShotTextEmbeddings returns every usable vector of one space joined with
+// its full shot row, in deterministic (shot_id) order, for the engine's
+// cosine scan. The space filter is the replacement boundary: vectors written
+// under another space are never scored against a query embedded by this one.
+//
+// Rows whose source_text_hash no longer matches the shot's CURRENT derived
+// text are dropped here, not scored as zero: with primary and fallback
+// spaces both persisted, a stale row in either space must never resurrect a
+// vector of an old shot description — the hash is what proves the vector
+// still describes the text that is on disk now. The rebuild paths read the
+// same method, so a stale row also reads as "this shot needs re-embedding".
 func (r *Repository) ListShotTextEmbeddings(ctx context.Context, model string) ([]search.ShotEmbeddingRow, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),''),e.model,e.vector_blob,e.source_text_hash FROM shot_text_embeddings e JOIN asset_shots s ON s.id=e.shot_id WHERE e.model=? ORDER BY e.shot_id`, model)
 	if err != nil {
@@ -74,6 +86,21 @@ func (r *Repository) ListShotTextEmbeddings(ctx context.Context, model string) (
 		row.Vector, err = decodeVectorBlob(blob)
 		if err != nil {
 			return nil, fmt.Errorf("decode embedding for shot %s: %w", row.Shot.ID, err)
+		}
+		// The row is usable only if its hash still covers the text the shot
+		// projects right now; the same ShotTextSourceHash drives the
+		// incremental rebuild, so the read filter and the rebuild trigger can
+		// never disagree.
+		doc := search.ShotSearchDocument{
+			ShotID:      row.Shot.ID,
+			Description: row.Shot.Description,
+			Tags:        row.Shot.Tags,
+			Objects:     row.Shot.Objects,
+			Actions:     row.Shot.Actions,
+			Mood:        row.Shot.Mood,
+		}
+		if search.ShotTextSourceHash(doc) != row.SourceTextHash {
+			continue
 		}
 		out = append(out, row)
 	}

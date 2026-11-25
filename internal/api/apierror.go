@@ -127,6 +127,7 @@ func apiErrorFromError(err error) (int, APIError) {
 		errors.Is(err, app.ErrProviderChannelValidation),
 		errors.Is(err, app.ErrInvalidWorkerArtifact),
 		errors.Is(err, domain.ErrInvalidWorkerRegistration),
+		errors.Is(err, domain.ErrInvalidWorkerGrants),
 		errors.Is(err, app.ErrWebDAVAccountInvalid),
 		errors.Is(err, app.ErrWebDAVLinkKindInvalid),
 		errors.Is(err, domain.ErrInvalidAssignment):

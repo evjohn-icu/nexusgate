@@ -1,7 +1,9 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -10,10 +12,12 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/evjohn-icu/nexusgate/internal/cachecoord"
 	"github.com/evjohn-icu/nexusgate/internal/config"
 	"github.com/evjohn-icu/nexusgate/internal/credentials"
 	"github.com/evjohn-icu/nexusgate/internal/curator"
@@ -108,12 +112,8 @@ var ErrWorkerProviderConfiguredAsChannelOnly = errors.New("worker provider acces
 type Repository interface {
 	PipelineRepository
 	IntegrityCheck(ctx context.Context) error
-	// HealStaleRunningJobs releases 'running' jobs whose lease expired (a
-	// crash artifact, not work in flight) back to 'pending', and terminally
-	// fails the ones that exhausted their attempts. HealOnStartup is its only
-	// caller; it lives on the full interface rather than PipelineRepository
-	// because it is a startup concern, not a pipeline-run one, and the narrow
-	// interface's fakes should not have to grow it.
+	// HealStaleRunningJobs releases abandoned jobs and terminalizes cancelled
+	// or exhausted jobs at startup and during the executor heartbeat.
 	HealStaleRunningJobs(context.Context, time.Time) (int, int, error)
 	// RegisterExecutor, TouchExecutor and UnregisterExecutor back the Hub-local
 	// pipeline executor registry (pipeline_executors table). HealOnStartup uses
@@ -170,6 +170,7 @@ type Repository interface {
 	ListCollectionShots(ctx context.Context, collectionID string) ([]domain.CollectionShotDetail, error)
 	ReorderCollectionShots(ctx context.Context, collectionID string, shotIDs []string) error
 	ListAssetCardsInCollection(ctx context.Context, collectionID string, limit, offset int) ([]domain.AssetCard, error)
+	PagedAssetCardsInCollection(ctx context.Context, collectionID string, limit, offset int) ([]domain.AssetCard, bool, error)
 	GetAssetProcessingSummary(ctx context.Context, filter domain.AssetCollectionFilter) (domain.AssetProcessingSummary, error)
 	ListShootSessions(ctx context.Context, filter domain.ShootSessionFilter) ([]domain.ShootSession, error)
 	PagedShootSessions(ctx context.Context, filter domain.ShootSessionFilter) ([]domain.ShootSession, bool, error)
@@ -242,17 +243,18 @@ type Repository interface {
 }
 
 type Service struct {
-	repo       Repository
-	cfg        config.Config
-	scanner    *ingest.Scanner
-	pipeline   *Pipeline
-	curator    providers.TagCurator
-	embedder   providers.Embedder
-	planner    providers.RepurposePlanner
-	hardware   media.HardwareReport
-	adminToken string
-	agentToken string
-	secrets    *secretstore.Store
+	repo              Repository
+	cfg               config.Config
+	scanner           *ingest.Scanner
+	pipeline          *Pipeline
+	curator           providers.TagCurator
+	embedder          providers.Embedder
+	planner           providers.RepurposePlanner
+	hardware          media.HardwareReport
+	adminToken        string
+	agentToken        string
+	secrets           *secretstore.Store
+	providerChannelMu sync.Mutex
 
 	// webdav is the on-demand WebDAV space manager for footage delivery to
 	// editing agents; nil when the operator has not enabled the feature.
@@ -468,6 +470,7 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 	// in-flight jobs to this process; HealOnStartup then reclaims only the
 	// jobs whose owning process is gone.
 	pipeline := NewPipeline(repo, cfg.CacheDir, channelRuntime.asr(), channelRuntime.asrFallback(), pipelineVideoProvider, alignment, shotDetector, plan, sourceStager, time.Duration(cfg.Pipeline.ProviderRouteDeferralMinutes)*time.Minute, cfg.Pipeline.MinimumFreeSpaceBytes).WithPreviewLUT(cfg.PreviewLUTPath).WithAnalysisLanguage(cfg.AnalysisLanguage)
+	pipeline.SetCacheLockDir(cfg.DataDir)
 	leaseOwner := "local-" + idgen.New()
 	pipeline.SetLeaseOwner(leaseOwner)
 	service := &Service{
@@ -528,12 +531,6 @@ func NewService(repo Repository, cfg config.Config) (*Service, error) {
 	// commit; the wrapper swallows errors so a ledger hiccup can never fail
 	// an analysis job (see recordAnalysisCostEstimate).
 	service.pipeline.SetCostEstimator(service.recordAnalysisCostEstimate)
-	// A crash between ciphertext creation and metadata publication leaves a
-	// durable deletion obligation. Drain it before the Hub accepts new
-	// speaker work; failure keeps the worklist for the next attempt.
-	if err := service.DrainBiometricPurge(context.Background()); err != nil {
-		slog.Warn("biometric purge recovery incomplete", "error", err)
-	}
 	return service, nil
 }
 
@@ -578,37 +575,88 @@ func (s *Service) ProviderChannelRuntimeStatus(_ context.Context) []ProviderChan
 // existing secret; the slice may be shorter than Members, in which case the
 // missing tail is treated as empty.
 func (s *Service) SaveProviderChannel(ctx context.Context, channel domain.ProviderChannel, memberKeys []string) (domain.ProviderChannel, error) {
+	newChannel := channel.ID == ""
+	if newChannel {
+		channel.ID = idgen.New()
+	}
+	unlock, err := s.lockProviderChannel(channel.ID)
+	if err != nil {
+		return domain.ProviderChannel{}, err
+	}
+	defer unlock()
+	if newChannel {
+		return s.saveProviderChannelLocked(ctx, channel, memberKeys, nil)
+	}
+	channels, err := s.repo.ListProviderChannels(ctx, "")
+	if err != nil {
+		return domain.ProviderChannel{}, err
+	}
+	for _, prior := range channels {
+		if prior.ID != channel.ID {
+			continue
+		}
+		priorRefs := make(map[string]string, len(prior.Members))
+		for _, member := range prior.Members {
+			priorRefs[member.ID] = member.SecretRef
+		}
+		channel.Members = slices.Clone(channel.Members)
+		for i := range channel.Members {
+			if ref, exists := priorRefs[channel.Members[i].ID]; exists {
+				channel.Members[i].SecretRef = ref
+			}
+		}
+		if err := validateProviderChannelOriginChange(prior.Endpoint, channel.Endpoint, channel.Members, memberKeys); err != nil {
+			return domain.ProviderChannel{}, err
+		}
+		return s.saveProviderChannelLocked(ctx, channel, memberKeys, prior.Members)
+	}
+	return s.saveProviderChannelLocked(ctx, channel, memberKeys, nil)
+}
+
+func (s *Service) lockProviderChannel(id string) (func(), error) {
+	if s.cfg.DataDir == "" {
+		s.providerChannelMu.Lock()
+		return s.providerChannelMu.Unlock, nil
+	}
+	name := fmt.Sprintf("%x.lock", sha256.Sum256([]byte(strings.TrimSpace(id))))
+	lock, err := cachecoord.AcquirePath(filepath.Join(s.cfg.DataDir, ".provider-channel-locks", name), true)
+	if err != nil {
+		return nil, err
+	}
+	return func() { _ = lock.Release() }, nil
+}
+
+func (s *Service) saveProviderChannelLocked(ctx context.Context, channel domain.ProviderChannel, memberKeys []string, priorMembers []domain.ProviderChannelMember) (domain.ProviderChannel, error) {
 	if err := validateDistinctProviderChannelMemberLabels(channel.Members); err != nil {
 		return domain.ProviderChannel{}, err
 	}
 	if err := validateProviderChannelCosts(channel); err != nil {
 		return domain.ProviderChannel{}, err
 	}
-	if channel.ID == "" {
-		channel.ID = idgen.New()
-	}
-	// Track which SecretRefs this call created (member.SecretRef was empty on
-	// entry) so they can be rolled back if UpsertProviderChannel rejects the
-	// channel below. Refs that already existed on a member are a key
-	// overwrite, not a creation, and are deliberately left alone: undoing
-	// those would require reading the previous plaintext key into memory
-	// first just to restore it, which is a second in-memory copy of a secret
-	// for a case that isn't the leak this guards against.
-	var newlyCreatedRefs []string
+	channel.Members = slices.Clone(channel.Members)
+	var staged []string
+	committed := false
+	defer func() {
+		if !committed {
+			for _, ref := range staged {
+				_ = s.secrets.Delete(ref)
+			}
+		}
+	}()
 	for i := range channel.Members {
 		member := &channel.Members[i]
 		if member.ID == "" {
 			member.ID = idgen.New()
 		}
-		if member.SecretRef == "" {
-			member.SecretRef = "provider-channel/" + channel.ID + "/" + member.ID
-			newlyCreatedRefs = append(newlyCreatedRefs, member.SecretRef)
-		}
 		var key string
 		if i < len(memberKeys) {
 			key = strings.TrimSpace(memberKeys[i])
 		}
+		if key != "" || member.SecretRef == "" {
+			member.SecretRef = "provider-channel/" + channel.ID + "/" + member.ID + "/" + idgen.New()
+		}
 		if key != "" {
+			staged = append(staged, member.SecretRef)
 			if err := s.secrets.Put(member.SecretRef, key); err != nil {
 				return domain.ProviderChannel{}, err
 			}
@@ -616,19 +664,16 @@ func (s *Service) SaveProviderChannel(ctx context.Context, channel domain.Provid
 	}
 	saved, err := s.repo.UpsertProviderChannel(ctx, channel)
 	if err != nil {
-		// The channel row was rejected (e.g. UNIQUE constraint, missing
-		// required field), so any secret this call just created has no
-		// channel referencing it. Delete it now rather than leaving an
-		// orphan in the encrypted store indefinitely. If the cleanup Delete
-		// itself fails, its error is discarded rather than returned: the
-		// Upsert error is the one the caller needs to see, and replacing or
-		// wrapping it with a secondary cleanup failure would hide the actual
-		// cause of the save failing.
-		for _, ref := range newlyCreatedRefs {
-			_ = s.secrets.Delete(ref)
-		}
 		return domain.ProviderChannel{}, err
 	}
+	committed = true
+	oldRefs := make(map[string]struct{}, len(priorMembers))
+	for _, member := range priorMembers {
+		if member.SecretRef != "" {
+			oldRefs[member.SecretRef] = struct{}{}
+		}
+	}
+	s.deleteOrphanedMemberSecrets(saved.ID, oldRefs, saved.Members)
 	return saved, nil
 }
 
@@ -1174,6 +1219,20 @@ func (s *Service) CreateWorkerPairing(ctx context.Context, ttl time.Duration) (r
 	return s.repo.CreateWorkerPairing(ctx, ttl)
 }
 
+// CreateWorkerPairingWithGrants issues a pairing scoped by the Hub administrator.
+func (s *Service) CreateWorkerPairingWithGrants(ctx context.Context, ttl time.Duration, grants remote.WorkerGrants) (remote.PairingToken, error) {
+	if len(grants.InferenceOperations) == 0 && len(grants.ModelManagementOperations) == 0 {
+		return s.CreateWorkerPairing(ctx, ttl)
+	}
+	repo, ok := s.repo.(interface {
+		CreateWorkerPairingWithGrants(context.Context, time.Duration, remote.WorkerGrants) (remote.PairingToken, error)
+	})
+	if !ok {
+		return remote.PairingToken{}, errors.New("worker pairing grants are unavailable")
+	}
+	return repo.CreateWorkerPairingWithGrants(ctx, ttl, grants)
+}
+
 func (s *Service) EnrollWorker(ctx context.Context, pairingToken string, registration remote.WorkerRegistration) (remote.Worker, string, error) {
 	// The repository marks its own refusals with sentinels
 	// (domain.ErrPairingTokenInvalid, domain.ErrInvalidWorkerRegistration),
@@ -1253,7 +1312,29 @@ func (s *Service) LeaseNextWorkerDerive(ctx context.Context, worker remote.Worke
 }
 
 func (s *Service) CompleteWorkerJob(ctx context.Context, jobID, workerID string, state domain.JobState, message string) error {
-	return s.repo.CompleteWorkerJob(ctx, jobID, workerID, state, message)
+	if state == domain.JobSucceeded {
+		if repo, ok := s.repo.(interface {
+			GetModelManagementTask(context.Context, string) (domain.ModelManagementTask, error)
+			CompleteModelManagement(context.Context, string, string) error
+		}); ok {
+			_, err := repo.GetModelManagementTask(ctx, jobID)
+			if err == nil {
+				return repo.CompleteModelManagement(ctx, jobID, workerID)
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+		}
+	}
+	if err := s.repo.CompleteWorkerJob(ctx, jobID, workerID, state, message); err != nil {
+		return err
+	}
+	if state == domain.JobSucceeded {
+		if err := s.drainDeriveModalityOutbox(ctx); err != nil && ctx.Err() == nil {
+			slog.Warn("derive modality replay incomplete", "error", err)
+		}
+	}
+	return nil
 }
 
 // RecordWorkerJobProgress accepts only bounded, lease-owned progress reports.
@@ -1321,87 +1402,167 @@ func (s *Service) UploadWorkerArtifact(ctx context.Context, jobID, workerID, art
 	if !safeWorkerArtifactSegment(profileHash) {
 		return domain.DerivedArtifact{}, false, fmt.Errorf("%w: invalid profile hash", ErrInvalidWorkerArtifact)
 	}
-	assetID, existing, err := s.repo.PrepareWorkerArtifact(ctx, jobID, workerID, artifactType, profileHash)
-	if err != nil {
-		if errors.Is(err, domain.ErrJobLeaseLost) {
-			return domain.DerivedArtifact{}, false, fmt.Errorf("%w: %w", ErrWorkerArtifactLease, err)
-		}
-		return domain.DerivedArtifact{}, false, err
-	}
-	preserveExisting := false
-	if existing != nil {
-		if info, statErr := os.Stat(existing.LocalPath); statErr == nil && info.Mode().IsRegular() && info.Size() > 0 {
-			preserveExisting = true
-			stored, reused, commitErr := s.repo.CommitWorkerArtifact(ctx, jobID, workerID, *existing, true)
-			if commitErr != nil {
-				if errors.Is(commitErr, domain.ErrJobLeaseLost) {
-					return domain.DerivedArtifact{}, false, fmt.Errorf("%w: %w", ErrWorkerArtifactLease, commitErr)
-				}
-				return domain.DerivedArtifact{}, false, commitErr
-			}
-			return stored, reused, nil
-		}
-	}
 	if strings.TrimSpace(s.cfg.DataDir) == "" {
 		return domain.DerivedArtifact{}, false, fmt.Errorf("%w: Hub data directory is not configured", ErrInvalidWorkerArtifact)
 	}
-	targetDir := filepath.Join(s.cfg.DataDir, "derived", "worker", assetID)
-	if err := os.MkdirAll(targetDir, 0o700); err != nil {
-		return domain.DerivedArtifact{}, false, fmt.Errorf("create derived storage: %w", err)
+	assetID, _, err := s.repo.PrepareWorkerArtifact(ctx, jobID, workerID, artifactType, profileHash)
+	if err != nil {
+		return domain.DerivedArtifact{}, false, workerArtifactLeaseError(err)
+	}
+	if !safeWorkerArtifactSegment(assetID) {
+		return domain.DerivedArtifact{}, false, fmt.Errorf("%w: invalid asset id", ErrInvalidWorkerArtifact)
+	}
+	cacheLock, err := cachecoord.AcquireShared(s.cfg.DataDir)
+	if err != nil {
+		return domain.DerivedArtifact{}, false, err
+	}
+	defer cacheLock.Release()
+	pathLock, err := cachecoord.AcquirePath(filepath.Join(s.cfg.DataDir, ".worker-artifact-locks", assetID, artifactType+"-"+profileHash+".lock"), true)
+	if err != nil {
+		return domain.DerivedArtifact{}, false, err
+	}
+	defer pathLock.Release()
+	currentAsset, existing, err := s.repo.PrepareWorkerArtifact(ctx, jobID, workerID, artifactType, profileHash)
+	if err != nil {
+		return domain.DerivedArtifact{}, false, workerArtifactLeaseError(err)
+	}
+	if currentAsset != assetID {
+		return domain.DerivedArtifact{}, false, ErrWorkerArtifactLease
+	}
+	storage, err := os.OpenRoot(s.cfg.DataDir)
+	if err != nil {
+		return domain.DerivedArtifact{}, false, err
+	}
+	defer storage.Close()
+	managedPath := filepath.Join("derived", "worker", assetID)
+	for _, path := range []string{"derived", filepath.Join("derived", "worker"), managedPath} {
+		if err := storage.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return domain.DerivedArtifact{}, false, err
+		}
+		if info, err := storage.Lstat(path); err != nil || !info.IsDir() {
+			return domain.DerivedArtifact{}, false, fmt.Errorf("%w: unsafe derived storage directory", ErrInvalidWorkerArtifact)
+		}
+	}
+	storageDir, err := storage.OpenRoot(managedPath)
+	if err != nil {
+		return domain.DerivedArtifact{}, false, err
+	}
+	defer storageDir.Close()
+	targetDir := filepath.Join(s.cfg.DataDir, managedPath)
+	if existing != nil {
+		// A committed row from any executor wins over a retry: reuse its file
+		// without rewriting it. The managed-destination checks below still
+		// apply to an unregistered orphan at the target.
+		if info, statErr := os.Stat(existing.LocalPath); statErr == nil && info.Mode().IsRegular() && info.Size() > 0 {
+			stored, reused, err := s.repo.CommitWorkerArtifact(ctx, jobID, workerID, *existing, true)
+			return stored, reused, workerArtifactLeaseError(err)
+		}
 	}
 	extension := workerArtifactExtension(artifactType, contentType)
-	targetPath := filepath.Join(targetDir, artifactType+"-"+profileHash+extension)
-	if _, statErr := os.Stat(targetPath); statErr == nil {
-		return domain.DerivedArtifact{}, false, fmt.Errorf("%w: target artifact path already exists", ErrInvalidWorkerArtifact)
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return domain.DerivedArtifact{}, false, fmt.Errorf("inspect derived storage: %w", statErr)
-	}
-	tmp, err := os.CreateTemp(targetDir, ".worker-upload-*")
+	target := artifactType + "-" + profileHash + extension
+	tempName := ".worker-upload-" + idgen.New()
+	tmp, err := storageDir.OpenFile(tempName, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return domain.DerivedArtifact{}, false, fmt.Errorf("create upload temporary file: %w", err)
 	}
-	tmpPath := tmp.Name()
-	cleanup := func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-	}
+	defer storageDir.Remove(tempName)
+	defer tmp.Close()
 	size, copyErr := io.Copy(tmp, io.LimitReader(source, maxWorkerArtifactBytes+1))
 	if copyErr != nil {
-		cleanup()
 		return domain.DerivedArtifact{}, false, fmt.Errorf("write worker artifact: %w", copyErr)
 	}
 	if size <= 0 || size > maxWorkerArtifactBytes {
-		cleanup()
 		return domain.DerivedArtifact{}, false, fmt.Errorf("%w: artifact size must be between 1 byte and %d bytes", ErrInvalidWorkerArtifact, maxWorkerArtifactBytes)
 	}
 	if err := tmp.Sync(); err != nil {
-		cleanup()
 		return domain.DerivedArtifact{}, false, fmt.Errorf("sync worker artifact: %w", err)
 	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return domain.DerivedArtifact{}, false, fmt.Errorf("close worker artifact: %w", err)
-	}
-	if err := os.Link(tmpPath, targetPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return domain.DerivedArtifact{}, false, fmt.Errorf("commit worker artifact file: %w", err)
-	}
-	_ = os.Remove(tmpPath)
-	artifact := domain.DerivedArtifact{ID: idgen.New(), AssetID: assetID, Type: artifactType, ProfileHash: profileHash, LocalPath: targetPath, SizeBytes: size}
-	stored, reused, err := s.repo.CommitWorkerArtifact(ctx, jobID, workerID, artifact, preserveExisting)
+	orphan, err := workerArtifactFile(storageDir, target)
 	if err != nil {
-		if !preserveExisting && !reused {
-			_ = os.Remove(targetPath)
-		}
-		if errors.Is(err, domain.ErrJobLeaseLost) {
-			return domain.DerivedArtifact{}, false, fmt.Errorf("%w: %w", ErrWorkerArtifactLease, err)
-		}
 		return domain.DerivedArtifact{}, false, err
 	}
-	if reused && stored.LocalPath != targetPath {
-		_ = os.Remove(targetPath)
+	adopt := false
+	if orphan != nil && orphan.Size() == size {
+		adopt, err = sameWorkerArtifactBytes(storageDir, target, orphan, tmp)
+		if err != nil {
+			return domain.DerivedArtifact{}, false, err
+		}
+	}
+	if err := tmp.Close(); err != nil {
+		return domain.DerivedArtifact{}, false, fmt.Errorf("close worker artifact: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return domain.DerivedArtifact{}, false, err
+	}
+	switch {
+	case orphan == nil:
+		err = storageDir.Link(tempName, target)
+	case !adopt:
+		err = storageDir.Rename(tempName, target)
+	}
+	if err != nil {
+		return domain.DerivedArtifact{}, false, fmt.Errorf("commit worker artifact file: %w", err)
+	}
+	artifact := domain.DerivedArtifact{ID: idgen.New(), AssetID: assetID, Type: artifactType, ProfileHash: profileHash, LocalPath: filepath.Join(targetDir, target), SizeBytes: size}
+	stored, reused, err := s.repo.CommitWorkerArtifact(ctx, jobID, workerID, artifact, false)
+	if err != nil {
+		if orphan == nil {
+			_ = storageDir.Remove(target)
+		}
+		return domain.DerivedArtifact{}, false, workerArtifactLeaseError(err)
 	}
 	return stored, reused, nil
+}
+
+func workerArtifactLeaseError(err error) error {
+	if errors.Is(err, domain.ErrJobLeaseLost) {
+		return fmt.Errorf("%w: %w", ErrWorkerArtifactLease, err)
+	}
+	return err
+}
+
+func workerArtifactFile(dir *os.Root, name string) (os.FileInfo, error) {
+	info, err := dir.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxWorkerArtifactBytes {
+		return nil, fmt.Errorf("%w: managed artifact is not a regular file of supported size", ErrInvalidWorkerArtifact)
+	}
+	return info, nil
+}
+
+func sameWorkerArtifactBytes(dir *os.Root, name string, expected os.FileInfo, staged *os.File) (bool, error) {
+	orphan, err := dir.Open(name)
+	if err != nil {
+		return false, err
+	}
+	defer orphan.Close()
+	if info, err := orphan.Stat(); err != nil || !os.SameFile(expected, info) || info.Size() != expected.Size() {
+		return false, fmt.Errorf("%w: managed artifact changed while being inspected", ErrInvalidWorkerArtifact)
+	}
+	if _, err := staged.Seek(0, io.SeekStart); err != nil {
+		return false, err
+	}
+	var stagedBlock, orphanBlock [32 << 10]byte
+	remaining := expected.Size()
+	for remaining > 0 {
+		length := min(int64(len(stagedBlock)), remaining)
+		if _, err := io.ReadFull(staged, stagedBlock[:length]); err != nil {
+			return false, err
+		}
+		if _, err := io.ReadFull(orphan, orphanBlock[:length]); err != nil {
+			return false, err
+		}
+		if !bytes.Equal(stagedBlock[:length], orphanBlock[:length]) {
+			return false, nil
+		}
+		remaining -= length
+	}
+	return true, nil
 }
 
 func safeWorkerArtifactSegment(value string) bool {
@@ -1836,21 +1997,66 @@ func (s *Service) StartExecutor(ctx context.Context) (stop func(), err error) {
 	if err := s.repo.RegisterExecutor(ctx, owner, "hub", time.Now()); err != nil {
 		return nil, err
 	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(executorHeartbeat)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-runCtx.Done():
 				return
-			case <-ticker.C:
-				// Best-effort: a failed heartbeat (e.g. DB closing during
-				// shutdown) must never take down the pipeline pass.
-				_ = s.repo.TouchExecutor(ctx, owner, time.Now())
+			case now := <-ticker.C:
+				if err := s.repo.TouchExecutor(runCtx, owner, now); err != nil {
+					if runCtx.Err() == nil {
+						slog.Warn("pipeline executor heartbeat failed", "error", err)
+					}
+					continue
+				}
+				if _, _, err := s.repo.HealStaleRunningJobs(runCtx, now); err != nil && runCtx.Err() == nil {
+					slog.Warn("periodic self-heal failed", "error", err)
+				}
 			}
 		}
 	}()
-	return func() { _ = s.repo.UnregisterExecutor(context.Background(), owner) }, nil
+	return sync.OnceFunc(func() {
+		cancel()
+		<-done
+		_ = s.repo.UnregisterExecutor(context.Background(), owner)
+	}), nil
+}
+
+// StartServingMaintenance runs recovery on startup and keeps it running even
+// when the library supervisor is disabled. The returned stop joins the loop.
+func (s *Service) StartServingMaintenance(ctx context.Context) func() {
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for {
+			if _, err := s.PurgeExpiredSearchReferences(runCtx); err != nil && runCtx.Err() == nil {
+				slog.Warn("search reference expiry cleanup incomplete", "error", err)
+			}
+			if err := s.DrainBiometricPurge(runCtx); err != nil && runCtx.Err() == nil {
+				slog.Warn("biometric purge recovery incomplete", "error", err)
+			}
+			if err := s.drainDeriveModalityOutbox(runCtx); err != nil && runCtx.Err() == nil {
+				slog.Warn("derive modality replay incomplete", "error", err)
+			}
+			select {
+			case <-runCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 func (s *Service) RunPipeline(ctx context.Context) error {
@@ -2492,6 +2698,9 @@ func (s *Service) DeleteAssetCollection(ctx context.Context, id string) error {
 func (s *Service) ListAssetCardsInCollection(ctx context.Context, collectionID string, limit, offset int) ([]domain.AssetCard, error) {
 	return s.repo.ListAssetCardsInCollection(ctx, collectionID, limit, offset)
 }
+func (s *Service) ListAssetCardsInCollectionPage(ctx context.Context, collectionID string, limit, offset int) ([]domain.AssetCard, bool, error) {
+	return s.repo.PagedAssetCardsInCollection(ctx, collectionID, limit, offset)
+}
 func (s *Service) GetAssetProcessingSummary(ctx context.Context, filter domain.AssetCollectionFilter) (domain.AssetProcessingSummary, error) {
 	return s.repo.GetAssetProcessingSummary(ctx, filter)
 }
@@ -2521,21 +2730,6 @@ func (s *Service) GetArtifact(ctx context.Context, id, typ string) (*domain.Deri
 	return s.repo.GetArtifact(ctx, id, typ)
 }
 
-// OriginalMediaPath returns the absolute on-disk path of an asset's primary
-// source file, or "" when the asset has no accessible primary location. Used
-// by the WebDAV space linker to stream original footage without ever exposing
-// the path to the client.
-func (s *Service) OriginalMediaPath(ctx context.Context, assetID string) string {
-	loc, err := s.repo.GetPrimaryLocation(ctx, assetID)
-	if err != nil {
-		return ""
-	}
-	if loc.AbsolutePath == "" {
-		return ""
-	}
-	return loc.AbsolutePath
-}
-
 // SetWebDAVSpaceManager wires the on-demand WebDAV delivery manager and its
 // persisted account store into the service. Called during startup when the
 // feature is enabled; nil manager disables the admin endpoints below.
@@ -2547,16 +2741,30 @@ func (s *Service) SetWebDAVSpaceManager(m *webdavspace.Manager, accounts webdavs
 // WebDAVLinker adapts the service's asset resolution to the space linker.
 type WebDAVLinker struct{ Service *Service }
 
-func (l WebDAVLinker) OriginalPath(ctx context.Context, assetID string) string {
-	return l.Service.OriginalMediaPath(ctx, assetID)
+func (l WebDAVLinker) OriginalLocation(ctx context.Context, assetID string) (root, relative string) {
+	location, err := l.Service.repo.GetPrimaryLocation(ctx, assetID)
+	if err != nil || location.RelativePath == "" {
+		return "", ""
+	}
+	library, err := l.Service.repo.GetLibraryRoot(ctx, location.RootID)
+	if err != nil {
+		return "", ""
+	}
+	return library.Path, filepath.FromSlash(location.RelativePath)
 }
 
-func (l WebDAVLinker) ProxyPath(ctx context.Context, assetID string) string {
-	a, err := l.Service.GetArtifact(ctx, assetID, "proxy")
-	if err != nil || a == nil {
-		return ""
+func (l WebDAVLinker) ProxyLocation(ctx context.Context, assetID string) (root, relative string) {
+	artifact, err := l.Service.GetArtifact(ctx, assetID, "proxy")
+	if err != nil || artifact == nil {
+		return "", ""
 	}
-	return a.LocalPath
+	for _, root := range []string{l.Service.cfg.CacheDir, filepath.Join(l.Service.cfg.DataDir, "derived", "worker")} {
+		relative, err := filepath.Rel(root, artifact.LocalPath)
+		if err == nil && filepath.IsLocal(relative) && relative != "." {
+			return root, relative
+		}
+	}
+	return "", ""
 }
 
 // CreateWebDAVAccount hashes the plaintext password with bcrypt (via the

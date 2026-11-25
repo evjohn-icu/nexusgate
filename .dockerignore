@@ -1,9 +1,13 @@
 # ============================================================================
 # .dockerignore — files and directories excluded from the Docker build context.
 #
-# The Dockerfile uses `COPY . .` to bring the repo into the build stage.  This
-# file keeps the context small (faster builds, fewer cache invalidations) by
-# excluding everything the compile step does not need.
+# The Dockerfile uses `COPY . .` to bring the repo into the build stage and
+# `COPY inference/` in the inference stage. This file keeps the context small
+# (faster builds, fewer cache invalidations) by excluding everything the
+# compile step does not need, plus the runtime artifacts that must never be
+# baked into an image: model weights and virtualenvs are fetched at runtime
+# under the digests in inference/models.lock.json, and no image layer ships
+# them.
 # ============================================================================
 
 # --- Version control (irrelevant inside a build) ---
@@ -19,6 +23,7 @@ CHANGELOG.md
 CONTRIBUTING.md
 LICENSE
 README.md
+README_CN.md
 SECURITY.md
 THIRD-PARTY-LICENSES
 
@@ -31,6 +36,22 @@ docker-compose.yml
 
 # --- Shell scripts (not needed at build time) ---
 scripts/
+
+# --- Release output and local test fixtures ---
+dist/
+testdata/
+/testdata-local/
+
+# --- Compiled local binaries (built inside the image, never copied in) ---
+/nexusgate
+/nexusgate-mcp
+
+# --- Python bytecode, caches, virtualenvs and model weights ---
+**/__pycache__
+**/*.pyc
+inference/.venv*
+inference/.cache
+inference/models
 
 # --- Source archives (accidental by-products, never needed) ---
 *.tar.gz
@@ -60,9 +81,6 @@ store.key
 *.test
 coverage.out
 *.cover
-
-# --- Local test fixtures ---
-/testdata-local/
 
 # --- OS metadata ---
 .DS_Store

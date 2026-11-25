@@ -12,7 +12,7 @@ import (
 
 func applyMigrationsThrough(t *testing.T, ctx context.Context, repo *Repository, through string) {
 	t.Helper()
-	if _, err := repo.db.ExecContext(ctx, `CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
+	if _, err := repo.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := migrationFiles.ReadDir("migrations")
@@ -22,6 +22,13 @@ func applyMigrationsThrough(t *testing.T, ctx context.Context, repo *Repository,
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	for _, entry := range entries {
 		if entry.IsDir() || entry.Name() > through {
+			continue
+		}
+		var applied bool
+		if err := repo.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=?)`, entry.Name()).Scan(&applied); err != nil {
+			t.Fatal(err)
+		}
+		if applied {
 			continue
 		}
 		content, err := migrationFiles.ReadFile("migrations/" + entry.Name())
@@ -149,7 +156,7 @@ func assertUpgradeMatrix(t *testing.T, ctx context.Context, repo *Repository) {
 	}
 }
 
-func TestMigrationUpgradeMatrixFrom0021And0029(t *testing.T) {
+func TestMigrationUpgradeMatrix(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		cutoff string
@@ -157,6 +164,7 @@ func TestMigrationUpgradeMatrixFrom0021And0029(t *testing.T) {
 	}{
 		{"0021", "0021_v021_sortable_timestamps.sql", false},
 		{"0029", "0029_cost_ledger.sql", true},
+		{"0040", "0040_multimodal_generation_identity.sql", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -165,8 +173,15 @@ func TestMigrationUpgradeMatrixFrom0021And0029(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer repo.Close()
-			applyMigrationsThrough(t, ctx, repo, tc.cutoff)
+			seedThrough := tc.cutoff
+			if tc.name == "0040" {
+				seedThrough = "0029_cost_ledger.sql"
+			}
+			applyMigrationsThrough(t, ctx, repo, seedThrough)
 			populateDirtyUpgradeCorpus(t, ctx, repo, tc.ledger)
+			if seedThrough != tc.cutoff {
+				applyMigrationsThrough(t, ctx, repo, tc.cutoff)
+			}
 			if err := repo.Migrate(ctx); err != nil {
 				t.Fatal(err)
 			}

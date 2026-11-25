@@ -21,6 +21,7 @@ import (
 	"github.com/evjohn-icu/nexusgate/internal/config"
 	"github.com/evjohn-icu/nexusgate/internal/domain"
 	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/remote"
 	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
 
@@ -408,6 +409,13 @@ func TestWorkerCanPairAndHeartbeatThroughHubAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := NewServer("", service).Handler()
+	badPair := httptest.NewRecorder()
+	badRequest := httptest.NewRequest(http.MethodPost, "/api/v1/hub/worker-pairings", strings.NewReader(`{"grants":{"model_management_operations":["delete"]}}`))
+	badRequest.Header.Set("Authorization", "Bearer "+service.AdminToken())
+	handler.ServeHTTP(badPair, badRequest)
+	if badPair.Code != http.StatusBadRequest {
+		t.Fatalf("invalid grant status=%d body=%s", badPair.Code, badPair.Body.String())
+	}
 
 	pair := httptest.NewRecorder()
 	pairRequest := httptest.NewRequest(http.MethodPost, "/api/v1/hub/worker-pairings", nil)
@@ -423,22 +431,30 @@ func TestWorkerCanPairAndHeartbeatThroughHubAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	enroll := httptest.NewRecorder()
-	handler.ServeHTTP(enroll, httptest.NewRequest(http.MethodPost, "/api/v1/worker/enroll", strings.NewReader(`{"pairing_token":"`+pairing.Token+`","name":"windows-gpu","platform":"windows-amd64","capabilities":{"proxy":true,"library_roots":["root-a"]}}`)))
+	handler.ServeHTTP(enroll, httptest.NewRequest(http.MethodPost, "/api/v1/worker/enroll", strings.NewReader(`{"pairing_token":"`+pairing.Token+`","name":"windows-gpu","platform":"windows-amd64","capabilities":{"proxy":true,"library_roots":["root-a"],"inference_operations":["visual_embedding"],"model_management_operations":["install"]}}`)))
 	if enroll.Code != http.StatusCreated {
 		t.Fatalf("enroll status=%d body=%s", enroll.Code, enroll.Body.String())
 	}
 	var enrolled struct {
-		Token string `json:"token"`
+		Token  string        `json:"token"`
+		Worker remote.Worker `json:"worker"`
 	}
 	if err := json.NewDecoder(enroll.Body).Decode(&enrolled); err != nil {
 		t.Fatal(err)
 	}
+	if caps := enrolled.Worker.Capabilities; len(caps.InferenceOperations)+len(caps.ModelManagementOperations)+len(caps.Inference) != 0 {
+		t.Fatalf("legacy pairing honored self-granted capabilities: %+v", caps)
+	}
 	heartbeat := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/worker/heartbeat", strings.NewReader(`{"capabilities":{"proxy":true,"max_parallel_proxy_jobs":1}}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/worker/heartbeat", strings.NewReader(`{"capabilities":{"proxy":true,"max_parallel_proxy_jobs":1,"inference_operations":["visual_embedding"],"model_management_operations":["install"]}}`))
 	req.Header.Set("Authorization", "Bearer "+enrolled.Token)
 	handler.ServeHTTP(heartbeat, req)
 	if heartbeat.Code != http.StatusNoContent {
 		t.Fatalf("heartbeat status=%d body=%s", heartbeat.Code, heartbeat.Body.String())
+	}
+	worker, err := service.AuthenticateWorker(ctx, enrolled.Token)
+	if err != nil || len(worker.Capabilities.InferenceOperations)+len(worker.Capabilities.ModelManagementOperations)+len(worker.Capabilities.Inference) != 0 {
+		t.Fatalf("heartbeat widened a legacy grant: capabilities=%+v err=%v", worker.Capabilities, err)
 	}
 }
 

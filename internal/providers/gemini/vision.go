@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,6 +80,13 @@ func (v *Vision) PrepareVideo(ctx context.Context, req common.PrepareVideoReques
 		startURL = strings.TrimSuffix(startURL, "/v1beta")
 	}
 	startURL += "/upload/v1beta/files"
+	// The resumable session location comes back from the provider and is
+	// resolved against this URL, so it is also the origin every upload byte
+	// and credential is allowed to travel to.
+	initialURL, err := url.Parse(startURL)
+	if err != nil || initialURL.Scheme != "http" && initialURL.Scheme != "https" || initialURL.Host == "" {
+		return common.PreparedVideo{}, fmt.Errorf("Gemini upload endpoint is invalid")
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, startURL, bytes.NewReader(body))
 	if err != nil {
 		return common.PreparedVideo{}, err
@@ -95,15 +103,28 @@ func (v *Vision) PrepareVideo(ctx context.Context, req common.PrepareVideoReques
 	}
 	if resp.StatusCode/100 != 2 {
 		defer resp.Body.Close()
-		return common.PreparedVideo{}, common.ReadErrorWithSecret(resp, v.Endpoint.APIKey)
+		return common.PreparedVideo{}, v.Endpoint.ReadError(resp)
 	}
 	uploadURL := resp.Header.Get("X-Goog-Upload-URL")
 	resp.Body.Close()
 	if uploadURL == "" {
 		return common.PreparedVideo{}, fmt.Errorf("Gemini upload did not return X-Goog-Upload-URL")
 	}
+	// Resolve the session URL the provider returned against the endpoint the
+	// upload started from: a relative location continues on the configured
+	// origin, an absolute URL must already carry it. Scheme and exact origin
+	// are checked before any file byte or authentication header is attached —
+	// a relay that answers with a session on some other origin would otherwise
+	// receive the configured credential with the next request.
+	resolved, err := initialURL.Parse(uploadURL)
+	if err != nil {
+		return common.PreparedVideo{}, fmt.Errorf("Gemini upload did not return a usable resumable upload URL")
+	}
+	if !common.SameOrigin(initialURL, resolved) {
+		return common.PreparedVideo{}, fmt.Errorf("Gemini upload returned a resumable session on a different origin; upload refused")
+	}
 
-	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, f)
+	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolved.String(), f)
 	if err != nil {
 		return common.PreparedVideo{}, err
 	}
@@ -117,7 +138,7 @@ func (v *Vision) PrepareVideo(ctx context.Context, req common.PrepareVideoReques
 	}
 	defer uploadResp.Body.Close()
 	if uploadResp.StatusCode/100 != 2 {
-		return common.PreparedVideo{}, common.ReadErrorWithSecret(uploadResp, v.Endpoint.APIKey)
+		return common.PreparedVideo{}, v.Endpoint.ReadError(uploadResp)
 	}
 	raw, err := common.ReadBody(uploadResp.Body)
 	if err != nil {
@@ -168,7 +189,7 @@ func (v *Vision) fileState(ctx context.Context, name string) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return "", common.ReadErrorWithSecret(resp, v.Endpoint.APIKey)
+		return "", v.Endpoint.ReadError(resp)
 	}
 	var x struct {
 		State string `json:"state"`
@@ -235,7 +256,7 @@ func (v *Vision) analyzeNative(ctx context.Context, req videoanalysis.Input, pro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return videoanalysis.Result{}, "", common.ReadErrorWithSecret(resp, v.Endpoint.APIKey)
+		return videoanalysis.Result{}, "", v.Endpoint.ReadError(resp)
 	}
 	raw, err := common.ReadBody(resp.Body)
 	if err != nil {
@@ -283,7 +304,7 @@ func (v *Vision) analyzeOpenAI(ctx context.Context, req videoanalysis.Input, pro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return videoanalysis.Result{}, "", common.ReadErrorWithSecret(resp, v.Endpoint.APIKey)
+		return videoanalysis.Result{}, "", v.Endpoint.ReadError(resp)
 	}
 	raw, _ := common.ReadBody(resp.Body)
 	var x struct {

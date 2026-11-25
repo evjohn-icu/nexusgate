@@ -80,7 +80,7 @@ func (p *Provider) completeJSON(ctx context.Context, system, user string) (strin
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return "", common.ReadErrorWithSecret(resp, p.Endpoint.APIKey)
+		return "", p.Endpoint.ReadError(resp)
 	}
 	raw, err := common.ReadBody(resp.Body)
 	if err != nil {

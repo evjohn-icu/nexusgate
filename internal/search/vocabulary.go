@@ -122,6 +122,8 @@ var allVocabularyWords = func() map[string]string {
 	return m
 }()
 
+var englishFallbackStopwords = asciiWordSet("a an the and or with without of to in on at for from by as is are was were be been being that this these those it its into over under while before after")
+
 // Canonicalize returns every canonical family a text resolves to, sorted by
 // earliest surface position (query word order). Raw terms absent from the
 // vocabulary pass through as their own canonical value (objects by default)
@@ -186,7 +188,7 @@ func Canonicalize(text string) []CanonicalMatch {
 				continue
 			}
 		} else {
-			if len([]rune(token)) < 3 {
+			if len(token) < 3 || englishFallbackStopwords[token] {
 				continue
 			}
 			if _, claimed := allVocabularyWords[token]; claimed {
@@ -196,7 +198,11 @@ func Canonicalize(text string) []CanonicalMatch {
 				continue
 			}
 		}
-		appendMatch(token, ConstraintObject, strings.Index(text, token))
+		position := strings.Index(text, token)
+		if !hasCJK(token) {
+			position = wordPosition(text, token)
+		}
+		appendMatch(token, ConstraintObject, position)
 	}
 	sort.SliceStable(matches, func(i, j int) bool { return matches[i].position < matches[j].position })
 	out := make([]CanonicalMatch, 0, len(matches))
@@ -231,7 +237,11 @@ func asciiWordSet(text string) map[string]bool {
 // wordPosition returns the byte offset of the whole word inside text.
 func wordPosition(text, word string) int {
 	lower := strings.ToLower(text)
-	for i := 0; i+len(word) <= len(lower); i++ {
+	return nextWordPosition(lower, word, 0)
+}
+
+func nextWordPosition(lower, word string, start int) int {
+	for i := start; i+len(word) <= len(lower); i++ {
 		if lower[i:i+len(word)] != word {
 			continue
 		}
@@ -351,7 +361,6 @@ func NegationSpans(text string) []NegationSpan {
 	if text == "" {
 		return nil
 	}
-	ascii := asciiWordSet(text)
 	var out []NegationSpan
 	for _, n := range negationWords {
 		cjk := hasCJK(n.word)
@@ -367,11 +376,7 @@ func NegationSpans(text string) []NegationSpan {
 			}
 			continue
 		}
-		if !ascii[n.word] {
-			continue
-		}
-		pos := wordPosition(text, n.word)
-		if pos >= 0 {
+		for pos := nextWordPosition(text, n.word, 0); pos >= 0; pos = nextWordPosition(text, n.word, pos+len(n.word)) {
 			out = append(out, NegationSpan{Start: pos, End: pos + len(n.word), Class: n.class, Text: text})
 		}
 	}

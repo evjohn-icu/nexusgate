@@ -2,8 +2,10 @@ package search
 
 import (
 	"context"
+	"errors"
 	"hash/fnv"
 	"math"
+	"sync"
 	"testing"
 
 	"github.com/evjohn-icu/nexusgate/internal/domain"
@@ -323,5 +325,92 @@ func TestShotTextSourceAndHash(t *testing.T) {
 	changed.Objects = []string{"truck"}
 	if ShotTextSourceHash(changed) == ShotTextSourceHash(doc) {
 		t.Fatal("changed derived text must change the hash")
+	}
+}
+
+// spaceRecordingStore records which space each ListShotTextEmbeddings call
+// asked for, so a test can prove a read never crosses spaces.
+type spaceRecordingStore struct {
+	fakeEmbeddingStore
+	mu      sync.Mutex
+	queried []string
+}
+
+func (s *spaceRecordingStore) ListShotTextEmbeddings(ctx context.Context, space string) ([]ShotEmbeddingRow, error) {
+	s.mu.Lock()
+	s.queried = append(s.queried, space)
+	s.mu.Unlock()
+	return s.fakeEmbeddingStore.ListShotTextEmbeddings(ctx, space)
+}
+
+// identifiedFakeEmbedder is the identity-aware shape a routed provider
+// reports: every batch names the space that actually served it.
+type identifiedFakeEmbedder struct {
+	dim   int
+	space string
+	fails bool
+}
+
+func (f *identifiedFakeEmbedder) Name() string  { return "identified" }
+func (f *identifiedFakeEmbedder) Model() string { return "display-model" }
+func (f *identifiedFakeEmbedder) Embed(ctx context.Context, texts []string) ([][]float64, error) {
+	vectors, _, err := f.EmbedInSpace(ctx, texts)
+	return vectors, err
+}
+func (f *identifiedFakeEmbedder) EmbeddingSpaceID() string { return f.space }
+func (f *identifiedFakeEmbedder) EmbedInSpace(_ context.Context, texts []string) ([][]float64, string, error) {
+	if f.fails {
+		return nil, "", errors.New("primary down")
+	}
+	vectors := make([][]float64, len(texts))
+	for i := range texts {
+		vectors[i] = fakeVector(texts[i], f.dim)
+	}
+	return vectors, f.space, nil
+}
+
+// TestEmbedTextInSpaceChoosesTheEmbedder: an identified embedder's vectors
+// carry the serving space; a plain embedder keeps its Model() space — the
+// single-provider shape every library/test caller already had.
+func TestEmbedTextInSpaceChoosesTheEmbedder(t *testing.T) {
+	identified := &identifiedFakeEmbedder{dim: 8, space: "text-space-v1:routed"}
+	vectors, space, err := embedTextInSpace(context.Background(), identified, []string{"car"})
+	if err != nil || space != "text-space-v1:routed" {
+		t.Fatalf("identified space=%q err=%v", space, err)
+	}
+	if len(vectors) != 1 {
+		t.Fatalf("identified vectors=%v", vectors)
+	}
+	plain := fakeEmbedder{dim: 8}
+	_, space, err = embedTextInSpace(context.Background(), plain, []string{"car"})
+	if err != nil || space != plain.Model() {
+		t.Fatalf("plain space=%q err=%v, want Model() %q", space, err, plain.Model())
+	}
+}
+
+// TestEmbeddingRetrieverReadsOnlyReturnedSpace: the retriever embeds the
+// query, asks for rows of the space the batch reported, and never scores
+// vectors of another space — even equal-dimensional ones.
+func TestEmbeddingRetrieverReadsOnlyReturnedSpace(t *testing.T) {
+	store := &spaceRecordingStore{fakeEmbeddingStore: fakeEmbeddingStore{
+		embeddingRows: map[string][]ShotEmbeddingRow{
+			"text-space-v1:routed": {
+				{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "s-car", Description: "car crossing the street"}}, Model: "text-space-v1:routed", Vector: fakeVector32("car crossing the street", 4), SourceTextHash: "h1"},
+			},
+			"text-space-v1:other": {
+				{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "s-other", Description: "car crossing the street"}}, Model: "text-space-v1:other", Vector: fakeVector32("car crossing the street", 4), SourceTextHash: "h2"},
+			},
+		},
+	}}
+	retriever := NewTextEmbeddingRetriever(store, &identifiedFakeEmbedder{dim: 4, space: "text-space-v1:routed"})
+	candidates, err := retriever.Retrieve(context.Background(), Compile("car"), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].ShotID != "s-car" {
+		t.Fatalf("only the serving space's row may be scored, got %+v", candidates)
+	}
+	if len(store.queried) != 1 || store.queried[0] != "text-space-v1:routed" {
+		t.Fatalf("read must name exactly the served space, got %v", store.queried)
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/evjohn-icu/nexusgate/internal/providerchannels"
 	"github.com/evjohn-icu/nexusgate/internal/providers"
 	"github.com/evjohn-icu/nexusgate/internal/providers/common"
+	"github.com/evjohn-icu/nexusgate/internal/providers/embedding"
 	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
 )
 
@@ -499,6 +502,16 @@ func (p *channelTagCurator) SummarizeLibrary(ctx context.Context, input domain.L
 	return draft, err
 }
 
+// channelEmbedder is the routed embedding implementation. It implements
+// search.IdentifiedTextEmbedder alongside providers.Embedder: one operation
+// may fall back from the primary route to a different backend, so the
+// identity of the space a batch lives in is only known once a route has
+// actually served it — EmbedInSpace returns the vectors and their space
+// together, captured from the invocation that succeeded, and EmbeddingSpaceID
+// plans the first route's space without any provider call.
+//
+// Model() stays a display/compatibility surface (tag curation, provider
+// pages) and deliberately does not participate in vector identity.
 type channelEmbedder struct{ runtime *providerChannelRuntime }
 
 func (p *channelEmbedder) Name() string {
@@ -511,18 +524,46 @@ func (p *channelEmbedder) Model() string {
 	return model
 }
 
-func (p *channelEmbedder) Embed(ctx context.Context, inputs []string) ([][]float64, error) {
+// EmbeddingSpaceID reports the space the next successful batch is planned to
+// land in: the first route's space, or the legacy provider's space when no
+// channel route exists. It never performs a provider call — the executor
+// read is SQLite only — so rebuild paths can consult it freely. An empty
+// result means no embedding backend is configured at all.
+func (p *channelEmbedder) EmbeddingSpaceID() string {
+	executor, hasRoute, err := p.runtime.executor(context.Background(), providerchannels.CapabilityEmbedding)
+	if err != nil || !hasRoute || executor == nil {
+		return p.runtime.legacyEmbeddingSpaceID()
+	}
+	routes := executor.Route(providerchannels.CapabilityEmbedding)
+	if len(routes) == 0 {
+		return p.runtime.legacyEmbeddingSpaceID()
+	}
+	return p.runtime.embeddingSpaceFromChannel(embeddingInvocationFromChannel(routes[0]))
+}
+
+// EmbedInSpace embeds one batch through the routed executor and reports the
+// space of the backend that actually served it. The identity is captured
+// from the successful invocation itself — never re-read from the channel
+// configuration afterwards — so a channel edit between the call and the
+// write cannot misattribute the vectors, and the legacy config's fields are
+// frozen in the runtime, not consulted per call.
+func (p *channelEmbedder) EmbedInSpace(ctx context.Context, inputs []string) ([][]float64, string, error) {
 	executor, hasRoute, err := p.runtime.executor(ctx, providerchannels.CapabilityEmbedding)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if !hasRoute {
 		if p.runtime.legacyEmbedder == nil {
-			return nil, ErrProviderChannelNotConfigured
+			return nil, "", ErrProviderChannelNotConfigured
 		}
-		return p.runtime.legacyEmbedder.Embed(ctx, inputs)
+		vectors, err := p.runtime.legacyEmbedder.Embed(ctx, inputs)
+		if err != nil {
+			return nil, "", err
+		}
+		return vectors, p.runtime.legacyEmbeddingSpaceID(), nil
 	}
 	var vectors [][]float64
+	var spaceID string
 	err = executor.Execute(ctx, providerchannels.CapabilityEmbedding, func(callCtx context.Context, invocation providerchannels.Invocation) error {
 		key, ok, resolveErr := p.runtime.resolve(invocation.SecretRef)
 		if resolveErr != nil {
@@ -539,9 +580,237 @@ func (p *channelEmbedder) Embed(ctx context.Context, inputs []string) ([][]float
 		if err != nil {
 			return redactError(err, key)
 		}
+		spaceID = p.runtime.embeddingSpaceForRoutedCall(invocation, provider)
 		return nil
 	})
+	if err != nil {
+		return nil, "", err
+	}
+	return vectors, spaceID, nil
+}
+
+func (p *channelEmbedder) Embed(ctx context.Context, inputs []string) ([][]float64, error) {
+	vectors, _, err := p.EmbedInSpace(ctx, inputs)
 	return vectors, err
+}
+
+// embeddingInvocationFromChannel builds the invocation executor.Execute would
+// hand an operation for this channel (member fields omitted: identity never
+// includes the credential or the member that served it), so the planned
+// first-route space is computed from exactly the same fields a real call
+// would carry.
+func embeddingInvocationFromChannel(channel providerchannels.Channel) providerchannels.Invocation {
+	return providerchannels.Invocation{
+		Capability:     providerchannels.CapabilityEmbedding,
+		ChannelID:      channel.ID,
+		ChannelLabel:   channel.Label,
+		Provider:       channel.Provider,
+		ProviderName:   channel.ProviderName,
+		Protocol:       channel.Protocol,
+		Endpoint:       channel.Endpoint,
+		Path:           channel.Path,
+		Model:          channel.Model,
+		AuthHeader:     channel.AuthHeader,
+		AuthScheme:     channel.AuthScheme,
+		TimeoutSeconds: channel.TimeoutSeconds,
+	}
+}
+
+// legacyEmbeddingSpaceID is the space of the legacy configured provider, the
+// tuple of its active config (the same fields a channel tuple uses, captured
+// from the provider instance NewEmbedder built). The runtime's config and
+// legacy embedder are frozen at construction, so the identity never consults
+// mutable state after a vector has been obtained. Empty when no legacy
+// provider exists.
+func (r *providerChannelRuntime) legacyEmbeddingSpaceID() string {
+	if r.legacyEmbedder == nil {
+		return ""
+	}
+	routed, ok := r.legacyEmbedder.(*embedding.Provider)
+	if !ok {
+		// A test or library embedder: its stable display fields are the only
+		// identity it has, so the tuple degrades to name + model.
+		return textEmbeddingSpaceID(textEmbeddingIdentity{
+			ProviderName: strings.TrimSpace(r.cfg.Providers.EmbeddingPrimary),
+			Model:        strings.TrimSpace(r.legacyEmbedder.Model()),
+		})
+	}
+	protocol := strings.TrimSpace(routed.Protocol)
+	if protocol == "" {
+		protocol = "openai_embeddings"
+	}
+	model := routed.Model()
+	return textEmbeddingSpaceID(textEmbeddingIdentity{
+		ProviderName: strings.TrimSpace(r.cfg.Providers.EmbeddingPrimary),
+		Protocol:     protocol,
+		Endpoint:     normalizeEmbeddingEndpoint(routed.Endpoint.BaseURL),
+		RequestPath:  effectiveEmbeddingRequestPath(protocol, routed.Path, model),
+		Model:        model,
+	})
+}
+
+// embeddingSpaceForRoutedCall derives the space identity from the invocation
+// that actually succeeded and the provider instance it built. The instance's
+// fields are the effective merged configuration (a channel inherits any
+// unspecified field from the legacy config), so this is the backend that
+// really served the batch — not a re-read of the (editable) channel table.
+func (r *providerChannelRuntime) embeddingSpaceForRoutedCall(invocation providerchannels.Invocation, provider providers.Embedder) string {
+	if routed, ok := provider.(*embedding.Provider); ok {
+		protocol := strings.TrimSpace(routed.Protocol)
+		if protocol == "" {
+			protocol = "openai_embeddings"
+		}
+		model := routed.Model()
+		return textEmbeddingSpaceID(textEmbeddingIdentity{
+			ProviderName: strings.TrimSpace(invocation.ProviderName),
+			Protocol:     protocol,
+			Endpoint:     normalizeEmbeddingEndpoint(routed.Endpoint.BaseURL),
+			RequestPath:  effectiveEmbeddingRequestPath(protocol, routed.Path, model),
+			Model:        model,
+		})
+	}
+	return r.embeddingSpaceFromChannel(invocation)
+}
+
+// embeddingSpaceFromChannel computes the space a channel route would serve
+// from channel metadata alone — the same config merge buildEmbedderProvider
+// performs (unspecified fields inherit the legacy config), minus the secret.
+// It backs EmbeddingSpaceID and the fallback for non-standard embedders.
+func (r *providerChannelRuntime) embeddingSpaceFromChannel(invocation providerchannels.Invocation) string {
+	providersConfig := r.cfg.Providers
+	clearProviderSecrets(&providersConfig)
+	name := strings.TrimSpace(invocation.ProviderName)
+	var effective config.ProviderConfig
+	switch name {
+	case "openai_embeddings", "gemini_embed_content":
+		applyProviderChannelConfig(&providersConfig.Embedding, invocation, "")
+		if invocation.Protocol == "" {
+			providersConfig.Embedding.Protocol = name
+		}
+		effective = providersConfig.Embedding
+	case "volc_agent_plan_embedding":
+		applyProviderChannelConfig(&providersConfig.VolcAgentPlanEmbedding, invocation, "")
+		providersConfig.VolcAgentPlanEmbedding.Protocol = "openai_embeddings"
+		effective = providersConfig.VolcAgentPlanEmbedding
+	case "volc_coding_plan_embedding":
+		applyProviderChannelConfig(&providersConfig.VolcCodingPlanEmbedding, invocation, "")
+		providersConfig.VolcCodingPlanEmbedding.Protocol = "openai_embeddings"
+		effective = providersConfig.VolcCodingPlanEmbedding
+	default:
+		return r.legacyEmbeddingSpaceID()
+	}
+	protocol := strings.TrimSpace(effective.Protocol)
+	if protocol == "" {
+		protocol = name
+	}
+	model := effectiveEmbeddingModel(effective.Model)
+	return textEmbeddingSpaceID(textEmbeddingIdentity{
+		ProviderName: name,
+		Protocol:     protocol,
+		Endpoint:     normalizeEmbeddingEndpoint(effective.BaseURL),
+		RequestPath:  effectiveEmbeddingRequestPath(protocol, effective.Path, model),
+		Model:        model,
+	})
+}
+
+// textEmbeddingIdentity is the canonical tuple that decides one embedding
+// space: the backend that produced a vector, minus everything a re-branding
+// or credential change cannot move. Authentication is excluded on purpose —
+// replacing an API key does not change what the vectors mean — and the
+// endpoint is normalized (lowercase scheme/host, effective port) so :443 and
+// a bare https host are one origin, exactly like common.SameOrigin's rule.
+type textEmbeddingIdentity struct {
+	ProviderName string
+	Protocol     string
+	Endpoint     string
+	RequestPath  string
+	Model        string
+}
+
+// textEmbeddingSpacePrefix marks every stored identity: a `model` column
+// without it is a legacy display name with unprovable provenance, never a
+// space a query may score against.
+const textEmbeddingSpacePrefix = "text-space-v1:"
+
+// textEmbeddingSpaceID hashes the canonical tuple into a stable space ID.
+// Key=value fields joined with NUL keep the serialization injective.
+func textEmbeddingSpaceID(identity textEmbeddingIdentity) string {
+	canonical := strings.Join([]string{
+		"provider=" + identity.ProviderName,
+		"protocol=" + identity.Protocol,
+		"endpoint=" + identity.Endpoint,
+		"path=" + identity.RequestPath,
+		"model=" + identity.Model,
+	}, "\x00")
+	sum := sha256.Sum256([]byte(canonical))
+	return textEmbeddingSpacePrefix + hex.EncodeToString(sum[:])
+}
+
+// normalizeEmbeddingEndpoint renders one endpoint as scheme://host:port/path:
+// lowercase scheme and host, the effective port (explicit, or the scheme's
+// default), path kept verbatim (paths are case-sensitive), and query,
+// fragment and userinfo dropped (a query string can carry credentials).
+// Anything that is not a valid HTTP(S) URL with an effective port — including
+// the empty endpoint — is returned trimmed and otherwise verbatim: the hash
+// must be stable, and an invalid endpoint is one a real call could not have
+// come from anyway.
+func normalizeEmbeddingEndpoint(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	host := strings.ToLower(parsed.Hostname())
+	if (scheme != "http" && scheme != "https") || host == "" {
+		return raw
+	}
+	var port string
+	if explicit := parsed.Port(); explicit != "" {
+		value, convErr := strconv.Atoi(explicit)
+		if convErr != nil || value <= 0 || value > 65535 {
+			return raw
+		}
+		port = strconv.Itoa(value)
+	} else if scheme == "https" {
+		port = "443"
+	} else {
+		port = "80"
+	}
+	normalized := scheme + "://"
+	if strings.Contains(host, ":") {
+		normalized += "[" + host + "]"
+	} else {
+		normalized += host
+	}
+	return normalized + ":" + port + parsed.Path
+}
+
+// effectiveEmbeddingModel mirrors embedding.Provider.Model's default, so a
+// channel with a blank model hashes the same identity the provider would
+// actually send.
+func effectiveEmbeddingModel(model string) string {
+	if strings.TrimSpace(model) == "" {
+		return "text-embedding-model"
+	}
+	return strings.TrimSpace(model)
+}
+
+// effectiveEmbeddingRequestPath mirrors the request-path default
+// embedding.Provider.Embed applies: the OpenAI-compatible protocol posts to
+// "embeddings", Gemini's native protocol to "models/<model>:embedContent".
+func effectiveEmbeddingRequestPath(protocol, path, model string) string {
+	path = strings.TrimSpace(path)
+	if path != "" {
+		return path
+	}
+	if protocol == "gemini_embed_content" {
+		return "models/" + effectiveEmbeddingModel(model) + ":embedContent"
+	}
+	return "embeddings"
 }
 
 type channelPlanner struct{ runtime *providerChannelRuntime }

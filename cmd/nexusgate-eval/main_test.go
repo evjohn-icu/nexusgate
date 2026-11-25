@@ -11,6 +11,7 @@ import (
 // commands' required flags explicitly, so a regression fails here instead of
 // on a machine.
 func TestParseRunArgs(t *testing.T) {
+	t.Setenv("NEXUSGATE_DATA_DIR", "")
 	t.Run("all flags parse", func(t *testing.T) {
 		corpus, dataDir, label, err := parseRunArgs([]string{"--corpus", "./c", "--data-dir", "./d", "--label", "qwen3vl-4b"})
 		if err != nil {
@@ -44,6 +45,7 @@ func TestParseRunArgs(t *testing.T) {
 }
 
 func TestParseScoreArgs(t *testing.T) {
+	t.Setenv("NEXUSGATE_DATA_DIR", "")
 	t.Run("labels list parses", func(t *testing.T) {
 		corpus, dataDir, labels, err := parseScoreArgs([]string{"--corpus", "./c", "--data-dir", "./d", "--labels", "qwen3vl-4b,gemini-flash"})
 		if err != nil {
@@ -74,4 +76,14 @@ func TestParseScoreArgs(t *testing.T) {
 			t.Fatal("expected error for unknown flag")
 		}
 	})
+}
+
+func TestEvalCommandsUseTheSameEnvironmentDataDirectory(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("NEXUSGATE_DATA_DIR", dir)
+	_, runDir, _, runErr := parseRunArgs([]string{"--corpus", "c", "--label", "a"})
+	_, scoreDir, _, scoreErr := parseScoreArgs([]string{"--corpus", "c", "--labels", "a"})
+	if runErr != nil || scoreErr != nil || runDir != dir || scoreDir != dir {
+		t.Fatalf("run = %q (%v), score = %q (%v), want %q", runDir, runErr, scoreDir, scoreErr, dir)
+	}
 }

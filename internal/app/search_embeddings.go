@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 
@@ -12,51 +13,105 @@ import (
 )
 
 // searchEmbedderAdapter adapts the Hub's embedding provider (legacy config or
-// provider channel — the channel runtime wrapper resolves both) to the
-// search engine's TextEmbedder contract, with one behavioural override: an
+// provider channel — the channel runtime wrapper resolves both) to the search
+// engine's TextEmbedder contract, plus its identity-aware extension: the
+// wrapper decides the space a batch lands in (the backend that actually
+// served it), so both Embed and EmbedInSpace are needed.
+//
+// One behavioural override carries over from the single-provider adapter: an
 // unconfigured embedding capability is an EXPECTED state, not a fault, so
-// Embed reports "no vectors" instead of an error. Without this, a Hub that
-// never configured embedding would fail every semantic/fact search — the
-// retriever treats an empty response as "this channel has nothing to say",
-// exactly like the transcript channel without aligned words.
+// EmbedInSpace reports "no vectors, no space" instead of an error. Without
+// this, a Hub that never configured embedding would fail every semantic/fact
+// search — the retriever treats an empty response as "this channel has
+// nothing to say", exactly like the transcript channel without aligned words.
 type searchEmbedderAdapter struct {
 	embedder providers.Embedder
 }
 
 func (a searchEmbedderAdapter) Name() string { return a.embedder.Name() }
 
+// Model is kept for display and single-provider consumers (tag curation
+// still keys its own storage by it); vector identity never reads it — the
+// routed wrapper's space ID is what embeddings are stored and scored under.
 func (a searchEmbedderAdapter) Model() string { return a.embedder.Model() }
 
 func (a searchEmbedderAdapter) Embed(ctx context.Context, texts []string) ([][]float64, error) {
+	vectors, _, err := a.EmbedInSpace(ctx, texts)
+	return vectors, err
+}
+
+// EmbeddingSpaceID plans the space the next successful batch would land in
+// (first channel route, else legacy provider). For a plain single-provider
+// embedder there is no routing, so its display model is the space — the
+// identity single-provider callers have always had.
+func (a searchEmbedderAdapter) EmbeddingSpaceID() string {
+	if identified, ok := a.embedder.(search.IdentifiedTextEmbedder); ok {
+		return identified.EmbeddingSpaceID()
+	}
+	return a.embedder.Model()
+}
+
+func (a searchEmbedderAdapter) EmbedInSpace(ctx context.Context, texts []string) ([][]float64, string, error) {
+	if identified, ok := a.embedder.(search.IdentifiedTextEmbedder); ok {
+		vectors, spaceID, err := identified.EmbedInSpace(ctx, texts)
+		if err != nil {
+			if errors.Is(err, ErrProviderChannelNotConfigured) {
+				return nil, "", nil
+			}
+			return nil, "", err
+		}
+		return vectors, spaceID, nil
+	}
 	vectors, err := a.embedder.Embed(ctx, texts)
 	if err != nil {
 		if errors.Is(err, ErrProviderChannelNotConfigured) {
-			return nil, nil
+			return nil, "", nil
 		}
-		return nil, err
+		return nil, "", err
 	}
-	return vectors, nil
+	return vectors, a.embedder.Model(), nil
+}
+
+// plannedEmbeddingSpace resolves the space the current embedding backend
+// would write next, or "" when no backend is configured. The "" shortcut
+// matters for the pipeline hook: it turns "never configured" into a silent
+// no-op before any store query runs.
+func (s *Service) plannedEmbeddingSpace() (store search.ShotStore, adapter searchEmbedderAdapter, spaceID string, ok bool) {
+	store, ok = s.repo.(search.ShotStore)
+	if !ok || s.embedder == nil {
+		return nil, searchEmbedderAdapter{}, "", false
+	}
+	adapter = searchEmbedderAdapter{embedder: s.embedder}
+	spaceID = adapter.EmbeddingSpaceID()
+	if spaceID == "" {
+		return nil, searchEmbedderAdapter{}, "", false
+	}
+	return store, adapter, spaceID, true
 }
 
 // ensureShotTextEmbeddings is the pipeline's post-commit hook: after shot
 // rows become canonical it re-embeds exactly the shots whose derived text
-// changed under the current model. It is synchronous (the pipeline's
+// changed in the planned (primary) space. It is synchronous (the pipeline's
 // "process exited means no call in flight" invariant) and never fails the
 // job — the embedding layer is derived, rebuildable and best-effort, so every
 // failure path ends in a log line instead of an error.
+//
+// The comparison happens in the planned space so a shot whose primary-space
+// row is missing or stale is re-embedded even if a fallback space already
+// holds a usable vector: the primary is what a recovered rebuild will write,
+// and while the primary is down the batch itself lands in whichever space
+// actually served it (the write uses the returned space ID).
 func (s *Service) ensureShotTextEmbeddings(ctx context.Context, assetID string) {
-	store, ok := s.repo.(search.ShotStore)
-	if !ok || s.embedder == nil {
+	store, adapter, spaceID, ok := s.plannedEmbeddingSpace()
+	if !ok {
 		return
 	}
-	adapter := searchEmbedderAdapter{embedder: s.embedder}
-	model := adapter.Model()
 	docs, err := store.ShotTextDocumentsByAsset(ctx, assetID)
 	if err != nil {
 		slog.Warn("shot text embedding: read documents", "asset_id", assetID, "error", err)
 		return
 	}
-	existing, err := store.ShotTextEmbeddingHashes(ctx, model, assetID)
+	existing, err := store.ShotTextEmbeddingHashes(ctx, spaceID, assetID)
 	if err != nil {
 		slog.Warn("shot text embedding: read hashes", "asset_id", assetID, "error", err)
 		return
@@ -79,20 +134,25 @@ func (s *Service) ensureShotTextEmbeddings(ctx context.Context, assetID string) 
 }
 
 // RebuildShotTextEmbeddings is the full retrieval_generation rebuild: every
-// shot whose derived text hash differs from the stored (current-model) one is
-// re-embedded, in bounded batches. Switching the embedding model therefore
-// means running this once — the canonical analysis is never touched.
+// shot whose planned-space row is missing or stale is re-embedded, in bounded
+// batches. "Missing or stale" is read through ListShotTextEmbeddings, which
+// only returns rows whose source hash still matches the current projection —
+// so a shot whose row went stale (including one that carries only a stale
+// fallback-space vector) is rebuilt, while healthy rows and other spaces'
+// rows are left exactly as they are. Switching the embedding backend
+// therefore means running this once — the canonical analysis is never
+// touched, and no Hub start ever triggers the rebuild implicitly: it stays
+// the documented operator command.
 func (s *Service) RebuildShotTextEmbeddings(ctx context.Context) (int, error) {
-	store, ok := s.repo.(search.ShotStore)
-	if !ok || s.embedder == nil {
+	store, adapter, spaceID, ok := s.plannedEmbeddingSpace()
+	if !ok {
 		return 0, errors.New("search engine or embedding provider not available")
 	}
-	adapter := searchEmbedderAdapter{embedder: s.embedder}
 	docs, err := store.AllShotTextDocuments(ctx)
 	if err != nil {
 		return 0, err
 	}
-	existing, err := store.ListShotTextEmbeddings(ctx, adapter.Model())
+	existing, err := store.ListShotTextEmbeddings(ctx, spaceID)
 	if err != nil {
 		return 0, err
 	}
@@ -126,17 +186,26 @@ func (s *Service) RebuildShotTextEmbeddings(ctx context.Context) (int, error) {
 	return total, nil
 }
 
-// embedShotDocuments embeds one batch of shot documents and persists the
-// rows under the current model. An unconfigured provider reports no vectors
-// (the adapter's contract): that is the expected no-op state, not an error —
-// the caller logs nothing and moves on, and the rebuild command reports zero
-// embeddings so an operator knows there is nothing to build.
-func embedShotDocuments(ctx context.Context, store search.ShotStore, embedder search.TextEmbedder, docs []search.ShotSearchDocument) (int, error) {
+// embedShotDocuments embeds one batch of shot documents and persists the rows
+// under the space that actually served the batch. An unconfigured provider
+// reports no vectors (the adapter's contract): that is the expected no-op
+// state, not an error — the caller logs nothing and moves on, and the rebuild
+// command reports zero embeddings so an operator knows there is nothing to
+// build.
+//
+// A batch that is malformed or ragged is an error BEFORE any write: fewer or
+// more vectors than inputs, a non-finite or zero-norm vector, vectors that
+// disagree on dimension, or empty vectors mixed with real ones would either
+// poison the space with unusable rows or silently drop data — every row of a
+// batch must be usable, or none of it is written. A batch whose vectors are
+// all empty keeps the prior no-vector semantics: the provider said nothing,
+// so there is nothing to persist and nothing failed.
+func embedShotDocuments(ctx context.Context, store search.ShotStore, embedder searchEmbedderAdapter, docs []search.ShotSearchDocument) (int, error) {
 	texts := make([]string, len(docs))
 	for i, doc := range docs {
 		texts[i] = search.ShotTextSource(doc)
 	}
-	vectors, err := embedder.Embed(ctx, texts)
+	vectors, spaceID, err := embedder.EmbedInSpace(ctx, texts)
 	if err != nil {
 		return 0, err
 	}
@@ -144,29 +213,47 @@ func embedShotDocuments(ctx context.Context, store search.ShotStore, embedder se
 		// Embedding not configured: nothing to persist, nothing failed.
 		return 0, nil
 	}
-	if len(vectors) != len(docs) {
-		return 0, errors.New("embedding provider returned fewer vectors than inputs")
+	if spaceID == "" {
+		return 0, errors.New("embedding provider returned vectors without a space identity")
 	}
-	for _, vector := range vectors {
+	if len(vectors) != len(docs) {
+		return 0, fmt.Errorf("embedding provider returned %d vectors for %d inputs", len(vectors), len(docs))
+	}
+	nonEmpty := make([][]float64, 0, len(vectors))
+	for i, vector := range vectors {
 		if len(vector) == 0 {
-			return 0, nil
+			continue
 		}
 		var norm float64
 		for _, value := range vector {
 			if math.IsNaN(value) || math.IsInf(value, 0) {
-				break
+				return 0, fmt.Errorf("embedding vector %d has a non-finite component", i)
 			}
 			norm += value * value
 		}
 		if norm == 0 {
-			return 0, nil
+			return 0, fmt.Errorf("embedding vector %d has zero norm", i)
+		}
+		nonEmpty = append(nonEmpty, vector)
+	}
+	if len(nonEmpty) == 0 {
+		// Every vector empty: the provider has nothing to say for this batch.
+		return 0, nil
+	}
+	if len(nonEmpty) != len(vectors) {
+		return 0, fmt.Errorf("embedding batch is ragged: %d of %d vectors are empty", len(nonEmpty), len(vectors))
+	}
+	dimension := len(nonEmpty[0])
+	for _, vector := range nonEmpty[1:] {
+		if len(vector) != dimension {
+			return 0, fmt.Errorf("embedding batch mixes dimensions %d and %d", dimension, len(vector))
 		}
 	}
 	rows := make([]search.ShotEmbeddingRow, 0, len(docs))
 	for i, doc := range docs {
 		rows = append(rows, search.ShotEmbeddingRow{
 			Shot:           domainShotForEmbedding(doc),
-			Model:          embedder.Model(),
+			Model:          spaceID,
 			Vector:         toFloat32(vectors[i]),
 			SourceTextHash: search.ShotTextSourceHash(doc),
 		})

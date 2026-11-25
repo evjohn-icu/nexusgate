@@ -14,10 +14,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .adapters import (capability_report, choose_model_dir, expected_dimension, make_adapter,
-                       resolve_model)
+                       probe_model, require_positive_dimension, resolve_model,
+                       validate_runtime_profile)
 from .adapters.base import (AdapterContext, Cancelled, DeadlineExceeded, InferenceFailure,
-                            ModelUnavailable, ResourceExhausted, UnsupportedInput,
-                            UnsupportedOperation)
+                            UnsupportedInput, UnsupportedOperation)
 from .protocol import (MAX_FRAME_BYTES, ProtocolError, read_request, result_frames,
                        validate_result, write_error, write_frame, write_progress)
 
@@ -45,6 +45,10 @@ def _parser() -> argparse.ArgumentParser:
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--once", action="store_true", help="read one request line (default)")
     modes.add_argument("--probe", action="store_true", help="emit locked model capabilities JSON")
+    modes.add_argument("--probe-model", metavar="MODEL_ID",
+                       help="run the locked load-only probe for one exact model identity")
+    parser.add_argument("--probe-revision", metavar="REVISION",
+                        help="immutable revision paired with --probe-model")
     parser.add_argument("--oom-probe-mib", type=int, help=argparse.SUPPRESS)
     return parser
 
@@ -141,12 +145,7 @@ def _run_one(model_dir: Path, device: str, dtype: str, protocol_output: Any) -> 
         request = read_request(sys.stdin.buffer)
         operation_id = request["operation_id"]
         entry = resolve_model(request["model_id"], request["model_revision"], request["operation"])
-        allowed_dtypes = entry.get("runtime", {}).get("dtypes", ["float32"])
-        if dtype not in allowed_dtypes:
-            raise UnsupportedInput("requested dtype is not supported by the locked model")
-        allowed_backends = load_backends(entry)
-        if device not in allowed_backends:
-            raise UnsupportedInput("requested device is not supported by the locked model")
+        validate_runtime_profile(entry, device, dtype)
         root = model_dir.resolve()
         chosen = choose_model_dir(root, entry)
         deadline_timer = threading.Timer(request["timeout_ms"] / 1000.0, deadline_event.set)
@@ -173,9 +172,8 @@ def _run_one(model_dir: Path, device: str, dtype: str, protocol_output: Any) -> 
             signal.signal(signal.SIGTERM, on_terminate)
         try:
             progress(0.0, "starting")
-            expected = expected_dimension(entry, request)
-            if expected <= 0:
-                raise ModelUnavailable("locked model has no usable output dimension")
+            expected = require_positive_dimension(request["operation"],
+                                                  expected_dimension(entry, request))
             context = AdapterContext(model_dir=chosen, device=device, dtype=dtype,
                                      progress=progress, model=entry, cancel_check=check_cancelled)
             adapter = make_adapter(entry, context)
@@ -214,14 +212,6 @@ def _run_one(model_dir: Path, device: str, dtype: str, protocol_output: Any) -> 
             deadline_timer.cancel()
 
 
-def load_backends(entry: Mapping[str, Any]) -> list[str]:
-    runtime = entry.get("runtime", {})
-    backends = runtime.get("backends")
-    if isinstance(backends, list):
-        return [str(item) for item in backends]
-    return ["cpu", "cuda"]
-
-
 def _oom_probe(mib: int, output: Any) -> int:
     if mib <= 0:
         write_error("benchmark-oom-probe", "unsupported_input", "probe size must be positive")
@@ -231,15 +221,32 @@ def _oom_probe(mib: int, output: Any) -> int:
     return 0
 
 
+def _probe_model(model_dir: Path, device: str, dtype: str, model_id: str, revision: str,
+                 protocol_output: Any) -> int:
+    """One load-only probe framed exactly like the capability inventory."""
+    capability = probe_model(model_dir, device, dtype, model_id, revision)
+    frame = {"type": "capabilities", "capabilities": [capability]}
+    protocol_output.write(json.dumps(frame, ensure_ascii=False, sort_keys=True,
+                                     separators=(",", ":")).encode("utf-8") + b"\n")
+    protocol_output.flush()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.probe_model and not args.probe_revision:
+        parser.error("--probe-revision is required with --probe-model")
     real_stdout = sys.stdout
     protocol_output = real_stdout.buffer
     sys.stdout = _StdoutRedirect(protocol_output)  # type: ignore[assignment]
     if args.oom_probe_mib is not None:
         return _oom_probe(args.oom_probe_mib, protocol_output)
+    if args.probe_model:
+        return _probe_model(args.model_dir, args.device, args.dtype,
+                            args.probe_model, args.probe_revision, protocol_output)
     if args.probe:
-        report = capability_report(args.model_dir)
+        report = capability_report(args.model_dir, args.device, args.dtype)
         # The Go executor dispatches on the frame type; a bare capabilities
         # object would be rejected as an unknown frame.
         report["type"] = "capabilities"

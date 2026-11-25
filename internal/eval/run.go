@@ -2,12 +2,14 @@ package eval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/evjohn-icu/nexusgate/internal/app"
+	"github.com/evjohn-icu/nexusgate/internal/cachecoord"
 	"github.com/evjohn-icu/nexusgate/internal/config"
 	"github.com/evjohn-icu/nexusgate/internal/domain"
 	"github.com/evjohn-icu/nexusgate/internal/media"
@@ -23,13 +25,19 @@ import (
 // measured cleanly. The report the score step needs is written to
 // <dataDir>/runs/<label>/report.json.
 func Run(ctx context.Context, cfg config.Config, corpus *Corpus, dataDir, label string) (*RunReport, error) {
-	if label == "" {
-		return nil, fmt.Errorf("label is required")
-	}
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+	dir, err := runDirectory(dataDir, label)
+	if err != nil {
 		return nil, err
 	}
-	repo, err := sqlite.Open(filepath.Join(dataDir, "nexusgate.db"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	lock, err := cachecoord.AcquirePath(filepath.Join(dir, ".run.lock"), true)
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Release()
+	repo, err := sqlite.Open(filepath.Join(dir, "nexusgate.db"))
 	if err != nil {
 		return nil, err
 	}
@@ -37,37 +45,51 @@ func Run(ctx context.Context, cfg config.Config, corpus *Corpus, dataDir, label 
 	if err := repo.Migrate(ctx); err != nil {
 		return nil, err
 	}
+	cfg.CacheDir = filepath.Join(dir, "cache")
 	pipeline, providerName, modelName, err := evalPipeline(repo, cfg)
 	if err != nil {
 		return nil, err
 	}
-	report := &RunReport{Label: label, Provider: providerName, Model: modelName, StartedAt: time.Now().UTC()}
+	pipeline.SetCacheLockDir(dir)
+	report := &RunReport{Label: label, Provider: providerName, Model: modelName, StartedAt: time.Now().UTC(), IsolatedDatabase: true}
 
 	// The corpus clips are linked into one root so the pipeline sees them as
 	// a real library without copying the footage (which could be many GB).
-	rootPath := filepath.Join(dataDir, "corpus-root")
+	rootPath := filepath.Join(dir, "corpus-root")
 	if err := os.MkdirAll(rootPath, 0o700); err != nil {
 		return nil, err
 	}
-	root, err := repo.CreateLibraryRoot(ctx, rootPath)
+	root, err := corpusRoot(ctx, repo, rootPath)
 	if err != nil {
 		return nil, err
 	}
+	previous, err := LoadReport(dataDir, label)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	completed := previous != nil && previous.IsolatedDatabase
+	if completed && len(previous.Assets) != len(corpus.Clips) {
+		return nil, fmt.Errorf("corpus has changed; use a new run label")
+	}
+	entries, err := os.ReadDir(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	clipNames := make(map[string]bool, len(corpus.Clips))
+	for _, clip := range corpus.Clips {
+		if clipNames[clip.Name] {
+			return nil, fmt.Errorf("duplicate corpus clip name %q", clip.Name)
+		}
+		clipNames[clip.Name] = true
+	}
+	for _, entry := range entries {
+		if !clipNames[entry.Name()] {
+			return nil, fmt.Errorf("corpus has changed; use a new run label")
+		}
+	}
 	assetIDs := make(map[string]string, len(corpus.Clips))
 	for _, clip := range corpus.Clips {
-		link := filepath.Join(rootPath, clip.Name)
-		// Re-running the harness into the same data dir (e.g. after a failed
-		// run) must not die on the existing links.
-		if _, err := os.Lstat(link); err == nil {
-			// Already linked; leave it.
-		} else if err := os.Symlink(clip.Path, link); err != nil {
-			// Some filesystems refuse symlinks (Windows without privileges);
-			// a hard link is the next-best thing and equally cheap.
-			if err := os.Link(clip.Path, link); err != nil {
-				return nil, fmt.Errorf("link %s into the corpus root: %w", clip.Name, err)
-			}
-		}
-		assetID, err := seedClip(ctx, repo, root, clip)
+		assetID, err := seedClip(ctx, repo, root, clip, completed)
 		if err != nil {
 			return nil, fmt.Errorf("seed %s: %w", clip.Name, err)
 		}
@@ -147,12 +169,69 @@ func evalPipeline(repo *sqlite.Repository, cfg config.Config) (*app.Pipeline, st
 	return app.NewPipeline(repo, cfg.CacheDir, nil, nil, videoProvider, nil, detector, plan, stager, deferral, cfg.Pipeline.MinimumFreeSpaceBytes), providerName, modelName, nil
 }
 
-func seedClip(ctx context.Context, repo *sqlite.Repository, root domain.LibraryRoot, clip Clip) (string, error) {
-	info, err := os.Stat(clip.Path)
+func corpusRoot(ctx context.Context, repo *sqlite.Repository, path string) (domain.LibraryRoot, error) {
+	roots, err := repo.ListLibraryRoots(ctx)
+	if err != nil {
+		return domain.LibraryRoot{}, err
+	}
+	for _, root := range roots {
+		if root.Path == path {
+			return root, nil
+		}
+	}
+	return repo.CreateLibraryRoot(ctx, path)
+}
+
+func seedClip(ctx context.Context, repo *sqlite.Repository, root domain.LibraryRoot, clip Clip, completed bool) (string, error) {
+	if !filepath.IsLocal(clip.Name) || clip.Name == "." || filepath.Base(clip.Name) != clip.Name {
+		return "", fmt.Errorf("invalid corpus clip name %q", clip.Name)
+	}
+	source, err := filepath.Abs(clip.Path)
 	if err != nil {
 		return "", err
 	}
-	scanned, err := repo.UpsertScannedFile(ctx, root, clip.Name, clip.Path, info, "eval-fp-"+clip.Name)
+	info, err := os.Stat(source)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("source is not a regular file")
+	}
+	digest, err := HashFile(source)
+	if err != nil {
+		return "", err
+	}
+	// Preserve a separate asset per corpus name even for byte-identical clips.
+	fingerprint := digest + "/" + clip.Name
+	known, exists, err := repo.KnownFile(ctx, root.ID, clip.Name)
+	if err != nil {
+		return "", err
+	}
+	if (exists && (known.Fingerprint != fingerprint || known.Size != info.Size())) || (!exists && completed) {
+		return "", fmt.Errorf("corpus clip identity has changed; use a new run label")
+	}
+	link := filepath.Join(root.Path, clip.Name)
+	linked, err := os.Stat(link)
+	switch {
+	case err == nil:
+		if !os.SameFile(info, linked) {
+			return "", fmt.Errorf("corpus clip points to a different source; use a new run label")
+		}
+	case errors.Is(err, os.ErrNotExist):
+		if _, linkErr := os.Lstat(link); !errors.Is(linkErr, os.ErrNotExist) {
+			return "", fmt.Errorf("corpus clip link is unavailable: %w", err)
+		}
+		if err := os.Symlink(source, link); err != nil {
+			// Hard links also work on systems where symlink creation is restricted.
+			if err := os.Link(source, link); err != nil {
+				return "", fmt.Errorf("link %s into the corpus root: %w", clip.Name, err)
+			}
+		}
+	default:
+		return "", err
+	}
+
+	scanned, err := repo.UpsertScannedFile(ctx, root, clip.Name, source, info, fingerprint)
 	if err != nil {
 		return "", err
 	}

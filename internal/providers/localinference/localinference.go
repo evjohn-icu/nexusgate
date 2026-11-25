@@ -52,10 +52,15 @@ type Config struct {
 	// it contains the `inference` package) or its parent (when ModuleDir is the
 	// package directory). It is never caller-controlled.
 	moduleRoot string
-	// ResolveAssetPath and ResolveImagePath return the already-authorized local
-	// staged file. The executor never guesses a path from an asset or reference ID.
+	// ResolveAssetPath returns the already-authorized local staged file. The
+	// executor never guesses a path from an asset ID.
 	ResolveAssetPath func(input domain.InferenceInput) (string, error)
-	ResolveImagePath func(referenceID, digest string) (string, error)
+	// ResolveImagePath returns the already-authorized local staged query image
+	// for a (reference ID, digest) pair. The context is the executing job's own
+	// context, passed through Execute: a per-job resolver uses it to see only
+	// the images that job's lease staged, so a call outside that job context
+	// can never resolve bytes.
+	ResolveImagePath func(ctx context.Context, referenceID, digest string) (string, error)
 }
 
 // Executor is safe for concurrent calls. Each operation owns a private
@@ -117,6 +122,13 @@ func New(cfg Config) (*Executor, error) {
 	if cfg.MaxFrameBytes <= 0 {
 		cfg.MaxFrameBytes = defaultFrameBytes
 	}
+	// The installer bootstraps the model root on a fresh install, so a missing
+	// directory is a normal startup state, not a configuration error. Create it
+	// with the same private mode as the scratch root before the ordinary
+	// stat/type checks; an existing regular file still fails below.
+	if err := ensurePrivateDir(cfg.ModelDir); err != nil {
+		return nil, fmt.Errorf("model directory: %w", err)
+	}
 	for name, path := range map[string]string{"PythonPath": cfg.PythonPath, "ModuleDir": cfg.ModuleDir, "ModelDir": cfg.ModelDir} {
 		info, err := os.Stat(path)
 		if err != nil {
@@ -137,13 +149,20 @@ func New(cfg Config) (*Executor, error) {
 	} else {
 		cfg.moduleRoot = filepath.Dir(cfg.ModuleDir)
 	}
-	if err := os.MkdirAll(cfg.ScratchDir, 0o700); err != nil {
+	if err := ensurePrivateDir(cfg.ScratchDir); err != nil {
 		return nil, fmt.Errorf("create scratch root: %w", err)
 	}
-	if err := os.Chmod(cfg.ScratchDir, 0o700); err != nil {
-		return nil, fmt.Errorf("secure scratch root: %w", err)
-	}
 	return &Executor{cfg: cfg}, nil
+}
+
+// ensurePrivateDir creates the managed directory when absent and always pins
+// its mode to 0700: MkdirAll is subject to the process umask, so the explicit
+// chmod is what actually guarantees the private mode on a fresh install.
+func ensurePrivateDir(path string) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o700)
 }
 
 // Execute runs exactly one inference request and returns only after the full
@@ -174,7 +193,7 @@ func (e *Executor) Execute(ctx context.Context, req domain.InferenceRequest) (re
 			result = domain.InferenceResult{}
 		}
 	}()
-	requestJSON, err := e.wireRequest(req)
+	requestJSON, err := e.wireRequest(ctx, req)
 	if err != nil {
 		return domain.InferenceResult{}, err
 	}
@@ -303,7 +322,124 @@ func (e *Executor) cacheProbe(caps []remote.InferenceCapability) {
 	e.probeAt = time.Now()
 }
 
+// ProbeModel runs the locked, load-only model probe for one exact model
+// identity. It reuses the inventory's subprocess, timeout and result framing:
+// the dispatcher selects the exact catalog entry, verifies the locked local
+// paths and the configured profile, loads the model, and reports one
+// capability row. No source media is read and no operation runs.
+//
+// The row decides the outcome: an unavailable row becomes the matching typed
+// failure, and a report that does not name the requested identity can never
+// satisfy the probe. Device use is serialized with Execute because a
+// load-only check occupies the same GPU concurrency slot.
+func (e *Executor) ProbeModel(ctx context.Context, modelID, revision string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	modelID, revision = strings.TrimSpace(modelID), strings.TrimSpace(revision)
+	if modelID == "" || revision == "" {
+		return failure(remote.FailureUnsupportedInput, "model probe requires an exact model id and revision")
+	}
+	if err := ctx.Err(); err != nil {
+		return contextFailure(err)
+	}
+	e.runMu.Lock()
+	defer e.runMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return contextFailure(err)
+	}
+
+	opDir, err := e.newOperationDir()
+	if err != nil {
+		return failure(remote.FailureResourceExhausted, "cannot create model probe directory")
+	}
+	defer os.RemoveAll(opDir)
+	probeCtx, cancel := context.WithTimeout(ctx, e.cfg.Timeout)
+	defer cancel()
+
+	var frames int
+	var match remote.InferenceCapability
+	found := false
+	parseErr := error(nil)
+	handler := func(line []byte) error {
+		frames++
+		if frames != 1 {
+			parseErr = fmt.Errorf("model probe must emit one frame")
+			return parseErr
+		}
+		var frame struct {
+			Type         string                       `json:"type"`
+			Capabilities []remote.InferenceCapability `json:"capabilities"`
+		}
+		if err := json.Unmarshal(line, &frame); err != nil || frame.Type != "capabilities" {
+			parseErr = fmt.Errorf("invalid model probe frame")
+			return parseErr
+		}
+		for _, capability := range frame.Capabilities {
+			if capability.ModelID == modelID && capability.ModelRevision == revision && capability.Validate() == nil {
+				match, found = capability, true
+				return nil
+			}
+		}
+		return nil
+	}
+	args := append(e.dispatchArgs(), "--probe-model", modelID, "--probe-revision", revision)
+	process, runErr := e.runProcess(probeCtx, opDir, args, nil, handler)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return contextFailure(ctxErr)
+	}
+	if probeErr := probeCtx.Err(); probeErr != nil {
+		return contextFailure(probeErr)
+	}
+	if runErr != nil || process.writeErr != nil || process.waitErr != nil {
+		return failure(remote.FailureModelUnavailable, "model probe process failed")
+	}
+	if process.handlerErr != nil {
+		if typed, ok := process.handlerErr.(*remote.InferenceFailure); ok {
+			return typed
+		}
+		return failure(remote.FailureModelUnavailable, "model probe report was invalid")
+	}
+	if frames != 1 || parseErr != nil {
+		return failure(remote.FailureModelUnavailable, "model probe report was invalid")
+	}
+	if !found {
+		return failure(remote.FailureModelUnavailable,
+			fmt.Sprintf("model probe report did not name the locked model %s@%s", modelID, revision))
+	}
+	if !match.Available {
+		code := match.UnavailableCode
+		if !code.Valid() {
+			code = remote.FailureModelUnavailable
+		}
+		return failure(code, fmt.Sprintf("model probe reported %s@%s unavailable", modelID, revision))
+	}
+	return nil
+}
+
+// InvalidateCapabilities drops the cached capability inventory so the next
+// Capabilities call re-probes the runtime. A completed install or an explicit
+// load-only probe changes what the runtime can load; stale availability must
+// never outlive the change that made it stale.
+func (e *Executor) InvalidateCapabilities() {
+	e.probeMu.Lock()
+	defer e.probeMu.Unlock()
+	e.probeCaps = nil
+	e.probeAt = time.Time{}
+}
+
 func (e *Executor) newOperationDir() (string, error) {
+	// A maintenance pass or an operator may have removed the scratch root
+	// after startup. Recreate it per operation so work continues instead of
+	// degrading to a resource failure.
+	if _, err := os.Stat(e.cfg.ScratchDir); err != nil {
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		if err := ensurePrivateDir(e.cfg.ScratchDir); err != nil {
+			return "", err
+		}
+	}
 	dir, err := os.MkdirTemp(e.cfg.ScratchDir, "inference-")
 	if err != nil {
 		return "", err
@@ -343,7 +479,7 @@ type pythonInput struct {
 	Text       string               `json:"text,omitempty"`
 }
 
-func (e *Executor) wireRequest(req domain.InferenceRequest) ([]byte, error) {
+func (e *Executor) wireRequest(ctx context.Context, req domain.InferenceRequest) ([]byte, error) {
 	var settings map[string]any
 	switch req.Operation {
 	case domain.OpVisualEmbedding:
@@ -388,7 +524,10 @@ func (e *Executor) wireRequest(req domain.InferenceRequest) ([]byte, error) {
 		if e.cfg.ResolveImagePath == nil {
 			return nil, failure(remote.FailureUnsupportedInput, "image input has no local path resolver")
 		}
-		path, err := e.cfg.ResolveImagePath(req.Input.ReferenceID, req.Input.Digest)
+		// The executing job's context, not a fresh background context: a
+		// lease-bound resolver must be unable to resolve outside the very job
+		// that staged its bytes.
+		path, err := e.cfg.ResolveImagePath(ctx, req.Input.ReferenceID, req.Input.Digest)
 		if err != nil || !filepath.IsAbs(path) || !isRegularFile(path) {
 			return nil, failure(remote.FailureUnsupportedInput, "image input path is unavailable")
 		}

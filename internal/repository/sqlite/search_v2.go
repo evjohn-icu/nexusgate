@@ -57,7 +57,7 @@ func hasAssetContext(f domain.AssetContextFilter) bool {
 // all-1.0 weight set must equal the plain bm25(asset_shot_search) score, which
 // the v2 tests pin (TestSearchV2LexicalFlatEqualsLegacy).
 func (r *Repository) LexicalRankedShots(ctx context.Context, q string, weights [5]float64, limit int) ([]domain.ShotSearchResult, error) {
-	if limit <= 0 || strings.TrimSpace(q) == "" {
+	if (limit <= 0 && limit != -1) || strings.TrimSpace(q) == "" {
 		return []domain.ShotSearchResult{}, nil
 	}
 	ftsQuery := buildFTSQuery(q)
@@ -188,7 +188,7 @@ func (r *Repository) transcriptTokenPools(ctx context.Context, patterns []string
 }
 
 func (r *Repository) TranscriptRankedShots(ctx context.Context, q string, limit int) ([]domain.ShotSearchResult, error) {
-	if limit <= 0 || strings.TrimSpace(q) == "" {
+	if (limit <= 0 && limit != -1) || strings.TrimSpace(q) == "" {
 		return []domain.ShotSearchResult{}, nil
 	}
 	patterns := transcriptPrefilterPatterns(q)
@@ -206,14 +206,7 @@ func (r *Repository) TranscriptRankedShots(ctx context.Context, q string, limit 
 		return r.transcriptPhraseFirst(ctx, q, limit, components)
 	}
 
-	candidateLimit := limit * 50
-	if candidateLimit < 1000 {
-		candidateLimit = 1000
-	}
-	if candidateLimit > 10000 {
-		candidateLimit = 10000
-	}
-	pool, err := r.transcriptTokenPools(ctx, patterns, candidateLimit)
+	pool, err := r.transcriptTokenPools(ctx, patterns, transcriptCandidateLimit(limit))
 	if err != nil {
 		return nil, err
 	}
@@ -230,12 +223,19 @@ func (r *Repository) TranscriptRankedShots(ctx context.Context, q string, limit 
 		result.LexicalScore = 0
 		if result.TranscriptScore > 0 {
 			out = append(out, result)
-			if len(out) >= limit {
+			if limit > 0 && len(out) >= limit {
 				break
 			}
 		}
 	}
 	return out, nil
+}
+
+func transcriptCandidateLimit(limit int) int {
+	if limit == -1 {
+		return -1
+	}
+	return max(1000, min(limit, 200)*50)
 }
 
 // transcriptPhraseFirst is the phrase-first pool for multi-component phrases.
@@ -257,13 +257,7 @@ func (r *Repository) transcriptPhraseFirst(ctx context.Context, q string, limit 
 		windows = append(windows, `EXISTS (SELECT 1 FROM ${SRC} wa JOIN ${SRC} wb ON wb.asset_id=wa.asset_id AND wb.ordinal > wa.ordinal AND wb.start_ms - wa.end_ms <= 1500 WHERE wa.asset_id=s.asset_id AND s.start_ms < wa.end_ms AND s.end_ms > wa.start_ms AND wa.text LIKE ? ESCAPE '\' AND wb.asset_id=s.asset_id AND s.start_ms < wb.end_ms AND s.end_ms > wb.start_ms AND wb.text LIKE ? ESCAPE '\')`)
 		args = append(args, `%`+escapeLike(ciTail)+`%`, `%`+escapeLike(ci1Head)+`%`)
 	}
-	candidateLimit := limit * 50
-	if candidateLimit < 1000 {
-		candidateLimit = 1000
-	}
-	if candidateLimit > 10000 {
-		candidateLimit = 10000
-	}
+	candidateLimit := transcriptCandidateLimit(limit)
 	base := `SELECT s.id,s.asset_id,COALESCE(s.source_run_id,''),s.ordinal,s.start_ms,s.end_ms,s.description,s.tags_json,s.objects_json,s.actions_json,s.mood_json,s.confidence,s.created_at,COALESCE((SELECT l.relative_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=s.asset_id AND l.is_primary=1 AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),''),0.0 AS tscore FROM asset_shots s WHERE `
 	runSource := func(source string, excludeAligned bool) ([]domain.ShotSearchResult, error) {
 		windowsSrc := make([]string, 0, len(windows))
@@ -326,7 +320,7 @@ func (r *Repository) transcriptPhraseFirst(ctx context.Context, q string, limit 
 		result.TranscriptScore = 1.0
 		result.LexicalScore = 0
 		out = append(out, result)
-		if len(out) >= limit {
+		if limit > 0 && len(out) >= limit {
 			break
 		}
 	}

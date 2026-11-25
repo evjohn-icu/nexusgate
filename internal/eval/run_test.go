@@ -3,6 +3,7 @@ package eval
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/evjohn-icu/nexusgate/internal/config"
 	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
 
 // TestRunAndScoreEndToEnd drives the whole harness: a real clip through a
@@ -113,6 +115,26 @@ func TestRunAndScoreEndToEnd(t *testing.T) {
 		t.Fatalf("report identity: %s / %s", report.Provider, report.Model)
 	}
 
+	secondCorpus := *corpus
+	secondCorpus.Clips = []Clip{{Name: "second.mp4", Path: clip}}
+	second, err := Run(context.Background(), cfg, &secondCorpus, dataDir, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Assets[0].AssetID == report.Assets[0].AssetID {
+		t.Fatal("the labels reused one asset record")
+	}
+	for _, label := range []string{report.Label, second.Label} {
+		for _, entry := range []string{"nexusgate.db", "cache"} {
+			if _, err := os.Stat(filepath.Join(dataDir, "runs", label, entry)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := os.Stat(cfg.DatabasePath); !os.IsNotExist(err) {
+		t.Fatalf("eval touched the shared database path: %v", err)
+	}
+
 	score, err := Score(context.Background(), dataDir, "fake-qwen3vl", corpus)
 	if err != nil {
 		t.Fatal(err)
@@ -125,6 +147,69 @@ func TestRunAndScoreEndToEnd(t *testing.T) {
 	}
 	if score.RelevantInTop10 != 2 {
 		t.Fatalf("relevant hits = %d, want 2", score.RelevantInTop10)
+	}
+
+	// Interrupt the label after its first clip is seeded, then resume it.
+	partial := *corpus
+	partial.Clips = append(append([]Clip(nil), corpus.Clips...), Clip{Name: "later.mp4", Path: filepath.Join(corpusDir, "later.mp4")})
+	if _, err := Run(context.Background(), cfg, &partial, dataDir, "partial"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected the missing clip to interrupt the run, got %v", err)
+	}
+	partialDir := filepath.Join(dataDir, "runs", "partial")
+	before := evalRootID(t, partialDir)
+	partial.Clips[1].Path = clip
+	if _, err := Run(context.Background(), cfg, &partial, dataDir, "partial"); err != nil {
+		t.Fatal(err)
+	}
+	if after := evalRootID(t, partialDir); after != before {
+		t.Fatalf("resumed root = %s, want %s", after, before)
+	}
+
+	// Equal bytes in a different file cannot retarget an established clip.
+	duplicate := filepath.Join(corpusDir, "duplicate.mp4")
+	bytes, err := os.ReadFile(clip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(duplicate, bytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secondCorpus.Clips[0].Path = duplicate
+	if _, err := Run(context.Background(), cfg, &secondCorpus, dataDir, second.Label); err == nil || !strings.Contains(err.Error(), "different source") {
+		t.Fatalf("relink returned %v", err)
+	}
+}
+
+func evalRootID(t *testing.T, dir string) string {
+	t.Helper()
+	repo, err := sqlite.Open(filepath.Join(dir, "nexusgate.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	roots, err := repo.ListLibraryRoots(context.Background())
+	if err != nil || len(roots) != 1 || roots[0].Path != filepath.Join(dir, "corpus-root") {
+		t.Fatalf("run roots = %+v (error %v)", roots, err)
+	}
+	return roots[0].ID
+}
+
+func TestScoreRequiresIsolatedDatabase(t *testing.T) {
+	dir := t.TempDir()
+	if err := (&RunReport{Label: "legacy"}).Save(dir, "legacy"); err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(dir, "nexusgate.db")
+	if err := os.WriteFile(shared, []byte("shared"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Score(context.Background(), dir, "legacy", &Corpus{}); err == nil || !strings.Contains(err.Error(), "run has no isolated database") {
+		t.Fatalf("legacy score returned %v", err)
+	}
+	for _, label := range []string{"", ".", "..", "../a", "a/b", `a\b`, `C:a`} {
+		if err := (&RunReport{}).Save(dir, label); err == nil {
+			t.Errorf("saved unsafe label %q", label)
+		}
 	}
 }
 

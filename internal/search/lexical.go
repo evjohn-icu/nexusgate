@@ -2,7 +2,10 @@ package search
 
 import (
 	"context"
+	"sort"
 	"strings"
+
+	"github.com/evjohn-icu/nexusgate/internal/domain"
 )
 
 // LexicalRetriever is the field-aware FTS channel: weighted bm25 over the
@@ -39,17 +42,8 @@ func (r *LexicalRetriever) Retrieve(ctx context.Context, q SearchQuery, limit in
 	return out, nil
 }
 
-// HeuristicSemanticRetriever is the deterministic semantic channel: the
-// legacy candidate scorer (cosine over the FNV feature vectors with the
-// shared-token gate). It is the only channel that applies facets, because
-// scoreShotCandidates is the full-library scorer — when facets are set it
-// defines the candidate universe and the other channels' candidates outside
-// it are dropped by the service.
-//
-// Facet-universe rule: when facets are set this channel defines the candidate
-// universe; facet-matched shots with no semantic signal are retained (Signal
-// value 0) so exact lexical matches under a facet are not dropped; without
-// facets the semantic>0 gate is unchanged.
+// HeuristicSemanticRetriever ranks positive cosine matches within the
+// requested facets and asset context.
 type HeuristicSemanticRetriever struct {
 	store ShotStore
 }
@@ -65,25 +59,29 @@ func (r *HeuristicSemanticRetriever) Retrieve(ctx context.Context, q SearchQuery
 	if err != nil {
 		return nil, err
 	}
-	faceted := hasAnySearchFilter(q.Filters.Facets, q.Filters.AssetFilter)
-	out := make([]Candidate, 0, len(shots))
-	for _, shot := range shots {
-		if shot.SemanticScore <= 0 && !faceted {
-			continue
-		}
-		c := toCandidate(shot)
-		if shot.SemanticScore <= 0 {
-			// Facet-matched but no semantic signal: stay in the candidate
-			// universe with an explicit zero so fusion does not rank the
-			// shot on a fabricated score; other channels (lexical/exact)
-			// decide its rank under the facet.
-			c.Signals[SignalHeuristicSemantic] = 0
-		} else {
-			c.Signals[SignalHeuristicSemantic] = shot.SemanticScore
-		}
-		out = append(out, c)
+	return rankHeuristicShots(shots, limit), nil
+}
+
+func rankHeuristicShots(shots []domain.ShotSearchResult, limit int) []Candidate {
+	if limit <= 0 {
+		return nil
 	}
-	return out, nil
+	sort.Slice(shots, func(i, j int) bool {
+		if shots[i].SemanticScore == shots[j].SemanticScore {
+			return shots[i].ID < shots[j].ID
+		}
+		return shots[i].SemanticScore > shots[j].SemanticScore
+	})
+	out := make([]Candidate, 0, min(limit, len(shots)))
+	for _, shot := range shots {
+		if shot.SemanticScore <= 0 || len(out) == limit {
+			break
+		}
+		candidate := toCandidate(shot)
+		candidate.Signals[SignalHeuristicSemantic] = shot.SemanticScore
+		out = append(out, candidate)
+	}
+	return out
 }
 
 // TranscriptRetriever is the speech channel: aligned transcript words

@@ -2,6 +2,9 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"strings"
 	"time"
 )
 
@@ -81,19 +84,91 @@ func (r *Repository) UnregisterExecutor(ctx context.Context, executorID string) 
 // claim it, exactly as it does under the lazy reclaims. The sweep recovers
 // Hub-local jobs (no assignment) and jobs whose worker comes back — it does
 // not silently re-route a dead node's work to a different node.
+//
+// A job whose inference task is flagged cancel_requested is excluded from both
+// branches below: cancellation terminalizes its jobs atomically
+// (cancelInferenceTasksTx), and a row that slipped through a crash is
+// terminalized 'cancelled' by the sweep this method runs first — never revived
+// to 'pending'. The sweep is composed here so every caller of this method
+// (startup and the repeatable executor heartbeat alike) drains stuck
+// cancelled rows without a second repository method; the ordinary stale
+// sweeps that follow must never see a cancelled row as reclaimable work.
 func (r *Repository) HealStaleRunningJobs(ctx context.Context, now time.Time) (released int, terminal int, err error) {
+	if _, err := r.sweepCancelledInferenceJobs(ctx, now); err != nil {
+		return 0, 0, err
+	}
 	staleBefore := formatTime(now.Add(-executorStaleAfter))
-	res, err := r.db.ExecContext(ctx, `UPDATE jobs SET state='pending',lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE state='running' AND terminal=0 AND attempt_count<max_attempts AND (lease_expires_at IS NOT NULL AND lease_expires_at<=? OR lease_owner LIKE 'local-%' AND NOT EXISTS (SELECT 1 FROM pipeline_executors pe WHERE pe.executor_id=jobs.lease_owner AND pe.last_seen_at>=?))`, formatTime(now), formatTime(now), staleBefore)
+	const cancelled = ` AND NOT EXISTS (SELECT 1 FROM inference_tasks it WHERE it.job_id=jobs.id AND it.cancel_requested=1)`
+	res, err := r.db.ExecContext(ctx, `UPDATE jobs SET state='pending',lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE state='running' AND terminal=0 AND attempt_count<max_attempts AND (lease_expires_at IS NOT NULL AND lease_expires_at<=? OR lease_owner LIKE 'local-%' AND NOT EXISTS (SELECT 1 FROM pipeline_executors pe WHERE pe.executor_id=jobs.lease_owner AND pe.last_seen_at>=?))`+cancelled, formatTime(now), formatTime(now), staleBefore)
 	if err != nil {
 		return 0, 0, err
 	}
 	n, _ := res.RowsAffected()
 	released = int(n)
-	res, err = r.db.ExecContext(ctx, `UPDATE jobs SET state='failed',terminal=1,lease_owner=NULL,lease_expires_at=NULL,last_error_message=COALESCE(last_error_message,'lease expired with attempts exhausted'),updated_at=? WHERE state='running' AND terminal=0 AND attempt_count>=max_attempts AND (lease_expires_at IS NOT NULL AND lease_expires_at<=? OR lease_owner LIKE 'local-%' AND NOT EXISTS (SELECT 1 FROM pipeline_executors pe WHERE pe.executor_id=jobs.lease_owner AND pe.last_seen_at>=?))`, formatTime(now), formatTime(now), staleBefore)
+	res, err = r.db.ExecContext(ctx, `UPDATE jobs SET state='failed',terminal=1,lease_owner=NULL,lease_expires_at=NULL,last_error_message=COALESCE(last_error_message,'lease expired with attempts exhausted'),updated_at=? WHERE state='running' AND terminal=0 AND attempt_count>=max_attempts AND (lease_expires_at IS NOT NULL AND lease_expires_at<=? OR lease_owner LIKE 'local-%' AND NOT EXISTS (SELECT 1 FROM pipeline_executors pe WHERE pe.executor_id=jobs.lease_owner AND pe.last_seen_at>=?))`+cancelled, formatTime(now), formatTime(now), staleBefore)
 	if err != nil {
 		return released, 0, err
 	}
 	n, _ = res.RowsAffected()
 	terminal = int(n)
 	return released, terminal, nil
+}
+
+// cancelInferenceTasksTx is the single transactional writer every cancellation
+// path shares: single-task cancellation (Repository.CancelInferenceTask),
+// query-reference removal, and biometric consent/profile changes. It flags the
+// selected inference_tasks rows with cancel_requested=1 and, in the same
+// transaction, terminalizes every nonterminal job bound to them under the
+// cancellation policy: state='failed', terminal=1, last_error_code='cancelled',
+// current_stage='cancelled', lease cleared, and progress untouched — succeeded
+// and already-terminal jobs are preserved exactly as they are.
+//
+// taskWhere is an SQL condition over inference_tasks, e.g. "job_id = ?" for
+// single-task cancellation or "query_reference_id = ?" for reference removal;
+// args bind its placeholders. A blank predicate is rejected so a mistyped
+// caller can never cancel every task in the database. The returned counts are
+// the task rows flagged (0 means "unknown task" — the caller maps that to its
+// own not-found error) and the jobs moved to terminal 'cancelled'.
+func cancelInferenceTasksTx(ctx context.Context, tx *sql.Tx, now time.Time, message, taskWhere string, args ...any) (flagged int, terminalized int, err error) {
+	if strings.TrimSpace(taskWhere) == "" {
+		return 0, 0, errors.New("cancellation predicate is required")
+	}
+	stamp := formatTime(now)
+	res, err := tx.ExecContext(ctx, `UPDATE inference_tasks SET cancel_requested=1,updated_at=? WHERE (`+taskWhere+`) AND EXISTS(SELECT 1 FROM jobs WHERE id=inference_tasks.job_id AND job_type='inference')`, append([]any{stamp}, args...)...)
+	if err != nil {
+		return 0, 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, 0, err
+	}
+	flagged = int(n)
+	res, err = tx.ExecContext(ctx, `UPDATE jobs SET state='failed',terminal=1,last_error_code='cancelled',last_error_message=?,current_stage='cancelled',lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE job_type='inference' AND terminal=0 AND state IN ('pending','running','failed') AND id IN (SELECT job_id FROM inference_tasks WHERE `+taskWhere+`)`, append([]any{message, stamp}, args...)...)
+	if err != nil {
+		return flagged, 0, err
+	}
+	n, err = res.RowsAffected()
+	if err != nil {
+		return flagged, 0, err
+	}
+	terminalized = int(n)
+	return flagged, terminalized, nil
+}
+
+// sweepCancelledInferenceJobs terminalizes inference jobs a cancellation left
+// stuck: a task already flagged cancel_requested whose job row is still
+// nonterminal. cancelInferenceTasksTx makes that window empty at cancel time;
+// this repeatable sweep is the backstop for rows that predate the helper or
+// that raced an enqueue, and it uses exactly the same predicate so neither
+// escalation nor healing can ever revive cancelled work. It is idempotent,
+// composed into HealStaleRunningJobs so startup and every heartbeat run it,
+// and preserves an existing last_error_message so a real diagnostic (for
+// example "query reference deleted") survives.
+func (r *Repository) sweepCancelledInferenceJobs(ctx context.Context, now time.Time) (int, error) {
+	res, err := r.db.ExecContext(ctx, `UPDATE jobs SET state='failed',terminal=1,last_error_code='cancelled',last_error_message=COALESCE(last_error_message,'cancelled'),current_stage='cancelled',lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE job_type='inference' AND terminal=0 AND state IN ('pending','running','failed') AND EXISTS(SELECT 1 FROM inference_tasks t WHERE t.job_id=jobs.id AND t.cancel_requested=1)`, formatTime(now))
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
 }

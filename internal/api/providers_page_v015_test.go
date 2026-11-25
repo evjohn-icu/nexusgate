@@ -776,3 +776,45 @@ func TestProvidersPageProviderLabelsLocalized(t *testing.T) {
 		t.Fatalf("advanced provider options must not carry raw mixed-language labels")
 	}
 }
+
+// The channel editor must bind every saved member row to its stored identity
+// and never match members by row position: formMembers reads the member id
+// from dataset.memberId (set when openEdit fills each row), carries the
+// stored enabled flag, and saveChannelPatch compares the dialog against the
+// saved channel by id. The old positional mapping (memberIds[i], index-based
+// label comparison) is what rebound one member's key to another member's row
+// after a removal or reorder.
+func TestProvidersPageBindsMemberIdentityToRows(t *testing.T) {
+	body := providersHTML
+	for _, marker := range []string{
+		`function fillMemberRow(row,m)`,
+		`row.dataset.memberId=m.id`,
+		`row.dataset.memberEnabled=m.enabled===false?'false':'true'`,
+		`function resetMemberRows()`,
+		`if(!first){first=addMemberRow();first.querySelector('.m-label').value='primary'}`,
+		`else if(first){first.remove()}`,
+		`.ui-dialog{width:min(680px,92vw);max-height:86vh;overflow:auto}`,
+		`form.reset();resetMemberRows()`,
+		`fillMemberRow(first,members[0])`,
+		`ensureRowRemove(first)`,
+		`members.slice(1).forEach(function(m){addMemberRow(m)})`,
+		`if(row.dataset.memberId)member.id=row.dataset.memberId`,
+		`function endpointOrigin(v)`,
+		`tdT('providers.originKeyRequired'`,
+		`tdT('providers.emptyMemberList')`,
+		`const orig=savedById.get(m.id)`,
+		// Kept rows omit a blank key entirely so the server preserves their
+		// stored reference; new rows carry no prior id.
+		`if(m.id)out.id=m.id`,
+		`if(m.api_key)out['api_key']=m.api_key`,
+	} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("providers page missing member-identity marker %q", marker)
+		}
+	}
+	for _, gone := range []string{"memberIds[i]", "orig=c.members&&c.members[i]"} {
+		if strings.Contains(body, gone) {
+			t.Fatalf("providers page still matches members by row position: %q", gone)
+		}
+	}
+}

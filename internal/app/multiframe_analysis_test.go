@@ -681,3 +681,162 @@ func TestMultiframeDetectorFailureFailsTheRun(t *testing.T) {
 func videoanalysisResult(summary string) videoanalysis.Result {
 	return videoanalysis.Result{Summary: summary, Analysis: domain.StructuredAnalysis{Summary: summary}}
 }
+
+// countingTwoShotVideo counts the pass-1 video member's calls on top of the
+// existing two-shot fixture provider.
+type countingTwoShotVideo struct {
+	twoShotVideoProvider
+	calls int
+}
+
+func (f *countingTwoShotVideo) Analyze(ctx context.Context, input videoanalysis.Input) (videoanalysis.Result, string, error) {
+	f.calls++
+	return f.twoShotVideoProvider.Analyze(ctx, input)
+}
+
+// revertRunToStaged rewinds a committed run to exactly the row a crashed
+// attempt leaves behind: the model has been paid, the envelope is staged,
+// the commit never happened. It is the state the next attempt's resume must
+// pick up.
+func revertRunToStaged(t *testing.T, repo *sqlite.Repository, runID string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := repo.DB().ExecContext(ctx, `UPDATE model_runs SET state='validated' WHERE id=?`, runID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Pure multiframe mode: a staged detector-mode envelope resumes into the
+// same canonical commit with the analyzer silent.
+func TestMultiframeDetectorResumesStagedEnvelope(t *testing.T) {
+	repo, root, dir := openMultiframeRepo(t)
+	ctx := context.Background()
+	assetID := seedMultiframeAsset(t, repo, root, "resume-detector")
+	meta, err := repo.GetMediaMetadata(ctx, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	analyzer := &fakeMultiframeAnalyzer{
+		summary: videoanalysisResult("city night"),
+		byShotStart: map[int64]videoproviders.ShotMetadata{
+			0:    {Description: "street opening", ShotSize: "close_up"},
+			1000: {Description: "wet road reflection", ShotSize: "close_up"},
+		},
+	}
+	detector := &fakeShotDetector{bounds: []shotdetect.ShotBound{{StartMS: 0, EndMS: 1000}, {StartMS: 1000, EndMS: 2000}}}
+	pipeline := NewPipeline(repo, dir, nil, nil, &testMultiframeRouter{analyzer: analyzer}, nil, detector, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
+	const inputHash = "resume-detector"
+	job := leaseAnalyzeJob(t, repo, assetID, inputHash, "attempt-1")
+	if err := pipeline.analyzeWithDetector(ctx, job, meta, &multiframeRoute{analyzer: analyzer}, "attempt-1"); err != nil {
+		t.Fatal(err)
+	}
+	if analyzer.summaryCalls != 1 || len(analyzer.requests) != 2 {
+		t.Fatalf("first attempt model calls = summary %d, shots %d, want 1 and 2", analyzer.summaryCalls, len(analyzer.requests))
+	}
+	var runID string
+	if err := repo.DB().QueryRowContext(ctx, `SELECT id FROM model_runs WHERE asset_id=? AND prompt_version='multiframe-analysis-v1'`, assetID).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	_, env := stagedEnvelope(t, repo, "asset_id=?", assetID)
+	if env.Version != visionStageVersion || env.Analysis == nil || env.Analysis.Summary != "city night" || len(env.Shots) != 2 {
+		t.Fatalf("staged envelope incomplete: version=%q analysis=%+v shots=%d", env.Version, env.Analysis, len(env.Shots))
+	}
+	// The staged analysis carries the folded per-shot evidence, so the
+	// resumed commit needs no second pass over the model.
+	if env.Analysis.ShotSize != "close_up" {
+		t.Fatalf("staged analysis not folded: %+v", env.Analysis)
+	}
+
+	revertRunToStaged(t, repo, runID)
+
+	job2 := leaseAnalyzeJob(t, repo, assetID, inputHash, "attempt-2")
+	if err := pipeline.analyzeWithDetector(ctx, job2, meta, &multiframeRoute{analyzer: analyzer}, "attempt-2"); err != nil {
+		t.Fatal(err)
+	}
+	if analyzer.summaryCalls != 1 || len(analyzer.requests) != 2 || detector.calls != 1 {
+		t.Fatalf("resumed attempt re-paid the model: summary=%d shots=%d detector=%d", analyzer.summaryCalls, len(analyzer.requests), detector.calls)
+	}
+	var state string
+	if err := repo.DB().QueryRowContext(ctx, `SELECT state FROM model_runs WHERE id=?`, runID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "committed" {
+		t.Fatalf("run state after resume = %q, want committed", state)
+	}
+	shots, err := repo.ListAssetShots(ctx, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shots) != 2 || shots[0].Description != "street opening" || shots[1].Description != "wet road reflection" {
+		t.Fatalf("resumed commit lost the refined shots: %+v", shots)
+	}
+}
+
+// Two-pass mode: a staged refinement envelope resumes into CommitShotRefinement
+// with the analyzer silent, and the already-committed pass-1 run short-circuits
+// without a video call.
+func TestMultiframeTwoPassResumesRefinementEnvelope(t *testing.T) {
+	repo, root, dir := openMultiframeRepo(t)
+	ctx := context.Background()
+	assetID := seedMultiframeAsset(t, repo, root, "resume-twopass")
+	meta, err := repo.GetMediaMetadata(ctx, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	video := &countingTwoShotVideo{}
+	analyzer := &fakeMultiframeAnalyzer{
+		byShotStart: map[int64]videoproviders.ShotMetadata{
+			0:    {Description: "refined opening"},
+			1500: {Description: "refined ending"},
+		},
+	}
+	pipeline := NewPipeline(repo, dir, nil, nil, &testMultiframeRouter{analyzer: analyzer, video: video}, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
+	const inputHash = "resume-twopass"
+	job := leaseAnalyzeJob(t, repo, assetID, inputHash, "attempt-1")
+	if err := pipeline.analyzeTwoPass(ctx, job, meta, &multiframeRoute{analyzer: analyzer, video: video}, "attempt-1"); err != nil {
+		t.Fatal(err)
+	}
+	if video.calls != 1 || len(analyzer.requests) != 2 {
+		t.Fatalf("first attempt model calls = video %d, shots %d, want 1 and 2", video.calls, len(analyzer.requests))
+	}
+	var refinedRun string
+	if err := repo.DB().QueryRowContext(ctx, `SELECT id FROM model_runs WHERE asset_id=? AND prompt_version='multiframe-refinement-v1'`, assetID).Scan(&refinedRun); err != nil {
+		t.Fatal(err)
+	}
+	_, env := stagedEnvelope(t, repo, "id=?", refinedRun)
+	if env.Version != visionStageVersion || env.Analysis != nil {
+		t.Fatalf("refinement envelope must carry a null analysis: version=%q analysis=%+v", env.Version, env.Analysis)
+	}
+	if len(env.Shots) != 2 || env.Shots[0].Description != "refined opening" || env.Shots[1].Description != "refined ending" {
+		t.Fatalf("refinement envelope shots incomplete: %+v", env.Shots)
+	}
+
+	revertRunToStaged(t, repo, refinedRun)
+
+	job2 := leaseAnalyzeJob(t, repo, assetID, inputHash, "attempt-2")
+	if err := pipeline.analyzeTwoPass(ctx, job2, meta, &multiframeRoute{analyzer: analyzer, video: video}, "attempt-2"); err != nil {
+		t.Fatal(err)
+	}
+	if video.calls != 1 || len(analyzer.requests) != 2 {
+		t.Fatalf("resumed attempt re-paid the model: video=%d shots=%d", video.calls, len(analyzer.requests))
+	}
+	var state string
+	if err := repo.DB().QueryRowContext(ctx, `SELECT state FROM model_runs WHERE id=?`, refinedRun).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "committed" {
+		t.Fatalf("refinement run state after resume = %q, want committed", state)
+	}
+	shots, err := repo.ListAssetShots(ctx, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shots) != 2 || shots[0].Description != "refined opening" || shots[0].StartMS != 0 || shots[1].StartMS != 1500 {
+		t.Fatalf("resumed commit lost the refined shots: %+v", shots)
+	}
+	if shots[0].SourceRunID != refinedRun {
+		t.Fatalf("resumed shots must point at the refinement run, got %q", shots[0].SourceRunID)
+	}
+}

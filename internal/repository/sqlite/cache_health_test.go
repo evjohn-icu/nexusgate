@@ -155,7 +155,7 @@ func TestMatchingAndDeletingHardwareDerivedProfiles(t *testing.T) {
 	if count != 4 {
 		t.Fatalf("query-only matching changed row count to %d", count)
 	}
-	assets, err := repo.DeleteDerivedArtifactsByProfilePrefixes(ctx, []string{"thumb-hw-", "proxy-720-hw-"})
+	assets, err := repo.DeleteDerivedArtifactsByPaths(ctx, []string{"/cache/hw-thumb", "/cache/hw-proxy"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,12 +208,22 @@ func TestListAllAssetIDs(t *testing.T) {
 	}
 }
 
-func TestListLiveJobAssetIDsLeaseMatrix(t *testing.T) {
+// TestListCacheProtectedAssetIDsMatrix pins the protection predicate cache
+// maintenance runs on: a nonterminal pending, running, or failed job with
+// attempts remaining protects its asset's derived files — including a running
+// job whose lease has expired, because the reclaim re-runs it and the re-run
+// reads those files — and a running job holding a live lease protects them
+// even on its final attempt, where a renewal or completion is still in
+// flight. Exhausted attempts, terminal rows and succeeded work protect
+// nothing: files under them are rebuildable content the next scheduled job
+// re-creates, not files a live stage is about to read.
+func TestListCacheProtectedAssetIDsMatrix(t *testing.T) {
 	repo := openTestRepo(t)
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Second)
 	stamp := formatTime(now)
-	for _, id := range []string{"live", "expired", "pending", "terminal", "nulllease", "wrongstate"} {
+	ids := []string{"live", "expired", "pending", "exhausted", "finallease", "retry", "failedexhausted", "faileddone", "terminal", "wrongstate"}
+	for _, id := range ids {
 		if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES(?,?,1,'discovered',?,?)`, id, id, stamp, stamp); err != nil {
 			t.Fatal(err)
 		}
@@ -221,26 +231,32 @@ func TestListLiveJobAssetIDsLeaseMatrix(t *testing.T) {
 	rows := []struct {
 		id, state string
 		terminal  int
+		attempts  int
 		expiry    any
 	}{
-		{"live", "running", 0, formatTime(now.Add(time.Minute))},
-		{"expired", "running", 0, formatTime(now.Add(-time.Minute))},
-		{"pending", "pending", 0, formatTime(now.Add(time.Minute))},
-		{"terminal", "running", 1, formatTime(now.Add(time.Minute))},
-		{"nulllease", "running", 0, nil},
-		{"wrongstate", "succeeded", 0, formatTime(now.Add(time.Minute))},
+		{"live", "running", 0, 1, formatTime(now.Add(time.Minute))},
+		{"expired", "running", 0, 1, formatTime(now.Add(-time.Minute))},
+		{"pending", "pending", 0, 1, nil},
+		{"exhausted", "pending", 0, 3, nil},
+		{"finallease", "running", 0, 3, formatTime(now.Add(time.Minute))},
+		{"retry", "failed", 0, 1, nil},
+		{"failedexhausted", "failed", 0, 3, nil},
+		{"faileddone", "failed", 1, 1, nil},
+		{"terminal", "running", 1, 1, formatTime(now.Add(time.Minute))},
+		{"wrongstate", "succeeded", 1, 1, nil},
 	}
 	for i, row := range rows {
-		if _, err := repo.db.ExecContext(ctx, `INSERT INTO jobs(id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,lease_owner,lease_expires_at,terminal,created_at,updated_at) VALUES(?,?, 'derive',?,?,1,3,?,?,?, ?,?,?,?)`, fmt.Sprintf("job-%d", i), row.id, row.state, 1, stamp, "hash", "owner", row.expiry, row.terminal, stamp, stamp); err != nil {
+		if _, err := repo.db.ExecContext(ctx, `INSERT INTO jobs(id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,lease_owner,lease_expires_at,terminal,created_at,updated_at) VALUES(?,?, 'derive',?,?,?,3,?,?,?, ?,?,?,?)`, fmt.Sprintf("job-%d", i), row.id, row.state, 1, row.attempts, stamp, "hash", "owner", row.expiry, row.terminal, stamp, stamp); err != nil {
 			t.Fatal(err)
 		}
 	}
-	got, err := repo.ListLiveJobAssetIDs(ctx, now)
+	got, err := repo.ListCacheProtectedAssetIDs(ctx, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(got, []string{"live"}) {
-		t.Fatalf("live ids = %v", got)
+	want := []string{"expired", "finallease", "live", "pending", "retry"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("protected ids = %v, want %v", got, want)
 	}
 }
 

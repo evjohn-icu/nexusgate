@@ -13,9 +13,10 @@ import (
 func (r *Repository) QueryReferenceVector(ctx context.Context, referenceID, spaceID string) ([]float32, bool, error) {
 	var raw string
 	err := r.db.QueryRowContext(ctx, `
-		SELECT staged_json FROM inference_tasks
-		WHERE query_reference_id=? AND operation='visual_embedding' AND staged_json IS NOT NULL
-		ORDER BY updated_at DESC LIMIT 1`, referenceID).Scan(&raw)
+		SELECT t.staged_json FROM inference_tasks t JOIN jobs j ON j.id=t.job_id
+		WHERE t.query_reference_id=? AND t.operation='visual_embedding' AND j.state='succeeded'
+		  AND json_extract(t.staged_json,'$.result.space_id')=?
+		ORDER BY t.updated_at DESC,t.job_id LIMIT 1`, referenceID, spaceID).Scan(&raw)
 	if err == sql.ErrNoRows {
 		return nil, false, nil
 	}
@@ -53,7 +54,7 @@ func (r *Repository) QueryReferenceJob(ctx context.Context, referenceID string) 
 	return jobID, true, nil
 }
 
-// QueryVectorByContentHash returns a staged query vector for identical image
+// QueryVectorByContentHash returns a committed query vector for identical image
 // bytes in one space. Two uploads of the same picture reuse one encoding, which
 // is what "deduplicate by space + content hash" means for the read path.
 func (r *Repository) QueryVectorByContentHash(ctx context.Context, contentHash, spaceID string) ([]float32, bool, error) {
@@ -61,8 +62,10 @@ func (r *Repository) QueryVectorByContentHash(ctx context.Context, contentHash, 
 	err := r.db.QueryRowContext(ctx, `
 		SELECT t.staged_json FROM inference_tasks t
 		JOIN search_references r ON r.id = t.query_reference_id
-		WHERE r.content_hash = ? AND t.operation='visual_embedding' AND t.staged_json IS NOT NULL
-		ORDER BY t.updated_at DESC LIMIT 1`, contentHash).Scan(&raw)
+		JOIN jobs j ON j.id=t.job_id
+		WHERE r.content_hash=? AND t.operation='visual_embedding' AND j.state='succeeded'
+		  AND json_extract(t.staged_json,'$.result.space_id')=?
+		ORDER BY t.updated_at DESC,t.job_id LIMIT 1`, contentHash, spaceID).Scan(&raw)
 	if err == sql.ErrNoRows {
 		return nil, false, nil
 	}
@@ -84,13 +87,16 @@ func (r *Repository) QueryVectorByContentHash(ctx context.Context, contentHash, 
 	return nil, false, nil
 }
 
-// QueryJobByContentHash returns the newest query job for identical image bytes.
+// QueryJobByContentHash returns the newest nonterminal query job for identical image bytes.
 func (r *Repository) QueryJobByContentHash(ctx context.Context, contentHash string) (string, bool, error) {
 	var jobID string
 	err := r.db.QueryRowContext(ctx, `
 		SELECT t.job_id FROM inference_tasks t
 		JOIN search_references r ON r.id = t.query_reference_id
-		WHERE r.content_hash = ? ORDER BY t.updated_at DESC LIMIT 1`, contentHash).Scan(&jobID)
+		JOIN jobs j ON j.id=t.job_id
+		WHERE r.content_hash=? AND t.operation='visual_embedding' AND t.cancel_requested=0
+		  AND j.terminal=0 AND j.state IN ('pending','running','failed')
+		ORDER BY t.updated_at DESC,t.job_id LIMIT 1`, contentHash).Scan(&jobID)
 	if err == sql.ErrNoRows {
 		return "", false, nil
 	}

@@ -3,6 +3,8 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -70,29 +72,66 @@ func (r *Repository) SetSpeakerConsent(ctx context.Context, enabled bool) (domai
 	return domain.SpeakerConsent{Enabled: enabled, Generation: generation, UpdatedAt: now}, nil
 }
 
-// CreateSpeakerProfile inserts a profile and its sources atomically.
-func (r *Repository) CreateSpeakerProfile(ctx context.Context, profile domain.SpeakerProfile, sources []domain.SpeakerProfileSource) error {
+// CreateSpeakerProfileWithTasks persists a profile, its sources and every
+// extraction job/task in one transaction, gated by a consent-generation CAS:
+// if speaker_consent is disabled, missing, or its generation has moved past
+// consentGeneration since the caller captured it, nothing is written and
+// domain.ErrSpeakerConsentGenerationInactive is returned. The tasks reuse the
+// shared enqueue transaction, so request validation and task-key
+// deduplication behave exactly like EnqueueInferenceTask; a duplicate key
+// returns the existing job id instead of a second job.
+func (r *Repository) CreateSpeakerProfileWithTasks(ctx context.Context, profile domain.SpeakerProfile, sources []domain.SpeakerProfileSource, tasks []domain.InferenceTask, priority int, consentGeneration int64) ([]string, error) {
 	if strings.TrimSpace(profile.ID) == "" {
-		return fmt.Errorf("speaker profile id is required")
+		return nil, fmt.Errorf("speaker profile id is required")
 	}
-	now := formatTime(time.Now().UTC())
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback()
+	var enabled int
+	var generation int64
+	err = tx.QueryRowContext(ctx, `SELECT enabled,generation FROM speaker_consent WHERE singleton=1`).Scan(&enabled, &generation)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && (enabled == 0 || generation != consentGeneration)) {
+		return nil, domain.ErrSpeakerConsentGenerationInactive
+	}
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO speaker_profiles(id,generation,state,created_at) VALUES(?,?,'active',?)`,
-		profile.ID, profile.Generation, now); err != nil {
-		return err
+		profile.ID, profile.Generation, formatTime(now)); err != nil {
+		return nil, err
 	}
 	for _, source := range sources {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO speaker_profile_sources(profile_id,asset_id,diarization_generation_id,local_speaker_id) VALUES(?,?,?,?)`,
 			profile.ID, source.AssetID, source.DiarizationGenerationID, source.LocalSpeakerID); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return tx.Commit()
+	jobIDs := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		id, err := enqueueInferenceTaskTx(ctx, tx, nil, task, priority, now)
+		if err != nil {
+			return nil, err
+		}
+		jobIDs = append(jobIDs, id)
+	}
+	return jobIDs, tx.Commit()
+}
+
+// DiarizationGenerationIdentity reports the committed generation's asset and
+// operation, so profile creation can prove the requested generation really is
+// this asset's committed diarization before any row exists. sql.ErrNoRows is
+// returned for an unknown or not-yet-committed generation.
+func (r *Repository) DiarizationGenerationIdentity(ctx context.Context, generationID string) (string, domain.InferenceOperation, error) {
+	var assetID, operation string
+	err := r.db.QueryRowContext(ctx, `SELECT asset_id,operation FROM modality_generations WHERE id=? AND state='committed'`, generationID).Scan(&assetID, &operation)
+	if err != nil {
+		return "", "", err
+	}
+	return assetID, domain.InferenceOperation(operation), nil
 }
 
 // ListSpeakerProfiles returns active profiles, never tombstoned ones.
@@ -151,30 +190,16 @@ func (r *Repository) DeleteSpeakerProfile(ctx context.Context, profileID string)
 	if err != nil {
 		return nil, err
 	}
-	// Capture the tasks before their staging rows are deleted: the old
-	// cancellation subquery ran after the DELETE and could never match.
-	jobRows, err := tx.QueryContext(ctx, `
-		SELECT job_id FROM inference_tasks
-		WHERE operation='speaker_embedding'
-		  AND (json_extract(request_json,'$.speaker.profile_id')=? OR job_id IN
-		       (SELECT job_id FROM speaker_embedding_staging WHERE profile_id=?))`, profileID, profileID)
-	if err != nil {
+	// Flag and terminalize the extraction jobs while the staging rows the
+	// predicate subquery needs are still present, using the shared
+	// cancellation contract: cancel_requested is set atomically and every
+	// nonterminal job moves to terminal failed/cancelled with no lease.
+	if _, _, err := cancelInferenceTasksTx(ctx, tx, time.Now().UTC(), "speaker profile deleted",
+		`operation='speaker_embedding' AND (json_extract(request_json,'$.speaker.profile_id')=? OR job_id IN
+		     (SELECT job_id FROM speaker_embedding_staging WHERE profile_id=?))`,
+		profileID, profileID); err != nil {
 		return nil, err
 	}
-	var jobIDs []string
-	for jobRows.Next() {
-		var jobID string
-		if err := jobRows.Scan(&jobID); err != nil {
-			jobRows.Close()
-			return nil, err
-		}
-		jobIDs = append(jobIDs, jobID)
-	}
-	if err := jobRows.Err(); err != nil {
-		jobRows.Close()
-		return nil, err
-	}
-	jobRows.Close()
 	for _, ref := range append(refs, staged...) {
 		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO biometric_purge_refs(secret_ref,created_at) VALUES(?,?)`, ref, now); err != nil {
 			return nil, err
@@ -191,16 +216,6 @@ func (r *Repository) DeleteSpeakerProfile(ctx context.Context, profileID string)
 			args = append(args, profileID)
 		}
 		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
-			return nil, err
-		}
-	}
-	for _, jobID := range jobIDs {
-		if _, err := tx.ExecContext(ctx, `UPDATE inference_tasks SET cancel_requested=1,updated_at=? WHERE job_id=?`, now, jobID); err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE jobs SET state='failed',terminal=1,last_error_code='cancelled',last_error_message='speaker profile deleted',updated_at=?
-			WHERE id=? AND job_type='inference' AND state IN ('pending','running')`, now, jobID); err != nil {
 			return nil, err
 		}
 	}
@@ -267,6 +282,11 @@ func (r *Repository) ListSpeakerEmbeddings(ctx context.Context, profileID string
 
 // UpsertSpeakerAssociation writes a candidate pairing. The CHECK on ordering
 // means callers must pass the lower profile id first; this helper enforces it.
+//
+// A similarity refresh never overrides an operator's decision: a pairing the
+// user confirmed or rejected keeps its state even when a new match round
+// recomputes its similarity, because only the explicitly authorized decision
+// methods (SetSpeakerAssociationState, SplitSpeakerCluster) change state.
 func (r *Repository) UpsertSpeakerAssociation(ctx context.Context, association domain.SpeakerAssociation) error {
 	left, right := association.LeftProfileID, association.RightProfileID
 	if left > right {
@@ -277,7 +297,12 @@ func (r *Repository) UpsertSpeakerAssociation(ctx context.Context, association d
 		INSERT INTO speaker_associations(id,left_profile_id,right_profile_id,state,similarity,calibration_id,consent_generation,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(left_profile_id,right_profile_id) DO UPDATE SET
-			state=excluded.state, similarity=excluded.similarity,
+			state=CASE
+				WHEN speaker_associations.state IN ('confirmed_by_user','rejected')
+				THEN speaker_associations.state
+				ELSE excluded.state
+			END,
+			similarity=excluded.similarity,
 			calibration_id=excluded.calibration_id, consent_generation=excluded.consent_generation,
 			updated_at=excluded.updated_at`,
 		idgen.New(), left, right, association.State, association.Similarity,
@@ -335,9 +360,20 @@ func (r *Repository) AddPurgeRef(ctx context.Context, secretRef string) error {
 	return err
 }
 
-// ListPurgeRefs returns the pending deletion worklist.
-func (r *Repository) ListPurgeRefs(ctx context.Context, limit int) ([]string, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT secret_ref FROM biometric_purge_refs ORDER BY created_at LIMIT ?`, limit)
+// biometricPurgePageSize is the bounded batch the purge drain reads per pass.
+const biometricPurgePageSize = 256
+
+// ListPurgeRefs returns the next bounded page of the pending deletion worklist
+// in stable secret_ref order. after is the last reference of the previous page
+// ("" for the first). Keyset pagination matters because a failed delete must
+// never stall the rows after it: the caller advances the keyset across
+// failures instead of retrying the same failing head of the list forever.
+func (r *Repository) ListPurgeRefs(ctx context.Context, after string, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = biometricPurgePageSize
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT secret_ref FROM biometric_purge_refs WHERE ?='' OR secret_ref>? ORDER BY secret_ref LIMIT ?`,
+		after, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -353,6 +389,67 @@ func (r *Repository) ListPurgeRefs(ctx context.Context, limit int) ([]string, er
 	return out, rows.Err()
 }
 
+// ClassifyBiometricPurgeRefs explains what the purge drain may do with the
+// given queued references. It reads live state, never the queue's word: a
+// canonical ciphertext stays while a committed embedding row names it, a
+// staged extraction with unrevoked consent and an active profile keeps its
+// ciphertext until its commit, and a staging row whose job is no longer live
+// is obsolete metadata that goes away together with the obligation.
+func (r *Repository) ClassifyBiometricPurgeRefs(ctx context.Context, refs []string) (map[string]domain.BiometricPurgeRefDisposition, error) {
+	out := make(map[string]domain.BiometricPurgeRefDisposition, len(refs))
+	if len(refs) == 0 {
+		return out, nil
+	}
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(refs)), ",")
+	args := make([]any, len(refs))
+	for i, ref := range refs {
+		args[i] = ref
+	}
+	for _, statement := range []struct {
+		query string
+		set   func(*domain.BiometricPurgeRefDisposition)
+	}{
+		{
+			query: `SELECT secret_ref FROM speaker_embeddings WHERE secret_ref IN (` + marks + `)`,
+			set:   func(d *domain.BiometricPurgeRefDisposition) { d.Canonical = true },
+		},
+		{
+			query: `SELECT s.secret_ref FROM speaker_embedding_staging s WHERE s.secret_ref IN (` + marks + `)`,
+			set:   func(d *domain.BiometricPurgeRefDisposition) { d.Staged = true },
+		},
+		{
+			query: `SELECT s.secret_ref
+				FROM speaker_embedding_staging s
+				JOIN jobs j ON j.id=s.job_id AND j.job_type='inference' AND j.terminal=0 AND j.state IN ('pending','running')
+				JOIN speaker_consent c ON c.singleton=1 AND c.enabled=1
+				JOIN speaker_profiles p ON p.id=s.profile_id AND p.state='active'
+				WHERE s.secret_ref IN (` + marks + `)`,
+			set: func(d *domain.BiometricPurgeRefDisposition) { d.LiveStaging = true },
+		},
+	} {
+		rows, err := r.db.QueryContext(ctx, statement.query, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var ref string
+			if err := rows.Scan(&ref); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			disposition := out[ref]
+			statement.set(&disposition)
+			out[ref] = disposition
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
 // ClearPurgeRef removes one completed deletion.
 func (r *Repository) ClearPurgeRef(ctx context.Context, secretRef string) error {
 	_, err := r.db.ExecContext(ctx, `DELETE FROM biometric_purge_refs WHERE secret_ref=?`, secretRef)
@@ -365,39 +462,221 @@ func (r *Repository) RecordPurgeFailure(ctx context.Context, secretRef, code str
 	return err
 }
 
-// PutSpeakerEmbeddingStaging records a staged biometric extraction.
+// ClearStagingBySecretRef removes the staging row that names a reference, used
+// by the purge drain when that staging row's job is cancelled or terminal and
+// the ciphertext it named was just deleted. The staging row of a live job is
+// never touched here.
+func (r *Repository) ClearStagingBySecretRef(ctx context.Context, secretRef string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM speaker_embedding_staging WHERE secret_ref=?`, secretRef)
+	return err
+}
+
+// PutSpeakerEmbeddingStaging records a staged biometric extraction with the
+// digest identity of its staged bytes. A conflict on operation_id repairs the
+// row from a newer valid submission: the fresh secret reference and digest
+// replace the old ones, and the superseded reference's deletion obligation is
+// still on the worklist from its own stage.
 func (r *Repository) PutSpeakerEmbeddingStaging(ctx context.Context, staging domain.SpeakerEmbeddingStaging) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO speaker_embedding_staging(operation_id,job_id,profile_id,profile_generation,consent_generation,secret_ref,created_at)
-		VALUES(?,?,?,?,?,?,?)
-		ON CONFLICT(operation_id) DO UPDATE SET secret_ref=excluded.secret_ref`,
+		INSERT INTO speaker_embedding_staging(operation_id,job_id,profile_id,profile_generation,consent_generation,secret_ref,result_digest,created_at)
+		VALUES(?,?,?,?,?,?,?,?)
+		ON CONFLICT(operation_id) DO UPDATE SET secret_ref=excluded.secret_ref,result_digest=excluded.result_digest`,
 		staging.OperationID, staging.JobID, staging.ProfileID, staging.ProfileGeneration,
-		staging.ConsentGeneration, staging.SecretRef, formatTime(time.Now().UTC()))
+		staging.ConsentGeneration, staging.SecretRef, nullString(staging.ResultDigest), formatTime(time.Now().UTC()))
 	return err
 }
 
 // GetSpeakerEmbeddingStaging returns one staged extraction by operation id.
 func (r *Repository) GetSpeakerEmbeddingStaging(ctx context.Context, operationID string) (domain.SpeakerEmbeddingStaging, error) {
 	var staging domain.SpeakerEmbeddingStaging
+	var digest sql.NullString
 	err := r.db.QueryRowContext(ctx, `
-		SELECT operation_id,job_id,profile_id,profile_generation,consent_generation,secret_ref
+		SELECT operation_id,job_id,profile_id,profile_generation,consent_generation,secret_ref,result_digest
 		FROM speaker_embedding_staging WHERE operation_id=?`, operationID).
 		Scan(&staging.OperationID, &staging.JobID, &staging.ProfileID, &staging.ProfileGeneration,
-			&staging.ConsentGeneration, &staging.SecretRef)
+			&staging.ConsentGeneration, &staging.SecretRef, &digest)
+	if err == nil {
+		staging.ResultDigest = digest.String
+	}
 	return staging, err
 }
 
-// GenerationExists reports whether a modality generation row exists.
-func (r *Repository) GenerationExists(ctx context.Context, generationID string) (bool, error) {
-	var one int
-	err := r.db.QueryRowContext(ctx, `SELECT 1 FROM modality_generations WHERE id=?`, generationID).Scan(&one)
-	if err == sql.ErrNoRows {
-		return false, nil
+// SpeakerResultCommitState reports the pre-commit view of one speaker job: the
+// job state, whether owner still holds an unexpired running lease, the task's
+// cancellation flag, and the result digest recorded at commit time. It is a
+// read-only optimization ahead of the encrypted write — the commit
+// transaction's own compare-and-swap remains the only authority that
+// publishes.
+func (r *Repository) SpeakerResultCommitState(ctx context.Context, jobID, owner string) (domain.SpeakerResultCommitState, error) {
+	var state domain.SpeakerResultCommitState
+	var leaseOwner, leaseExpires string
+	var digest sql.NullString
+	var cancelRequested int
+	err := r.db.QueryRowContext(ctx, `
+		SELECT j.state,COALESCE(j.lease_owner,''),COALESCE(j.lease_expires_at,''),t.cancel_requested,t.result_digest
+		FROM jobs j JOIN inference_tasks t ON t.job_id=j.id
+		WHERE j.id=? AND j.job_type=?`, jobID, string(domain.JobInference)).
+		Scan(&state.State, &leaseOwner, &leaseExpires, &cancelRequested, &digest)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.SpeakerResultCommitState{}, fmt.Errorf("inference job %s: %w", jobID, domain.ErrJobLeaseLost)
 	}
 	if err != nil {
-		return false, err
+		return domain.SpeakerResultCommitState{}, err
 	}
-	return true, nil
+	if digest.Valid {
+		state.CommittedDigest = digest.String
+	}
+	state.CancelRequested = cancelRequested != 0
+	if state.State == string(domain.JobRunning) && leaseOwner == owner {
+		expires, parseErr := time.Parse(time.RFC3339Nano, leaseExpires)
+		state.LeaseValid = parseErr == nil && expires.After(time.Now().UTC())
+	}
+	return state, nil
+}
+
+// CommitSpeakerEmbedding publishes metadata for vectors already encrypted by
+// the Hub secret store. It never accepts or serializes a plaintext vector.
+//
+// digest is the opaque one-way identity the Hub computed from the result it
+// received (remote.DigestResult). The transaction refuses to publish anything
+// the Hub did not stage under exactly this digest: the staging row for this
+// job and operation must exist, must carry the same digest, and every record
+// must name the staged ciphertext. A job that already succeeded under the same
+// digest is a read-only idempotent success — a lost HTTP response must not
+// stage or publish a second vector — while a different or legacy-unknown
+// digest is rejected without any mutation. Lease ownership is re-checked by
+// the final UPDATE, so only the executor that holds the lease can drive the
+// transition.
+func (r *Repository) CommitSpeakerEmbedding(ctx context.Context, jobID, owner string, consentGeneration, profileGeneration int64, digest string, records []domain.SpeakerEmbedding) error {
+	if strings.TrimSpace(digest) == "" {
+		return domain.Permanent(errors.New("speaker embedding commit has no result digest"))
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC()
+	var assetID, operation, requestJSON string
+	var cancelRequested int
+	var committedDigest sql.NullString
+	var state, leaseOwner, leaseExpires string
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(j.asset_id,''),t.operation,t.request_json,t.cancel_requested,t.result_digest,j.state,COALESCE(j.lease_owner,''),COALESCE(j.lease_expires_at,'') FROM inference_tasks t JOIN jobs j ON j.id=t.job_id WHERE j.id=? AND j.job_type=?`, jobID, string(domain.JobInference)).Scan(&assetID, &operation, &requestJSON, &cancelRequested, &committedDigest, &state, &leaseOwner, &leaseExpires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return leaseLostErr(jobID, owner)
+	}
+	if err != nil {
+		return err
+	}
+	if state == string(domain.JobSucceeded) {
+		// The job transition and the canonical writes are one transaction, so
+		// an already-succeeded task whose recorded digest matches is a safe
+		// same-identity lost-response retry. This branch writes nothing: a
+		// different executor, or a different result under the same operation
+		// id, can never mutate rows here.
+		if committedDigest.Valid && committedDigest.String == digest {
+			return nil
+		}
+		return domain.Permanent(errors.New("speaker result digest does not match the committed result"))
+	}
+	if cancelRequested != 0 {
+		if err := failCancelledInferenceTx(ctx, tx, jobID, owner); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		return domain.Permanent(domain.ErrInferenceCancelled)
+	}
+	if state != string(domain.JobRunning) {
+		return leaseLostErr(jobID, owner)
+	}
+	expires, parseErr := time.Parse(time.RFC3339Nano, leaseExpires)
+	if leaseOwner != owner || parseErr != nil || !expires.After(now) {
+		return leaseLostErr(jobID, owner)
+	}
+	var request domain.InferenceRequest
+	if err := json.Unmarshal([]byte(requestJSON), &request); err != nil {
+		return domain.Permanent(fmt.Errorf("stored inference request is unreadable: %w", err))
+	}
+	if domain.InferenceOperation(operation) != domain.OpSpeakerEmbedding || request.Operation != domain.OpSpeakerEmbedding || request.Input.Kind != domain.InputKindAsset || request.Input.AssetID != assetID || request.Speaker == nil || strings.TrimSpace(request.Speaker.ProfileID) == "" || assetID == "" {
+		return domain.Permanent(errors.New("speaker embedding request has no matching asset profile"))
+	}
+	if err := request.Validate(); err != nil {
+		return domain.Permanent(fmt.Errorf("stored inference request is invalid: %w", err))
+	}
+	if len(records) == 0 {
+		return domain.Permanent(errors.New("speaker embedding commit has no records"))
+	}
+	var enabled int
+	var currentConsentGeneration int64
+	err = tx.QueryRowContext(ctx, `SELECT enabled,generation FROM speaker_consent WHERE singleton=1`).Scan(&enabled, &currentConsentGeneration)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && (enabled == 0 || currentConsentGeneration != consentGeneration) {
+		return domain.Permanent(domain.ErrSpeakerConsentGenerationInactive)
+	}
+	if err != nil {
+		return err
+	}
+	var currentProfileGeneration int64
+	var profileState string
+	err = tx.QueryRowContext(ctx, `SELECT generation,state FROM speaker_profiles WHERE id=?`, request.Speaker.ProfileID).Scan(&currentProfileGeneration, &profileState)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && (profileState != "active" || currentProfileGeneration != profileGeneration) {
+		return domain.Permanent(errors.New("speaker profile generation is no longer active"))
+	}
+	if err != nil {
+		return err
+	}
+	var stagedRef, stagedDigest string
+	err = tx.QueryRowContext(ctx, `SELECT secret_ref,COALESCE(result_digest,'') FROM speaker_embedding_staging WHERE job_id=? AND operation_id=?`, jobID, request.OperationID).Scan(&stagedRef, &stagedDigest)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Permanent(errors.New("speaker embedding result was never staged"))
+	}
+	if err != nil {
+		return err
+	}
+	if stagedDigest != digest {
+		return domain.Permanent(errors.New("staged speaker digest does not match the committed result"))
+	}
+	for index, record := range records {
+		if strings.TrimSpace(record.SecretRef) == "" || record.SecretRef != stagedRef || record.ProfileID != request.Speaker.ProfileID || record.AssetID != assetID || record.SpaceID != request.SpaceID || record.ConsentGeneration != consentGeneration || record.ProfileGeneration != profileGeneration || strings.TrimSpace(record.GenerationID) == "" {
+			return domain.Permanent(fmt.Errorf("speaker embedding record %d has mismatched identity, generation or ciphertext reference", index))
+		}
+		interval := domain.TimeInterval{StartMS: record.StartMS, EndMS: record.EndMS}
+		if err := interval.Validate(request.Input.DurationMS); err != nil {
+			return domain.Permanent(fmt.Errorf("speaker embedding record %d: %w", index, err))
+		}
+		if interval.StartMS < request.Speaker.Interval.StartMS || interval.EndMS > request.Speaker.Interval.EndMS {
+			return domain.Permanent(fmt.Errorf("speaker embedding record %d is outside the requested interval", index))
+		}
+	}
+	for _, record := range records {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO speaker_embeddings(id,profile_id,asset_id,generation_id,space_id,start_ms,end_ms,speech_duration_ms,quality_json,secret_ref,consent_generation,profile_generation,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, idgen.New(), record.ProfileID, record.AssetID, record.GenerationID, record.SpaceID, record.StartMS, record.EndMS, record.SpeechDurationMS, record.QualityJSON, record.SecretRef, record.ConsentGeneration, record.ProfileGeneration, formatTime(now)); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM biometric_purge_refs WHERE secret_ref=?`, record.SecretRef); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM speaker_embedding_staging WHERE job_id=? AND operation_id=?`, jobID, request.OperationID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE inference_tasks SET result_digest=?,updated_at=? WHERE job_id=? AND operation=? AND config_hash=? AND model_revision=? AND cancel_requested=0`, digest, formatTime(now), jobID, string(request.Operation), request.ConfigHash, request.ModelRevision); err != nil {
+		return err
+	}
+	finalNow := time.Now().UTC()
+	res, err := tx.ExecContext(ctx, `UPDATE jobs SET state='succeeded',terminal=0,last_error_code=NULL,last_error_message=NULL,current_stage='complete',progress=100,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND job_type=? AND state='running' AND lease_owner=? AND lease_expires_at>?`, formatTime(finalNow), jobID, string(domain.JobInference), owner, formatTime(finalNow))
+	if err != nil {
+		return err
+	}
+	count, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return leaseLostErr(jobID, owner)
+	}
+	return tx.Commit()
 }
 
 // ListSpeakerTurnsForGeneration returns the stored turns of one diarization

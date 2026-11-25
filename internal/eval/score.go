@@ -3,11 +3,13 @@ package eval
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/evjohn-icu/nexusgate/internal/cachecoord"
 	"github.com/evjohn-icu/nexusgate/internal/domain"
 	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
@@ -70,11 +72,29 @@ type QueryDetail struct {
 // same metric conventions as the retrieval golden set: a fixed K denominator,
 // a relevant shot must actually appear in the top-10.
 func Score(ctx context.Context, dataDir, label string, corpus *Corpus) (*RunScore, error) {
+	dir, err := runDirectory(dataDir, label)
+	if err != nil {
+		return nil, err
+	}
+	dbPath := filepath.Join(dir, "nexusgate.db")
+	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("run has no isolated database; re-run with this label")
+	} else if err != nil {
+		return nil, err
+	}
+	lock, err := cachecoord.AcquirePath(filepath.Join(dir, ".run.lock"), false)
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Release()
 	report, err := LoadReport(dataDir, label)
 	if err != nil {
 		return nil, err
 	}
-	repo, err := sqlite.Open(filepath.Join(dataDir, "nexusgate.db"))
+	if !report.IsolatedDatabase {
+		return nil, fmt.Errorf("run has no isolated database; re-run with this label")
+	}
+	repo, err := sqlite.Open(dbPath)
 	if err != nil {
 		return nil, err
 	}
@@ -263,9 +283,13 @@ func max64(a, b int64) int64 {
 
 // SaveScore persists the scored run for later comparison.
 func SaveScore(score *RunScore, dataDir string) error {
+	dir, err := runDirectory(dataDir, score.Label)
+	if err != nil {
+		return err
+	}
 	raw, err := json.MarshalIndent(score, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dataDir, "runs", score.Label, "score.json"), raw, 0o600)
+	return os.WriteFile(filepath.Join(dir, "score.json"), raw, 0o600)
 }

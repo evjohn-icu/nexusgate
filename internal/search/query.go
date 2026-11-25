@@ -161,9 +161,10 @@ func DefaultOptions() Options {
 
 // SearchQueryInfo is the echo of how the query was understood.
 type SearchQueryInfo struct {
-	Raw      string       `json:"raw"`
-	Intent   SearchIntent `json:"intent"`
-	Temporal string       `json:"temporal,omitempty"`
+	Raw           string         `json:"raw"`
+	Intent        SearchIntent   `json:"intent"`
+	Temporal      string         `json:"temporal,omitempty"`
+	TemporalQuery *TemporalQuery `json:"temporal_query,omitempty"`
 }
 
 // SearchResponse is the structured v2 search response. SearchID and QueryHash
@@ -298,6 +299,7 @@ type Candidate struct {
 	SessionID   string
 	Signals     map[string]float64
 	Score       float64
+	fusedScore  float64
 }
 
 // Signal names. heuristic_semantic is deliberately the honest name for the

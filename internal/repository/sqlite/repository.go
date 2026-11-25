@@ -20,7 +20,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/evjohn-icu/nexusgate/internal/capture"
 	"github.com/evjohn-icu/nexusgate/internal/discovery"
 	"github.com/evjohn-icu/nexusgate/internal/domain"
 	"github.com/evjohn-icu/nexusgate/internal/idgen"
@@ -37,6 +36,29 @@ import (
 // CreateWorkerPairing returns the raw token exactly once. Only its SHA-256
 // digest is persisted, so a database backup never becomes a worker credential.
 func (r *Repository) CreateWorkerPairing(ctx context.Context, ttl time.Duration) (remote.PairingToken, error) {
+	return r.CreateWorkerPairingWithGrants(ctx, ttl, remote.WorkerGrants{})
+}
+
+// CreateWorkerPairingWithGrants binds administrator-authorized operations to
+// the one-time enrollment token.
+func (r *Repository) CreateWorkerPairingWithGrants(ctx context.Context, ttl time.Duration, grants remote.WorkerGrants) (remote.PairingToken, error) {
+	var err error
+	grants.InferenceOperations, err = normalizeWorkerGrants(grants.InferenceOperations, func(operation string) bool {
+		return domain.InferenceOperation(operation).Valid()
+	})
+	if err != nil {
+		return remote.PairingToken{}, err
+	}
+	grants.ModelManagementOperations, err = normalizeWorkerGrants(grants.ModelManagementOperations, func(operation string) bool {
+		return operation == "install" || operation == "probe"
+	})
+	if err != nil {
+		return remote.PairingToken{}, err
+	}
+	grantsJSON, err := json.Marshal(grants)
+	if err != nil {
+		return remote.PairingToken{}, err
+	}
 	if ttl <= 0 {
 		ttl = 15 * time.Minute
 	}
@@ -46,11 +68,28 @@ func (r *Repository) CreateWorkerPairing(ctx context.Context, ttl time.Duration)
 	}
 	now := time.Now().UTC()
 	expires := now.Add(ttl)
-	_, err = r.db.ExecContext(ctx, `INSERT INTO worker_pairing_tokens(id,token_hash,expires_at,created_at) VALUES(?,?,?,?)`, idgen.New(), tokenDigest(raw), formatTime(expires), formatTime(now))
+	_, err = r.db.ExecContext(ctx, `INSERT INTO worker_pairing_tokens(id,token_hash,expires_at,created_at,grants_json) VALUES(?,?,?,?,?)`, idgen.New(), tokenDigest(raw), formatTime(expires), formatTime(now), string(grantsJSON))
 	if err != nil {
 		return remote.PairingToken{}, err
 	}
 	return remote.PairingToken{Token: raw, ExpiresAt: expires}, nil
+}
+
+func normalizeWorkerGrants(operations []string, valid func(string) bool) ([]string, error) {
+	var normalized []string
+	seen := make(map[string]bool, len(operations))
+	for _, operation := range operations {
+		operation = strings.TrimSpace(operation)
+		if !valid(operation) {
+			return nil, domain.ErrInvalidWorkerGrants
+		}
+		if !seen[operation] {
+			seen[operation] = true
+			normalized = append(normalized, operation)
+		}
+	}
+	sort.Strings(normalized)
+	return normalized, nil
 }
 
 // WorkerPairingValid reports whether rawToken names an unredeemed, unexpired
@@ -86,8 +125,8 @@ func (r *Repository) EnrollWorker(ctx context.Context, pairingToken string, regi
 		return remote.Worker{}, "", err
 	}
 	defer tx.Rollback()
-	var pairingID, expires string
-	err = tx.QueryRowContext(ctx, `SELECT id,expires_at FROM worker_pairing_tokens WHERE token_hash=? AND redeemed_at IS NULL`, tokenDigest(pairingToken)).Scan(&pairingID, &expires)
+	var pairingID, expires, grantsJSON string
+	err = tx.QueryRowContext(ctx, `SELECT id,expires_at,grants_json FROM worker_pairing_tokens WHERE token_hash=? AND redeemed_at IS NULL`, tokenDigest(pairingToken)).Scan(&pairingID, &expires, &grantsJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return remote.Worker{}, "", domain.ErrPairingTokenInvalid
 	}
@@ -98,6 +137,13 @@ func (r *Repository) EnrollWorker(ctx context.Context, pairingToken string, regi
 	if !expiresAt.After(now) {
 		return remote.Worker{}, "", fmt.Errorf("%w: the pairing token has expired", domain.ErrPairingTokenInvalid)
 	}
+	var grants remote.WorkerGrants
+	if err := json.Unmarshal([]byte(grantsJSON), &grants); err != nil {
+		return remote.Worker{}, "", err
+	}
+	registration.Capabilities.InferenceOperations = grants.InferenceOperations
+	registration.Capabilities.ModelManagementOperations = grants.ModelManagementOperations
+	registration.Capabilities.Inference = nil
 	token, err := randomToken()
 	if err != nil {
 		return remote.Worker{}, "", err
@@ -148,7 +194,7 @@ func (r *Repository) HeartbeatWorker(ctx context.Context, workerID, version stri
 	var storedRaw, status string
 	err = tx.QueryRowContext(ctx, `SELECT capabilities_json,status FROM workers WHERE id=?`, workerID).Scan(&storedRaw, &status)
 	if errors.Is(err, sql.ErrNoRows) || status == string(remote.WorkerRevoked) {
-		return nil
+		return domain.ErrWorkerNotFound
 	}
 	if err != nil {
 		return err
@@ -532,12 +578,14 @@ func migrationFreeSpaceRequired(dbSize int64) int64 {
 	return dbSize*2 + 256<<20
 }
 
+const cjkFTSIndexState = "cjk_bigram_unigram_v2"
+
 // ensureCJKBigramFTS makes an interrupted upgrade recoverable: migration SQL
 // marks the index pending, then this Hub-owned transaction rebuilds both FTS
 // tables from the authoritative asset rows before marking it ready.
 func (r *Repository) ensureCJKBigramFTS(ctx context.Context) error {
 	var state string
-	err := r.db.QueryRowContext(ctx, `SELECT value FROM fts_index_state WHERE name='cjk_bigram_v1'`).Scan(&state)
+	err := r.db.QueryRowContext(ctx, `SELECT value FROM fts_index_state WHERE name=?`, cjkFTSIndexState).Scan(&state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -568,7 +616,7 @@ func (r *Repository) rebuildCJKBigramFTS(ctx context.Context) error {
 	assets := make([]assetRecord, 0)
 	assetRows, err := tx.QueryContext(ctx, `SELECT a.id,
 COALESCE((SELECT absolute_path FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=a.id AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.is_primary DESC,l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1),''),
-COALESCE(an.summary,''),COALESCE((SELECT full_text FROM transcripts t WHERE t.asset_id=a.id AND t.status='succeeded' ORDER BY t.created_at DESC LIMIT 1),''),
+COALESCE(an.summary,''),COALESCE((SELECT full_text FROM transcripts t WHERE t.asset_id=a.id AND t.status='succeeded' ORDER BY t.created_at DESC,t.id DESC LIMIT 1),''),
 COALESCE(an.scene_tags_json,''),COALESCE(an.subjects_json,''),COALESCE(an.mood_tags_json,''),COALESCE(an.extra_tags_json,''),COALESCE(an.editorial_reason,'')
 FROM assets a LEFT JOIN asset_analysis an ON an.asset_id=a.id`)
 	if err != nil {
@@ -633,7 +681,7 @@ FROM assets a LEFT JOIN asset_analysis an ON an.asset_id=a.id`)
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE fts_index_state SET value='ready',updated_at=? WHERE name='cjk_bigram_v1'`, formatTime(time.Now())); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE fts_index_state SET value='ready',updated_at=? WHERE name=?`, formatTime(time.Now()), cjkFTSIndexState); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1142,63 +1190,6 @@ func (r *Repository) ListProviderChannels(ctx context.Context, capability string
 	return channels, nil
 }
 
-// RebuildAutomaticShootSessions materializes deterministic, conservative
-// capture groups for one library root. Manual sessions are intentionally left
-// untouched; source files and metadata are never modified.
-func (r *Repository) RebuildAutomaticShootSessions(ctx context.Context, rootID string) error {
-	rows, err := r.db.QueryContext(ctx, `SELECT a.id,COALESCE(al.relative_path,''),COALESCE(cm.vendor,''),COALESCE(cm.model,''),COALESCE(cm.device_serial,''),cm.captured_at,COALESCE(m.duration_ms,0),COALESCE(cm.session_marker,''),COALESCE(cm.reel,'') FROM assets a JOIN asset_locations al ON al.id=(SELECT l.id FROM asset_locations l JOIN library_roots lr ON lr.id=l.root_id WHERE l.asset_id=a.id AND l.root_id=? AND l.exists_now=1 AND lr.health_state<>'unavailable' ORDER BY l.is_primary DESC,l.last_seen_at DESC,lr.created_at,lr.id,l.relative_path,l.id LIMIT 1) LEFT JOIN capture_metadata cm ON cm.asset_id=a.id LEFT JOIN media_metadata m ON m.asset_id=a.id WHERE cm.captured_at IS NOT NULL GROUP BY a.id`, rootID)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	var captures []capture.Capture
-	for rows.Next() {
-		var item capture.Capture
-		var vendor, model, serial, captured, sessionMarker, reel string
-		var durationMS int64
-		if err := rows.Scan(&item.ID, &item.Context.Filename, &vendor, &model, &serial, &captured, &durationMS, &sessionMarker, &reel); err != nil {
-			return err
-		}
-		item.Source = capture.SourceOriginal
-		item.Identity = capture.CaptureIdentity{DeviceID: strings.TrimSpace(vendor + ":" + model), DeviceSerial: serial, Manufacturer: vendor, Model: model}
-		item.Context.CapturedAt, _ = time.Parse(time.RFC3339Nano, captured)
-		item.Context.Duration = time.Duration(durationMS) * time.Millisecond
-		item.Context.SessionMarker = sessionMarker
-		item.Context.ReelMarker = reel
-		captures = append(captures, item)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	sessions := capture.AggregateSessions(captures)
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM shoot_sessions WHERE root_id=? AND state='automatic'`, rootID); err != nil {
-		return err
-	}
-	now := formatTime(time.Now())
-	for _, session := range sessions {
-		id := idgen.New()
-		cameraLabel := strings.TrimSpace(session.Identity.Manufacturer + " " + session.Identity.Model)
-		title := cameraLabel
-		if !session.Start.IsZero() {
-			title = session.Start.Local().Format("2006-01-02 15:04") + " · " + cameraLabel
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO shoot_sessions(id,root_id,title,state,starts_at,ends_at,camera_label,confidence,created_at,updated_at) VALUES(?,?,?,'automatic',?,?,?,?,?,?)`, id, rootID, title, nullableTime(&session.Start), nullableTime(&session.End), cameraLabel, 0.8, now, now); err != nil {
-			return err
-		}
-		for _, item := range session.Captures {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO asset_shoot_sessions(asset_id,session_id,is_primary,created_at) VALUES(?,?,1,?)`, item.ID, id, now); err != nil {
-				return err
-			}
-		}
-	}
-	return tx.Commit()
-}
-
 // SaveMediaMetadata writes the probe result for an asset. jobID/owner bind the
 // write to the caller's lease exactly like SaveTranscript and
 // CommitAnalysisWithShots: the guard runs inside this transaction, so a holder
@@ -1532,7 +1523,14 @@ func (r *Repository) LeaseNextJob(ctx context.Context, worker string, ttlFor fun
 	// planner a second table to order by and could cost the ordered scan. The
 	// subquery is a primary-key lookup, and it is skipped entirely when the
 	// ceiling is zero.
-	err = tx.QueryRowContext(ctx, `SELECT id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,last_error_message FROM jobs INDEXED BY idx_jobs_lease_order WHERE job_type NOT IN ('inference','model_install','model_probe') AND state IN ('pending','failed','running') AND terminal=0 AND assigned_worker_id IS NULL AND attempt_count<max_attempts AND run_after<=? AND (lease_expires_at IS NULL OR lease_expires_at<=?) AND (?=0 OR NOT EXISTS (SELECT 1 FROM assets a WHERE a.id=jobs.asset_id AND a.file_size>?)) ORDER BY priority DESC,created_at LIMIT 1`, formatTime(now), formatTime(now), filter.MaxAssetBytes, filter.MaxAssetBytes).Scan(&j.ID, &j.AssetID, &j.Type, &j.State, &j.Priority, &j.AttemptCount, &j.MaxAttempts, &run, &j.InputHash, &last)
+	err = tx.QueryRowContext(ctx, `SELECT id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,last_error_message FROM jobs INDEXED BY idx_jobs_lease_order
+		WHERE job_type NOT IN ('inference','model_install','model_probe') AND state IN ('pending','failed','running') AND terminal=0 AND assigned_worker_id IS NULL
+		  AND attempt_count<max_attempts AND run_after<=? AND (lease_expires_at IS NULL OR lease_expires_at<=?)
+		  AND (?=0 OR NOT EXISTS (SELECT 1 FROM assets a WHERE a.id=jobs.asset_id AND a.file_size>?))
+		  AND (input_hash NOT LIKE 'cache-rederive:%' OR EXISTS (
+			SELECT 1 FROM asset_locations al JOIN library_roots lr ON lr.id=al.root_id
+			WHERE al.asset_id=jobs.asset_id AND al.exists_now=1 AND lr.health_state<>'unavailable'))
+		ORDER BY priority DESC,created_at LIMIT 1`, formatTime(now), formatTime(now), filter.MaxAssetBytes, filter.MaxAssetBytes).Scan(&j.ID, &j.AssetID, &j.Type, &j.State, &j.Priority, &j.AttemptCount, &j.MaxAttempts, &run, &j.InputHash, &last)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Nothing to lease, but reclaimExhaustedLeases above may still have
 		// terminally failed an unrelated exhausted job in this same
@@ -1683,7 +1681,7 @@ func (r *Repository) FailJobTerminally(ctx context.Context, id, owner string, ca
 // lease, and succeeded or skipped jobs are the idempotency record that keeps
 // re-running the pipeline cheap.
 func (r *Repository) RequeueFailedJobs(ctx context.Context) (int, error) {
-	result, err := r.db.ExecContext(ctx, `UPDATE jobs SET state='pending',terminal=0,attempt_count=0,run_after=?,last_error_message=NULL,last_error_code=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE state='failed'`, formatTime(time.Now()), formatTime(time.Now()))
+	result, err := r.db.ExecContext(ctx, `UPDATE jobs SET state='pending',terminal=0,attempt_count=0,run_after=?,last_error_message=NULL,last_error_code=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE state='failed' AND NOT EXISTS(SELECT 1 FROM inference_tasks t WHERE t.job_id=jobs.id AND t.cancel_requested=1)`, formatTime(time.Now()), formatTime(time.Now()))
 	if err != nil {
 		return 0, err
 	}
@@ -1707,7 +1705,7 @@ func (r *Repository) RequeueFailedJobs(ctx context.Context) (int, error) {
 // compares last_error_code=?), so a category-scoped release is just
 // ResumeDeferredJobs(category).
 func (r *Repository) RequeueFailedJobsByCategory(ctx context.Context, category string) (int, error) {
-	result, err := r.db.ExecContext(ctx, `UPDATE jobs SET state='pending',terminal=0,attempt_count=0,run_after=?,last_error_message=NULL,last_error_code=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE state='failed' AND COALESCE(NULLIF(last_error_code,''),'unknown')=?`, formatTime(time.Now()), formatTime(time.Now()), category)
+	result, err := r.db.ExecContext(ctx, `UPDATE jobs SET state='pending',terminal=0,attempt_count=0,run_after=?,last_error_message=NULL,last_error_code=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE state='failed' AND COALESCE(NULLIF(last_error_code,''),'unknown')=? AND NOT EXISTS(SELECT 1 FROM inference_tasks t WHERE t.job_id=jobs.id AND t.cancel_requested=1)`, formatTime(time.Now()), formatTime(time.Now()), category)
 	if err != nil {
 		return 0, err
 	}
@@ -1951,7 +1949,7 @@ func (r *Repository) RebuildSearch(ctx context.Context, assetID string) error {
 	if err := r.db.QueryRowContext(ctx, `SELECT summary,scene_tags_json,subjects_json,mood_tags_json,extra_tags_json,editorial_reason FROM asset_analysis WHERE asset_id=?`, assetID).Scan(&summary, &tags, &subjects, &moods, &extra, &reason); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if err := r.db.QueryRowContext(ctx, `SELECT full_text FROM transcripts WHERE asset_id=? AND status='succeeded' ORDER BY created_at DESC LIMIT 1`, assetID).Scan(&transcript); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err := r.db.QueryRowContext(ctx, `SELECT full_text FROM transcripts WHERE asset_id=? AND status='succeeded' ORDER BY created_at DESC,id DESC LIMIT 1`, assetID).Scan(&transcript); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 
@@ -3429,10 +3427,10 @@ func (r *Repository) FailModelRun(ctx context.Context, runID, code, message, raw
 	if err != nil {
 		return err
 	}
-	if n != 1 && jobID != "" {
-		return leaseLostErr(jobID, owner)
-	}
 	if n != 1 {
+		if err := leaseGuard(ctx, r.db, jobID, assetID, owner); err != nil {
+			return err
+		}
 		return domain.Permanent(fmt.Errorf("%w: run %s", domain.ErrModelRunNotRunning, runID))
 	}
 	return nil
@@ -3456,10 +3454,10 @@ func (r *Repository) MarkModelRunCommitted(ctx context.Context, runID, jobID, ow
 	if err != nil {
 		return err
 	}
-	if n != 1 && jobID != "" {
-		return leaseLostErr(jobID, owner)
-	}
 	if n != 1 {
+		if err := leaseGuard(ctx, r.db, jobID, assetID, owner); err != nil {
+			return err
+		}
 		return domain.Permanent(fmt.Errorf("%w: run %s", domain.ErrCommitRunNotValidated, runID))
 	}
 	return nil
@@ -3478,10 +3476,10 @@ func (r *Repository) StageModelRun(ctx context.Context, runID, raw, parsed, jobI
 	if err != nil {
 		return err
 	}
-	if n != 1 && jobID != "" {
-		return leaseLostErr(jobID, owner)
-	}
 	if n != 1 {
+		if err := leaseGuard(ctx, r.db, jobID, assetID, owner); err != nil {
+			return err
+		}
 		return domain.Permanent(fmt.Errorf("%w: run %s", domain.ErrModelRunNotRunning, runID))
 	}
 	return nil
@@ -3601,68 +3599,6 @@ func (r *Repository) GetSpeechClassification(ctx context.Context, assetID string
 		return nil, nil
 	}
 	return &c, err
-}
-
-func (r *Repository) SaveTranscript(ctx context.Context, assetID, provider, model, inputHash string, t domain.Transcript, jobID, owner string) error {
-	segments, _ := json.Marshal(t.Segments)
-	now := formatTime(time.Now().UTC())
-	res, err := r.db.ExecContext(ctx, `INSERT INTO transcripts(id,asset_id,provider,model,input_hash,language,full_text,segments_json,raw_response,status,created_at)
-SELECT ?,?,?,?,?,?,?,?,?, 'succeeded',? WHERE (?='' OR EXISTS (SELECT 1 FROM jobs WHERE id=? AND asset_id=? AND state='running' AND lease_owner=? AND lease_expires_at>?)) ON CONFLICT(asset_id,input_hash) DO UPDATE SET language=excluded.language,full_text=excluded.full_text,segments_json=excluded.segments_json,raw_response=excluded.raw_response,status='succeeded'`,
-		idgen.New(), assetID, provider, model, inputHash, t.Language, t.Text, string(segments), t.RawResponse, now, jobID, jobID, assetID, owner, now)
-	if err != nil {
-		return err
-	}
-	if jobID != "" {
-		n, e := res.RowsAffected()
-		if e != nil {
-			return e
-		}
-		if n != 1 {
-			// The lease is gone: the transcript write did not land, and the
-			// asr_segments materialization below must not run for a transcript
-			// the caller does not own.
-			return leaseLostErr(jobID, owner)
-		}
-	}
-	// Materialize the timed ASR segments as the shot-level speech source,
-	// replacing any prior transcript's segments (GetTranscript reads the
-	// latest row). The common no-segments path — and the placeholder 0-0
-	// segment some ASR providers emit — stays a single write with no
-	// asr_segments rows; degenerate segments carry no placement and are
-	// dropped, the same rule Transcript.Timed and the transcript endpoint
-	// apply.
-	var timed []domain.TranscriptSegment
-	for _, seg := range t.Segments {
-		if seg.EndMS > seg.StartMS {
-			timed = append(timed, seg)
-		}
-	}
-	if len(timed) == 0 {
-		return nil
-	}
-	if _, err := r.db.ExecContext(ctx, `DELETE FROM asr_segments WHERE asset_id=?`, assetID); err != nil {
-		return err
-	}
-	for i, seg := range timed {
-		if _, err := r.db.ExecContext(ctx, `INSERT INTO asr_segments(id,asset_id,ordinal,start_ms,end_ms,text,confidence) VALUES(?,?,?,?,?,?,NULL)`, idgen.New(), assetID, i, seg.StartMS, seg.EndMS, seg.Text); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (r *Repository) GetTranscript(ctx context.Context, assetID string) (*domain.Transcript, error) {
-	var t domain.Transcript
-	var segments string
-	err := r.db.QueryRowContext(ctx, `SELECT language,full_text,segments_json,raw_response FROM transcripts WHERE asset_id=? AND status='succeeded' ORDER BY created_at DESC LIMIT 1`, assetID).Scan(&t.Language, &t.Text, &segments, &t.RawResponse)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	_ = json.Unmarshal([]byte(segments), &t.Segments)
-	return &t, nil
 }
 
 func (r *Repository) GetProviderFile(ctx context.Context, assetID, artifactType, profileHash, provider string) (*domain.ProviderFile, error) {
@@ -4063,281 +3999,6 @@ func (r *Repository) LatestLibrarySummary(ctx context.Context) (*domain.LibraryS
 	return &item, nil
 }
 
-// SaveRepurposePlan refuses to overwrite a plan a human already approved.
-// This check and the ones in SaveRepurposePlanRevision and
-// ApproveRepurposePlanRevision below are where the human-approval boundary is
-// actually enforced -- they are the only ones that run against state no
-// concurrent caller can change underneath them, so they are also the only
-// ones that can be trusted. They wrap domain sentinels rather than returning
-// bare prose so the layers above can react to what was refused with errors.Is
-// instead of re-deriving it from a second, unlocked read; see
-// internal/domain/errors.go.
-func (r *Repository) SaveRepurposePlan(ctx context.Context, plan domain.RepurposePlan) (domain.RepurposePlan, error) {
-	var currentState string
-	err := r.db.QueryRowContext(ctx, `SELECT status FROM repurpose_plans WHERE id=?`, plan.ID).Scan(&currentState)
-	if err == nil && currentState == "approved" {
-		return domain.RepurposePlan{}, fmt.Errorf("%w: plan %s is approved and accepts no further writes", domain.ErrPlanImmutable, plan.ID)
-	}
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return domain.RepurposePlan{}, err
-	}
-	now := time.Now().UTC()
-	if plan.ID == "" {
-		plan.ID = idgen.New()
-	}
-	if plan.Status == "" {
-		plan.Status = "draft"
-	}
-	if plan.CreatedAt.IsZero() {
-		plan.CreatedAt = now
-	}
-	plan.UpdatedAt = now
-	encoded, err := json.Marshal(plan)
-	if err != nil {
-		return domain.RepurposePlan{}, err
-	}
-	_, err = r.db.ExecContext(ctx, `INSERT INTO repurpose_plans(id,brief,duration_ms,style,audience,title,status,provider,model,plan_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET brief=excluded.brief,duration_ms=excluded.duration_ms,style=excluded.style,audience=excluded.audience,title=excluded.title,status=excluded.status,provider=excluded.provider,model=excluded.model,plan_json=excluded.plan_json,updated_at=excluded.updated_at`, plan.ID, plan.Brief, plan.DurationMS, plan.Style, plan.Audience, plan.Title, plan.Status, plan.Provider, plan.Model, string(encoded), formatTime(plan.CreatedAt), formatTime(plan.UpdatedAt))
-	if err != nil {
-		return domain.RepurposePlan{}, err
-	}
-	return plan, nil
-}
-
-func (r *Repository) GetRepurposePlan(ctx context.Context, id string) (*domain.RepurposePlan, error) {
-	var planJSON, created, updated string
-	err := r.db.QueryRowContext(ctx, `SELECT plan_json,created_at,updated_at FROM repurpose_plans WHERE id=?`, id).Scan(&planJSON, &created, &updated)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var plan domain.RepurposePlan
-	if err := json.Unmarshal([]byte(planJSON), &plan); err != nil {
-		return nil, fmt.Errorf("decode repurpose plan: %w", err)
-	}
-	plan.ID = id
-	plan.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-	plan.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
-	return &plan, nil
-}
-
-// ListRepurposePlans returns the plan inbox projection, most recently
-// updated first. status filters to draft or approved; any other value ("" or
-// "all") returns both. The projection comes from denormalized columns plus a
-// revision subquery — never the full candidate payloads.
-func (r *Repository) ListRepurposePlans(ctx context.Context, status string, limit int) ([]domain.RepurposePlanSummary, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
-	}
-	query := `SELECT p.id,p.title,p.brief,p.status,p.duration_ms,p.updated_at,
-	COALESCE((SELECT COUNT(*) FROM repurpose_plan_revisions r WHERE r.plan_id=p.id),0),
-	COALESCE((SELECT MAX(r.revision) FROM repurpose_plan_revisions r WHERE r.plan_id=p.id),0),
-	COALESCE(json_array_length(COALESCE(json_extract(p.plan_json,'$.missing_needs'),'[]')),0)
-	FROM repurpose_plans p`
-	args := make([]any, 0, 2)
-	if status == "draft" || status == "approved" {
-		query += ` WHERE p.status=?`
-		args = append(args, status)
-	}
-	query += ` ORDER BY p.updated_at DESC LIMIT ?`
-	args = append(args, limit)
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []domain.RepurposePlanSummary
-	for rows.Next() {
-		var s domain.RepurposePlanSummary
-		var updated string
-		if err := rows.Scan(&s.ID, &s.Title, &s.Brief, &s.Status, &s.DurationMS, &updated, &s.RevisionCount, &s.LatestRevision, &s.MissingNeedsCount); err != nil {
-			return nil, err
-		}
-		s.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
-		out = append(out, s)
-	}
-	return out, rows.Err()
-}
-
-// PagedRepurposePlans is the paged form of ListRepurposePlans with an id
-// tie-break on the updated_at ordering and a probe row for has-more.
-func (r *Repository) PagedRepurposePlans(ctx context.Context, status string, limit, offset int) ([]domain.RepurposePlanSummary, bool, error) {
-	if limit <= 0 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	query := `SELECT p.id,p.title,p.brief,p.status,p.duration_ms,p.updated_at,
-	COALESCE((SELECT COUNT(*) FROM repurpose_plan_revisions r WHERE r.plan_id=p.id),0),
-	COALESCE((SELECT MAX(r.revision) FROM repurpose_plan_revisions r WHERE r.plan_id=p.id),0),
-	COALESCE(json_array_length(COALESCE(json_extract(p.plan_json,'$.missing_needs'),'[]')),0)
-	FROM repurpose_plans p`
-	args := make([]any, 0, 2)
-	if status == "draft" || status == "approved" {
-		query += ` WHERE p.status=?`
-		args = append(args, status)
-	}
-	query += ` ORDER BY p.updated_at DESC, p.id LIMIT ? OFFSET ?`
-	args = append(args, limit+1, offset)
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, false, err
-	}
-	defer rows.Close()
-	out := make([]domain.RepurposePlanSummary, 0, limit+1)
-	for rows.Next() {
-		var s domain.RepurposePlanSummary
-		var updated string
-		if err := rows.Scan(&s.ID, &s.Title, &s.Brief, &s.Status, &s.DurationMS, &updated, &s.RevisionCount, &s.LatestRevision, &s.MissingNeedsCount); err != nil {
-			return nil, false, err
-		}
-		s.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
-		out = append(out, s)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, false, err
-	}
-	hasMore := len(out) > limit
-	if hasMore {
-		out = out[:limit]
-	}
-	return out, hasMore, nil
-}
-
-func (r *Repository) SaveRepurposePlanRevision(ctx context.Context, plan domain.RepurposePlan, editorNote string) (domain.RepurposePlanRevision, error) {
-	current, err := r.GetRepurposePlan(ctx, plan.ID)
-	if err != nil {
-		return domain.RepurposePlanRevision{}, err
-	}
-	if current == nil {
-		return domain.RepurposePlanRevision{}, fmt.Errorf("%w: no plan matches id %s", domain.ErrPlanNotFound, plan.ID)
-	}
-	if current.Status == "approved" {
-		return domain.RepurposePlanRevision{}, fmt.Errorf("%w: plan %s is approved and accepts no further revisions", domain.ErrPlanImmutable, plan.ID)
-	}
-	plan.ID = current.ID
-	plan.CreatedAt = current.CreatedAt
-	plan.Status = "draft"
-	saved, err := r.SaveRepurposePlan(ctx, plan)
-	if err != nil {
-		return domain.RepurposePlanRevision{}, err
-	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return domain.RepurposePlanRevision{}, err
-	}
-	defer tx.Rollback()
-	var latest int
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision),0) FROM repurpose_plan_revisions WHERE plan_id=?`, saved.ID).Scan(&latest); err != nil {
-		return domain.RepurposePlanRevision{}, err
-	}
-	snapshot, err := json.Marshal(saved)
-	if err != nil {
-		return domain.RepurposePlanRevision{}, err
-	}
-	created := time.Now().UTC()
-	revision := domain.RepurposePlanRevision{ID: idgen.New(), PlanID: saved.ID, Revision: latest + 1, State: "draft", Plan: saved, EditorNote: strings.TrimSpace(editorNote), CreatedAt: created}
-	_, err = tx.ExecContext(ctx, `INSERT INTO repurpose_plan_revisions(id,plan_id,revision,state,snapshot_json,editor_note,created_at) VALUES(?,?,?,?,?,?,?)`, revision.ID, revision.PlanID, revision.Revision, revision.State, string(snapshot), revision.EditorNote, formatTime(created))
-	if err != nil {
-		return domain.RepurposePlanRevision{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return domain.RepurposePlanRevision{}, err
-	}
-	return revision, nil
-}
-
-func (r *Repository) ListRepurposePlanRevisions(ctx context.Context, planID string) ([]domain.RepurposePlanRevision, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id,revision,state,snapshot_json,editor_note,created_at,approved_at FROM repurpose_plan_revisions WHERE plan_id=? ORDER BY revision DESC`, planID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := make([]domain.RepurposePlanRevision, 0)
-	for rows.Next() {
-		var item domain.RepurposePlanRevision
-		var snapshot, created string
-		var approved sql.NullString
-		if err := rows.Scan(&item.ID, &item.Revision, &item.State, &snapshot, &item.EditorNote, &created, &approved); err != nil {
-			return nil, err
-		}
-		item.PlanID = planID
-		if err := json.Unmarshal([]byte(snapshot), &item.Plan); err != nil {
-			return nil, fmt.Errorf("decode repurpose plan revision: %w", err)
-		}
-		item.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-		if approved.Valid {
-			parsed, _ := time.Parse(time.RFC3339Nano, approved.String)
-			item.ApprovedAt = &parsed
-		}
-		items = append(items, item)
-	}
-	return items, rows.Err()
-}
-
-// ApproveRepurposePlanRevision is the write that makes a human's approval
-// real, so its three preconditions -- the revision exists, it is still a
-// draft, and it is the plan's latest -- are checked inside the same
-// transaction as the two UPDATEs rather than by the caller beforehand. A
-// caller's check cannot hold anything between its read and this write, so a
-// concurrent approval can always land in that gap; only these can't be raced.
-// They wrap domain sentinels for the reason SaveRepurposePlan's comment
-// gives.
-func (r *Repository) ApproveRepurposePlanRevision(ctx context.Context, planID string, revisionNumber int) (domain.RepurposePlanRevision, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return domain.RepurposePlanRevision{}, err
-	}
-	defer tx.Rollback()
-	var id, state, snapshot, editorNote, created string
-	err = tx.QueryRowContext(ctx, `SELECT id,state,snapshot_json,editor_note,created_at FROM repurpose_plan_revisions WHERE plan_id=? AND revision=?`, planID, revisionNumber).Scan(&id, &state, &snapshot, &editorNote, &created)
-	if errors.Is(err, sql.ErrNoRows) {
-		return domain.RepurposePlanRevision{}, fmt.Errorf("%w: plan %s has no revision %d", domain.ErrPlanRevisionNotFound, planID, revisionNumber)
-	}
-	if err != nil {
-		return domain.RepurposePlanRevision{}, err
-	}
-	if state != "draft" {
-		return domain.RepurposePlanRevision{}, fmt.Errorf("%w: %s/%d is %s", domain.ErrPlanRevisionNotDraft, planID, revisionNumber, state)
-	}
-	var latest int
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(revision),0) FROM repurpose_plan_revisions WHERE plan_id=?`, planID).Scan(&latest); err != nil {
-		return domain.RepurposePlanRevision{}, err
-	}
-	if revisionNumber != latest {
-		return domain.RepurposePlanRevision{}, fmt.Errorf("%w: %s/%d, latest is %d", domain.ErrPlanRevisionNotLatest, planID, revisionNumber, latest)
-	}
-	var plan domain.RepurposePlan
-	if err := json.Unmarshal([]byte(snapshot), &plan); err != nil {
-		return domain.RepurposePlanRevision{}, fmt.Errorf("decode repurpose plan snapshot: %w", err)
-	}
-	now := time.Now().UTC()
-	plan.Status = "approved"
-	plan.UpdatedAt = now
-	approvedSnapshot, err := json.Marshal(plan)
-	if err != nil {
-		return domain.RepurposePlanRevision{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE repurpose_plan_revisions SET state='approved',snapshot_json=?,approved_at=? WHERE id=?`, string(approvedSnapshot), formatTime(now), id); err != nil {
-		return domain.RepurposePlanRevision{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE repurpose_plans SET status='approved',plan_json=?,updated_at=? WHERE id=?`, string(approvedSnapshot), formatTime(now), planID); err != nil {
-		return domain.RepurposePlanRevision{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return domain.RepurposePlanRevision{}, err
-	}
-	createdAt, _ := time.Parse(time.RFC3339Nano, created)
-	return domain.RepurposePlanRevision{ID: id, PlanID: planID, Revision: revisionNumber, State: "approved", Plan: plan, EditorNote: editorNote, CreatedAt: createdAt, ApprovedAt: &now}, nil
-}
 func (r *Repository) CreateTagCurationRun(ctx context.Context, proposals []domain.TagProposal, scanned int, strategy string) (domain.TagCurationResult, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {

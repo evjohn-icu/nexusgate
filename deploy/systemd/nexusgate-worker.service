@@ -6,14 +6,20 @@ After=network-online.target
 
 [Service]
 Type=simple
-User=nexusgate
-Group=nexusgate
+# The Worker runs under its own service account. It never needs the Hub's
+# state -- InaccessiblePaths below makes /var/lib/nexusgate unreachable even
+# from a compromised worker process -- and media access is read-only through
+# the nexusgate group (docs/v0.14-deployment.md systemd section).
+User=nexusgate-worker
+Group=nexusgate-worker
 StateDirectory=nexusgate-worker
+# 0700: this directory holds the mode-0600 worker.json with the revocable
+# worker token and the Worker's cache; it must not be shared or readable.
+StateDirectoryMode=0700
 RuntimeDirectory=nexusgate-worker
 RuntimeDirectoryMode=0700
 WorkingDirectory=/var/lib/nexusgate-worker
 Environment=NEXUSGATE_DATA_DIR=/var/lib/nexusgate-worker
-Environment=NEXUSGATE_WORKER_TOKEN_FILE=/etc/nexusgate/worker.token
 EnvironmentFile=-/etc/nexusgate/worker.env
 ExecStart=/usr/local/bin/nexusgate worker run --config /var/lib/nexusgate-worker/worker.json
 Restart=on-failure
@@ -21,7 +27,9 @@ RestartSec=5s
 TimeoutStopSec=30s
 UMask=0077
 
-# This service has no access to the Hub's StateDirectory or SQLite file.
+# This service has no access to the Hub's StateDirectory or SQLite file. The
+# dash tolerates Hub-only machines where the directory does not exist.
+InaccessiblePaths=-/var/lib/nexusgate
 # /srv/nexusgate/media must be the same path exposed to the Hub and is read
 # only so a worker cannot modify originals, sidecars, or metadata.
 ProtectSystem=strict
@@ -29,7 +37,12 @@ ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
 ReadWritePaths=/var/lib/nexusgate-worker /run/nexusgate-worker
-ReadOnlyPaths=/srv/nexusgate/media /etc/nexusgate/tls /etc/nexusgate/worker.token
+# Only the two required entries remain: a documented install keeps the Worker
+# configuration in its own state directory (worker.json), so nothing here
+# requires /etc/nexusgate/worker.token; a legacy install that still uses that
+# optional file grants it to the nexusgate-worker account instead of making
+# the unit depend on it.
+ReadOnlyPaths=/srv/nexusgate/media /etc/nexusgate/tls
 
 [Install]
 WantedBy=multi-user.target

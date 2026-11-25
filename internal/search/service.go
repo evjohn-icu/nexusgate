@@ -82,17 +82,16 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 	}); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidMultimodal, err)
 	}
-	var temporal *TemporalQuery
 	if req.Temporal != nil {
-		copy := *req.Temporal
-		temporal = &copy
-		if len(temporal.Conditions) == 0 {
-			if compiled, recognized := CompileTemporalQuery(raw); recognized {
-				temporal = compiled
-			} else {
-				temporal = nil
+		if len(req.Temporal.Conditions) == 0 {
+			compiled, recognized := CompileTemporalQuery(raw)
+			if !recognized {
+				return nil, fmt.Errorf("%w: no recognized temporal conditions", ErrInvalidMultimodal)
 			}
+			req.Temporal = compiled
 		}
+		response.Query.Temporal = req.Temporal.Interpretation
+		response.Query.TemporalQuery = req.Temporal
 	}
 	pageOffset := req.Offset
 	if pageOffset < 0 {
@@ -157,33 +156,17 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 		response.NextOffset = nextOffset
 		response.WindowExhausted = windowExhausted
 		response.Query.Intent = q.Intent
-		if req.Temporal != nil {
-			response.Query.Temporal = req.Temporal.Interpretation
-		}
 		response.SearchID = randomHex(8)
 		response.QueryHash = requestQueryFingerprint(q, req, s.opts.ProfileVersion)
-		for i, candidate := range page {
-			item := ResultItem{
-				ShotID:      candidate.ShotID,
-				AssetID:     candidate.AssetID,
-				Filename:    candidate.Filename,
-				StartMS:     candidate.StartMS,
-				EndMS:       candidate.EndMS,
-				Description: candidate.Description,
-				Tags:        candidate.Tags,
-				Objects:     candidate.Objects,
-				Actions:     candidate.Actions,
-				Mood:        candidate.Mood,
-				Score:       candidate.Score,
-				Rank:        pageOffset + i + 1,
-				Scores:      map[string]float64{},
+		var evidence map[string][]Evidence
+		if req.IncludeEvidence {
+			_, evidence, err = s.gate.Gate(ctx, s.store, q, page, false)
+			if err != nil {
+				return nil, err
 			}
-			for signal, value := range candidate.Signals {
-				item.Scores[signal] = value
-			}
-			item.Matches = nil
-			item.Coverage = nil
-			response.Results = append(response.Results, item)
+		}
+		if err := s.assembleResults(ctx, response, page, evidence, req.IncludeContext, "", nil, nil); err != nil {
+			return nil, err
 		}
 		return response, nil
 	}
@@ -197,41 +180,46 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 		recallLimit = maxRecallPool
 	}
 
-	// Routing selects recall channels only; it does not establish what a shot
-	// claims. Channel construction is intent-aware: a channel whose profile weight is
-	// zero (or absent) is not executed at all — no DB query, no embedding call,
-	// no candidate noise. The transcript channel belongs to speech intent; the
-	// embedding channel needs a configured provider AND a positive profile
-	// weight. Auto/fact keep the full silent-channel set so the default path
-	// ranks exactly as v0.27's plain RRF did.
-	// New modality channels run only when explicitly requested. Their universe
-	// is computed once from the same facet predicates the browse surface uses,
-	// so an ineligible shot cannot enter through a modality channel.
-	var modalityUniverse map[string]bool
-	modalityUniverseReady := false
-	if hasMultimodal && s.opts.ModalityStore != nil && hasAnySearchFilter(q.Filters.Facets, q.Filters.AssetFilter) {
-		computed, err := s.opts.ModalityStore.FilteredShotUniverse(ctx, q.Filters.Facets, q.Filters.AssetFilter)
+	// Profile weights select the recall channels. Facet membership needs
+	// every eligible shot, including shots without a positive semantic score.
+	var universe map[string]bool
+	var heuristicCandidates []Candidate
+	filtered := hasAnySearchFilter(q.Filters.Facets, q.Filters.AssetFilter)
+	if filtered && s.opts.ModalityStore != nil {
+		universe, err = s.opts.ModalityStore.FilteredShotUniverse(ctx, q.Filters.Facets, q.Filters.AssetFilter)
 		if err != nil {
 			return nil, err
 		}
-		modalityUniverse = computed
-		modalityUniverseReady = true
 	}
-	modalityBundles, err := s.retrieveModalities(ctx, req, q, recallLimit, modalityUniverse, modalityUniverseReady)
+	heuristicEnabled := profile.ChannelWeights[SignalHeuristicSemantic] > 0
+	if heuristicEnabled || (filtered && s.opts.ModalityStore == nil) {
+		shots, err := s.store.ScoreCandidatesV2(ctx, q.Raw, q.Filters.Facets, q.Filters.AssetFilter)
+		if err != nil {
+			return nil, err
+		}
+		if filtered && s.opts.ModalityStore == nil {
+			universe = make(map[string]bool, len(shots))
+			for _, shot := range shots {
+				universe[shot.ID] = true
+			}
+		}
+		if heuristicEnabled {
+			heuristicCandidates = rankHeuristicShots(shots, recallLimit)
+		}
+	}
+	modalityBundles, err := s.retrieveModalities(ctx, req, q, recallLimit, universe, filtered)
 	if err != nil {
 		return nil, err
 	}
-	temporalAssets, temporalMatches, err := s.temporalEvidence(ctx, req, q, recallLimit, modalityUniverse, modalityUniverseReady)
+	temporalAssets, temporalShots, temporalMatches, err := s.temporalEvidence(ctx, req, q, recallLimit, universe, filtered)
 	if err != nil {
 		return nil, err
 	}
 
+	results := make([]ChannelResult, 0, 6+len(modalityBundles))
 	channels := []CandidateRetriever{}
 	if profile.ChannelWeights[SignalLexical] > 0 {
 		channels = append(channels, NewLexicalRetriever(s.store, profile.FieldWeights))
-	}
-	if profile.ChannelWeights[SignalHeuristicSemantic] > 0 {
-		channels = append(channels, NewHeuristicSemanticRetriever(s.store))
 	}
 	if profile.ChannelWeights[SignalTranscript] > 0 {
 		channels = append(channels, NewTranscriptRetriever(s.store))
@@ -242,68 +230,42 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 	if s.opts.Embedder != nil && profile.ChannelWeights[SignalTextEmbedding] > 0 {
 		channels = append(channels, NewTextEmbeddingRetriever(s.store, s.opts.Embedder))
 	}
-	results := make([]ChannelResult, 0, len(channels))
-	// When facets are set, the semantic channel (the full-library scorer)
-	// defines the candidate universe: other channels' candidates outside it
-	// are dropped rather than bypassing the facet constraint. The semantic
-	// retriever retains facet-matched semantic-0 shots, so an exact lexical
-	// match under a facet survives the universe gate.
-	var universe map[string]bool
 	for _, channel := range channels {
 		candidates, err := channel.Retrieve(ctx, q, recallLimit)
 		if err != nil {
 			return nil, err
 		}
-		if channel.Name() == SignalHeuristicSemantic && hasAnySearchFilter(q.Filters.Facets, q.Filters.AssetFilter) {
-			universe = make(map[string]bool, len(candidates))
-			for _, c := range candidates {
-				universe[c.ShotID] = true
-			}
-		}
 		results = append(results, ChannelResult{Signal: channel.Name(), Candidates: candidates})
+	}
+	if heuristicEnabled {
+		results = append(results, ChannelResult{Signal: SignalHeuristicSemantic, Candidates: heuristicCandidates})
 	}
 	for _, bundle := range modalityBundles {
 		results = append(results, ChannelResult{Signal: bundle.signal, Candidates: bundle.candidates})
 	}
+	if len(temporalShots) != 0 {
+		results = append(results, ChannelResult{Signal: temporalSignal, Candidates: temporalShots})
+	}
 
-	// Fusion is per-intent: auto/fact keep the plain RRF (k=60) so the default
-	// path is byte-identical to the pre-weights engine; the differentiated
-	// intents (speech/semantic/creative/similar) use WeightedRRF so the
-	// profile's ChannelWeights actually rank. An explicit Fusion (the
-	// benchmark, the legacy endpoints) always wins.
+	// Auto and fact default to plain RRF. The other intents apply the
+	// profile's weights, and callers can supply their own fusion strategy.
 	fusion := s.opts.Fusion
 	if fusion == nil {
-		fusion = defaultFusion(q.Intent)
+		fusion = defaultFusion(q.Intent, modalityBundles, len(temporalShots) != 0)
 	}
 	fused := fusion.Fuse(results)
-	// An explicit multimodal request has its own canonical-shot universe,
-	// computed from the same facet predicates as browse. The legacy semantic
-	// pool is only a top-K heuristic and would drop a visual-only shot that
-	// legitimately matched the filter but had no semantic vector.
-	if hasMultimodal && modalityUniverseReady {
-		universe = modalityUniverse
-	}
-	if universe != nil {
-		kept := fused[:0]
-		for _, c := range fused {
-			if universe[c.ShotID] {
-				kept = append(kept, c)
-			}
+	speakers := speakerAllowlist(modalityBundles)
+	kept := fused[:0]
+	for _, candidate := range fused {
+		if filtered && !universe[candidate.ShotID] ||
+			temporalAssets != nil && !temporalAssets[candidate.AssetID] ||
+			speakers != nil && !speakers[candidate.ShotID] {
+			continue
 		}
-		fused = kept
+		candidate.fusedScore = candidate.Score
+		kept = append(kept, candidate)
 	}
-	// A temporal query is an asset-level constraint: a shot belongs to an
-	// asset whose conditions actually satisfy every predicate. Shot-level
-	// sub-intervals are reported as matches, never used to widen the claim.
-	if temporalAssets != nil {
-		kept := fused[:0]
-		for _, c := range fused {
-			if temporalAssets[c.AssetID] {
-				kept = append(kept, c)
-			}
-		}
-		fused = kept
-	}
+	fused = kept
 
 	// Evidence + gate. The gate always computes evidence for the pool (so the
 	// response can explain any result); it filters only for fact intents when
@@ -313,7 +275,8 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 	var evidenceByID map[string][]Evidence
 	if needEvidence {
 		var err error
-		fused, evidenceByID, err = s.gate.Gate(ctx, s.store, q, fused, q.Intent == IntentFact && s.opts.GateFact)
+		strictFact := q.Intent == IntentFact && s.opts.GateFact && req.Temporal == nil
+		fused, evidenceByID, err = s.gate.Gate(ctx, s.store, q, fused, strictFact)
 		if err != nil {
 			return nil, err
 		}
@@ -374,8 +337,18 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 	response.HasMore = hasMore
 	response.NextOffset = nextOffset
 	response.WindowExhausted = windowExhausted
+	response.Query.Intent = q.Intent
+	response.SearchID = randomHex(8)
+	response.QueryHash = requestQueryFingerprint(q, req, s.opts.ProfileVersion)
+	if err := s.assembleResults(ctx, response, selected, evidenceByID, req.IncludeContext, fusion.Name(), modalityBundles, temporalMatches); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+func (s *Service) assembleResults(ctx context.Context, response *SearchResponse, selected []Candidate, evidence map[string][]Evidence, includeContext bool, fusionName string, bundles []modalityBundle, matches []Match) error {
 	var neighborsByID map[string]Neighbors
-	if req.IncludeContext && len(selected) > 0 {
+	if includeContext && len(selected) > 0 {
 		requests := make([]NeighborRequest, 0, len(selected))
 		for _, candidate := range selected {
 			requests = append(requests, NeighborRequest{
@@ -384,15 +357,14 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 				Ordinal: candidate.Ordinal,
 			})
 		}
+		var err error
 		neighborsByID, err = s.store.NeighborShotsBatch(ctx, requests)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
+	coverage := coverageForBundles(bundles)
 
-	response.Query.Intent = q.Intent
-	response.SearchID = randomHex(8)
-	response.QueryHash = requestQueryFingerprint(q, req, s.opts.ProfileVersion)
 	for i, candidate := range selected {
 		item := ResultItem{
 			ShotID:      candidate.ShotID,
@@ -406,24 +378,25 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchRespons
 			Actions:     candidate.Actions,
 			Mood:        candidate.Mood,
 			Score:       candidate.Score,
-			Rank:        pageOffset + i + 1,
+			Rank:        response.Offset + i + 1,
 			Scores:      map[string]float64{},
 		}
 		for signal, value := range candidate.Signals {
 			item.Scores[signal] = value
 		}
-		item.Scores[fusion.Name()] = candidate.Score
-		item.Matches = matchesForCandidate(candidate, modalityBundles, temporalMatches)
-		item.Coverage = coverageForBundles(modalityBundles)
-		if needEvidence {
-			item.Evidence = evidenceByID[candidate.ShotID]
+		if fusionName != "" {
+			item.Score = candidate.fusedScore
+			item.Scores[fusionName] = candidate.fusedScore
 		}
-		if req.IncludeContext {
+		item.Matches = matchesForCandidate(candidate, bundles, matches)
+		item.Coverage = coverage
+		item.Evidence = evidence[candidate.ShotID]
+		if includeContext {
 			item.Context = contextFromNeighbors(neighborsByID[candidate.ShotID])
 		}
 		response.Results = append(response.Results, item)
 	}
-	return response, nil
+	return nil
 }
 
 // normalizePagination applies defaults and validates the reachable ranked
@@ -511,24 +484,30 @@ func requestQueryFingerprint(q SearchQuery, req SearchRequest, profileVersion st
 	return hex.EncodeToString(sum[:8])
 }
 
-// defaultFusion picks the fusion strategy for the default (unset) options
-// path. Auto/fact rank on plain RRF — byte-identical to the pre-weights
-// engine, which is what the golden/benchmark floor assumes. The differentiated
-// intents apply their profile ChannelWeights through WeightedRRF so the
-// weights are effective in production, not decorative.
-func defaultFusion(intent SearchIntent) FusionStrategy {
+const temporalSignal = "temporal"
+
+func defaultFusion(intent SearchIntent, bundles []modalityBundle, hasTemporalSupport bool) FusionStrategy {
 	weights, ok := fusionWeights[intent]
 	if !ok {
 		return &RRF{K: DefaultRRFK}
 	}
+	if len(bundles) > 0 || hasTemporalSupport {
+		withModalities := make(map[string]float64, len(weights)+len(bundles)+1)
+		for signal, weight := range weights {
+			withModalities[signal] = weight
+		}
+		for _, bundle := range bundles {
+			withModalities[bundle.signal] = 0.20
+		}
+		if hasTemporalSupport {
+			withModalities[temporalSignal] = 0.20
+		}
+		weights = withModalities
+	}
 	return &WeightedRRF{Weights: weights, K: DefaultRRFK}
 }
 
-// fusionWeights maps the intents whose profile weights actually rank the
-// default path. Auto and fact are deliberately absent: their default path is
-// plain RRF, the lease that keeps the golden set byte-identical (their
-// ChannelWeights still gate channel construction and apply under an explicit
-// WeightedBlend fusion — see profile.go).
+// fusionWeights holds the weights of the default weighted profiles.
 var fusionWeights = map[SearchIntent]map[string]float64{
 	IntentSpeech:   {SignalTranscript: 0.60, SignalLexical: 0.25, SignalHeuristicSemantic: 0.15},
 	IntentSemantic: {SignalHeuristicSemantic: 0.45, SignalTextEmbedding: 0.35, SignalLexical: 0.20},

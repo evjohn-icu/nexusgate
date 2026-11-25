@@ -1429,3 +1429,54 @@ func TestDefaultMountpointIsOneThisPackageWillAccept(t *testing.T) {
 		t.Errorf("DefaultMountpoint = %q, want /mnt/nexusgate/Video", got)
 	}
 }
+
+// TestGuidanceRefusesUnsafeDiscoveredDefault pins the discovered-default
+// guard: a containerised Hub's default mount point is built from the media
+// bind source the runtime reported, and a legal bind whose host path contains
+// spaces must produce the same no-commands response as an unsafe
+// caller-supplied path — never an unquoted command that means a different
+// directory than the one displayed.
+func TestGuidanceRefusesUnsafeDiscoveredDefault(t *testing.T) {
+	share := Share{Protocol: ProtocolSMB, Host: "nas", Name: "video"}
+	host := Host{OS: "linux", Container: true, MediaBind: Bind{Source: "/mnt/My Media", Target: "/media/library"}}
+	if !strings.Contains(DefaultMountpoint(share, host), " ") {
+		t.Fatalf("fixture must produce a default with a space, got %q", DefaultMountpoint(share, host))
+	}
+	guide := Guidance(share, "", host)
+	if len(guide.Steps) != 0 {
+		t.Fatalf("an unsafe discovered default must emit no steps, got %d", len(guide.Steps))
+	}
+	if guide.Summary == "" {
+		t.Fatal("the no-commands shape keeps its summary")
+	}
+}
+
+// TestGuidanceAcceptsSafeDiscoveredDefault pins the other half: a safe
+// discovered bind still produces the full guidance with the discovered path
+// in it, and the literal <HOST_MEDIA_ROOT> placeholder — the operator-edit
+// marker for an undiscovered bind — is not treated as unsafe input.
+func TestGuidanceAcceptsSafeDiscoveredDefault(t *testing.T) {
+	share := Share{Protocol: ProtocolSMB, Host: "nas", Name: "video"}
+	host := Host{OS: "linux", Container: true, MediaBind: Bind{Source: "/mnt/remotes", Target: "/media/library"}}
+	guide := Guidance(share, "", host)
+	if len(guide.Steps) == 0 {
+		t.Fatal("a safe discovered default must emit steps")
+	}
+	found := false
+	for _, step := range guide.Steps {
+		for _, command := range step.Commands {
+			if strings.Contains(command, "/mnt/remotes/video") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("the discovered bind source must reach the generated commands")
+	}
+
+	undiscovered := Host{OS: "linux", Container: true}
+	guide = Guidance(share, "", undiscovered)
+	if len(guide.Steps) == 0 {
+		t.Fatal("the <HOST_MEDIA_ROOT> placeholder default is normal output and must still guide")
+	}
+}

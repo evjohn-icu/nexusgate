@@ -19,6 +19,7 @@ import (
 	"github.com/evjohn-icu/nexusgate/internal/providerchannels"
 	"github.com/evjohn-icu/nexusgate/internal/providers"
 	"github.com/evjohn-icu/nexusgate/internal/providers/common"
+	"github.com/evjohn-icu/nexusgate/internal/providers/embedding"
 	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
 )
 
@@ -364,3 +365,221 @@ func TestResolveIdentityRequiresModel(t *testing.T) {
 }
 
 var _ providers.ASR = (*runtimeLegacyASR)(nil)
+
+// embeddingFixtureServer serves two equal-dimensional embedding backends on
+// distinct endpoint paths of one listener. The fallback always succeeds; the
+// primary fails until failuresRemaining hits zero, so one runtime can observe
+// the fallback serving and, after recovery, the primary serving.
+type embeddingFixtureServer struct {
+	*httptest.Server
+	mu                  sync.Mutex
+	primaryFailuresLeft int
+}
+
+func (s *embeddingFixtureServer) handle(t *testing.T) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/embeddings") {
+			http.NotFound(w, r)
+			return
+		}
+		s.mu.Lock()
+		fail := s.primaryFailuresLeft > 0 && strings.Contains(r.URL.Path, "/primary")
+		if fail {
+			s.primaryFailuresLeft--
+		}
+		s.mu.Unlock()
+		if fail {
+			http.Error(w, "primary backend is down", http.StatusInternalServerError)
+			return
+		}
+		model := "model-fallback"
+		if strings.Contains(r.URL.Path, "/primary") {
+			model = "model-primary"
+		}
+		var body struct {
+			Model string   `json:"model"`
+			Input []string `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if body.Model != model {
+			t.Errorf("request model = %q, want %q", body.Model, model)
+		}
+		data := make([]map[string]any, 0, len(body.Input))
+		for i, input := range body.Input {
+			// Two dimensions for every backend: equal-dimensional localhost
+			// models must still land in different spaces.
+			data = append(data, map[string]any{"index": i, "embedding": []float64{float64(len(input) % 7), 1}})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}
+}
+
+func newEmbeddingChannelRoutes(serverURL string) []domain.ProviderChannel {
+	return []domain.ProviderChannel{
+		{
+			ID: "channel-embed-primary", Capability: "embedding", Label: "Primary embeddings",
+			ProviderName: "openai_embeddings", Protocol: "openai_embeddings",
+			Endpoint: serverURL + "/primary", Model: "model-primary",
+			Enabled: true, RouteOrder: 1,
+			Members: []domain.ProviderChannelMember{{ID: "member-embed-primary", Label: "primary", SecretRef: "provider/embed-primary", Enabled: true}},
+		},
+		{
+			ID: "channel-embed-fallback", Capability: "embedding", Label: "Fallback embeddings",
+			ProviderName: "openai_embeddings", Protocol: "openai_embeddings",
+			Endpoint: serverURL + "/fallback", Model: "model-fallback",
+			Enabled: true, RouteOrder: 2,
+			Members: []domain.ProviderChannelMember{{ID: "member-embed-fallback", Label: "fallback", SecretRef: "provider/embed-fallback", Enabled: true}},
+		},
+	}
+}
+
+// TestChannelEmbedderEmbedInSpaceCapturesServingRoute: the planned identity
+// (EmbeddingSpaceID) is the primary route's space, but the batch identity
+// returned by EmbedInSpace is the space of the backend that actually served —
+// a fallback serving a failed primary must not be stored as if the primary
+// had produced it.
+func TestChannelEmbedderEmbedInSpaceCapturesServingRoute(t *testing.T) {
+	fixture := &embeddingFixtureServer{primaryFailuresLeft: 3}
+	fixture.Server = httptest.NewServer(fixture.handle(t))
+	defer fixture.Close()
+
+	channels := newEmbeddingChannelRoutes(fixture.URL)
+	runtime := newProviderChannelRuntime(&runtimeChannelRepo{channels: channels}, config.Config{}, &runtimeSecrets{values: map[string]string{
+		"provider/embed-primary": "key-primary", "provider/embed-fallback": "key-fallback",
+	}}, nil, nil, nil, nil, nil, nil)
+	embedder := runtime.embedder().(*channelEmbedder)
+
+	planned := embedder.EmbeddingSpaceID()
+	if planned == "" || !strings.HasPrefix(planned, "text-space-v1:") {
+		t.Fatalf("planned space = %q, want a text-space-v1 identity", planned)
+	}
+	primary := embedder.EmbeddingSpaceID()
+	if primary != planned {
+		t.Fatal("planned space must be deterministic without any provider call")
+	}
+
+	vectors, served, err := embedder.EmbedInSpace(context.Background(), []string{"urban night", "rain"})
+	if err != nil || len(vectors) != 2 {
+		t.Fatalf("fallback batch vectors=%v err=%v", vectors, err)
+	}
+	if served == "" || !strings.HasPrefix(served, "text-space-v1:") {
+		t.Fatalf("served space = %q, want a text-space-v1 identity", served)
+	}
+	if served == primary {
+		t.Fatal("a batch the fallback served must not carry the primary route's space")
+	}
+	repeatVectors, repeatSpace, err := embedder.EmbedInSpace(context.Background(), []string{"urban night", "rain"})
+	if err != nil || repeatSpace != served {
+		t.Fatalf("repeat call space=%q err=%v, want the same fallback space", repeatSpace, err)
+	}
+	if len(repeatVectors) != 2 {
+		t.Fatalf("repeat batch vectors=%v", repeatVectors)
+	}
+
+	// Recovery: the primary backend starts answering, so the next operation
+	// reports the primary space again. A fresh runtime stands in for the
+	// executor rebuild: the failed attempts put the primary member into the
+	// pool's cooldown, which is per-executor state, while the space identity
+	// comes from channel metadata both runtimes agree on.
+	fixture.mu.Lock()
+	fixture.primaryFailuresLeft = 0
+	fixture.mu.Unlock()
+	runtimeRecovered := newProviderChannelRuntime(&runtimeChannelRepo{channels: channels}, config.Config{}, &runtimeSecrets{values: map[string]string{
+		"provider/embed-primary": "key-primary", "provider/embed-fallback": "key-fallback",
+	}}, nil, nil, nil, nil, nil, nil)
+	recoveredVectors, recoveredSpace, err := runtimeRecovered.embedder().(*channelEmbedder).EmbedInSpace(context.Background(), []string{"urban night"})
+	if err != nil || recoveredSpace != primary {
+		t.Fatalf("recovered space=%q err=%v, want the primary space %q", recoveredSpace, err, primary)
+	}
+	if len(recoveredVectors) != 1 {
+		t.Fatalf("recovered batch vectors=%v", recoveredVectors)
+	}
+}
+
+// TestChannelEmbedderLegacySpaceIsTheConfigTuple: with no channel route the
+// legacy provider's space is the tuple of its active config, and two
+// equal-dimensional localhost models at different endpoints/models land in
+// different spaces.
+func TestChannelEmbedderLegacySpaceIsTheConfigTuple(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Input []string `json:"input"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		data := make([]map[string]any, 0, len(body.Input))
+		for i := range body.Input {
+			data = append(data, map[string]any{"index": i, "embedding": []float64{1, 0}})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	defer server.Close()
+
+	cfg := config.Config{Providers: config.ProvidersConfig{
+		EmbeddingPrimary: "openai_embeddings",
+		Embedding:        config.ProviderConfig{Enabled: true, Protocol: "openai_embeddings", BaseURL: server.URL + "/v1", Path: "embeddings", Model: "model-a"},
+	}}
+	legacy := &embedding.Provider{
+		Endpoint:  common.Endpoint{BaseURL: server.URL + "/v1", HTTPClient: server.Client()},
+		ModelName: "model-a", Protocol: "openai_embeddings",
+	}
+	runtime := newProviderChannelRuntime(&runtimeChannelRepo{}, cfg, &runtimeSecrets{values: map[string]string{}}, nil, nil, nil, nil, legacy, nil)
+	embedder := runtime.embedder().(*channelEmbedder)
+
+	space := embedder.EmbeddingSpaceID()
+	if space == "" || !strings.HasPrefix(space, "text-space-v1:") {
+		t.Fatalf("legacy space = %q, want a text-space-v1 identity", space)
+	}
+	vectors, served, err := embedder.EmbedInSpace(context.Background(), []string{"urban night"})
+	if err != nil || served != space {
+		t.Fatalf("legacy batch space=%q err=%v, want %q", served, err, space)
+	}
+	if len(vectors) != 1 || len(vectors[0]) != 2 {
+		t.Fatalf("legacy batch vectors=%v", vectors)
+	}
+
+	// An equal-dimensional second model at a different endpoint is a
+	// different space, though both produce two-dimensional vectors.
+	other := &embedding.Provider{
+		Endpoint:  common.Endpoint{BaseURL: server.URL + "/other", HTTPClient: server.Client()},
+		ModelName: "model-b", Protocol: "openai_embeddings",
+	}
+	cfgOther := cfg
+	cfgOther.Providers.Embedding.BaseURL = server.URL + "/other"
+	cfgOther.Providers.Embedding.Model = "model-b"
+	runtimeOther := newProviderChannelRuntime(&runtimeChannelRepo{}, cfgOther, &runtimeSecrets{values: map[string]string{}}, nil, nil, nil, nil, other, nil)
+	if got := runtimeOther.embedder().(*channelEmbedder).EmbeddingSpaceID(); got == space || got == "" {
+		t.Fatalf("equal-dimensional other model must have a distinct space, got %q", got)
+	}
+}
+
+// TestNormalizeEmbeddingEndpointCanonicalizes: the endpoint component of the
+// space tuple is scheme://host:effectivePort/path, so default-port spellings
+// and host case cannot split one backend into two spaces, while query strings
+// and credentials never take part.
+func TestNormalizeEmbeddingEndpointCanonicalizes(t *testing.T) {
+	cases := map[string]string{
+		"https://Example.com/v1":        "https://example.com:443/v1",
+		"https://example.com:443/v1":    "https://example.com:443/v1",
+		"http://127.0.0.1:1234/v1":      "http://127.0.0.1:1234/v1",
+		"https://user:pw@example.com/v": "https://example.com:443/v",
+		"https://example.com/v?key=a":   "https://example.com:443/v",
+		"":                              "",
+	}
+	for raw, want := range cases {
+		if got := normalizeEmbeddingEndpoint(raw); got != want {
+			t.Fatalf("normalizeEmbeddingEndpoint(%q) = %q, want %q", raw, got, want)
+		}
+	}
+	// Non-HTTP schemes and invalid endpoints stay verbatim: stable, but never
+	// merged with a valid origin.
+	if got := normalizeEmbeddingEndpoint("ftp://example.com/files"); got != "ftp://example.com/files" {
+		t.Fatalf("ftp endpoint = %q, want verbatim", got)
+	}
+}
+
+func TestChannelEmbedderEmbedInSpaceCapturesServingRoutePLACEHOLDER(t *testing.T) { t.Skip() }

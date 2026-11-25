@@ -4,10 +4,12 @@ import (
 	"context"
 	"hash/fnv"
 	"math"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/evjohn-icu/nexusgate/internal/config"
 	"github.com/evjohn-icu/nexusgate/internal/domain"
 	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 	"github.com/evjohn-icu/nexusgate/internal/search"
@@ -193,9 +195,12 @@ func TestRebuildShotTextEmbeddingsIncremental(t *testing.T) {
 		t.Fatalf("no changes must mean no rebuild, got %d", rebuilt)
 	}
 
-	// Model switch: the per-shot rows are overwritten under the new model
-	// (one representation per shot, like shot_semantic_vectors), and the
-	// rebuild re-embeds everything — canonical analysis untouched.
+	// Backend switch: the planned space becomes test-embed-v2, the rebuild
+	// re-embeds every shot there (its planned-space rows are all missing) and
+	// the canonical analysis is untouched. Vectors are keyed per space now,
+	// so the old space's rows are NOT destroyed: a fallback backend's vectors
+	// stay readable for as long as their source hash matches the current
+	// projection, and a later switch back finds them fresh.
 	svc2 := &Service{repo: repo, embedder: switchedModelEmbedder{}}
 	rebuilt, err = svc2.RebuildShotTextEmbeddings(ctx)
 	if err != nil {
@@ -208,8 +213,8 @@ func TestRebuildShotTextEmbeddingsIncremental(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(oldRows) != 0 {
-		t.Fatalf("old model rows must be replaced by the new model, got %d", len(oldRows))
+	if len(oldRows) != 2 {
+		t.Fatalf("other spaces' rows must survive a rebuild, got %d", len(oldRows))
 	}
 	newRows, err := repo.ListShotTextEmbeddings(ctx, "test-embed-v2")
 	if err != nil {
@@ -257,3 +262,191 @@ func TestRebuildShotTextEmbeddingsZeroVectorIsNoOp(t *testing.T) {
 type switchedModelEmbedder struct{ testEmbedder }
 
 func (switchedModelEmbedder) Model() string { return "test-embed-v2" }
+
+// TestEmbeddingFallbackBatchStaysUnderFallbackAndRecoveryWritesPrimary drives
+// the real storage path through a routed provider: the primary backend is
+// down, so the incremental hook's batch lands under the FALLBACK space; a
+// primary-space query has nothing to read; after recovery the rebuild writes
+// primary rows without destroying the fallback rows; and content that changed
+// since the fallback was written is invisible to reads in both spaces until
+// it is re-embedded.
+func TestEmbeddingFallbackBatchStaysUnderFallbackAndRecoveryWritesPrimary(t *testing.T) {
+	repo, _ := openEmbeddingTestRepo(t)
+	fixture := &embeddingFixtureServer{primaryFailuresLeft: 6}
+	fixture.Server = httptest.NewServer(fixture.handle(t))
+	defer fixture.Close()
+
+	routes := newEmbeddingChannelRoutes(fixture.URL)
+	runtime := newProviderChannelRuntime(&runtimeChannelRepo{channels: routes}, config.Config{}, &runtimeSecrets{values: map[string]string{
+		"provider/embed-primary": "key-primary", "provider/embed-fallback": "key-fallback",
+	}}, nil, nil, nil, nil, nil, nil)
+	svc := &Service{repo: repo, embedder: runtime.embedder()}
+	adapter := searchEmbedderAdapter{embedder: svc.embedder}
+	primarySpace := adapter.EmbeddingSpaceID()
+	if primarySpace == "" {
+		t.Fatal("planned space must be the primary channel's identity")
+	}
+	// The fallback route's space, computed from its channel metadata alone (a
+	// runtime holding only that route plans its space with no provider call).
+	fallbackOnly := newProviderChannelRuntime(&runtimeChannelRepo{channels: routes[1:]}, config.Config{}, &runtimeSecrets{values: map[string]string{
+		"provider/embed-fallback": "key-fallback",
+	}}, nil, nil, nil, nil, nil, nil)
+	fallbackSpace := fallbackOnly.embedder().(*channelEmbedder).EmbeddingSpaceID()
+	if fallbackSpace == primarySpace || fallbackSpace == "" {
+		t.Fatalf("fallback space %q must differ from primary %q", fallbackSpace, primarySpace)
+	}
+	ctx := context.Background()
+
+	// Primary down: the batch is served by the fallback and stored there.
+	svc.ensureShotTextEmbeddings(ctx, "asset-1")
+	fallbackRows, err := repo.ListShotTextEmbeddings(ctx, fallbackSpace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fallbackRows) != 2 {
+		t.Fatalf("fallback-served batch must be stored under the fallback space, got %d rows", len(fallbackRows))
+	}
+	primaryRows, err := repo.ListShotTextEmbeddings(ctx, primarySpace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(primaryRows) != 0 {
+		t.Fatalf("a primary-space query has nothing to read while the fallback wrote the batch, got %d rows", len(primaryRows))
+	}
+	fallbackVectors := make(map[string][]float32, len(fallbackRows))
+	for _, row := range fallbackRows {
+		fallbackVectors[row.Shot.ID] = row.Vector
+	}
+
+	// Recovery: the rebuild writes primary rows and leaves fallback rows
+	// exactly as they are — no destructive rewrite across spaces.
+	fixture.mu.Lock()
+	fixture.primaryFailuresLeft = 0
+	fixture.mu.Unlock()
+	runtimeRecovered := newProviderChannelRuntime(&runtimeChannelRepo{channels: newEmbeddingChannelRoutes(fixture.URL)}, config.Config{}, &runtimeSecrets{values: map[string]string{
+		"provider/embed-primary": "key-primary", "provider/embed-fallback": "key-fallback",
+	}}, nil, nil, nil, nil, nil, nil)
+	recovered := &Service{repo: repo, embedder: runtimeRecovered.embedder()}
+	written, err := recovered.RebuildShotTextEmbeddings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if written != 2 {
+		t.Fatalf("recovered rebuild must embed both shots under primary, got %d", written)
+	}
+	primaryRows, err = repo.ListShotTextEmbeddings(ctx, primarySpace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(primaryRows) != 2 {
+		t.Fatalf("primary space must hold both shots after recovery, got %d rows", len(primaryRows))
+	}
+	fallbackRows, err = repo.ListShotTextEmbeddings(ctx, fallbackSpace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fallbackRows) != 2 {
+		t.Fatalf("fallback rows must survive the primary rebuild, got %d rows", len(fallbackRows))
+	}
+	for _, row := range fallbackRows {
+		want := fallbackVectors[row.Shot.ID]
+		if len(want) != len(row.Vector) {
+			t.Fatalf("fallback vector rewritten: %s", row.Shot.ID)
+		}
+		for i := range want {
+			if want[i] != row.Vector[i] {
+				t.Fatalf("fallback vector rewritten: %s", row.Shot.ID)
+			}
+		}
+	}
+
+	// Changed content invalidates the stale rows: both spaces' rows for the
+	// changed shot no longer match the projection, so reads return nothing
+	// until a re-embed stores the new text's vector. The recovered primary
+	// serves the incremental hook; the stale fallback row stays in the table
+	// but must never surface.
+	changed := domain.AssetShot{ID: "shot-1", AssetID: "asset-1", Ordinal: 0, StartMS: 0, EndMS: 5000, Description: "blue van crossing"}
+	unchanged := domain.AssetShot{ID: "shot-2", AssetID: "asset-1", Ordinal: 1, StartMS: 5000, EndMS: 10_000, Description: "empty parking lot"}
+	if err := repo.ReplaceAssetShots(ctx, "asset-1", "", []domain.AssetShot{changed, unchanged}, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	stalePrimary, err := repo.ListShotTextEmbeddings(ctx, primarySpace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range stalePrimary {
+		if row.Shot.ID == "shot-1" {
+			t.Fatal("a stale primary-space row must be filtered from reads")
+		}
+	}
+	svc2 := &Service{repo: repo, embedder: runtimeRecovered.embedder()}
+	svc2.ensureShotTextEmbeddings(ctx, "asset-1")
+	refreshedPrimary, err := repo.ListShotTextEmbeddings(ctx, primarySpace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refreshedPrimary) != 2 {
+		t.Fatalf("hook must re-embed the changed shot under primary, got %d rows", len(refreshedPrimary))
+	}
+	refreshedFallback, err := repo.ListShotTextEmbeddings(ctx, fallbackSpace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refreshedFallback) != 1 {
+		t.Fatalf("fallback must keep only its still-valid row, got %d", len(refreshedFallback))
+	}
+	if refreshedFallback[0].Shot.ID != "shot-2" {
+		t.Fatalf("the fallback row surviving a content change must be the untouched shot, got %s", refreshedFallback[0].Shot.ID)
+	}
+}
+
+// scriptedEmbedder answers every batch with a fixed script: a provider that
+// misbehaves the way a half-broken gateway can.
+type scriptedEmbedder struct {
+	vectors [][]float64
+	err     error
+}
+
+func (s scriptedEmbedder) Name() string  { return "scripted" }
+func (s scriptedEmbedder) Model() string { return "scripted-v1" }
+func (s scriptedEmbedder) Embed(context.Context, []string) ([][]float64, error) {
+	return s.vectors, s.err
+}
+
+// TestEmbedShotDocumentsRejectsMalformedBatch: a ragged or malformed batch is
+// an error BEFORE any write — no partial space poisoning, no silent drop.
+func TestEmbedShotDocumentsRejectsMalformedBatch(t *testing.T) {
+	repo, _ := openEmbeddingTestRepo(t)
+	ctx := context.Background()
+	docs := []search.ShotSearchDocument{
+		{ShotID: "shot-1", Description: "red car"},
+		{ShotID: "shot-2", Description: "dog park"},
+	}
+	cases := map[string]scriptedEmbedder{
+		"fewer vectors than inputs": {vectors: [][]float64{{1, 0}}},
+		"mixed dimensions":          {vectors: [][]float64{{1, 0}, {1, 0, 0}}},
+		"mixed empty and real":      {vectors: [][]float64{{1, 0}, {}}},
+		"non-finite component":      {vectors: [][]float64{{1, 0}, {math.NaN(), 1}}},
+		"zero norm":                 {vectors: [][]float64{{1, 0}, {0, 0}}},
+	}
+	for name, provider := range cases {
+		adapter := searchEmbedderAdapter{embedder: provider}
+		if _, err := embedShotDocuments(ctx, repo, adapter, docs); err == nil {
+			t.Fatalf("%s: malformed batch must fail", name)
+		}
+		rows, err := repo.ListShotTextEmbeddings(ctx, provider.Model())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 0 {
+			t.Fatalf("%s: failed batch must write nothing, got %d rows", name, len(rows))
+		}
+	}
+	// All-empty vectors: the provider said nothing — prior no-vector
+	// semantics, no error, no rows.
+	allEmpty := searchEmbedderAdapter{embedder: zeroVectorEmbedder{}}
+	persisted, err := embedShotDocuments(ctx, repo, allEmpty, docs)
+	if err != nil || persisted != 0 {
+		t.Fatalf("all-empty batch = %d, err=%v; want 0, nil", persisted, err)
+	}
+}

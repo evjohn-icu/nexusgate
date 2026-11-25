@@ -22,6 +22,7 @@ import (
 	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 	"github.com/evjohn-icu/nexusgate/internal/providers/openaivideo"
 	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
+	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
 )
 
 // recordingVideoProvider answers every call with a shot at a fixed offset
@@ -647,4 +648,237 @@ func buildFixtureProxy(t *testing.T, seconds int) (string, int64) {
 		t.Skipf("test fixture cannot be encoded by local ffmpeg: %v: %s", err, output)
 	}
 	return proxy, int64(seconds) * 1000
+}
+
+// seedPlainVisionAsset registers one asset whose proxy exists as a row but
+// needs no real media: the plain vision path reads only the row (the fake
+// provider never opens the file) and the metadata arrives as a parameter.
+// The proxy artifact itself is saved against the leased analyze job by the
+// caller, because SaveArtifact requires the writing job's live lease.
+func seedPlainVisionAsset(t *testing.T, repo *sqlite.Repository, root domain.LibraryRoot, id string) (string, domain.MediaMetadata) {
+	t.Helper()
+	ctx := context.Background()
+	source := filepath.Join(root.Path, id+".mov")
+	if err := os.WriteFile(source, []byte("footage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanned, err := repo.UpsertScannedFile(ctx, root, id+".mov", source, info, "fp-"+id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := domain.MediaMetadata{DurationMS: 4000, HasAudio: true}
+	if err := repo.SaveMediaMetadata(ctx, scanned.AssetID, m, "test", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	return scanned.AssetID, m
+}
+
+// leaseAnalyzeJob hands the test a live analyze-job lease for one attempt.
+// Repeated calls re-lease the same job identity the way a Hub retry does:
+// the enqueue deduplicates on (asset, type, input hash), the reset puts the
+// row back into the leasable state a crashed attempt leaves, and the lease
+// mint is what the staging transition enforces.
+func leaseAnalyzeJob(t *testing.T, repo *sqlite.Repository, assetID, inputHash, owner string) *domain.Job {
+	t.Helper()
+	ctx := context.Background()
+	if err := repo.EnqueueJob(ctx, assetID, domain.JobAnalyze, inputHash, 30); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.DB().ExecContext(ctx, `UPDATE jobs SET state='pending',attempt_count=0,lease_owner=NULL,lease_expires_at=NULL WHERE asset_id=? AND job_type=? AND input_hash=?`, assetID, string(domain.JobAnalyze), inputHash); err != nil {
+		t.Fatal(err)
+	}
+	job, err := repo.LeaseNextJob(ctx, owner, nil, domain.LeaseFilter{})
+	if err != nil || job == nil {
+		t.Fatalf("lease analyze job: job=%+v err=%v", job, err)
+	}
+	return job
+}
+
+// stagedEnvelope reads one vision run matched by the given predicate and
+// decodes its staged parsed_json, failing loudly when staging left anything
+// but the envelope.
+func stagedEnvelope(t *testing.T, repo *sqlite.Repository, query string, args ...any) (string, visionStageEnvelope) {
+	t.Helper()
+	var runID, parsed string
+	if err := repo.DB().QueryRowContext(context.Background(), `SELECT id,parsed_json FROM model_runs WHERE `+query, args...).Scan(&runID, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	var env visionStageEnvelope
+	if err := json.Unmarshal([]byte(parsed), &env); err != nil {
+		t.Fatalf("staged parsed_json is not the vision envelope: %v (%s)", err, parsed)
+	}
+	return runID, env
+}
+
+func savePlainVisionProxy(t *testing.T, repo *sqlite.Repository, dir, assetID, jobID, owner string) {
+	t.Helper()
+	path := filepath.Join(dir, "cache", assetID, "proxy-software.mp4")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	contents := []byte("fixture proxy")
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SaveArtifact(context.Background(), domain.DerivedArtifact{
+		ID: "proxy-" + assetID, AssetID: assetID, Type: "proxy", ProfileHash: "proxy-720-software", LocalPath: path, SizeBytes: int64(len(contents)),
+	}, jobID, owner); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The full staging-replay cycle: attempt one pays the model once and stages
+// the envelope; the crash simulation reverts the committed run to its staged
+// state; attempt two resumes from it and commits with zero provider calls.
+func TestVisionStagedEnvelopeResumesWithZeroProviderCalls(t *testing.T) {
+	repo, root, dir := openMultiframeRepo(t)
+	ctx := context.Background()
+	assetID, _ := seedPlainVisionAsset(t, repo, root, "resume-a")
+	provider := &recordingVideoProvider{}
+	pipeline := NewPipeline(repo, dir, nil, nil, provider, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
+	const inputHash = "resume-input-a"
+	job := leaseAnalyzeJob(t, repo, assetID, inputHash, "attempt-1")
+	savePlainVisionProxy(t, repo, dir, assetID, job.ID, "attempt-1")
+	if err := pipeline.analyzeAssetVideo(ctx, job, &domain.MediaMetadata{DurationMS: 4000, HasAudio: true}, provider, "fixture-path", "attempt-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.calls) != 1 {
+		t.Fatalf("first attempt provider calls = %d, want 1", len(provider.calls))
+	}
+	runID, env := stagedEnvelope(t, repo, "asset_id=?", assetID)
+	if env.Version != visionStageVersion {
+		t.Fatalf("staged version = %q, want %q", env.Version, visionStageVersion)
+	}
+	if env.Analysis == nil || env.Analysis.Summary != "window summary" {
+		t.Fatalf("staged analysis incomplete: %+v", env.Analysis)
+	}
+	if len(env.Shots) != 1 || env.Shots[0].StartMS != 1000 || env.Shots[0].EndMS != 3000 {
+		t.Fatalf("staged shots incomplete: %+v", env.Shots)
+	}
+
+	// Crash simulation: the attempt died after staging, before the commit.
+	// Reverting the run to its staged state is exactly the row the next
+	// attempt must resume from.
+	if _, err := repo.DB().ExecContext(ctx, `UPDATE model_runs SET state='validated' WHERE id=?`, runID); err != nil {
+		t.Fatal(err)
+	}
+
+	job2 := leaseAnalyzeJob(t, repo, assetID, inputHash, "attempt-2")
+	if err := repo.SaveArtifact(ctx, domain.DerivedArtifact{ID: "proxy-resume-a", AssetID: assetID, Type: "proxy", ProfileHash: "proxy-720-software", LocalPath: filepath.Join(dir, "cache", assetID, "proxy-software.mp4"), SizeBytes: 123}, job2.ID, "attempt-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pipeline.analyzeAssetVideo(ctx, job2, &domain.MediaMetadata{DurationMS: 4000, HasAudio: true}, provider, "fixture-path", "attempt-2"); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.calls) != 1 {
+		t.Fatalf("resumed attempt called the provider %d times, want zero more", len(provider.calls)-1)
+	}
+	var state string
+	if err := repo.DB().QueryRowContext(ctx, `SELECT state FROM model_runs WHERE id=?`, runID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "committed" {
+		t.Fatalf("run state after resume = %q, want committed", state)
+	}
+	detail, err := repo.GetAssetDetail(ctx, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Analysis == nil || detail.Analysis.Summary != "window summary" {
+		t.Fatalf("resumed commit lost the analysis: %+v", detail.Analysis)
+	}
+	shots, err := repo.ListAssetShots(ctx, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shots) != 1 || shots[0].StartMS != 1000 || shots[0].EndMS != 3000 || shots[0].SourceRunID != runID {
+		t.Fatalf("resumed commit lost the shots: %+v", shots)
+	}
+}
+
+// A committed run satisfies a retry with no model charge, and the retry
+// repairs the ordinary crash: committed analysis, hook never reached.
+func TestVisionCommittedReturnReplaysAfterShotsCommitted(t *testing.T) {
+	repo, root, dir := openMultiframeRepo(t)
+	ctx := context.Background()
+	assetID, m := seedPlainVisionAsset(t, repo, root, "replay-a")
+	provider := &recordingVideoProvider{}
+	pipeline := NewPipeline(repo, dir, nil, nil, provider, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
+	const inputHash = "replay-input-a"
+	hookCalls := 0
+	pipeline.SetAfterShotsCommitted(func(ctx context.Context, assetID string) { hookCalls++ })
+	job := leaseAnalyzeJob(t, repo, assetID, inputHash, "attempt-1")
+	savePlainVisionProxy(t, repo, dir, assetID, job.ID, "attempt-1")
+	if err := pipeline.analyzeAssetVideo(ctx, job, &m, provider, "fixture-path", "attempt-1"); err != nil {
+		t.Fatal(err)
+	}
+	if hookCalls != 1 {
+		t.Fatalf("first attempt hook calls = %d, want 1", hookCalls)
+	}
+
+	// The run stays committed; the retry must replay the hook without
+	// re-billing the model.
+	job2 := leaseAnalyzeJob(t, repo, assetID, inputHash, "attempt-2")
+	if err := repo.SaveArtifact(ctx, domain.DerivedArtifact{ID: "proxy-replay-a", AssetID: assetID, Type: "proxy", ProfileHash: "proxy-720-software", LocalPath: filepath.Join(dir, "cache", assetID, "proxy-software.mp4"), SizeBytes: 123}, job2.ID, "attempt-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pipeline.analyzeAssetVideo(ctx, job2, &m, provider, "fixture-path", "attempt-2"); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.calls) != 1 {
+		t.Fatalf("committed replay called the provider %d times, want zero more", len(provider.calls)-1)
+	}
+	if hookCalls != 2 {
+		t.Fatalf("hook calls after committed replay = %d, want 2", hookCalls)
+	}
+}
+
+// A legacy staged row (pre-envelope parsed_json) carries no shot data and
+// cannot be resumed; the repository makes it restageable under the live
+// lease and the attempt pays once more, then stages the full envelope.
+func TestVisionLegacyStagedRowRecoversOnce(t *testing.T) {
+	repo, root, dir := openMultiframeRepo(t)
+	ctx := context.Background()
+	assetID, m := seedPlainVisionAsset(t, repo, root, "legacy-a")
+	provider := &recordingVideoProvider{}
+	pipeline := NewPipeline(repo, dir, nil, nil, provider, nil, nil, media.HardwarePlan{}, nil, providerRouteDeferral, 0)
+	const inputHash = "legacy-input-a"
+	job := leaseAnalyzeJob(t, repo, assetID, inputHash, "attempt-1")
+	savePlainVisionProxy(t, repo, dir, assetID, job.ID, "attempt-1")
+	if err := pipeline.analyzeAssetVideo(ctx, job, &m, provider, "fixture-path", "attempt-1"); err != nil {
+		t.Fatal(err)
+	}
+	runID, _ := stagedEnvelope(t, repo, "asset_id=?", assetID)
+	// Rewrite the row to the shape pre-envelope staging left behind: the
+	// legacy parsed body has no vision_stage marker, so no attempt can
+	// resume from it.
+	if _, err := repo.DB().ExecContext(ctx, `UPDATE model_runs SET state='validated',parsed_json=? WHERE id=?`, `{"summary":"legacy staged answer"}`, runID); err != nil {
+		t.Fatal(err)
+	}
+
+	job2 := leaseAnalyzeJob(t, repo, assetID, inputHash, "attempt-2")
+	if err := repo.SaveArtifact(ctx, domain.DerivedArtifact{ID: "proxy-legacy-a", AssetID: assetID, Type: "proxy", ProfileHash: "proxy-720-software", LocalPath: filepath.Join(dir, "cache", assetID, "proxy-software.mp4"), SizeBytes: 123}, job2.ID, "attempt-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pipeline.analyzeAssetVideo(ctx, job2, &m, provider, "fixture-path", "attempt-2"); err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.calls) != 2 {
+		t.Fatalf("legacy recovery provider calls = %d, want 2 (the row cannot be resumed)", len(provider.calls))
+	}
+	_, env := stagedEnvelope(t, repo, "asset_id=?", assetID)
+	if env.Version != visionStageVersion || env.Analysis == nil || len(env.Shots) != 1 {
+		t.Fatalf("legacy recovery did not stage a full envelope: version=%q analysis=%+v shots=%d", env.Version, env.Analysis, len(env.Shots))
+	}
+	var state string
+	if err := repo.DB().QueryRowContext(ctx, `SELECT state FROM model_runs WHERE id=?`, runID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "committed" {
+		t.Fatalf("run state after legacy recovery = %q, want committed", state)
+	}
 }

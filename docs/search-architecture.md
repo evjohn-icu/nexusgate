@@ -100,8 +100,9 @@ semantic；"给我找…" → creative；其余 fact。`mode: auto` 是默认；
   而 RRF 会给每个有排名的候选记分——不设阈值的话，近正交噪声的长尾会
   淹没稀疏通道的强 top rank。因此通道只保留相似度 ≥ 0.8 × 通道自身最高
   相似度的簇（`embeddingCutoffFraction`）。embedding 是检索信号，不是
-  证据；换 embedding 模型 = 对 derived 文本重建（`nexusgate search
-  rebuild-embeddings`），绝不重跑 VLM analysis。
+  证据；换 embedding 后端（换端点/协议/模型都算）= 换空间，重建发生在
+  新空间的 planned 行上（`nexusgate search rebuild-embeddings`），绝不
+  重跑 VLM analysis，也不销毁旧空间的行。
 
 未来通道（同一接口，不重写 SearchService）：VisualEmbedding / OCR。
 
@@ -164,16 +165,29 @@ shot 的评分与 evidence。
 
 ## 未来能力（本轮仅边界/文档）
 
-### Text embedding（v0.28 已落地）
+### Text embedding（v0.28 已落地，v0.22 起带空间溯源）
 
 `search.TextEmbedder` 批量接口（`Embed([]string) ([][]float64, error)`），
 与 `providers.Embedder` 结构性一致：OpenAI-compatible（Ollama/Qwen/local
-gateway）与 Gemini `embedContent` 协议直接满足，零适配器代码。存储
-`shot_text_embeddings`（每 shot 一行，model 标记，float32 LE blob，
-source_text_hash 驱动增量重建）。生成时机：分析提交后自动增量
-（post-commit hook，只重嵌 derived 文本变化的 shot）+ `nexusgate search
-rebuild-embeddings` 全量命令。future 可接 Qwen3-VL-Embedding / CLIP /
-SigLIP，核心 domain 不写死模型。
+gateway）与 Gemini `embedContent` 协议直接满足，零适配器代码。
+
+存储 `shot_text_embeddings`：**键是 `(shot_id, space)`**，float32 LE blob，
+`source_text_hash` 驱动增量重建；读取时还会过滤 hash 与当前投影不再一致
+的行，所以主空间和 fallback 空间并存时，旧描述的向量不可能复活。空间
+（space）是产生这批向量的后端身份：`text-space-v1:` + SHA-256，元组为
+（provider 名、协议、归一化端点含路径、请求路径、模型版本），不含任何
+凭证，端口按默认值归一化。通道路由可能在一次操作内从主路由落到
+fallback 后端，所以写库用的空间取自**实际成功服务这次调用的路由**
+（`search.IdentifiedTextEmbedder.EmbedInSpace`），而 `EmbeddingSpaceID()`
+只做计划（无网络调用）：重建命令用"计划空间"的 hash 判断哪些 shot 需要
+重嵌，写入仍跟随实际服务的空间。`Model()` 保留给展示类调用方（tag
+curation、provider 页面），不参与向量身份。
+
+生成时机：分析提交后自动增量（post-commit hook，只重嵌计划空间下
+derived 文本变化的 shot）+ `nexusgate search rebuild-embeddings` 全量命令。
+启动 Hub 不触发重建；升级（0045）会丢弃无法证明来源的旧行（旧 `model`
+列是展示名，不是空间身份），需要跑一次重建命令，属于一次性 derived 重建。
+future 可接 Qwen3-VL-Embedding / CLIP / SigLIP，核心 domain 不写死模型。
 
 ### Visual embedding
 

@@ -147,6 +147,18 @@ func TestWeightedRRFMergesSignalsAcrossChannels(t *testing.T) {
 	}
 }
 
+func TestWeightedRRFStartsFromZeroForEmbeddingOnlyMatch(t *testing.T) {
+	const weight = 0.35
+	fusion := &WeightedRRF{Weights: map[string]float64{SignalTextEmbedding: weight}, K: DefaultRRFK}
+	candidates := fusion.Fuse([]ChannelResult{{Signal: SignalTextEmbedding, Candidates: []Candidate{
+		{ShotID: "embedding-match", Score: 0.8, Signals: map[string]float64{SignalTextEmbedding: 0.8}},
+	}}})
+	want := weight / (DefaultRRFK + 1.0)
+	if len(candidates) != 1 || candidates[0].Score != want || candidates[0].Signals[SignalTextEmbedding] != 0.8 {
+		t.Fatalf("weighted rank = %+v, want fused score %g and raw cosine 0.8", candidates, want)
+	}
+}
+
 func TestWeightedRRFZeroScoreCandidatesRemoved(t *testing.T) {
 	results := []ChannelResult{
 		{Signal: SignalLexical, Candidates: []Candidate{

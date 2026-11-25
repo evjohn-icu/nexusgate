@@ -75,7 +75,7 @@ func EDL(t Timeline) (string, error) {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "TITLE: %s\r\n", t.Title)
+	fmt.Fprintf(&b, "TITLE: %s\r\n", strings.Join(strings.Fields(t.Title), " "))
 	fmt.Fprintf(&b, "%s\r\n", fcm)
 
 	// Everything below is frame arithmetic, not millisecond arithmetic, and the

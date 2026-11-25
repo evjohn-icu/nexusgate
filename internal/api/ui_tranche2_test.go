@@ -343,10 +343,10 @@ func TestLibraryFilterChangeKeepsTheSearch(t *testing.T) {
 	// saved *asset* filter and runShotSearch's body carries no collection, so
 	// routing it through refreshResults would have made picking a collection
 	// during a search a silent no-op — the chip appears, the URL updates, the
-	// results do not move. Dropping to that collection's asset listing is at
-	// least an answer.
+	// results do not move. It clears the query first so the browse-ownership
+	// guard cannot swallow the deliberate navigation.
 	for _, site := range []string{
-		`async function loadCollection(id){activeCollection=id||'';load()}`,
+		`async function loadCollection(id){activeCollection=id||'';document.getElementById('q').value='';imageSearchReference='';load()}`,
 		`activeCollection='';load();syncURL();return`,
 	} {
 		if !strings.Contains(page, site) {

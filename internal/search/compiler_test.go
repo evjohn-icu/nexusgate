@@ -2,6 +2,7 @@ package search
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -62,6 +63,26 @@ func TestCompileNegativeCarQuery(t *testing.T) {
 	q := Compile("没有车的街道")
 	if len(q.MustNot) != 1 || q.MustNot[0].Value != "car" {
 		t.Fatalf("mustNot = %+v, want [car]", q.MustNot)
+	}
+}
+
+func TestCompileEnglishFallbackAndRepeatedNegation(t *testing.T) {
+	for _, tt := range []struct {
+		query   string
+		must    []string
+		mustNot []string
+	}{
+		{query: "the car", must: []string{"object:car"}},
+		{query: "person with umbrella", must: []string{"object:person", "object:umbrella"}},
+		{query: "no people and no cars", mustNot: []string{"object:person", "object:car"}},
+	} {
+		q := Compile(tt.query)
+		if got := constraintsToValues(q.Must); !slices.Equal(got, tt.must) {
+			t.Errorf("%q must constraints = %v, want %v", tt.query, got, tt.must)
+		}
+		if got := constraintsToValues(q.MustNot); !slices.Equal(got, tt.mustNot) {
+			t.Errorf("%q must-not constraints = %v, want %v", tt.query, got, tt.mustNot)
+		}
 	}
 }
 

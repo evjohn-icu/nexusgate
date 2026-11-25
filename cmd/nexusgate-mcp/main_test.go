@@ -493,6 +493,12 @@ func TestNewHubClientRejectsRemoteHTTP(t *testing.T) {
 	if _, err := newHubClient(); err != nil {
 		t.Fatalf("link-local http must construct: %v", err)
 	}
+	for _, address := range []string{"http://localhost", "http://[::1]"} {
+		t.Setenv("NEXUSGATE_BASE_URL", address)
+		if _, err := newHubClient(); err != nil {
+			t.Errorf("bare loopback %s: %v", address, err)
+		}
+	}
 }
 
 func TestValidFingerprint(t *testing.T) {
@@ -623,6 +629,37 @@ func TestSearchShotsOffsetPassThrough(t *testing.T) {
 	}
 	if offset, ok := hub.searchBody["offset"].(float64); !ok || offset != 0 {
 		t.Fatalf("default offset = %v, want 0 in the POST body", hub.searchBody["offset"])
+	}
+}
+
+func TestSearchToolValidatesSelectorsBeforeSending(t *testing.T) {
+	hub := &fakeHub{searchHits: []map[string]any{}}
+	srv := server.NewMCPServer("nexusgate", "test")
+	registerTools(srv, newTestClient(t, hub))
+	search := srv.ListTools()["search_shots"]
+	for _, input := range []any{" visual, audio ", []string{" visual ", "audio"}, []any{"visual", " audio "}} {
+		result, err := search.Handler(context.Background(), mcp.CallToolRequest{Params: mcp.CallToolParams{
+			Arguments: map[string]any{"query": "sunset", "modalities": input, "reference_id": " id ", "visual_shot_id": " shot "},
+		}})
+		if err != nil || result.IsError {
+			t.Fatalf("search %v: %+v, %v", input, result, err)
+		}
+		values, ok := hub.searchBody["modalities"].([]any)
+		if !ok || len(values) != 2 || values[0] != "visual" || values[1] != "audio" ||
+			hub.searchBody["reference_id"] != "id" || hub.searchBody["visual_shot_id"] != "shot" {
+			t.Fatalf("search %v sent %+v", input, hub.searchBody)
+		}
+	}
+	for _, invalid := range []map[string]any{
+		{"modalities": 3}, {"modalities": []any{"visual", false}}, {"modalities": []string{"visual", " "}},
+		{"reference_id": nil}, {"visual_shot_id": []string{"shot"}}, {"temporal": "["},
+	} {
+		invalid["query"] = "sunset"
+		hub.searchBody = nil
+		result, err := search.Handler(context.Background(), mcp.CallToolRequest{Params: mcp.CallToolParams{Arguments: invalid}})
+		if err != nil || !result.IsError || hub.searchBody != nil {
+			t.Fatalf("invalid search %+v: %+v, %v, HTTP body %+v", invalid, result, err, hub.searchBody)
+		}
 	}
 }
 

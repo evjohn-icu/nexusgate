@@ -486,7 +486,10 @@ func seedScaleCorpus(ctx context.Context, repo *Repository, shots int) error {
 			if _, err := semanticStmt.ExecContext(ctx, shotID, discovery.HeuristicVectorModel, string(semantic), description, now); err != nil {
 				return err
 			}
-			if _, err := embeddingStmt.ExecContext(ctx, shotID, scaleEmbeddingModel, encodeVectorBlob(scaleEmbeddingVector(i*scaleShotsPerAsset+ordinal)), "scale-source-"+strconv.Itoa(i*scaleShotsPerAsset+ordinal), now); err != nil {
+			// The hash must cover the projection the retriever re-derives at
+			// read time; a placeholder would make every row stale.
+			sourceHash := search.ShotTextSourceHash(search.ShotSearchDocument{ShotID: shotID, Description: description, Tags: []string{"rain", "city"}, Objects: []string{"car"}, Actions: []string{"driving"}, Mood: []string{"cinematic"}})
+			if _, err := embeddingStmt.ExecContext(ctx, shotID, scaleEmbeddingModel, encodeVectorBlob(scaleEmbeddingVector(i*scaleShotsPerAsset+ordinal)), sourceHash, now); err != nil {
 				return err
 			}
 		}

@@ -342,6 +342,86 @@ test.describe('usability repair (2026-08-28 audit)', () => {
     await expect(page.locator('#wizard-endpoint')).toHaveValue('wss://openspeech.bytedance.com/api/v3/plan/sauc/bigmodel_nostream');
   });
 
+  test('provider editor keeps retained keys bound to their own member id', async ({ page }) => {
+    await login(page);
+    await page.goto('/providers');
+    // Other projects share this fixture server, so the case owns a channel
+    // instead of mutating the seeded one.
+    const channel = await page.evaluate(async () => {
+      const response = await fetch('/api/v1/admin/provider-channels', {
+        method: 'POST',
+        headers: adminHeaders(true),
+        body: JSON.stringify({
+          capability: 'video_analysis', label: `editor-${Date.now()}`, provider_name: 'fixture',
+          endpoint: 'http://127.0.0.1:1', model: 'offline', enabled: true, route_order: 99,
+          members: [{ label: 'primary', api_key: 'offline-key', enabled: true, weight: 1, max_inflight: 1 }],
+        }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    }) as { id: string; members: { id: string }[] };
+    await page.reload();
+    await page.locator(`[data-channel="${channel.id}"] [data-act="edit-channel"]`).click();
+    const rows = page.locator('#member-rows .memberrow');
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toHaveAttribute('data-member-id', channel.members[0].id);
+    // A stored key is never rendered back, so a blank input must not block the
+    // save; only a new row still requires one.
+    await expect(rows.first().locator('.m-key')).not.toHaveAttribute('required', '');
+    await rows.first().locator('details summary').click();
+    await rows.first().locator('.m-weight').fill('2');
+    await page.locator('.keyhead button').click();
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(1)).not.toHaveAttribute('data-member-id', /.+/);
+    await rows.nth(1).locator('.m-label').fill('second-key');
+    await rows.nth(1).locator('.m-key').fill('second-key-value');
+    const patched = page.waitForResponse((response) => response.url().endsWith(`/api/v1/admin/provider-channels/${channel.id}`) && response.request().method() === 'PATCH');
+    await page.locator('#channel-form button[type="submit"]').click();
+    const response = await patched;
+    expect(response.ok()).toBeTruthy();
+    const body = JSON.parse(response.request().postData() ?? '{}');
+    expect(body.members).toHaveLength(2);
+    expect(body.members[0]).toEqual({ id: channel.members[0].id, label: 'primary', enabled: true, weight: 2, max_inflight: 1 });
+    expect(body.members[1]).toMatchObject({ label: 'second-key', enabled: true, weight: 1, max_inflight: 1, api_key: 'second-key-value' });
+    expect(body.members[1].id).toBeUndefined();
+    const saved = await response.json();
+    expect(saved.members).toHaveLength(2);
+    expect(saved.members.some((member: { id: string }) => member.id === channel.members[0].id)).toBe(true);
+  });
+
+  test('provider editor opens a channel with no members and can add one', async ({ page }) => {
+    await login(page);
+    await page.goto('/providers');
+    const channel = await page.evaluate(async () => {
+      const response = await fetch('/api/v1/admin/provider-channels', {
+        method: 'POST',
+        headers: adminHeaders(true),
+        body: JSON.stringify({
+          capability: 'video_analysis', label: `empty-${Date.now()}`, provider_name: 'fixture',
+          endpoint: 'http://127.0.0.1:1', model: 'offline', enabled: true, route_order: 98, members: [],
+        }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
+    }) as { id: string };
+    await page.reload();
+    await page.locator(`[data-channel="${channel.id}"] [data-act="edit-channel"]`).click();
+    const rows = page.locator('#member-rows .memberrow');
+    await expect(rows).toHaveCount(0);
+    await page.locator('.keyhead button').click();
+    await expect(rows).toHaveCount(1);
+    await rows.first().locator('.m-label').fill('first-key');
+    await rows.first().locator('.m-key').fill('first-key-value');
+    const patched = page.waitForResponse((response) => response.url().endsWith(`/api/v1/admin/provider-channels/${channel.id}`) && response.request().method() === 'PATCH');
+    await page.locator('#channel-form button[type="submit"]').click();
+    expect((await patched).ok()).toBeTruthy();
+    // The empty edit removed the anchor row; the manual create dialog must
+    // put a fresh one back.
+    await page.locator('#advanced-btn').click();
+    await expect(rows).toHaveCount(1);
+    await page.keyboard.press('Escape');
+  });
+
   test('search POST carries semantic facets plus the asset context filter', async ({ page }) => {
     await page.goto('/');
     await page.locator('#status-filter').selectOption('ready');

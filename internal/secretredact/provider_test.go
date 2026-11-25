@@ -2,6 +2,7 @@ package secretredact
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -20,11 +21,15 @@ func TestProviderRedactor(t *testing.T) {
 		want   []string
 		absent []string
 	}{
-		{"long and unrelated", `{"answer":"` + longKey + `","ordinary":"ordinary-value","header":"` + headerSecret + `"}`, []string{marker, "ordinary-value"}, []string{longKey, headerSecret}},
+		// Configured API key and secret header values are redacted at every
+		// occurrence under the stricter policy — including inside the value of
+		// an ordinary header named in the same credential block, and in the
+		// rewritten key name.
+		{"long and unrelated", `{"answer":"` + longKey + `","ordinary":"ordinary-value","header":"` + headerSecret + `"}`, []string{marker, `"answer":"` + marker + `"`}, []string{longKey, headerSecret, "ordinary-value", "ordinary"}},
 		{"short only in credential key", `{"note":"tiny","api_key":"tiny","nested":{"TOKEN":"tiny"}}`, []string{`"api_key":"` + marker + `"`, `"TOKEN":"` + marker + `"`, `"note":"tiny"`}, []string{"\"note\":\"" + marker}},
-		{"nested escaped json", `{"payload":"{\"authorization\":\"Bearer ` + longKey + `\",\"ok\":\"ordinary-value\"}"}`, []string{marker, "ordinary-value"}, []string{longKey}},
+		{"nested escaped json", `{"payload":"{\"authorization\":\"Bearer ` + longKey + `\",\"ok\":\"untouched-value\"}"}`, []string{marker, "untouched-value"}, []string{longKey, "ordinary-value"}},
 		{"urls", `{"url":"https://url-user:url-password@provider.example/v1?TOKEN=url-token&mode=keep#secret=url-fragment"}`, []string{"mode=keep", "provider.example"}, []string{"url-user", "url-password", "url-token", "url-fragment"}},
-		{"empty values", `{"token":"","ordinary":""}`, []string{`"token":""`}, []string{marker}},
+		{"empty values", `{"token":"","unrelated":""}`, []string{`"token":""`, `"unrelated":""`}, []string{marker}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -86,5 +91,111 @@ func TestProviderRedactorArbitraryExtraHeaderAndURLPostProcessing(t *testing.T) 
 func TestProviderRedactorInvalidJSON(t *testing.T) {
 	if _, err := New(Material{APIKey: "long-secret"}).JSON([]byte(`{"broken":`)); err == nil {
 		t.Fatal("invalid JSON accepted")
+	}
+}
+
+// The stricter JSON policy: configured API keys and secret header values are
+// redacted at every occurrence, in keys and values, including their
+// URL-encoded spellings; anything that cannot be sanitized safely withholds
+// the whole response with the generic sentinel.
+func TestRedactorJSONRedactsEveryOccurrenceOfPrimaryMaterial(t *testing.T) {
+	const apiKey = "abc def"
+	r := New(Material{APIKey: apiKey, ExtraHeaders: map[string]string{"X-Secret": "{{SECRET_sj2k3l9d}}"}})
+	out, err := r.JSON([]byte(`{"note":"x` + apiKey + `y","url":"https://h.example/?k=abc%20def","nested":"{\"deep\":\"abc+def\"}","z":"plain"}`))
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	text := string(out)
+	for _, material := range []string{apiKey, "abc def", "abc%20def", "abc+def", "{{SECRET_sj2k3l9d}}"} {
+		if strings.Contains(text, material) {
+			t.Fatalf("output leaked %q: %s", material, text)
+		}
+	}
+	for _, want := range []string{`"note":"x` + marker + `y"`, `?k=` + marker, `{\"deep\":\"` + marker + `\"}`, `"z":"plain"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("output %s missing %q", text, want)
+		}
+	}
+}
+
+// A short configured API key must sanitize in every JSON position, not only
+// inside established credential context.
+func TestRedactorJSONShortKeyEveryPosition(t *testing.T) {
+	r := New(Material{APIKey: "abc"})
+	out, err := r.JSON([]byte(`{"note":"xabcz","arr":["abc","tail"],"obj":{"k":"abc"}}`))
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	text := string(out)
+	if strings.Contains(text, "abc") && !strings.Contains(text, `"`+marker+`"`) {
+		t.Fatalf("short key survived outside credential context: %s", text)
+	}
+	if strings.Count(text, marker) != 3 {
+		t.Fatalf("expected three redactions, got %s", text)
+	}
+}
+
+func TestRedactorJSONWithholdsUnredactableResponses(t *testing.T) {
+	t.Run("material inside a number", func(t *testing.T) {
+		const apiKey = "12345"
+		r := New(Material{APIKey: apiKey})
+		out, err := r.JSON([]byte(`{"count":123450}`))
+		if !errors.Is(err, ErrRedactionWithheld) {
+			t.Fatalf("error = %v, want ErrRedactionWithheld", err)
+		}
+		if out != nil {
+			t.Fatalf("withheld response must not be returned, got %s", out)
+		}
+		if strings.Contains(err.Error(), apiKey) {
+			t.Fatalf("error leaked material: %v", err)
+		}
+	})
+	t.Run("key rewrite collision", func(t *testing.T) {
+		r := New(Material{APIKey: "X"})
+		if _, err := r.JSON([]byte(`{"aXc":1,"a[REDACTED]c":2}`)); !errors.Is(err, ErrRedactionWithheld) {
+			t.Fatalf("error = %v, want ErrRedactionWithheld", err)
+		}
+	})
+	t.Run("material inside the marker", func(t *testing.T) {
+		r := New(Material{APIKey: "REDACTED"})
+		if _, err := r.JSON([]byte(`{"ok":true}`)); !errors.Is(err, ErrRedactionWithheld) {
+			t.Fatalf("error = %v, want ErrRedactionWithheld", err)
+		}
+	})
+}
+
+// The exact-replacement routine is single-pass: the marker it inserts is never
+// rescanned, so a pre-existing marker in the response cannot be corrupted and
+// no source text is revisited.
+func TestRedactorJSONNeverReprocessesMarker(t *testing.T) {
+	const apiKey = "sk-test-123"
+	r := New(Material{APIKey: apiKey})
+	out, err := r.JSON([]byte(`{"log":"prev=[REDACTED] now=` + apiKey + `"}`))
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+	if got, want := string(out), `{"log":"prev=[REDACTED] now=`+marker+`"}`; got != want {
+		t.Fatalf("output = %s, want %s", got, want)
+	}
+}
+
+// Validation must also catch the JSON-escaped spelling of a secret that the
+// exact pass cannot rewrite because the encoder escaped it.
+func TestRedactorJSONWithholdsEscapedSurvivor(t *testing.T) {
+	const apiKey = `a"b`
+	r := New(Material{APIKey: apiKey})
+	// The secret reaches the encoder through a numeric position is impossible;
+	// instead the nested stringify path preserves it with escapes when the
+	// exact pass cannot see the decoded form. Sanitize must either redact it
+	// or withhold — never emit it.
+	out, err := r.JSON([]byte(`{"k":"a\"b"}`))
+	if err != nil {
+		if !errors.Is(err, ErrRedactionWithheld) {
+			t.Fatalf("error = %v, want ErrRedactionWithheld", err)
+		}
+		return
+	}
+	if strings.Contains(string(out), `a\"b`) {
+		t.Fatalf("escaped secret survived: %s", out)
 	}
 }

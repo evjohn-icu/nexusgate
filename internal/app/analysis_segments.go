@@ -21,6 +21,142 @@ import (
 	videoproviders "github.com/evjohn-icu/nexusgate/internal/providers/video"
 )
 
+// visionStageVersion is the parsed_json envelope marker every vision path
+// stages at StageModelRun. A previous attempt of the same job can only be
+// resumed from a staged answer it actually completed: the marker is what
+// distinguishes a complete, resumable envelope from the pre-envelope legacy
+// staged rows, whose parsed body carries no shot data and can only be
+// restaged from a fresh model call.
+const visionStageVersion = "vision_stage.v1"
+
+// visionStageEnvelope is what a vision run stages into model_runs.parsed_json
+// once the model has answered and the answer has passed validation:
+//
+//	{ "version": "vision_stage.v1",
+//	  "analysis": <StructuredAnalysis-or-null>,
+//	  "shots": [<AssetShot>...] }
+//
+// Staging happens after every provider call and before the canonical commit,
+// so a crash in that gap costs the job its process but not its model bill:
+// the next attempt finds the envelope, revalidates it, and commits with zero
+// provider calls. The two-pass refinement path stages a null analysis — its
+// run replaces shot rows only, and the asset-level analysis stays attributed
+// to the pass-1 run that produced it.
+type visionStageEnvelope struct {
+	Version  string                     `json:"version"`
+	Analysis *domain.StructuredAnalysis `json:"analysis"`
+	Shots    []domain.AssetShot         `json:"shots"`
+}
+
+// validatedRunReader is the narrow staging-transition capability the resume
+// path needs. It is asserted rather than added to PipelineRepository so test
+// fixtures that do not model the transition keep compiling: a repository
+// without it simply never reports a resumable envelope.
+type validatedRunReader interface {
+	// GetValidatedModelRun enforces the caller's current lease on the run's
+	// job and returns the staged envelope's JSON, whether one exists, and:
+	// ok=true for a validated run whose parsed_json carries the
+	// vision_stage.v1 marker; ok=false otherwise — including a legacy staged
+	// row, which the repository makes restageable by resetting its state to
+	// 'running' under the enforced live lease.
+	GetValidatedModelRun(ctx context.Context, runID, jobID, owner string) (string, bool, error)
+}
+
+// stageVisionEnvelope encodes the envelope and stages it through the existing
+// StageModelRun signature. The envelope is staged unconditionally after
+// validation, so a shot count of zero is still a complete answer — an empty
+// array, not a null, keeps the shape exact for the reader.
+func stageVisionEnvelope(ctx context.Context, repo PipelineRepository, runID, raw string, analysis *domain.StructuredAnalysis, shots []domain.AssetShot, jobID, owner string) error {
+	if shots == nil {
+		shots = []domain.AssetShot{}
+	}
+	encoded, err := json.Marshal(visionStageEnvelope{Version: visionStageVersion, Analysis: analysis, Shots: shots})
+	if err != nil {
+		return err
+	}
+	return repo.StageModelRun(ctx, runID, raw, string(encoded), jobID, owner)
+}
+
+// stagedVisionRun is a decoded, resumable answer: the analysis the first
+// attempt validated (nil for the refinement-only path) and the shots it
+// built from the model's reply.
+type stagedVisionRun struct {
+	analysis *domain.StructuredAnalysis
+	shots    []domain.AssetShot
+}
+
+// resumeStagedVision reports whether runID already carries a complete staged
+// envelope from an earlier attempt of this job. It must be consulted right
+// after CreateModelRun returns cached=false — that is the one point where the
+// run may be a validated leftover rather than a fresh row — and before any
+// provider work, so a resumable run costs zero provider calls.
+//
+// A lost lease surfaces as an error and stops the attempt: staging or
+// committing after the lease moved on would race whatever holds it now. A
+// found-but-unreadable envelope is a permanent failure rather than a silent
+// re-bill: the repository only reports ok=true for a body carrying the
+// version marker, so a body that then fails to decode is corruption, and
+// paying the model again for an answer that cannot commit is the worse
+// outcome. A legacy staged row (no marker) arrives as not-found and is
+// restaged through the normal path, exactly once, after the repository reset
+// it under the live lease.
+func (p *Pipeline) resumeStagedVision(ctx context.Context, j *domain.Job, runID, worker string) (*stagedVisionRun, error) {
+	reader, ok := p.repo.(validatedRunReader)
+	if !ok {
+		return nil, nil
+	}
+	parsed, found, err := reader.GetValidatedModelRun(ctx, runID, j.ID, worker)
+	if err != nil || !found {
+		return nil, err
+	}
+	var env visionStageEnvelope
+	if err := json.Unmarshal([]byte(parsed), &env); err != nil {
+		return nil, domain.Permanent(fmt.Errorf("staged vision envelope for run %s is unreadable: %w", runID, err))
+	}
+	if env.Version != visionStageVersion {
+		return nil, domain.Permanent(fmt.Errorf("staged vision envelope for run %s carries unsupported version %q", runID, env.Version))
+	}
+	staged := &stagedVisionRun{shots: env.Shots}
+	if env.Analysis != nil {
+		a := *env.Analysis
+		staged.analysis = &a
+	}
+	return staged, nil
+}
+
+// commitStagedVision revalidates and commits a resumed answer through the
+// canonical commit the calling path uses. Revalidation is deliberately the
+// same code the first attempt ran: the envelope was staged after it passed,
+// and both checks are fixed points over already-normalized content, so a
+// replayed answer passes iff the original did. The commit is the same call —
+// CommitAnalysisWithShots or CommitShotRefinement — so the canonical tables
+// change exactly as a first attempt would have changed them, with zero
+// provider calls. Cost estimation stays out: the ledger records actual model
+// calls, and a replay makes none.
+//
+// The post-commit hook runs even though a first attempt may have run it
+// before dying: it is idempotent (incremental text embeddings and visual
+// enqueue), so replaying it repairs the ordinary crash — committed analysis,
+// hook never reached — without repeating any model charge.
+func (p *Pipeline) commitStagedVision(ctx context.Context, j *domain.Job, m *domain.MediaMetadata, runID, worker string, staged *stagedVisionRun, commit func(domain.StructuredAnalysis, []domain.AssetShot) error) error {
+	a := domain.StructuredAnalysis{}
+	if staged.analysis != nil {
+		validated, err := normalize.ValidateAndNormalize(*staged.analysis)
+		if err != nil {
+			return err
+		}
+		a = validated
+	}
+	if err := validateAnalysisShots(staged.shots, m.DurationMS); err != nil {
+		return err
+	}
+	if err := commit(a, staged.shots); err != nil {
+		return err
+	}
+	p.afterShotsCommitted(ctx, j.AssetID)
+	return nil
+}
+
 // analyzeAssetVideo runs the plain video analysis path against one provider:
 // a model run recorded under the provider's own identity, window planning
 // around its inline budget, validation, and the canonical commit. The plain
@@ -39,7 +175,22 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 		return err
 	}
 	if cached {
+		// The run is already committed by a previous attempt. The model has
+		// been paid; the only remaining work is the post-commit hook, which
+		// an attempt that died between commit and hook never reached. It is
+		// idempotent, so replaying it here repairs that omission.
+		p.afterShotsCommitted(ctx, j.AssetID)
 		return nil
+	}
+	// A previous attempt may have paid the model, staged the full envelope,
+	// and died before the commit. Committing it now costs zero provider
+	// calls; falling through would re-bill the model for the same answer.
+	if staged, err := p.resumeStagedVision(ctx, j, runID, worker); err != nil {
+		return err
+	} else if staged != nil {
+		return p.commitStagedVision(ctx, j, m, runID, worker, staged, func(a domain.StructuredAnalysis, shots []domain.AssetShot) error {
+			return p.repo.CommitAnalysisWithShots(ctx, j.AssetID, runID, "asset-analysis/v2", a, shots, j.ID, worker)
+		})
 	}
 	var a domain.StructuredAnalysis
 	var raw string
@@ -70,42 +221,46 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 		}
 	}
 	analyzeReq := videoanalysis.Input{VideoPath: proxy.LocalPath, Transcript: transcript, Metadata: *m, Language: p.analysisLanguage}
-	cacheLock, e := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
-	if e != nil {
-		return e
-	}
-	requiresPreparation := false
-	if preparation, ok := provider.(interface{ RequiresVideoPreparation() bool }); ok {
-		requiresPreparation = preparation.RequiresVideoPreparation()
-	} else if _, ok := provider.(videoproviders.VideoPreparer); ok {
-		requiresPreparation = true
-	}
-	if requiresPreparation {
-		preparer, ok := provider.(videoproviders.VideoPreparer)
-		if !ok {
-			return domain.Permanent(fmt.Errorf("video provider %q requires preparation but cannot prepare video", provider.Name()))
+	var result videoanalysis.Result
+	var providerErr error
+	if err := func() error {
+		lock, err := cachecoord.AcquireShared(p.cacheLockDir)
+		if err != nil {
+			return err
 		}
-		cachedFile, e := p.repo.GetProviderFile(ctx, j.AssetID, "proxy", proxy.ProfileHash, provider.Name())
-		if e != nil {
-			return e
+		defer lock.Release()
+		requiresPreparation := false
+		if preparation, ok := provider.(interface{ RequiresVideoPreparation() bool }); ok {
+			requiresPreparation = preparation.RequiresVideoPreparation()
+		} else if _, ok := provider.(videoproviders.VideoPreparer); ok {
+			requiresPreparation = true
 		}
-		if cachedFile == nil || cachedFile.State != "ACTIVE" || (cachedFile.ExpiresAt != nil && cachedFile.ExpiresAt.Before(time.Now())) {
-			prepared, e := preparer.PrepareVideo(ctx, videoproviders.PrepareVideoRequest{VideoPath: proxy.LocalPath, DisplayName: j.AssetID + "-proxy.mp4", MIMEType: "video/mp4"})
-			if e != nil {
-				return e
+		if requiresPreparation {
+			preparer, ok := provider.(videoproviders.VideoPreparer)
+			if !ok {
+				return domain.Permanent(fmt.Errorf("video provider %q requires preparation but cannot prepare video", provider.Name()))
 			}
-			cachedFile = &domain.ProviderFile{ID: idgen.New(), AssetID: j.AssetID, ArtifactType: "proxy", ProfileHash: proxy.ProfileHash, Provider: provider.Name(), RemoteName: prepared.RemoteName, RemoteURI: prepared.RemoteURI, MIMEType: prepared.MIMEType, State: prepared.State, SizeBytes: prepared.SizeBytes}
-			if e := p.repo.SaveProviderFile(ctx, *cachedFile); e != nil {
-				return e
+			cachedFile, err := p.repo.GetProviderFile(ctx, j.AssetID, "proxy", proxy.ProfileHash, provider.Name())
+			if err != nil {
+				return err
 			}
+			if cachedFile == nil || cachedFile.State != "ACTIVE" || (cachedFile.ExpiresAt != nil && cachedFile.ExpiresAt.Before(time.Now())) {
+				prepared, err := preparer.PrepareVideo(ctx, videoproviders.PrepareVideoRequest{VideoPath: proxy.LocalPath, DisplayName: j.AssetID + "-proxy.mp4", MIMEType: "video/mp4"})
+				if err != nil {
+					return err
+				}
+				cachedFile = &domain.ProviderFile{ID: idgen.New(), AssetID: j.AssetID, ArtifactType: "proxy", ProfileHash: proxy.ProfileHash, Provider: provider.Name(), RemoteName: prepared.RemoteName, RemoteURI: prepared.RemoteURI, MIMEType: prepared.MIMEType, State: prepared.State, SizeBytes: prepared.SizeBytes}
+				if err := p.repo.SaveProviderFile(ctx, *cachedFile); err != nil {
+					return err
+				}
+			}
+			analyzeReq.RemoteURI, analyzeReq.MIMEType = cachedFile.RemoteURI, cachedFile.MIMEType
 		}
-		analyzeReq.RemoteURI, analyzeReq.MIMEType = cachedFile.RemoteURI, cachedFile.MIMEType
+		result, raw, providerErr = p.analyzeVideo(ctx, provider, j.AssetID, analyzeReq, m.DurationMS)
+		return nil
+	}(); err != nil {
+		return err
 	}
-	if e := cacheLock.Release(); e != nil {
-		return e
-	}
-	result, rawResult, providerErr := p.analyzeVideo(ctx, provider, j.AssetID, analyzeReq, m.DurationMS)
-	raw = rawResult
 	err = providerErr
 	if err != nil {
 		if failErr := p.failModelRun(ctx, runID, "provider_error", err.Error(), raw, j, worker); failErr != nil {
@@ -134,8 +289,7 @@ func (p *Pipeline) analyzeAssetVideo(ctx context.Context, j *domain.Job, m *doma
 		}
 		return err
 	}
-	parsed, _ := json.Marshal(a)
-	if err := p.repo.StageModelRun(ctx, runID, raw, string(parsed), j.ID, worker); err != nil {
+	if err := stageVisionEnvelope(ctx, p.repo, runID, raw, &a, shots, j.ID, worker); err != nil {
 		return err
 	}
 	if err := p.repo.CommitAnalysisWithShots(ctx, j.AssetID, runID, "asset-analysis/v2", a, shots, j.ID, worker); err != nil {

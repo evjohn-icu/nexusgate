@@ -2,11 +2,15 @@ package cache
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -394,4 +398,306 @@ func (f fakeArtifactLister) ListDerivedArtifacts(context.Context) ([]domain.Deri
 		artifacts = append(artifacts, domain.DerivedArtifact{ID: "art", AssetID: "asset", Type: "thumbnail", LocalPath: path, SizeBytes: int64(i)})
 	}
 	return artifacts, nil
+}
+
+// TestGCOrphanFixturePreservesManagedSubtreesAndQueuedAssets is the
+// `--orphans --yes` acceptance fixture: one real orphan asset directory is
+// removed, while the managed search-references tree, the active inference
+// scratch, and the artifacts of an asset with queued pipeline work all
+// survive. The subtrees are the regression: their names match no asset row,
+// so an orphan listing that did not know them would delete a 24-hour query
+// image or the input a live inference run is about to read.
+func TestGCOrphanFixturePreservesManagedSubtreesAndQueuedAssets(t *testing.T) {
+	ctx := context.Background()
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	writeFile(t, filepath.Join(cacheDir, "gone-asset", "odd-file.bin"), 5)
+	old := time.Now().Add(-10 * time.Minute)
+	if err := os.Chtimes(filepath.Join(cacheDir, "gone-asset"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(cacheDir, "search-references", "abc123.jpg"), 11)
+	writeFile(t, filepath.Join(cacheDir, "inference", "inputs", "job1", "frame.jpg"), 13)
+	// A protected asset's directory is a known asset, so it is not an orphan
+	// candidate at all; its artifacts are covered by the protection set in the
+	// rebuildable test below.
+	writeFile(t, filepath.Join(cacheDir, "kept-asset", "thumbnail-sw.jpg"), 7)
+
+	lister := fakeAssetLister{ids: []string{"kept-asset"}}
+	orphanDirs, err := OrphanDirectories(ctx, lister, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orphanDirs) != 1 || filepath.Base(orphanDirs[0].Path) != "gone-asset" {
+		t.Fatalf("orphan candidates = %+v, want only gone-asset", orphanDirs)
+	}
+	result, err := GC(cacheDir, GCOptions{
+		RemoveOrphans:     orphanDirs,
+		ProtectedAssetIDs: map[string]struct{}{"kept-asset": {}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RemovedFiles != 1 || result.FreedBytes != 5 {
+		t.Fatalf("removed %d files/%d bytes, want 1/5", result.RemovedFiles, result.FreedBytes)
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "gone-asset")); !os.IsNotExist(err) {
+		t.Fatalf("the real orphan must be gone, stat err = %v", err)
+	}
+	for _, preserved := range []string{
+		filepath.Join(cacheDir, "search-references", "abc123.jpg"),
+		filepath.Join(cacheDir, "inference", "inputs", "job1", "frame.jpg"),
+		filepath.Join(cacheDir, "kept-asset", "thumbnail-sw.jpg"),
+	} {
+		if _, err := os.Stat(preserved); err != nil {
+			t.Fatalf("%s must survive an orphan run: %v", preserved, err)
+		}
+	}
+}
+
+// TestGCRebuildableGatedOnDurableRepair pins the eligibility gate: artifacts
+// whose asset is absent from the run's durable-repair set are preserved and
+// reported as skipped-unrepaired, never deleted behind a merely promised
+// rebuild. Only a nil set disables gating.
+func TestGCRebuildableGatedOnDurableRepair(t *testing.T) {
+	cacheDir, _, _, _ := gcFixture(t)
+	old := time.Now().Add(-10 * time.Minute)
+	if err := os.Chtimes(filepath.Join(cacheDir, "assetA", "unlisted.txt"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	// Ungated: everything rebuildable goes.
+	result, err := GC(cacheDir, GCOptions{RemoveRebuildable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SkippedUnrepairedFiles != 0 {
+		t.Fatalf("a nil eligibility set must gate nothing, skipped %d", result.SkippedUnrepairedFiles)
+	}
+	if result.RemovedRebuildableAssetIDs == nil || len(result.RemovedRebuildableAssetIDs) != 1 {
+		t.Fatalf("ungated run must report assetA, got %v", result.RemovedRebuildableAssetIDs)
+	}
+
+	// Gated away: the same artifact survives and the skip is accounted.
+	cacheDir, _, _, _ = gcFixture(t)
+	result, err = GC(cacheDir, GCOptions{
+		RemoveRebuildable: true,
+		EligibleAssetIDs:  map[string]struct{}{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "assetA", "thumbnail-sw.jpg")); err != nil {
+		t.Fatalf("an asset without a durable repair keeps its files: %v", err)
+	}
+	if result.SkippedUnrepairedFiles != 3 || result.SkippedUnrepairedBytes != 10 {
+		t.Fatalf("skipped unrepaired = %d files/%d bytes, want 3/10", result.SkippedUnrepairedFiles, result.SkippedUnrepairedBytes)
+	}
+	if len(result.RemovedRebuildableAssetIDs) != 0 {
+		t.Fatalf("a gated-out asset must not be reported as removed, got %v", result.RemovedRebuildableAssetIDs)
+	}
+}
+
+// waveformPairFixture writes a manifest and the payload it names under one
+// asset directory and returns the manifest path, payload path and payload
+// bytes.
+func waveformPairFixture(t *testing.T, cacheDir, assetID string) (manifestPath, payloadPath string, payload []byte) {
+	t.Helper()
+	payload = []byte{0, 0, 0x80, 0xbf, 0, 0, 0x80, 0x3f, 0, 0, 0, 0, 0, 0, 0, 0}
+	sum := sha256.Sum256(payload)
+	manifest := map[string]any{
+		"version":        "waveform.v1",
+		"sample_rate":    16000,
+		"bucket_ms":      10,
+		"duration_ms":    20,
+		"levels":         []map[string]any{{"level": 0, "offset": 0, "count": 2}},
+		"payload_size":   len(payload),
+		"payload_sha256": hex.EncodeToString(sum[:]),
+		"payload_file":   "waveform." + hex.EncodeToString(sum[:]) + ".bin",
+	}
+	manifestPath = filepath.Join(cacheDir, assetID, "waveform.json")
+	encoded, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payloadPath = filepath.Join(filepath.Dir(manifestPath), "waveform."+hex.EncodeToString(sum[:])+".bin")
+	if err := os.WriteFile(payloadPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return manifestPath, payloadPath, payload
+}
+
+// TestGCWaveformPairIsOneLogicalArtifact pins the pair contract in GC: a
+// rebuildable run deletes the manifest and the payload it names together, an
+// unregistered payload (no manifest names it) goes on its own merits, and a
+// dry run reports both halves without deleting either.
+func TestGCWaveformPairIsOneLogicalArtifact(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	manifestPath, payloadPath, pairPayload := waveformPairFixture(t, cacheDir, "assetA")
+	// A payload no manifest names: a crashed publish's litter.
+	lonePath := filepath.Join(cacheDir, "assetA", "waveform."+strings.Repeat("ab", 32)+".bin")
+	writeFile(t, lonePath, 8)
+	old := time.Now().Add(-10 * time.Minute)
+	if err := filepath.WalkDir(cacheDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		return os.Chtimes(path, old, old)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Dry run: both halves reported, nothing deleted.
+	manifestInfo, err := os.Stat(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBytes := manifestInfo.Size() + int64(len(pairPayload)) + 8
+	dry, err := GC(cacheDir, GCOptions{RemoveRebuildable: true, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.RemovedFiles != 3 || dry.FreedBytes != wantBytes {
+		t.Fatalf("dry run removed %d files/%d bytes, want 3/%d", dry.RemovedFiles, dry.FreedBytes, wantBytes)
+	}
+	if _, err := os.Stat(manifestPath); err != nil {
+		t.Fatal("a dry run must not delete the manifest")
+	}
+	if _, err := os.Stat(payloadPath); err != nil {
+		t.Fatal("a dry run must not delete the payload")
+	}
+
+	// Real run: manifest and referenced payload go together; the lone payload
+	// goes too.
+	result, err := GC(cacheDir, GCOptions{RemoveRebuildable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RemovedFiles != 3 || result.FreedBytes != wantBytes {
+		t.Fatalf("removed %d files/%d bytes, want 3/%d", result.RemovedFiles, result.FreedBytes, wantBytes)
+	}
+	if _, err := os.Stat(manifestPath); !os.IsNotExist(err) {
+		t.Fatalf("manifest must be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(payloadPath); !os.IsNotExist(err) {
+		t.Fatalf("referenced payload must be removed with its manifest, stat err = %v", err)
+	}
+	if _, err := os.Stat(lonePath); !os.IsNotExist(err) {
+		t.Fatalf("an unregistered payload must be removed, stat err = %v", err)
+	}
+}
+
+// TestGCMissingWaveformPayloadStillRemovesManifest pins the missing-pair
+// shape: a manifest whose payload is already gone is still deletable
+// rebuildable content — the row survives and the derive re-creates both
+// halves — and the missing payload is not an error.
+func TestGCMissingWaveformPayloadStillRemovesManifest(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	manifestPath, payloadPath, _ := waveformPairFixture(t, cacheDir, "assetA")
+	if err := os.Remove(payloadPath); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-10 * time.Minute)
+	if err := os.Chtimes(manifestPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	result, err := GC(cacheDir, GCOptions{RemoveRebuildable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RemovedFiles != 1 {
+		t.Fatalf("removed %d files, want 1 (the manifest)", result.RemovedFiles)
+	}
+	for _, err := range result.Errors {
+		t.Fatalf("unexpected error: %s", err)
+	}
+	if _, err := os.Stat(manifestPath); !os.IsNotExist(err) {
+		t.Fatalf("manifest must be removed, stat err = %v", err)
+	}
+}
+
+// typedArtifactLister returns rows with explicit artifact types, so Verify's
+// waveform pair logic can be exercised against real "waveform" rows.
+type typedArtifactLister struct{ rows []domain.DerivedArtifact }
+
+func (f typedArtifactLister) ListDerivedArtifacts(context.Context) ([]domain.DerivedArtifact, error) {
+	return f.rows, nil
+}
+
+// TestVerifyWaveformRowReportsMissingPair pins the pair contract in Verify: a
+// waveform row whose manifest exists but whose named payload is missing is
+// ONE missing artifact, and the payload a registered manifest names is never
+// an orphan. A payload no manifest or row accounts for is still an orphan.
+func TestVerifyWaveformRowReportsMissingPair(t *testing.T) {
+	ctx := context.Background()
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	manifestPath, payloadPath, _ := waveformPairFixture(t, cacheDir, "assetA")
+	rows := []domain.DerivedArtifact{{ID: "w1", AssetID: "assetA", Type: "waveform", LocalPath: manifestPath}}
+	result, err := Verify(ctx, typedArtifactLister{rows: rows}, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MissingFiles != 0 {
+		t.Fatalf("an intact pair is not missing, got %d", result.MissingFiles)
+	}
+	if result.OrphanFiles != 0 {
+		t.Fatalf("the registered payload must not be an orphan, got %d orphans", result.OrphanFiles)
+	}
+
+	// The payload vanishes: one missing artifact, reported against the row.
+	if err := os.Remove(payloadPath); err != nil {
+		t.Fatal(err)
+	}
+	result, err = Verify(ctx, typedArtifactLister{rows: rows}, cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MissingFiles != 1 || len(result.MissingPaths) != 1 || result.MissingPaths[0] != manifestPath {
+		t.Fatalf("a missing payload is one missing pair, got %d/%v", result.MissingFiles, result.MissingPaths)
+	}
+	if result.OrphanFiles != 0 {
+		t.Fatalf("got %d orphans, want 0", result.OrphanFiles)
+	}
+}
+
+// TestInspectClassifiesManagedSubtreesAndWaveform pins the classification the
+// settings page and the CLI table read: managed search references, active
+// inference scratch, and registered waveform pairs are their own categories,
+// never orphans; a payload no manifest names is an orphan.
+func TestInspectClassifiesManagedSubtreesAndWaveform(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	_, payloadPath, _ := waveformPairFixture(t, cacheDir, "assetA")
+	writeFile(t, filepath.Join(cacheDir, "search-references", "abc.jpg"), 4)
+	writeFile(t, filepath.Join(cacheDir, "inference", "run1.bin"), 6)
+	lone := filepath.Join(cacheDir, "assetA", "waveform."+strings.Repeat("cd", 32)+".bin")
+	writeFile(t, lone, 3)
+
+	stats, err := Inspect(cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.SearchReferenceCount != 1 || stats.SearchReferenceBytes != 4 {
+		t.Fatalf("references = %d/%d, want 1/4", stats.SearchReferenceCount, stats.SearchReferenceBytes)
+	}
+	if stats.InferenceScratchCount != 1 || stats.InferenceScratchBytes != 6 {
+		t.Fatalf("inference scratch = %d/%d, want 1/6", stats.InferenceScratchCount, stats.InferenceScratchBytes)
+	}
+	if stats.WaveformCount != 2 {
+		t.Fatalf("waveform pair must count manifest and payload, got %d", stats.WaveformCount)
+	}
+	if stats.OrphanCount != 1 || stats.OrphanBytes != 3 {
+		t.Fatalf("only the unregistered payload is an orphan, got %d/%d", stats.OrphanCount, stats.OrphanBytes)
+	}
+	// The registered pair is rebuildable content, and its registration is
+	// what keeps the payload out of the orphan count.
+	if stats.RebuildableBytes < stats.WaveformBytes {
+		t.Fatalf("waveform bytes must be counted as rebuildable, %d < %d", stats.RebuildableBytes, stats.WaveformBytes)
+	}
+	if _, err := os.Stat(payloadPath); err != nil {
+		t.Fatalf("inspection must not delete anything: %v", err)
+	}
 }

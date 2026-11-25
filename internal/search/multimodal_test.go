@@ -65,9 +65,12 @@ func TestMultimodalRetrieverDeduplicatesShotsAndPreservesWindows(t *testing.T) {
 		},
 	}
 	retriever := NewModalityRetriever(store, ModalityVisual, "siglip-space", []float32{0.25, 0.75})
-	candidates, windows, err := retriever.RetrieveWithWindows(context.Background(), SearchQuery{}, 2)
+	candidates, windows, truncated, err := retriever.RetrieveWithWindows(context.Background(), SearchQuery{}, 3)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if truncated {
+		t.Fatal("a pool no larger than the limit must not report truncation")
 	}
 	if len(candidates) != 2 || candidates[0].ShotID != "shot-a" || candidates[1].ShotID != "shot-b" {
 		t.Fatalf("deduplicated candidates = %+v, want shot-a then shot-b", candidates)
@@ -81,7 +84,7 @@ func TestMultimodalRetrieverDeduplicatesShotsAndPreservesWindows(t *testing.T) {
 	if windows[0].RecordID != "frame-1" || windows[1].RecordID != "frame-2" || windows[2].RecordID != "frame-3" {
 		t.Fatalf("windows not deterministically ordered: %+v", windows)
 	}
-	if store.gotSpace != "siglip-space" || !reflect.DeepEqual(store.gotVector, []float32{0.25, 0.75}) || store.gotUniverse["shot-a"] != true || store.gotLimit != 2 {
+	if store.gotSpace != "siglip-space" || !reflect.DeepEqual(store.gotVector, []float32{0.25, 0.75}) || store.gotUniverse["shot-a"] != true || store.gotLimit != 4 {
 		t.Fatalf("visual store call args space=%q vector=%v universe=%v limit=%d", store.gotSpace, store.gotVector, store.gotUniverse, store.gotLimit)
 	}
 	if got := retriever.Name(); got != SignalVisual {
@@ -96,7 +99,7 @@ func TestMultimodalRetrieverSoundLabelsAndSpeakerFilter(t *testing.T) {
 		speakerTurns: []ModalityWindow{{AssetID: "asset", ShotID: "shot", RecordID: "turn-1", StartMS: 50, EndMS: 100, Score: 0.6}},
 	}
 	sound := NewModalityRetriever(store, ModalitySoundEvent, "", nil)
-	candidates, _, err := sound.RetrieveWithWindows(context.Background(), SearchQuery{Raw: "horn before rain"}, 10)
+	candidates, _, _, err := sound.RetrieveWithWindows(context.Background(), SearchQuery{Raw: "horn before rain"}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +108,7 @@ func TestMultimodalRetrieverSoundLabelsAndSpeakerFilter(t *testing.T) {
 	}
 	speakerFilter := SpeakerFilter{AssetID: "asset", DiarizationGenerationID: "generation", LocalSpeakerID: "speaker-1"}
 	speaker := &ModalityRetriever{Store: store, Modality: ModalitySpeaker, SpeakerFilter: speakerFilter}
-	candidates, _, err = speaker.RetrieveWithWindows(context.Background(), SearchQuery{}, 10)
+	candidates, _, _, err = speaker.RetrieveWithWindows(context.Background(), SearchQuery{}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,6 +126,82 @@ func TestMultimodalRetrieverRejectsUnconfiguredDenseChannels(t *testing.T) {
 				t.Fatal("dense modality retrieval accepted a missing space/vector")
 			}
 		})
+	}
+}
+
+func TestMultimodalRetrieverReportsTruncatedStoragePool(t *testing.T) {
+	store := &testModalityStore{
+		universe: map[string]bool{"shot-a": true},
+		visual: []ModalityWindow{
+			{AssetID: "asset-a", ShotID: "shot-a", RecordID: "frame-1", StartMS: 0, EndMS: 100, Score: 0.9},
+			{AssetID: "asset-a", ShotID: "shot-a", RecordID: "frame-2", StartMS: 100, EndMS: 200, Score: 0.8},
+			{AssetID: "asset-a", ShotID: "shot-a", RecordID: "frame-3", StartMS: 200, EndMS: 300, Score: 0.7},
+		},
+	}
+	retriever := NewModalityRetriever(store, ModalityVisual, "space", []float32{1})
+	candidates, windows, truncated, err := retriever.RetrieveWithWindows(context.Background(), SearchQuery{}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The store returned the probe row (3 rows for limit 2): the pool was
+	// cut even though one shot occupies every row. The probe row is
+	// discarded and the candidate count alone never decides coverage.
+	if !truncated {
+		t.Fatal("a full probe row must report storage truncation")
+	}
+	if len(candidates) != 1 || len(windows) != 2 {
+		t.Fatalf("candidates=%d windows=%d, want the probe row discarded", len(candidates), len(windows))
+	}
+	if windows[0].RecordID != "frame-1" || windows[1].RecordID != "frame-2" {
+		t.Fatalf("probe row not the discarded tail: %+v", windows)
+	}
+	store2 := &testModalityStore{visual: windows[:2]}
+	store2.universe = map[string]bool{"shot-a": true}
+	retriever2 := NewModalityRetriever(store2, ModalityVisual, "space", []float32{1})
+	if _, _, truncated, err = retriever2.RetrieveWithWindows(context.Background(), SearchQuery{}, 2); err != nil {
+		t.Fatal(err)
+	}
+	if truncated {
+		t.Fatal("a pool at exactly the limit must not report truncation")
+	}
+	if _, _, truncated, err = retriever2.RetrieveWithWindows(context.Background(), SearchQuery{}, -1); err != nil {
+		t.Fatal(err)
+	}
+	if truncated {
+		t.Fatal("unlimited retrieval never truncates")
+	}
+}
+
+func TestMultimodalRetrieverCandidatesUseCanonicalShotBounds(t *testing.T) {
+	store := &testModalityStore{
+		universe: map[string]bool{"shot-1": true, "shot-2": true},
+		soundEvents: []ModalityWindow{
+			// One 5–15 s rain event spans two canonical shots; each pair row
+			// keeps the event's own interval as evidence while the shot
+			// bounds name the claimed shot.
+			{AssetID: "asset", ShotID: "shot-1", RecordID: "event-rain", Modality: ModalitySoundEvent, StartMS: 5000, EndMS: 15000, ShotStartMS: 0, ShotEndMS: 10000, Score: 0.9},
+			{AssetID: "asset", ShotID: "shot-2", RecordID: "event-rain", Modality: ModalitySoundEvent, StartMS: 5000, EndMS: 15000, ShotStartMS: 10000, ShotEndMS: 20000, Score: 0.9},
+		},
+	}
+	retriever := NewModalityRetriever(store, ModalitySoundEvent, "", nil)
+	candidates, windows, _, err := retriever.RetrieveWithWindows(context.Background(), SearchQuery{Raw: "rain"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("candidates=%d, want one per overlapping shot", len(candidates))
+	}
+	for i, candidate := range candidates {
+		want := []struct{ start, end int64 }{{0, 10000}, {10000, 20000}}[i]
+		if candidate.StartMS != want.start || candidate.EndMS != want.end {
+			t.Fatalf("candidate %d bounds=%d-%d, want canonical shot bounds %d-%d", i, candidate.StartMS, candidate.EndMS, want.start, want.end)
+		}
+		if candidate.Signals[SignalSoundEvent] != 0.9 {
+			t.Fatalf("candidate %d lost its window score: %+v", i, candidate)
+		}
+	}
+	if len(windows) != 2 || windows[0].StartMS != 5000 || windows[0].EndMS != 15000 {
+		t.Fatalf("windows must keep the original event interval: %+v", windows)
 	}
 }
 

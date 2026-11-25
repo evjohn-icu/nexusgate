@@ -70,7 +70,7 @@ func (a *ASR) Transcribe(ctx context.Context, req common.TranscribeRequest) (dom
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return domain.Transcript{}, common.ReadErrorWithSecret(resp, a.Endpoint.APIKey)
+		return domain.Transcript{}, a.Endpoint.ReadError(resp)
 	}
 	raw, err := common.ReadBody(resp.Body)
 	if err != nil {

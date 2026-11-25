@@ -3,10 +3,12 @@ package app
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/evjohn-icu/nexusgate/internal/domain"
 	"github.com/evjohn-icu/nexusgate/internal/inferencecatalog"
+	"github.com/evjohn-icu/nexusgate/internal/remote"
 )
 
 // ModelManager executes one queued install/probe unit for a catalog entry.
@@ -16,6 +18,13 @@ type ModelManager interface {
 	Install(ctx context.Context, task domain.ModelManagementTask) error
 	Probe(ctx context.Context, task domain.ModelManagementTask) error
 }
+
+// localModelTarget is the stable maintenance target for this Hub's own device.
+// It is deliberately independent of the pipeline lease owner: a queued local
+// install must survive a process restart, and the owner the pipeline leases
+// under is minted fresh every start. The repository and the pipeline lease
+// path both use this value.
+const localModelTarget = "local"
 
 // WithModelManager attaches the installer/prober. A Hub without one still
 // queues maintenance jobs for Workers that have the runtime; it refuses to
@@ -28,7 +37,9 @@ func (p *Pipeline) WithModelManager(manager ModelManager) *Pipeline {
 // executeModelManagement dispatches one maintenance job. The job's terminal
 // transition is owned here, not by the generic completion path, because a
 // probe may succeed while deliberately reporting an unavailable model: the
-// probe succeeded at its job of finding out.
+// probe succeeded at its job of finding out. The attestation is written by the
+// repository's CompleteModelManagement from the task row it queued -- never
+// from a Worker claim and never from the manager's in-memory state.
 func (p *Pipeline) executeModelManagement(ctx context.Context, j domain.Job, owner string) error {
 	if p.modelManager == nil {
 		return domain.Permanent(fmt.Errorf("model management is not configured on this Hub"))
@@ -60,12 +71,7 @@ func (p *Pipeline) executeModelManagement(ctx context.Context, j domain.Job, own
 	if err != nil {
 		return err
 	}
-	// An attestation is the Hub's record that a locked profile was verified on
-	// this Worker. Routing reads it; the Worker's own claim is never enough.
-	if err := repo.RecordModelAttestation(ctx, unit.TargetWorkerID, unit.CatalogID, unit.ManifestDigest, unit.Action, "{}"); err != nil {
-		return err
-	}
-	if err := p.repo.CompleteJob(ctx, j.ID, owner, domain.JobSucceeded, ""); err != nil {
+	if err := repo.CompleteModelManagement(ctx, j.ID, owner); err != nil {
 		return err
 	}
 	return ErrJobCommittedEarly
@@ -76,7 +82,11 @@ func (p *Pipeline) executeModelManagement(ctx context.Context, j domain.Job, own
 // implement the installer.
 type ModelManagementRepository interface {
 	GetModelManagementTask(ctx context.Context, jobID string) (domain.ModelManagementTask, error)
-	RecordModelAttestation(ctx context.Context, workerID, catalogID, manifestDigest, action, detailJSON string) error
+	// CompleteModelManagement validates the executing lease and writes the
+	// success state and attestation atomically. owner is the current lease
+	// owner: the Hub process's own local- identity for local targets, or the
+	// executing Worker for Worker targets.
+	CompleteModelManagement(ctx context.Context, jobID, owner string) error
 }
 
 // modelManagementRepository is the optional persistence behind install/probe
@@ -84,6 +94,7 @@ type ModelManagementRepository interface {
 type modelManagementRepository interface {
 	CreateModelManagementTask(ctx context.Context, task domain.ModelManagementTask, priority int) (string, error)
 	GetModelManagementTask(ctx context.Context, jobID string) (domain.ModelManagementTask, error)
+	GetWorker(ctx context.Context, workerID string) (remote.Worker, error)
 }
 
 // ModelManifestDigest is the identity of one catalog entry as the installer
@@ -95,6 +106,8 @@ func ModelManifestDigest(entry inferencecatalog.Model) string {
 }
 
 // QueueModelManagement validates and enqueues one install or probe unit.
+// workerID names the target device: a registered Worker granted the action,
+// or empty/the stable local target for this Hub's own runtime.
 func (s *Service) QueueModelManagement(ctx context.Context, action, catalogID, workerID, manifestDigest string, licenseAccepted bool) (string, error) {
 	if action != "install" && action != "probe" {
 		return "", fmt.Errorf("unknown model management action %q", action)
@@ -114,14 +127,24 @@ func (s *Service) QueueModelManagement(ctx context.Context, action, catalogID, w
 	if action == "install" && !licenseAccepted {
 		return "", fmt.Errorf("install requires explicit licence acceptance")
 	}
-	if strings.TrimSpace(workerID) == "" {
-		// Hub-local maintenance is leased under this process's pipeline owner,
-		// so the row must target the same identity; a generic "local" sentinel
-		// would never match LeaseNextModelManagement.
-		workerID = s.leaseOwner
-		if strings.TrimSpace(workerID) == "" {
-			workerID = "local"
+	workerID = strings.TrimSpace(workerID)
+	if workerID != "" && workerID != localModelTarget {
+		// An explicit Worker target is authorized at queue time: unknown,
+		// revoked or action-ineligible targets are rejected before anything is
+		// queued, so a task can never wait forever on a device that may
+		// legitimately never execute it.
+		worker, err := repo.GetWorker(ctx, workerID)
+		if err != nil {
+			return "", err
 		}
+		if worker.Status == remote.WorkerRevoked {
+			return "", fmt.Errorf("worker %q is revoked", workerID)
+		}
+		if !slices.Contains(worker.Capabilities.ModelManagementOperations, action) {
+			return "", fmt.Errorf("worker %q is not authorized for model management action %q", workerID, action)
+		}
+	} else {
+		workerID = localModelTarget
 	}
 	task := domain.ModelManagementTask{
 		TargetWorkerID:  workerID,

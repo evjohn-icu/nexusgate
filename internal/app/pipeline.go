@@ -100,6 +100,7 @@ type PipelineRepository interface {
 type Pipeline struct {
 	repo          PipelineRepository
 	cacheDir      string
+	cacheLockDir  string
 	asr           providers.ASR
 	asrFallback   providers.ASR
 	videoProvider videoproviders.VideoUnderstandingProvider
@@ -191,7 +192,7 @@ func NewPipeline(repo PipelineRepository, cacheDir string, asr providers.ASR, as
 	if deferral < minProviderRouteDeferral {
 		deferral = minProviderRouteDeferral
 	}
-	return &Pipeline{repo: repo, cacheDir: cacheDir, asr: asr, asrFallback: asrFallback, videoProvider: videoProvider, alignment: alignment, shotDetector: shotDetector, hardware: hardware, sourceStager: sourceStager, routeDeferral: deferral, minFreeBytes: minFreeBytes}
+	return &Pipeline{repo: repo, cacheDir: cacheDir, cacheLockDir: filepath.Dir(cacheDir), asr: asr, asrFallback: asrFallback, videoProvider: videoProvider, alignment: alignment, shotDetector: shotDetector, hardware: hardware, sourceStager: sourceStager, routeDeferral: deferral, minFreeBytes: minFreeBytes}
 }
 
 // SetLeaseOwner pins the identity this pipeline uses for every lease it mints
@@ -200,6 +201,13 @@ func NewPipeline(repo PipelineRepository, cacheDir string, asr providers.ASR, as
 // startup sweep cannot tell this process's own jobs from a dead predecessor's.
 func (p *Pipeline) SetLeaseOwner(owner string) {
 	p.leaseOwner = owner
+}
+
+// SetCacheLockDir binds pipeline readers to the service's cache maintenance lock.
+func (p *Pipeline) SetCacheLockDir(dataDir string) {
+	if dataDir != "" {
+		p.cacheLockDir = dataDir
+	}
 }
 
 // SetAfterShotsCommitted attaches the post-commit hook (see onShotsCommitted).
@@ -953,8 +961,9 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		if err := p.diskSpaceErr(diskFloor); err != nil {
 			return err
 		}
+		deriveInputHash := canonicalDeriveInputHash(j.InputHash, loc.QuickFingerprint, loc.FileSize, loc.ProbeModifiedNS)
 		base := filepath.Join(p.cacheDir, j.AssetID)
-		cacheLock, lockErr := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+		cacheLock, lockErr := cachecoord.AcquireShared(p.cacheLockDir)
 		if lockErr != nil {
 			return fmt.Errorf("acquire cache reader lock: %w", lockErr)
 		}
@@ -1025,16 +1034,8 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		if err := saveArtifact(p.repo, ctx, j.AssetID, "proxy", "proxy-720-"+proxyPlan.Profile(), proxy, j.ID, worker); err != nil {
 			return err
 		}
-		// Visual indexing is not audio-driven. A silent asset never enters the
-		// HasAudio branch below, so firing the hook only there left silent
-		// imports without detect_shots until an operator happened to save
-		// multimodal settings and trigger the backfill. Audio assets still fire
-		// the hook after the audio artifact is saved, where planning can see
-		// audioExists; calling it earlier would only duplicate the visual plan.
-		if m == nil || !m.HasAudio {
-			p.afterDeriveCompleted(ctx, j.AssetID, j.InputHash)
-		}
-		if m != nil && m.HasAudio {
+		hasAudio := m != nil && m.HasAudio
+		if hasAudio {
 			audio := filepath.Join(base, "audio.m4a")
 			if _, err := os.Stat(audio); os.IsNotExist(err) {
 				if err := media.ExtractAudio(ctx, sourcePath, audio, readRate); err != nil {
@@ -1044,39 +1045,11 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 			if err := saveArtifact(p.repo, ctx, j.AssetID, "audio", "audio-16k-v1", audio, j.ID, worker); err != nil {
 				return err
 			}
-			// The waveform is a presentational derivative, so a failure to build
-			// it must not fail the derive job: the audio exists and the chain
-			// can continue without a picture of it.
-			waveBase := filepath.Join(base, "waveform")
-			if _, statErr := os.Stat(waveBase + ".json"); os.IsNotExist(statErr) {
-				if _, waveErr := media.GenerateWaveformPyramid(ctx, audio, waveBase, media.DefaultWaveformConfig()); waveErr != nil {
-					slog.Warn("waveform generation failed", "asset", j.AssetID, "error", waveErr)
-				} else if saveErr := saveArtifact(p.repo, ctx, j.AssetID, "waveform", "waveform-v1", waveBase+".json", j.ID, worker); saveErr != nil {
-					slog.Warn("waveform artifact not recorded", "asset", j.AssetID, "error", saveErr)
-				}
+			if err := p.ensureWaveform(ctx, j, worker, audio, filepath.Join(base, "waveform")); err != nil {
+				slog.Warn("waveform artifact unavailable", "asset", j.AssetID, "error", err)
 			}
-			// Audio-driven modalities are queued only after the audio artifact
-			// row exists: the enqueue path checks artifacts, so firing this
-			// before the save would depend on a race with the worker that
-			// leases the new job. The order is the contract; the speech gate's
-			// verdict is irrelevant to environmental sound and diarization.
-			p.afterDeriveCompleted(ctx, j.AssetID, j.InputHash)
-			// A re-derive job (enqueued by `cache gc --rebuildable`) re-creates
-			// the files for an asset whose analysis already committed. The paid
-			// chain must not re-run: the canonical shots are already there, and
-			// re-billing them for a cache clean-up is exactly the double spend
-			// the model-run dedup exists to prevent. The check is the committed
-			// analysis, the same canonical evidence reanalysis switches; the
-			// artifacts above were re-saved either way, so the rows never dangle.
-			committed, err := p.repo.HasCommittedAnalysis(ctx, j.AssetID)
-			if err != nil {
-				return err
-			}
-			if committed {
-				return nil
-			}
-			return p.repo.EnqueueJob(ctx, j.AssetID, domain.JobSpeechGate, hashStrings(j.InputHash, "speech-v1"), 80)
 		}
+		p.afterDeriveCompleted(ctx, j.AssetID, deriveInputHash)
 		committed, err := p.repo.HasCommittedAnalysis(ctx, j.AssetID)
 		if err != nil {
 			return err
@@ -1084,7 +1057,10 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		if committed {
 			return nil
 		}
-		return p.repo.EnqueueJob(ctx, j.AssetID, domain.JobAnalyze, hashStrings(j.InputHash, "analyze-v1"), 30)
+		if hasAudio {
+			return p.repo.EnqueueJob(ctx, j.AssetID, domain.JobSpeechGate, hashStrings(deriveInputHash, "speech-v1"), 80)
+		}
+		return p.repo.EnqueueJob(ctx, j.AssetID, domain.JobAnalyze, hashStrings(deriveInputHash, "analyze-v1"), 30)
 	case domain.JobSpeechGate:
 		a, err := p.repo.GetArtifact(ctx, j.AssetID, "audio")
 		if err != nil {
@@ -1106,16 +1082,19 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		if metadata == nil || metadata.DurationMS <= 0 {
 			return domain.Permanent(fmt.Errorf("media duration missing for speech gate"))
 		}
-		cacheLock, lockErr := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
-		if lockErr != nil {
-			return fmt.Errorf("acquire cache reader lock: %w", lockErr)
-		}
-		c, err := media.SpeechGate(ctx, a.LocalPath, metadata.DurationMS)
-		_ = cacheLock.Release()
+		c, err := func() (domain.SpeechClassification, error) {
+			cacheLock, err := cachecoord.AcquireShared(p.cacheLockDir)
+			if err != nil {
+				return domain.SpeechClassification{}, fmt.Errorf("acquire cache reader lock: %w", err)
+			}
+			defer cacheLock.Release()
+			c, err := media.SpeechGate(ctx, a.LocalPath, metadata.DurationMS)
+			if err != nil {
+				return domain.SpeechClassification{}, err
+			}
+			return c, p.repo.SaveSpeechClassification(ctx, j.AssetID, c, j.ID, worker)
+		}()
 		if err != nil {
-			return err
-		}
-		if err := p.repo.SaveSpeechClassification(ctx, j.AssetID, c, j.ID, worker); err != nil {
 			return err
 		}
 		if c.SpeechProbability >= 0.5 && p.asr != nil {
@@ -1133,24 +1112,23 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		if a == nil {
 			return domain.Permanent(fmt.Errorf("audio artifact missing"))
 		}
-		cacheLock, lockErr := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
-		if lockErr != nil {
-			return fmt.Errorf("acquire cache reader lock: %w", lockErr)
-		}
-		t, err := p.asr.Transcribe(ctx, providers.TranscribeRequest{AudioPath: a.LocalPath, Language: "zh"})
 		providerUsed := p.asr
-		if err != nil && p.asrFallback != nil {
-			t, err = p.asrFallback.Transcribe(ctx, providers.TranscribeRequest{AudioPath: a.LocalPath, Language: "zh"})
-			providerUsed = p.asrFallback
-		}
-		if err != nil {
-			_ = cacheLock.Release()
-			return err
-		}
-		if err := cacheLock.Release(); err != nil {
-			return err
-		}
-		if err := p.repo.SaveTranscript(ctx, j.AssetID, providerUsed.Name(), providerUsed.Model(), j.InputHash, t, j.ID, worker); err != nil {
+		if err := func() error {
+			cacheLock, err := cachecoord.AcquireShared(p.cacheLockDir)
+			if err != nil {
+				return fmt.Errorf("acquire cache reader lock: %w", err)
+			}
+			defer cacheLock.Release()
+			t, err := p.asr.Transcribe(ctx, providers.TranscribeRequest{AudioPath: a.LocalPath, Language: "zh"})
+			if err != nil && p.asrFallback != nil {
+				providerUsed = p.asrFallback
+				t, err = providerUsed.Transcribe(ctx, providers.TranscribeRequest{AudioPath: a.LocalPath, Language: "zh"})
+			}
+			if err != nil {
+				return err
+			}
+			return p.repo.SaveTranscript(ctx, j.AssetID, providerUsed.Name(), providerUsed.Model(), j.InputHash, t, j.ID, worker)
+		}(); err != nil {
 			return err
 		}
 		// The transcript is canonical; record the ASR estimate against the
@@ -1184,26 +1162,26 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 		if a == nil {
 			return domain.Permanent(fmt.Errorf("audio artifact missing"))
 		}
-		cacheLock, lockErr := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
-		if lockErr != nil {
-			return fmt.Errorf("acquire cache reader lock: %w", lockErr)
-		}
-		t, err := p.repo.GetTranscript(ctx, j.AssetID)
-		if err != nil {
-			_ = cacheLock.Release()
-			return err
-		}
-		if t == nil || t.Text == "" {
-			_ = cacheLock.Release()
-			return domain.Permanent(fmt.Errorf("transcript missing"))
-		}
-		result, err := p.alignment.Align(ctx, providers.AlignRequest{AudioPath: a.LocalPath, Transcript: *t, Language: t.Language})
-		_ = cacheLock.Release()
-		if err != nil {
-			return err
-		}
-		req, _ := json.Marshal(map[string]any{"audio_path": a.LocalPath, "text": t.Text, "language": t.Language})
-		if err := p.repo.SaveAlignment(ctx, j.AssetID, p.alignment.Name(), p.alignment.Model(), j.InputHash, string(req), result, j.ID, worker); err != nil {
+		if err := func() error {
+			cacheLock, err := cachecoord.AcquireShared(p.cacheLockDir)
+			if err != nil {
+				return fmt.Errorf("acquire cache reader lock: %w", err)
+			}
+			defer cacheLock.Release()
+			t, err := p.repo.GetTranscript(ctx, j.AssetID)
+			if err != nil {
+				return err
+			}
+			if t == nil || t.Text == "" {
+				return domain.Permanent(fmt.Errorf("transcript missing"))
+			}
+			result, err := p.alignment.Align(ctx, providers.AlignRequest{AudioPath: a.LocalPath, Transcript: *t, Language: t.Language})
+			if err != nil {
+				return err
+			}
+			req, _ := json.Marshal(map[string]any{"audio_path": a.LocalPath, "text": t.Text, "language": t.Language})
+			return p.repo.SaveAlignment(ctx, j.AssetID, p.alignment.Name(), p.alignment.Model(), j.InputHash, string(req), result, j.ID, worker)
+		}(); err != nil {
 			return err
 		}
 		return p.repo.EnqueueJob(ctx, j.AssetID, domain.JobAnalyze, hashStrings(j.InputHash, "analyze-v1"), 30)
@@ -1247,6 +1225,28 @@ func (p *Pipeline) execute(ctx context.Context, j domain.Job, worker string, thr
 	default:
 		return domain.Permanent(fmt.Errorf("unsupported job type %s", j.Type))
 	}
+}
+
+func canonicalDeriveInputHash(inputHash, fingerprint string, size, modifiedNS int64) string {
+	if !strings.HasPrefix(inputHash, "cache-rederive:") {
+		return inputHash
+	}
+	return hashStrings(ingest.StableAssetKey(fingerprint, size, modifiedNS), "derive-v1")
+}
+
+func (p *Pipeline) ensureWaveform(ctx context.Context, job domain.Job, owner, audio, base string) error {
+	lock, err := cachecoord.AcquireWaveform(p.cacheLockDir, job.AssetID, true)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	manifestPath := base + ".json"
+	if _, err := media.VerifyWaveformPair(manifestPath); err != nil {
+		if _, err := media.GenerateWaveformPyramid(ctx, audio, base, media.DefaultWaveformConfig()); err != nil {
+			return err
+		}
+	}
+	return saveArtifact(p.repo, ctx, job.AssetID, "waveform", "waveform-v1", manifestPath, job.ID, owner)
 }
 
 func (p *Pipeline) enqueueAnalysisIndex(ctx context.Context, j domain.Job) error {
@@ -1376,7 +1376,7 @@ func hashStrings(v ...string) string {
 // keep compiling.
 type localDeviceLeaseRepository interface {
 	LeaseNextLocalInference(ctx context.Context, worker string, lease time.Duration, caps []remote.InferenceCapability, maxAssetBytes int64, now time.Time) (*remote.WorkerJob, error)
-	LeaseNextModelManagement(ctx context.Context, worker string, lease time.Duration, now time.Time) (*remote.WorkerJob, error)
+	LeaseNextModelManagement(ctx context.Context, targetID, leaseOwner string, operations []string, lease time.Duration, now time.Time) (*remote.WorkerJob, error)
 }
 
 // leaseLocalDeviceJob returns one inference or maintenance job this Hub can
@@ -1413,7 +1413,7 @@ func (p *Pipeline) leaseLocalDeviceJob(ctx context.Context, worker string, maxAs
 		}
 	}
 	if p.modelManager != nil {
-		leased, err := repo.LeaseNextModelManagement(ctx, worker, InferenceLease, now)
+		leased, err := repo.LeaseNextModelManagement(ctx, localModelTarget, worker, []string{"install", "probe"}, InferenceLease, now)
 		if err != nil || leased != nil {
 			if leased == nil {
 				return nil, err

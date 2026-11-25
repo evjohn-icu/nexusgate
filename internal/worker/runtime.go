@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/evjohn-icu/nexusgate/internal/buildinfo"
@@ -31,6 +32,11 @@ type Runtime struct {
 	config   Config
 	deriver  Deriver
 	executor InferenceExecutor
+	// modelManager is attached by WithModelManager (runtime_models.go): the
+	// narrow Install/Probe wrapper around the shared catalog installer. It is
+	// declared here so WithModelManager only sets it and the runtime guards
+	// accept a maintenance-only Worker that has neither deriver nor executor.
+	modelManager ModelManager
 	// inferenceRenew is the progress/renewal cadence during a model run; zero
 	// means inferenceRenewDefault.
 	inferenceRenew time.Duration
@@ -77,14 +83,38 @@ func MergeDetectedCapabilities(declared remote.WorkerCapabilities, report media.
 	return merged
 }
 
+// heartbeatCapabilities returns the capabilities one heartbeat should send.
+// The executor's live model inventory is refreshed into a copy of the
+// declared capabilities before every heartbeat (first and subsequent), so a
+// heartbeat advertises only what the runtime can serve right now: an executor
+// or probe failure publishes no available models instead of yesterday's
+// list, and a completed model install or probe is reflected by the next
+// heartbeat without any extra bookkeeping. Declared fields an executor knows
+// nothing about — provider operations, library roots, the enrollment grant
+// lists — pass through untouched; the Hub still intersects the announcement
+// with the stored grants.
+func (r *Runtime) heartbeatCapabilities(ctx context.Context) remote.WorkerCapabilities {
+	caps := r.capabilities
+	caps.Inference = nil
+	if r.executor == nil {
+		return caps
+	}
+	inventory, err := r.executor.Capabilities(ctx)
+	if err != nil {
+		return caps
+	}
+	caps.Inference = inventory
+	return caps
+}
+
 // RunOnce sends a liveness signal, leases at most one job, and processes that
 // job. It is intentionally small so the long-running loop and integration
 // tests share exactly the same lease/derive/upload/complete behavior.
 func (r *Runtime) RunOnce(ctx context.Context) (bool, error) {
-	if r == nil || r.client == nil || (r.deriver == nil && r.executor == nil) {
+	if r == nil || r.client == nil || (r.deriver == nil && r.executor == nil && r.modelManager == nil) {
 		return false, fmt.Errorf("worker runtime is not configured")
 	}
-	if err := r.client.Heartbeat(ctx, r.config.Token, buildinfo.VersionString(), r.capabilities); err != nil {
+	if err := r.client.Heartbeat(ctx, r.config.Token, buildinfo.VersionString(), r.heartbeatCapabilities(ctx)); err != nil {
 		return false, err
 	}
 	job, err := r.client.Lease(ctx, r.config.Token)
@@ -132,20 +162,23 @@ func (o RunOptions) withDefaults() RunOptions {
 // separate cadence and keeps leasing after the first heartbeat. A transient
 // Hub error is returned to the service manager, which can restart the Worker.
 func (r *Runtime) Run(ctx context.Context, options RunOptions) error {
-	if r == nil || r.client == nil || (r.deriver == nil && r.executor == nil) {
+	if r == nil || r.client == nil || (r.deriver == nil && r.executor == nil && r.modelManager == nil) {
 		return fmt.Errorf("worker runtime is not configured")
 	}
 	options = options.withDefaults()
 	lastHeartbeat := time.Time{}
 	for {
 		if lastHeartbeat.IsZero() || time.Since(lastHeartbeat) >= options.HeartbeatInterval {
-			// Capabilities are re-detected once, at Run's caller (worker run
-			// startup in cmd/nexusgate/main.go), not on this cadence. A device
-			// becoming available requires a container recreate, which restarts
-			// the process anyway, so nothing here would ever observe a change;
-			// re-probing on every 30s heartbeat would only tax the GPU with a
-			// throwaway encode for no new information.
-			if err := r.client.Heartbeat(ctx, r.config.Token, buildinfo.VersionString(), r.capabilities); err != nil {
+			// Hardware is re-detected once, at Run's caller (worker run
+			// startup in cmd/nexusgate/main.go), not on this cadence: a device
+			// becoming available requires a container recreate, which
+			// restarts the process anyway, so nothing here would ever observe
+			// a change. The inference inventory is different: which models
+			// are installed and loadable changes underneath a long-lived
+			// process (model install/probe maintenance jobs), so every
+			// heartbeat refreshes it from the executor. A probe failure
+			// publishes no available models rather than the previous list.
+			if err := r.client.Heartbeat(ctx, r.config.Token, buildinfo.VersionString(), r.heartbeatCapabilities(ctx)); err != nil {
 				return err
 			}
 			lastHeartbeat = time.Now()
@@ -157,6 +190,9 @@ func (r *Runtime) Run(ctx context.Context, options RunOptions) error {
 		if job != nil {
 			if err := r.processAndComplete(ctx, *job); err != nil {
 				return err
+			}
+			if job.JobType == domain.JobModelInstall || job.JobType == domain.JobModelProbe {
+				lastHeartbeat = time.Time{}
 			}
 			continue
 		}
@@ -189,7 +225,13 @@ func (r *Runtime) processAndComplete(ctx context.Context, job remote.WorkerJob) 
 	return r.client.Complete(ctx, r.config.Token, job.JobID, domain.JobSucceeded, "")
 }
 
-func (r *Runtime) process(ctx context.Context, job remote.WorkerJob) error {
+func (r *Runtime) process(ctx context.Context, job remote.WorkerJob) (err error) {
+	if job.JobType == domain.JobModelInstall || job.JobType == domain.JobModelProbe {
+		// Maintenance execution and its lease renewal live in
+		// runtime_models.go; the ordinary complete endpoint records the
+		// outcome after this returns, exactly as it does for derive.
+		return r.runModelManagement(ctx, job)
+	}
 	if job.JobType == domain.JobInference {
 		return r.processInference(ctx, job)
 	}
@@ -199,7 +241,48 @@ func (r *Runtime) process(ctx context.Context, job remote.WorkerJob) error {
 	if r.deriver == nil {
 		return fmt.Errorf("worker has no derive runtime")
 	}
-	r.reportProgress(ctx, job.JobID, "staging", 5, "started", "准备原始素材")
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	var progressMu sync.Mutex
+	stage, progress := "staging", 5.0
+	update := func(nextStage string, nextProgress float64, event, message string) {
+		progressMu.Lock()
+		defer progressMu.Unlock()
+		stage, progress = nextStage, nextProgress
+		_ = r.reportProgress(ctx, job.JobID, stage, progress, event, message)
+	}
+	update("staging", 5, "started", "准备原始素材")
+	if _, ok := r.client.(progressReporter); ok {
+		stop, joined := make(chan struct{}), make(chan struct{})
+		go func() {
+			defer close(joined)
+			ticker := time.NewTicker(r.renewInterval())
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-stop:
+					return
+				case <-ticker.C:
+					progressMu.Lock()
+					renewErr := r.reportProgress(ctx, job.JobID, stage, progress, "progress", "派生任务运行中")
+					progressMu.Unlock()
+					if renewErr != nil {
+						cancel(fmt.Errorf("renew derive lease: %w", renewErr))
+						return
+					}
+				}
+			}
+		}()
+		defer func() {
+			close(stop)
+			<-joined
+			if cause := context.Cause(ctx); cause != nil {
+				err = cause
+			}
+		}()
+	}
 	source, err := r.config.ResolveSourcePath(job.RootID, job.RelativePath)
 	if err != nil {
 		return err
@@ -214,7 +297,7 @@ func (r *Runtime) process(ctx context.Context, job remote.WorkerJob) error {
 	if err != nil {
 		return err
 	}
-	r.reportProgress(ctx, job.JobID, "derive", 25, "progress", "正在生成预览素材")
+	update("derive", 25, "progress", "正在生成预览素材")
 	outputDir := filepath.Join(cacheDir, "artifacts", safeID(job.AssetID))
 	if err := os.MkdirAll(outputDir, 0o700); err != nil {
 		return err
@@ -230,21 +313,17 @@ func (r *Runtime) process(ctx context.Context, job remote.WorkerJob) error {
 		if err := r.client.UploadArtifact(ctx, r.config.Token, job.JobID, artifact); err != nil {
 			return err
 		}
-		progress := 30 + float64(index+1)*60/float64(len(artifacts))
-		r.reportProgress(ctx, job.JobID, "upload", progress, "progress", "派生产物已上传")
+		update("upload", 30+float64(index+1)*60/float64(len(artifacts)), "progress", "派生产物已上传")
 	}
-	return nil
+	return ctx.Err()
 }
 
-func (r *Runtime) reportProgress(ctx context.Context, jobID, stage string, progress float64, event, message string) {
+func (r *Runtime) reportProgress(ctx context.Context, jobID, stage string, progress float64, event, message string) error {
 	reporter, ok := r.client.(progressReporter)
 	if !ok {
-		return
+		return nil
 	}
-	// Progress is informational. The final upload/complete mutations retain
-	// the strict failure semantics; a transient status update cannot discard a
-	// correctly produced derived artifact.
-	_ = reporter.Progress(ctx, r.config.Token, jobID, stage, progress, event, message)
+	return reporter.Progress(ctx, r.config.Token, jobID, stage, progress, event, message)
 }
 
 func safeID(value string) string {

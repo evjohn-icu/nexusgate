@@ -150,7 +150,7 @@ func (p *Provider) Analyze(ctx context.Context, input videoanalysis.Input) (vide
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return videoanalysis.Result{}, "", common.ReadErrorWithSecret(resp, p.Endpoint.APIKey)
+		return videoanalysis.Result{}, "", p.Endpoint.ReadError(resp)
 	}
 	raw, err := common.ReadBody(resp.Body)
 	if err != nil {

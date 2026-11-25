@@ -83,6 +83,19 @@ func TestWorkerArtifactUploadPersistsOnHubAndRejectsNonOwner(t *testing.T) {
 	}
 	handler := NewServer("", service).Handler()
 
+	artifactDir := filepath.Join(service.DataDir(), "derived", "worker", assetID)
+	if err := os.MkdirAll(artifactDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	orphan := filepath.Join(artifactDir, "thumbnail-thumb-v1.jpg")
+	if err := os.WriteFile(orphan, []byte("jpeg"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	beforeAdoption, err := os.Stat(orphan)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	first := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPut, "/api/v1/worker/jobs/"+job.JobID+"/artifacts/thumbnail?profile=thumb-v1", bytes.NewReader([]byte("jpeg")))
 	request.Header.Set("Authorization", "Bearer "+workerToken)
@@ -119,6 +132,9 @@ func TestWorkerArtifactUploadPersistsOnHubAndRejectsNonOwner(t *testing.T) {
 	if err != nil || existingArtifact == nil {
 		t.Fatalf("stored thumbnail=%+v err=%v", existingArtifact, err)
 	}
+	if adopted, err := os.Stat(existingArtifact.LocalPath); err != nil || !os.SameFile(beforeAdoption, adopted) {
+		t.Fatalf("identical thumbnail orphan was replaced: %v", err)
+	}
 	if err := os.Remove(existingArtifact.LocalPath); err != nil {
 		t.Fatal(err)
 	}
@@ -131,6 +147,10 @@ func TestWorkerArtifactUploadPersistsOnHubAndRejectsNonOwner(t *testing.T) {
 		t.Fatalf("repair upload status=%d body=%s", repair.Code, repair.Body.String())
 	}
 
+	makeOrphan := filepath.Join(artifactDir, "proxy-proxy-v1.mp4")
+	if err := os.WriteFile(makeOrphan, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	var multipartBody bytes.Buffer
 	multipartWriter := multipart.NewWriter(&multipartBody)
 	if err := multipartWriter.WriteField("type", "proxy"); err != nil {
@@ -156,6 +176,14 @@ func TestWorkerArtifactUploadPersistsOnHubAndRejectsNonOwner(t *testing.T) {
 	handler.ServeHTTP(multipartUpload, multipartRequest)
 	if multipartUpload.Code != http.StatusCreated {
 		t.Fatalf("multipart upload status=%d body=%s", multipartUpload.Code, multipartUpload.Body.String())
+	}
+	content, err := os.ReadFile(makeOrphan)
+	if err != nil || string(content) != "mp4" {
+		t.Fatalf("proxy orphan contains %q after replacement, err=%v", content, err)
+	}
+	var count int
+	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM derived_artifacts WHERE asset_id=?`, assetID).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("artifact rows=%d err=%v", count, err)
 	}
 
 	unauthorized := httptest.NewRecorder()

@@ -105,16 +105,29 @@ type AssetReport struct {
 // RunReport is everything the score step needs about a run, plus the raw
 // timing the operator wants to see next to the retrieval metrics.
 type RunReport struct {
-	Label     string        `json:"label"`
-	Provider  string        `json:"provider"`
-	Model     string        `json:"model"`
-	StartedAt time.Time     `json:"started_at"`
-	Assets    []AssetReport `json:"assets"`
+	Label            string        `json:"label"`
+	Provider         string        `json:"provider"`
+	Model            string        `json:"model"`
+	StartedAt        time.Time     `json:"started_at"`
+	Assets           []AssetReport `json:"assets"`
+	IsolatedDatabase bool          `json:"isolated_database,omitempty"`
+}
+
+func runDirectory(dataDir, label string) (string, error) {
+	if label == "" || label == "." || label == ".." || !filepath.IsLocal(label) ||
+		strings.ContainsAny(label, `<>:"/\|?*,`) || strings.TrimSpace(label) != label || strings.HasSuffix(label, ".") ||
+		strings.ContainsFunc(label, func(r rune) bool { return r < ' ' || r == 127 }) {
+		return "", fmt.Errorf("run label must be a single safe directory name")
+	}
+	return filepath.Abs(filepath.Join(dataDir, "runs", label))
 }
 
 // Save writes the report into the run directory.
 func (r *RunReport) Save(dataDir, label string) error {
-	dir := filepath.Join(dataDir, "runs", label)
+	dir, err := runDirectory(dataDir, label)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -127,7 +140,11 @@ func (r *RunReport) Save(dataDir, label string) error {
 
 // LoadReport reads a run's saved report.
 func LoadReport(dataDir, label string) (*RunReport, error) {
-	raw, err := os.ReadFile(filepath.Join(dataDir, "runs", label, "report.json"))
+	dir, err := runDirectory(dataDir, label)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "report.json"))
 	if err != nil {
 		return nil, err
 	}

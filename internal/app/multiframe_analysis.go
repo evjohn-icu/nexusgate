@@ -73,11 +73,23 @@ func (p *Pipeline) analyzeWithDetector(ctx context.Context, j *domain.Job, m *do
 		return err
 	}
 	if cached {
+		// Committed by a previous attempt: replay the post-commit hook, which
+		// that attempt may never have reached (see analyzeAssetVideo).
+		p.afterShotsCommitted(ctx, j.AssetID)
 		return nil
+	}
+	// A previous attempt may have staged the complete detector-mode envelope
+	// and died before the commit. Resume with zero model calls.
+	if staged, err := p.resumeStagedVision(ctx, j, runID, worker); err != nil {
+		return err
+	} else if staged != nil {
+		return p.commitStagedVision(ctx, j, m, runID, worker, staged, func(a domain.StructuredAnalysis, shots []domain.AssetShot) error {
+			return p.repo.CommitAnalysisWithShots(ctx, j.AssetID, runID, "asset-analysis/v2", a, shots, j.ID, worker)
+		})
 	}
 	raws := make([]json.RawMessage, 0, 32)
 
-	cacheLock, err := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+	cacheLock, err := cachecoord.AcquireShared(p.cacheLockDir)
 	if err != nil {
 		return err
 	}
@@ -101,7 +113,7 @@ func (p *Pipeline) analyzeWithDetector(ctx context.Context, j *domain.Job, m *do
 		return domain.Permanent(err)
 	}
 
-	cacheLock, err = cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+	cacheLock, err = cachecoord.AcquireShared(p.cacheLockDir)
 	if err != nil {
 		return err
 	}
@@ -123,7 +135,7 @@ func (p *Pipeline) analyzeWithDetector(ctx context.Context, j *domain.Job, m *do
 		return err
 	}
 
-	cacheLock, err = cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+	cacheLock, err = cachecoord.AcquireShared(p.cacheLockDir)
 	if err != nil {
 		return err
 	}
@@ -143,11 +155,16 @@ func (p *Pipeline) analyzeWithDetector(ctx context.Context, j *domain.Job, m *do
 		return err
 	}
 	foldShotMetadata(&a, metas)
-	parsed, _ := json.Marshal(a)
-	if err := p.repo.StageModelRun(ctx, runID, joinRaw(raws), string(parsed), j.ID, worker); err != nil {
+	if err := stageVisionEnvelope(ctx, p.repo, runID, joinRaw(raws), &a, shots, j.ID, worker); err != nil {
 		return err
 	}
-	return p.repo.CommitAnalysisWithShots(ctx, j.AssetID, runID, "asset-analysis/v2", a, shots, j.ID, worker)
+	if err := p.repo.CommitAnalysisWithShots(ctx, j.AssetID, runID, "asset-analysis/v2", a, shots, j.ID, worker); err != nil {
+		return err
+	}
+	// The refined shots are canonical; the derived layers rebuild off them the
+	// same way the plain path's do.
+	p.afterShotsCommitted(ctx, j.AssetID)
+	return nil
 }
 
 // analyzeTwoPass runs the no-detector fallback: pass 1 is the existing VLM
@@ -187,14 +204,28 @@ func (p *Pipeline) analyzeTwoPass(ctx context.Context, j *domain.Job, m *domain.
 		return err
 	}
 	if cached {
+		// Committed by a previous attempt: replay the post-commit hook, which
+		// that attempt may never have reached (see analyzeAssetVideo).
+		p.afterShotsCommitted(ctx, j.AssetID)
 		return nil
+	}
+	// A previous attempt may have staged the complete refinement envelope and
+	// died before the commit. Resume with zero model calls: the staged shots
+	// already carry the boundaries pass 1 produced for the attempt that staged
+	// them, so re-running pass 1 is not a prerequisite for committing them.
+	if staged, err := p.resumeStagedVision(ctx, j, runID, worker); err != nil {
+		return err
+	} else if staged != nil {
+		return p.commitStagedVision(ctx, j, m, runID, worker, staged, func(_ domain.StructuredAnalysis, shots []domain.AssetShot) error {
+			return p.repo.CommitShotRefinement(ctx, j.AssetID, runID, shots, j.ID, worker)
+		})
 	}
 	passOneShots, err := p.repo.ListAssetShots(ctx, j.AssetID)
 	if err != nil {
 		return err
 	}
 	raws := make([]json.RawMessage, 0, len(passOneShots))
-	cacheLock, err := cachecoord.AcquireShared(filepath.Dir(p.cacheDir))
+	cacheLock, err := cachecoord.AcquireShared(p.cacheLockDir)
 	if err != nil {
 		return err
 	}
@@ -213,7 +244,7 @@ func (p *Pipeline) analyzeTwoPass(ctx context.Context, j *domain.Job, m *domain.
 		}
 		return err
 	}
-	if err := p.repo.StageModelRun(ctx, runID, joinRaw(raws), "", j.ID, worker); err != nil {
+	if err := stageVisionEnvelope(ctx, p.repo, runID, joinRaw(raws), nil, refined, j.ID, worker); err != nil {
 		return err
 	}
 	if err := p.repo.CommitShotRefinement(ctx, j.AssetID, runID, refined, j.ID, worker); err != nil {

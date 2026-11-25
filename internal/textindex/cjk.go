@@ -6,6 +6,7 @@ package textindex
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 type Chunk struct {
@@ -13,7 +14,23 @@ type Chunk struct {
 	CJK    bool
 }
 
-func Segment(text string) string { return strings.Join(Tokens(text), " ") }
+const unigramPrefix = "nghan1"
+
+func Segment(text string) string {
+	tokens := Tokens(text)
+	var seen map[rune]bool
+	for _, r := range text {
+		if !isCJK(r) || seen[r] {
+			continue
+		}
+		if seen == nil {
+			seen = make(map[rune]bool)
+		}
+		seen[r] = true
+		tokens = append(tokens, unigramPrefix+string(r))
+	}
+	return strings.Join(tokens, " ")
+}
 
 func Tokens(text string) []string {
 	chunks := Chunks(text)
@@ -77,6 +94,9 @@ func FTSQuery(text string) string {
 			continue
 		}
 		term := strings.ReplaceAll(strings.Join(chunk.Tokens, " "), `"`, `""`)
+		if chunk.CJK && len(chunk.Tokens) == 1 && utf8.RuneCountInString(chunk.Tokens[0]) == 1 {
+			term = unigramPrefix + term
+		}
 		terms = append(terms, `"`+term+`"`)
 	}
 	return strings.Join(terms, " AND ")

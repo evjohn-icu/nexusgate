@@ -80,7 +80,8 @@ notRelevant shot 进入了**所有含语义权重的 blend**（含 RRF）的 top
 nexusgate-corpusgen --out ./corpus
 nexusgate-eval run  --corpus ./corpus --data-dir ./eval/qwen   --label qwen3vl-4b
 nexusgate-eval run  --corpus ./corpus --data-dir ./eval/gemini --label gemini-flash
-nexusgate-eval score --corpus ./corpus --data-dir ./eval --labels qwen3vl-4b,gemini-flash
+nexusgate-eval score --corpus ./corpus --data-dir ./eval/qwen --labels qwen3vl-4b
+nexusgate-eval score --corpus ./corpus --data-dir ./eval/gemini --labels gemini-flash
 ```
 
 `score` 的 RunScore 输出新增 `semantic_false_positives` /

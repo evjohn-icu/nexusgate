@@ -183,7 +183,7 @@ LEFT JOIN asset_locations al ON al.id=(SELECT l.id FROM asset_locations l JOIN l
 LEFT JOIN media_metadata m ON m.asset_id=a.id
 LEFT JOIN capture_metadata cm ON cm.asset_id=a.id
 LEFT JOIN asset_analysis an ON an.asset_id=a.id
-LEFT JOIN transcripts t ON t.id=(SELECT id FROM transcripts t2 WHERE t2.asset_id=a.id AND t2.status='succeeded' ORDER BY t2.created_at DESC LIMIT 1)`
+LEFT JOIN transcripts t ON t.id=(SELECT id FROM transcripts t2 WHERE t2.asset_id=a.id AND t2.status='succeeded' ORDER BY t2.created_at DESC,t2.id DESC LIMIT 1)`
 
 // scanAssetCardRow scans one row of assetCardColumns into a domain.AssetCard,
 // applying the same field post-processing (basename, has_speech bool, time

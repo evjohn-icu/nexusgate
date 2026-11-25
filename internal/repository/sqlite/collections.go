@@ -135,12 +135,19 @@ func (r *Repository) DeleteAssetCollection(ctx context.Context, id string) error
 }
 
 func (r *Repository) ListAssetCardsInCollection(ctx context.Context, collectionID string, limit, offset int) ([]domain.AssetCard, error) {
+	cards, _, err := r.PagedAssetCardsInCollection(ctx, collectionID, limit, offset)
+	return cards, err
+}
+
+// PagedAssetCardsInCollection reports whether another page exists so the
+// browse page can append rather than replace its first 300 cards.
+func (r *Repository) PagedAssetCardsInCollection(ctx context.Context, collectionID string, limit, offset int) ([]domain.AssetCard, bool, error) {
 	collection, err := r.GetAssetCollection(ctx, collectionID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if collection == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	// collectionToAssetCardFilter carries the facets across, so a saved
 	// collection narrows its cards the same way its summary does — the two
@@ -148,7 +155,7 @@ func (r *Repository) ListAssetCardsInCollection(ctx context.Context, collectionI
 	cardFilter := collectionToAssetCardFilter(collection.Filter)
 	cardFilter.Limit = limit
 	cardFilter.Offset = offset
-	return r.ListAssetCardsFiltered(ctx, cardFilter)
+	return r.PagedAssetCardsFiltered(ctx, cardFilter)
 }
 
 func (r *Repository) GetAssetProcessingSummary(ctx context.Context, filter domain.AssetCollectionFilter) (domain.AssetProcessingSummary, error) {

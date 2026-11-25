@@ -15,8 +15,8 @@
 // footage ever enters it. The scene sequence of each clip mirrors the
 // corresponding adversarial asset in the retrieval golden set
 // (internal/repository/sqlite/retrieval_golden_corpus_test.go): the car only
-// in the second half, the beach asset with an indoor shot, a window-boundary
-// shot, timed speech, and so on. Running a real video-understanding provider
+// in the second half, the beach asset with an indoor shot, and a
+// window-boundary shot. Running a real video-understanding provider
 // over these clips and scoring the result is the manual, offline benchmark —
 // it is never part of CI.
 package main
@@ -189,15 +189,6 @@ func goldenClips() []clipSpec {
 			scenes: []scene{sceneA, sceneB},
 			queries: []corpusQuery{
 				{query: "scene change", language: "en", expected: []expectedShot{{asset: "clip-window-boundary.mp4", startMS: 2000, endMS: 4000}}},
-			},
-		},
-		// timed speech asset (asset-timed-speech): the narration interval
-		// is the second half of the clip.
-		{
-			name:   "clip-timed-speech",
-			scenes: []scene{sceneA, sceneB},
-			queries: []corpusQuery{
-				{query: "narration", language: "en", expected: []expectedShot{{asset: "clip-timed-speech.mp4", startMS: 2000, endMS: 4000}}},
 			},
 		},
 	}

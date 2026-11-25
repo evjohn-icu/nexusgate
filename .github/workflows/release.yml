@@ -39,6 +39,11 @@ jobs:
           GOOS=linux  GOARCH=amd64 go build -trimpath -ldflags="$ldflags" -o dist/nexusgate-mcp              ./cmd/nexusgate-mcp
           GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="$ldflags" -o dist/nexusgate-mcp-darwin-arm64 ./cmd/nexusgate-mcp
 
+          # Checked-in inference module, model lock and pinned requirements,
+          # shipped beside the binaries (same package as the native release
+          # script produces).
+          scripts/package-inference.sh dist
+
           ls -la dist
 
       - name: release

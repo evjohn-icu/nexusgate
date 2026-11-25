@@ -34,6 +34,10 @@ func (r *fakeUpsertOnlyRepo) UpsertProviderChannel(_ context.Context, channel do
 	return channel, nil
 }
 
+func (r *fakeUpsertOnlyRepo) ListProviderChannels(_ context.Context, _ string) ([]domain.ProviderChannel, error) {
+	return nil, nil
+}
+
 // TestSaveProviderChannelRejectsDuplicateLabelBeforeAnySecretIsStored guards
 // the create path's half of N1/N2: two members sharing a label used to reach
 // UpsertProviderChannel — after SaveProviderChannel had already written a

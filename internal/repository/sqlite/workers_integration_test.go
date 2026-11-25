@@ -46,6 +46,47 @@ func TestWorkerPairingTokenCanEnrollOnlyOnce(t *testing.T) {
 	}
 }
 
+func TestPairingUpgradeDiscardsUntrustedGrants(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "worker-grant-upgrade.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	applyMigrationsThrough(t, ctx, repo, "0040_multimodal_generation_identity.sql")
+	now := time.Now().UTC()
+	const pairing = "pre-upgrade-pairing"
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO worker_pairing_tokens(id,token_hash,expires_at,created_at) VALUES('old-pairing',?,?,?)`, tokenDigest(pairing), formatTime(now.Add(time.Minute)), formatTime(now)); err != nil {
+		t.Fatal(err)
+	}
+	const oldToken = "pre-upgrade-worker"
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO workers(id,name,platform,token_hash,status,capabilities_json,last_seen_at,created_at) VALUES('old-worker','worker','linux',?,'online','{"proxy":true,"inference_operations":["visual_embedding"],"model_management_operations":["install"]}',?,?)`, tokenDigest(oldToken), formatTime(now), formatTime(now)); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	checkDeriveOnly := func(worker remote.Worker) {
+		t.Helper()
+		caps := worker.Capabilities
+		if !caps.Proxy || len(caps.InferenceOperations)+len(caps.ModelManagementOperations)+len(caps.Inference) != 0 {
+			t.Fatalf("upgraded worker capabilities=%+v", caps)
+		}
+	}
+	oldWorker, err := repo.AuthenticateWorker(ctx, oldToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkDeriveOnly(oldWorker)
+	worker, _, err := repo.EnrollWorker(ctx, pairing, remote.WorkerRegistration{Name: "worker", Platform: "linux", Capabilities: remote.WorkerCapabilities{
+		Proxy: true, InferenceOperations: []string{"visual_embedding"}, ModelManagementOperations: []string{"install"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkDeriveOnly(worker)
+}
+
 // TestWorkerPairingValidDoesNotRedeem proves WorkerPairingValid is a pure read:
 // it reports whether a raw token is unredeemed and unexpired, and repeated
 // checks never consume it, so the bootstrap binary download can authorize

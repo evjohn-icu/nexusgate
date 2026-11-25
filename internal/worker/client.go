@@ -35,8 +35,19 @@ type Enrollment struct {
 
 type Client struct {
 	baseURL string
-	http    *http.Client
+	// http is the short control client (enroll, heartbeat, lease, progress,
+	// results): small JSON exchanges bounded by 30 seconds.
+	http *http.Client
+	// upload streams derived artifacts over the same pinned transport with a
+	// separate 30-minute maximum request lifetime; the caller's context still
+	// governs cancellation.
+	upload *http.Client
 }
+
+// uploadTimeout bounds one artifact upload independently of the control
+// timeout. Derived media on a slow NAS link can legitimately stream for many
+// minutes, while the caller's context still cancels the exchange.
+const uploadTimeout = 30 * time.Minute
 
 type ArtifactUpload struct {
 	Type        string
@@ -71,7 +82,7 @@ func NewClient(baseURL, fingerprint string) *Client {
 			return nil
 		}}
 	}
-	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: &http.Client{Transport: transport, Timeout: 30 * time.Second}}
+	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: &http.Client{Transport: transport, Timeout: 30 * time.Second}, upload: &http.Client{Transport: transport, Timeout: uploadTimeout}}
 }
 
 // ValidFingerprint accepts only the canonical 64-character SHA-256 hex form.
@@ -253,7 +264,9 @@ func (c *Client) ProxyProviderJSON(ctx context.Context, token, jobID string, ope
 }
 
 // UploadArtifact sends one derived file to the Hub. The file is streamed from
-// the Worker cache and is never persisted in the Worker configuration.
+// the Worker cache and is never persisted in the Worker configuration. The
+// exchange uses the pinned transport with the 30-minute upload lifetime
+// instead of the short control timeout, and the caller's context cancels it.
 // Contract: POST /api/v1/worker/jobs/{jobID}/artifacts multipart/form-data
 // with fields type, profile_hash and file field artifact. Hub may return 200
 // for an idempotent reuse, or 201, 202 or 204 for an accepted upload.
@@ -269,64 +282,35 @@ func (c *Client) UploadArtifact(ctx context.Context, token, jobID string, artifa
 
 	reader, writer := io.Pipe()
 	multipartWriter := multipart.NewWriter(writer)
+	contentType := multipartWriter.FormDataContentType()
 	writeDone := make(chan error, 1)
 	go func() {
-		var writeErr error
-		done := make(chan struct{})
-		defer close(done)
-		go func() {
-			select {
-			case <-ctx.Done():
-				_ = writer.CloseWithError(ctx.Err())
-			case <-done:
-			}
-		}()
-		defer func() {
-			if writeErr != nil {
-				_ = writer.CloseWithError(writeErr)
-			} else {
-				_ = writer.Close()
-			}
-			writeDone <- writeErr
-		}()
-		if writeErr = multipartWriter.WriteField("type", artifact.Type); writeErr != nil {
-			return
-		}
-		if writeErr = multipartWriter.WriteField("profile_hash", artifact.ProfileHash); writeErr != nil {
-			return
-		}
-		filename := filepath.Base(artifact.Path)
-		disposition := mime.FormatMediaType("form-data", map[string]string{"name": "artifact", "filename": filename})
-		partHeader := make(textproto.MIMEHeader)
-		partHeader.Set("Content-Disposition", disposition)
-		partHeader.Set("Content-Type", artifactContentType(artifact))
-		var part io.Writer
-		part, writeErr = multipartWriter.CreatePart(partHeader)
-		if writeErr != nil {
-			return
-		}
-		_, writeErr = io.Copy(part, file)
-		if writeErr == nil {
-			writeErr = multipartWriter.Close()
-		}
+		writeDone <- writeMultipartArtifact(writer, multipartWriter, artifact, file)
 	}()
+	// Every return path below unblocks the writer goroutine by closing the
+	// request pipe and then joins it, so neither the pipe nor the writer
+	// outlives the call.
+	joinWriter := func() error {
+		_ = reader.CloseWithError(io.ErrClosedPipe)
+		return <-writeDone
+	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/worker/jobs/"+jobID+"/artifacts", reader)
 	if err != nil {
-		_ = reader.CloseWithError(err)
-		<-writeDone
+		joinWriter()
 		return err
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("Content-Type", multipartWriter.FormDataContentType())
-	response, err := c.http.Do(request)
+	request.Header.Set("Content-Type", contentType)
+	response, err := c.upload.Do(request)
 	if err != nil {
-		_ = reader.CloseWithError(err)
-		<-writeDone
+		joinWriter()
 		return err
 	}
 	defer response.Body.Close()
-	if writeErr := <-writeDone; writeErr != nil {
+	// The Hub answered, so nothing more may be sent: close the request pipe
+	// even when the writer is still streaming, then join it.
+	if writeErr := joinWriter(); writeErr != nil && response.StatusCode >= 200 && response.StatusCode < 300 {
 		return writeErr
 	}
 	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusAccepted && response.StatusCode != http.StatusNoContent {
@@ -334,6 +318,72 @@ func (c *Client) UploadArtifact(ctx context.Context, token, jobID string, artifa
 		return apiclient.DecodeError(response.StatusCode, response.Status, message)
 	}
 	return nil
+}
+
+// FetchInferenceInput fetches the query-image bytes bound to this job's
+// running lease through the authenticated lease-input endpoint
+// (GET /api/v1/worker/jobs/{jobID}/input). The body is bounded by the Hub's
+// lease-input ceiling and failures decode to typed API errors. The bytes are
+// returned unverified: the runtime stage verifies the SHA-256 digest against
+// the request before the bytes reach an executor.
+func (c *Client) FetchInferenceInput(ctx context.Context, token, jobID string) ([]byte, error) {
+	if strings.TrimSpace(jobID) == "" {
+		return nil, fmt.Errorf("inference input fetch requires job id")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/v1/worker/jobs/"+jobID+"/input", nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := c.http.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return nil, apiclient.DecodeError(response.StatusCode, response.Status, message)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxInferenceInputBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxInferenceInputBytes {
+		return nil, fmt.Errorf("inference input exceeds %d bytes", maxInferenceInputBytes)
+	}
+	return body, nil
+}
+
+// writeMultipartArtifact writes the upload body. It always terminates: either
+// every field, the file bytes and the closing boundary are written, or a pipe
+// close by the request/response paths fails the pending write.
+func writeMultipartArtifact(writer *io.PipeWriter, multipartWriter *multipart.Writer, artifact ArtifactUpload, file *os.File) error {
+	fail := func(err error) error {
+		_ = writer.CloseWithError(err)
+		return err
+	}
+	if err := multipartWriter.WriteField("type", artifact.Type); err != nil {
+		return fail(err)
+	}
+	if err := multipartWriter.WriteField("profile_hash", artifact.ProfileHash); err != nil {
+		return fail(err)
+	}
+	filename := filepath.Base(artifact.Path)
+	disposition := mime.FormatMediaType("form-data", map[string]string{"name": "artifact", "filename": filename})
+	partHeader := make(textproto.MIMEHeader)
+	partHeader.Set("Content-Disposition", disposition)
+	partHeader.Set("Content-Type", artifactContentType(artifact))
+	part, err := multipartWriter.CreatePart(partHeader)
+	if err != nil {
+		return fail(err)
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		return fail(err)
+	}
+	if err := multipartWriter.Close(); err != nil {
+		return fail(err)
+	}
+	return writer.Close()
 }
 
 func artifactContentType(artifact ArtifactUpload) string {

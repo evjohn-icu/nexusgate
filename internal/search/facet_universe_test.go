@@ -85,15 +85,11 @@ func (f *facetUniverseStore) ShotTextEmbeddingHashes(_ context.Context, _, _ str
 func facetUniverseCandidates() []domain.ShotSearchResult {
 	return []domain.ShotSearchResult{
 		{AssetShot: domain.AssetShot{ID: "shotA", AssetID: "a1"}, SemanticScore: 0, LexicalScore: 0.8},
-		{AssetShot: domain.AssetShot{ID: "shotB", AssetID: "a1"}, SemanticScore: 0.5, LexicalScore: 0.3},
+		{AssetShot: domain.AssetShot{ID: "shotB", AssetID: "a2"}, SemanticScore: 0.5, LexicalScore: 0.3},
 	}
 }
 
-// TestHeuristicSemanticRetrieverFacetUniverseRetainsSemanticZero pins the
-// facet-universe rule: with facets set, a semantic-0 row stays a candidate
-// (universe membership) with an explicit Signal value 0 — present, not absent
-// — so the service's universe includes it and fusion treats it consistently.
-func TestHeuristicSemanticRetrieverFacetUniverseRetainsSemanticZero(t *testing.T) {
+func TestHeuristicSemanticRetrieverRanksOnlyPositiveMatchesWithinFacets(t *testing.T) {
 	store := &facetUniverseStore{candidates: facetUniverseCandidates()}
 	retriever := NewHeuristicSemanticRetriever(store)
 	q := SearchQuery{
@@ -104,28 +100,8 @@ func TestHeuristicSemanticRetrieverFacetUniverseRetainsSemanticZero(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("facets set: want 2 candidates, got %d", len(got))
-	}
-	byID := make(map[string]Candidate, len(got))
-	for _, c := range got {
-		byID[c.ShotID] = c
-	}
-	shotA, ok := byID["shotA"]
-	if !ok {
-		t.Fatal("facets set: semantic-0 shotA must stay in the candidate universe")
-	}
-	if value, present := shotA.Signals[SignalHeuristicSemantic]; !present {
-		t.Fatal("facets set: shotA must carry the heuristic_semantic signal key (explicit 0, not absent)")
-	} else if value != 0 {
-		t.Fatalf("facets set: shotA signal = %v, want 0 (no fabricated semantic score)", value)
-	}
-	shotB, ok := byID["shotB"]
-	if !ok {
-		t.Fatal("facets set: shotB must be retained")
-	}
-	if shotB.Signals[SignalHeuristicSemantic] != 0.5 {
-		t.Fatalf("facets set: shotB signal = %v, want 0.5", shotB.Signals[SignalHeuristicSemantic])
+	if len(got) != 1 || got[0].ShotID != "shotB" || got[0].Signals[SignalHeuristicSemantic] != 0.5 {
+		t.Fatalf("positive ranked recall = %+v, want shotB with score 0.5", got)
 	}
 }
 
@@ -149,11 +125,7 @@ func TestHeuristicSemanticRetrieverNoFacetsDropsSemanticZero(t *testing.T) {
 	}
 }
 
-// TestFacetUniverseServiceSurvivesLexicalOnlyShotEndToEnd proves the universe
-// contract end to end: with facets set, shotA (semantic 0, lexical 0.8)
-// survives the semantic channel and, being in the universe, is not dropped by
-// the service's universe gate, so an exact lexical match under a facet ranks.
-// The fact gate is off — the universe gate, not evidence, is what this pins.
+// A lexical-only match can pass a facet filter despite having no semantic rank.
 func TestFacetUniverseServiceSurvivesLexicalOnlyShotEndToEnd(t *testing.T) {
 	store := &facetUniverseStore{
 		candidates: facetUniverseCandidates(),
@@ -176,8 +148,8 @@ func TestFacetUniverseServiceSurvivesLexicalOnlyShotEndToEnd(t *testing.T) {
 	for _, item := range response.Results {
 		if item.ShotID == "shotA" {
 			foundA = true
-			if value, present := item.Scores[SignalHeuristicSemantic]; !present || value != 0 {
-				t.Fatalf("shotA heuristic_semantic score = %v (present=%v), want explicit 0", value, present)
+			if _, present := item.Scores[SignalHeuristicSemantic]; present {
+				t.Fatal("a lexical-only match should have no heuristic rank contribution")
 			}
 		}
 	}

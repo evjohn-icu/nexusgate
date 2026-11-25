@@ -187,7 +187,7 @@ func (p *Provider) chat(ctx context.Context, content []any) (string, string, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return "", "", common.ReadErrorWithSecret(resp, p.Endpoint.APIKey)
+		return "", "", p.Endpoint.ReadError(resp)
 	}
 	raw, err := common.ReadBody(resp.Body)
 	if err != nil {
