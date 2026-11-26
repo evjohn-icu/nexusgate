@@ -1,0 +1,2 @@
+# SQLite column reference excluded.secret_ref in the speaker staging upsert.
+53bb249cea157cbb261500336808cbf926e94c28:internal/repository/sqlite/speaker_privacy.go:generic-api-key:483
