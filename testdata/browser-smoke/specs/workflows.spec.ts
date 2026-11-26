@@ -615,6 +615,56 @@ test.describe('browse and search view ownership (partition 18 review)', () => {
   }
 
   for (const searchKind of ['text', 'image']) {
+    test(`${searchKind} first page finishes after a replacement image upload fails`, async ({ page }) => {
+      await page.goto('/');
+      await browseReady(page);
+      let uploads = 0;
+      await page.route('**/api/v1/admin/search-references', async (route) => {
+        uploads++;
+        if (searchKind === 'image' && uploads === 1) {
+          await route.fulfill({ status: 201, json: { id: 'original-reference' } });
+          return;
+        }
+        await route.fulfill({ status: 503, json: { error: { code: 'unavailable', message: 'upload failed' } } });
+      });
+      const resultRequest = Promise.withResolvers<Route>();
+      let searches = 0;
+      await page.route('**/api/v1/search/shots', async (route) => {
+        searches++;
+        if (searchKind === 'image' && searches === 1) {
+          await route.fulfill({ status: 202, json: { status: 'pending' } });
+          return;
+        }
+        resultRequest.resolve(route);
+      });
+      const input = page.locator('#image-search');
+      const status = page.locator('#image-search-status');
+      if (searchKind === 'image') {
+        await input.setInputFiles({ name: 'original.png', mimeType: 'image/png', buffer: nextProbePng() });
+        await expect(status).toHaveText(zh.imageSearchPending);
+      } else {
+        const started = page.waitForRequest((request) => request.url().endsWith('/api/v1/search/shots'));
+        await page.locator('#q').fill('camera');
+        await page.locator('#q').press('Enter');
+        await started;
+      }
+
+      await input.setInputFiles({ name: 'replacement.png', mimeType: 'image/png', buffer: nextProbePng() });
+      await expect(status).toContainText(zh.imageSearchError);
+      const route = await resultRequest.promise;
+      expect(route.request().postDataJSON()).toMatchObject(searchKind === 'image'
+        ? { query: '', offset: 0, reference_id: 'original-reference' }
+        : { query: 'camera', offset: 0 });
+      await route.fulfill({ json: {
+        results: [{ shot_id: 'first', asset_id: 'asset-fixture', filename: 'first-page.mp4', start_ms: 0, end_ms: 5000 }],
+      } });
+      await expect(page.locator('.shot-result-file')).toHaveText('first-page.mp4');
+      await expect(status).toContainText(zh.imageSearchError);
+      expect(searches).toBe(searchKind === 'image' ? 2 : 1);
+    });
+  }
+
+  for (const searchKind of ['text', 'image']) {
     for (const failure of [401, 403, 503, 'network']) {
       test(`${searchKind} pagination recovers after an image upload fails (${failure})`, async ({ page }) => {
         await page.goto('/');

@@ -317,23 +317,25 @@ async function runShotSearch(append){
   browseGeneration++;
   const requestGeneration=imageSearchGeneration;
   const reference=imageSearchReference;
-  const isCurrent=()=>pageState===shotPage&&requestGeneration===imageSearchGeneration;
+  // An upload only replaces the first page once it starts a new search.
+  const isCurrent=()=>pageState===shotPage&&(!append||requestGeneration===imageSearchGeneration);
   const assetFilter={captured_from:isoDate('date-from'),captured_to:isoDatePlus1('date-to'),region_label:document.getElementById('region-filter').value.trim(),camera_model:document.getElementById('camera-filter').value,session_id:document.getElementById('session-filter').value,status:document.getElementById('status-filter').value};
   const hasAssetFilter=assetFilter.captured_from||assetFilter.captured_to||assetFilter.region_label||assetFilter.camera_model||assetFilter.session_id||assetFilter.status;
   const status=document.getElementById('image-search-status');
+  const ownsImageStatus=()=>status&&reference&&imageSearchReferenceGeneration===imageSearchGeneration;
   try{
     const response=await fetch('/api/v1/search/shots',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:pageState.query,mode:'auto',limit:pageState.limit,offset:append?pageState.nextOffset:0,diversity:0.2,include_evidence:true,include_context:false,facets:filterFacets(),...(hasAssetFilter?{asset_filter:assetFilter}:{}),...(reference?{modalities:['visual'],reference_id:reference}:{})})});
     if(!response.ok)throw Error(await tdApiErrorMessage(response));
     const data=await response.json();
     if(!isCurrent())return;
     if(data&&data.status==='pending'){
-      if(status&&!imageSearchPendingFile)status.textContent=tdT('library.imageSearchPending');
+      if(ownsImageStatus())status.textContent=tdT('library.imageSearchPending');
       imageSearchPolls++;
       if(imageSearchPolls<15){
         setTimeout(function(){if(isCurrent())runShotSearch(append)},2000);
       }else if(append){
         throw Error(tdT('library.imageSearchPending'));
-      }else if(status&&!imageSearchPendingFile){status.textContent=tdT('library.imageSearchError')}
+      }else if(ownsImageStatus()){status.textContent=tdT('library.imageSearchError')}
       return;
     }
     const page=data&&Array.isArray(data.results)?data.results:[];
@@ -342,7 +344,7 @@ async function runShotSearch(append){
     pageState.nextOffset=data&&typeof data.next_offset==='number'?data.next_offset:null;
     pageState.windowExhausted=!!(data&&data.window_exhausted);
     imageSearchPolls=0;
-    if(status&&reference&&!imageSearchPendingFile)status.textContent=tdT('library.imageSearchReady');
+    if(ownsImageStatus())status.textContent=tdT('library.imageSearchReady');
     renderShotResults(pageState.items);
     lastLoadedAssets=[];lastLoadedAssets.__searchOwned=true;
   }catch(e){
@@ -357,7 +359,7 @@ async function runShotSearch(append){
       retry.disabled=false;
       return;
     }
-    if(status&&reference&&!imageSearchPendingFile)status.textContent=tdT('library.imageSearchError')+e.message;
+    if(ownsImageStatus())status.textContent=tdT('library.imageSearchError')+e.message;
     library.innerHTML='<div class="empty error">'+tdT('library.searchFailed')+esc(e.message)+'</div>';
   }finally{pageState.loading=false}
 }
@@ -375,8 +377,8 @@ async function loadMoreShots(){
 // request cannot cross. Saying "全部结果" there would be a claim the engine
 // never made.
 function shotPageFooter(){const shown=shotPage.items.length;if(!shown)return'';let html='<div class="shot-results-foot"><span class="muted">'+esc(tdPlural('library.shotResultsShown',shown))+'</span>';if(shotPage.hasMore){html+='<span class="muted" data-shot-page-error hidden></span><button type="button" class="btn" id="shot-more-btn" onclick="loadMoreShots()">'+esc(tdT('library.loadMore'))+'</button>'}else if(shotPage.windowExhausted){html+='<span class="muted">'+esc(tdT('library.windowExhausted'))+'</span>'}else{html+='<span class="muted">'+esc(tdT('library.allShown'))+'</span>'}return html+'</div>'}
-function clearSearch(){document.getElementById('q').value='';resetImageSearch();return load()}`},
-	{anchor: `async function loadMoreShots(){`, replacement: `let imageSearchReference='';let imageSearchPolls=0;let imageSearchGeneration=0;let imageSearchPendingFile=null;
+function clearSearch(){document.getElementById('q').value='';shotPage=undefined;resetImageSearch();return load()}`},
+	{anchor: `async function loadMoreShots(){`, replacement: `let imageSearchReference='';let imageSearchReferenceGeneration=0;let imageSearchPolls=0;let imageSearchGeneration=0;let imageSearchPendingFile=null;
 function resetImageSearch(){
   imageSearchGeneration++;
   imageSearchReference='';
@@ -395,11 +397,9 @@ document.addEventListener('DOMContentLoaded',function(){const input=document.get
 // admin dialog and re-runs the upload once the shell reports a fresh session
 // (the same admin-auth-changed wiring the roots page uses); a 403 shows the
 // server's localized authorization wording and stops; any other status shows
-// the upload error and waits for a fresh file selection. A newly selected
-// file bumps the generation counter, so an in-flight upload, a pending poll
-// loop, or a late result of an older image can never supersede the newer one,
-// and a successful upload continues into the existing pending-to-ready shot
-// search flow (runShotSearch polls until the reference is encoded).
+// the upload error and waits for a fresh file selection. The upload generation
+// keeps responses from older selections out. A successful upload replaces the
+// active search and polls until its reference is encoded.
 async function imageSearchFile(file){
   if(!file)return;
   const status=document.getElementById('image-search-status');
@@ -427,6 +427,7 @@ async function imageSearchFile(file){
     const ref=await response.json();
     if(generation!==imageSearchGeneration)return;
     imageSearchReference=ref.id||'';
+    imageSearchReferenceGeneration=generation;
     await startShotSearch('');
   }catch(e){
     if(generation===imageSearchGeneration&&status)status.textContent=tdT('library.imageSearchError')+e.message;
