@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -18,7 +19,7 @@ func lockStoreDirectory(t *testing.T) (dir, secretDir, path, keyPath string) {
 	t.Helper()
 	dir = t.TempDir()
 	secretDir = filepath.Join(dir, "provider-secrets")
-	if err := os.MkdirAll(secretDir, 0o700); err != nil {
+	if err := ensurePrivateDirectory(secretDir); err != nil {
 		t.Fatalf("prepare secret dir: %v", err)
 	}
 	return dir, secretDir, filepath.Join(secretDir, filename), filepath.Join(secretDir, keyFilename)
@@ -354,8 +355,15 @@ func TestRekeyJournalWithoutKeyExistedFieldRestoresSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Deliberately written without key_existed: the old rekey format.
-	journal := `{"state":"prepared","ciphertext_path":"` + path + `","ciphertext_existed":true,"key_path":"` + keyPath + `","snapshot_ciphertext":"` + snapshotCt + `","snapshot_key":"` + snapshotKey + `","staged_ciphertext":"","staged_key":""}`
-	if err := os.WriteFile(filepath.Join(secretDir, rekeyJournal), []byte(journal), 0o600); err != nil {
+	journal, err := json.Marshal(map[string]any{
+		"state": "prepared", "ciphertext_path": path, "ciphertext_existed": true,
+		"key_path": keyPath, "snapshot_ciphertext": snapshotCt, "snapshot_key": snapshotKey,
+		"staged_ciphertext": "", "staged_key": "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secretDir, rekeyJournal), journal, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -521,19 +529,21 @@ func TestStoreLockFileStaysPrivateInsideStoreDirectory(t *testing.T) {
 	if err := store.Put("provider/one", "value-one"); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(filepath.Join(dir, "provider-secrets", lockFilename))
+	secretPath := filepath.Join(dir, "provider-secrets")
+	lockPath := filepath.Join(secretPath, lockFilename)
+	info, err := os.Lstat(lockPath)
 	if err != nil {
 		t.Fatalf("lock file missing: %v", err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
-		t.Fatalf("lock file mode = %v, want regular 0600", info.Mode())
+	if err := validateSecretFileInfo(lockPath, info); err != nil {
+		t.Fatal(err)
 	}
-	secretDir, err := os.Stat(filepath.Join(dir, "provider-secrets"))
+	secretDir, err := os.Lstat(secretPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if secretDir.Mode().Perm() != 0o700 {
-		t.Fatalf("secret directory mode = %o, want 700", secretDir.Mode().Perm())
+	if err := validateSecretDirectory(secretPath, secretDir); err != nil {
+		t.Fatal(err)
 	}
 }
 

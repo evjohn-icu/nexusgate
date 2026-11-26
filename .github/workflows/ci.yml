@@ -187,6 +187,8 @@ jobs:
       - uses: actions/setup-go@v5
         with: {go-version-file: go.mod, cache: true}
       - run: go test -count=1 ./internal/app ./internal/media ./internal/providers/... ./internal/worker
+      - run: go test -count=1 ./internal/repository/sqlite -run 'TestMigrationSnapshot|TestConcurrentMigrate'
+      - run: go test -count=1 ./internal/hubauth ./internal/secretstore
 
   browser-smoke:
     runs-on: ubuntu-latest

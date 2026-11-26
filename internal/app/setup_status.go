@@ -49,10 +49,7 @@ func (s *Service) SetupStatus(ctx context.Context) domain.SetupStatus {
 	}
 	status.DataDirWritable = dirWritable(s.cfg.DataDir)
 	status.CacheWritable = dirWritable(s.cfg.CacheDir)
-	// freeBytes is the same Statfs-based probe the pipeline's disk preflight
-	// uses; 1 GiB is the floor for a scan's worth of thumbnails and proxies.
-	// On Windows it degrades to "unknown", which reports not-OK — conservative,
-	// like the preflight's own skip-never-block posture inverted.
+	// Use the pipeline's disk probe with a 1 GiB floor for thumbnails and proxies.
 	if bytes, err := freeBytes(s.cfg.CacheDir); err == nil {
 		status.FreeDiskBytes = bytes
 		status.FreeDiskOK = bytes >= 1<<30

@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
-func TestEnsureAdminTokenPersistsMode0600AndReusesToken(t *testing.T) {
+func TestEnsureAdminTokenPersistsPrivatelyAndReusesToken(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -21,14 +22,15 @@ func TestEnsureAdminTokenPersistsMode0600AndReusesToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	if first == "" || first != second {
-		t.Fatalf("tokens first=%q second=%q", first, second)
+		t.Fatal("administrator token was empty or changed")
 	}
-	info, err := os.Lstat(filepath.Join(dir, "admin-token"))
+	path := filepath.Join(dir, "admin-token")
+	info, err := os.Lstat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("admin token mode=%#o want 0600", info.Mode().Perm())
+	if err := validateTokenFile(path, info); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -65,6 +67,9 @@ func TestEnsureTokenRejectsUnsafeFilesAndDirectories(t *testing.T) {
 		}
 	})
 	for _, mode := range []os.FileMode{0o644, 0o400, 0o660} {
+		if runtime.GOOS == "windows" {
+			break
+		}
 		t.Run(fmt.Sprintf("insecure token %o", mode), func(t *testing.T) {
 			dir := secureHubDir(t)
 			path := filepath.Join(dir, "admin-token")
@@ -100,13 +105,14 @@ func TestEnsureAgentTokenUsesSameRawFileContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	if first == "" || first != second {
-		t.Fatalf("tokens first=%q second=%q", first, second)
+		t.Fatal("agent token was empty or changed")
 	}
-	info, err := os.Lstat(filepath.Join(dir, "agent-token"))
+	path := filepath.Join(dir, "agent-token")
+	info, err := os.Lstat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 || !info.Mode().IsRegular() {
-		t.Fatalf("agent token mode/type=%o/%v", info.Mode().Perm(), info.Mode().IsRegular())
+	if err := validateTokenFile(path, info); err != nil {
+		t.Fatal(err)
 	}
 }

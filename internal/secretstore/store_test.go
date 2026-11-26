@@ -39,8 +39,8 @@ func TestStorePersistsEncryptedSecretWithoutPlaintext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("secret file mode = %o, want 600", info.Mode().Perm())
+	if err := validateSecretFileInfo(path, info); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -126,12 +126,13 @@ func TestStoreCreatesPrivateSecretDirectoryInsideSharedDataDirectory(t *testing.
 	if _, err := Open(dir, "hub-admin-token-for-test"); err != nil {
 		t.Fatalf("Open() shared data directory: %v", err)
 	}
-	info, err := os.Stat(filepath.Join(dir, "provider-secrets"))
+	path := filepath.Join(dir, "provider-secrets")
+	info, err := os.Lstat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o700 {
-		t.Fatalf("secret directory mode = %o, want 700", info.Mode().Perm())
+	if err := validateSecretDirectory(path, info); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -146,11 +147,11 @@ func TestStoreRefusesInsecureExistingFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "provider-secrets", filename)
-	if err := os.Chmod(path, 0o644); err != nil {
+	if err := weakenTestSecretFile(path); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Open(dir, "hub-admin-token-for-test"); err == nil {
-		t.Fatal("Open accepted a secret file without mode 0600")
+		t.Fatal("Open accepted an insecure secret file")
 	} else if strings.Contains(err.Error(), value) {
 		t.Fatalf("Open error leaked secret value: %v", err)
 	}
@@ -166,7 +167,7 @@ func TestStoreFailsClosedWhenOpenedFileBecomesInsecure(t *testing.T) {
 	if err := store.Put("provider/gemini-a", value); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(filepath.Join(dir, "provider-secrets", filename), 0o644); err != nil {
+	if err := weakenTestSecretFile(filepath.Join(dir, "provider-secrets", filename)); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := store.Resolve("provider/gemini-a"); err == nil {
@@ -303,7 +304,7 @@ func TestStoreSurvivesAdminTokenRotation(t *testing.T) {
 func TestStoreMigratesLegacyTokenDerivedStore(t *testing.T) {
 	dir := t.TempDir()
 	secretDir := filepath.Join(dir, "provider-secrets")
-	if err := os.MkdirAll(secretDir, 0o700); err != nil {
+	if err := ensurePrivateDirectory(secretDir); err != nil {
 		t.Fatalf("prepare secret dir: %v", err)
 	}
 
@@ -346,7 +347,7 @@ func TestStoreMigratesLegacyTokenDerivedStore(t *testing.T) {
 func TestStoreReportsRotatedTokenOnUnmigratableLegacyStore(t *testing.T) {
 	dir := t.TempDir()
 	secretDir := filepath.Join(dir, "provider-secrets")
-	if err := os.MkdirAll(secretDir, 0o700); err != nil {
+	if err := ensurePrivateDirectory(secretDir); err != nil {
 		t.Fatalf("prepare secret dir: %v", err)
 	}
 	legacyGCM, err := newGCM(legacyKey("the-original-token"))

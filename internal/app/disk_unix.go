@@ -4,12 +4,8 @@ package app
 
 import "syscall"
 
-// freeBytes reports the free bytes on the filesystem holding path — the probe
-// behind the pipeline's disk-space preflight. The guard exists for NAS/local
-// Linux hubs: a full cache volume makes ffmpeg fail mid-encode and lets
-// cache/sources staging copies fill the disk silently. disk_windows.go exists
-// so the preflight compiles on Windows, where it degrades to "unknown" and is
-// skipped rather than ever blocking a job.
+// freeBytes reports the space available to the calling user on the filesystem
+// holding path. A full cache volume can interrupt encoding and source staging.
 func freeBytes(path string) (int64, error) {
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(path, &st); err != nil {

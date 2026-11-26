@@ -2,12 +2,34 @@
 
 package app
 
-import "errors"
+import (
+	"math"
+	"os"
+	"path/filepath"
+	"strings"
 
-// freeBytes exists so the pipeline's disk preflight compiles on Windows, but
-// it always reports "unknown". The guard is a safety net for NAS/local Linux
-// hubs; on Windows the preflight degrades to a skip — never a false blocker —
-// so a Windows Hub behaves exactly as it did without the knob.
-func freeBytes(string) (int64, error) {
-	return 0, errors.New("disk preflight unsupported on windows")
+	"golang.org/x/sys/windows"
+)
+
+// freeBytes reports the space available to this account, including quotas.
+func freeBytes(path string) (int64, error) {
+	if path == "" {
+		return 0, os.ErrNotExist
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return 0, err
+	}
+	if strings.HasPrefix(absolute, `\\`) && !strings.HasSuffix(absolute, `\`) {
+		absolute += `\`
+	}
+	name, err := windows.UTF16PtrFromString(absolute)
+	if err != nil {
+		return 0, err
+	}
+	var available uint64
+	if err := windows.GetDiskFreeSpaceEx(name, &available, nil, nil); err != nil {
+		return 0, err
+	}
+	return int64(min(available, math.MaxInt64)), nil
 }

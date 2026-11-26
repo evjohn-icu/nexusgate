@@ -213,12 +213,13 @@ func TestRekeySuccessCleansJournalAndPreservesPermissions(t *testing.T) {
 		t.Fatal("journal remains")
 	}
 	for _, name := range []string{filename, keyFilename, keyFilename + ".pre-rekey"} {
-		info, err := os.Stat(filepath.Join(secretDir, name))
+		path := filepath.Join(secretDir, name)
+		info, err := os.Lstat(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if info.Mode().Perm() != secretFileMode {
-			t.Fatalf("%s mode = %o", name, info.Mode().Perm())
+		if err := validateSecretFileInfo(path, info); err != nil {
+			t.Fatalf("%s: %v", name, err)
 		}
 	}
 }
@@ -443,17 +444,18 @@ func TestRekeyPreservesFilePermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dirInfo.Mode().Perm() != 0o700 {
-		t.Fatalf("provider-secrets/ mode = %o, want 700", dirInfo.Mode().Perm())
+	if err := validateSecretDirectory(secretDir, dirInfo); err != nil {
+		t.Fatal(err)
 	}
 
 	for _, name := range []string{"store.key", "store.key.pre-rekey", "provider-secrets.enc"} {
-		info, err := os.Stat(filepath.Join(secretDir, name))
+		path := filepath.Join(secretDir, name)
+		info, err := os.Lstat(path)
 		if err != nil {
 			t.Fatalf("stat %s: %v", name, err)
 		}
-		if info.Mode().Perm() != 0o600 {
-			t.Fatalf("%s mode = %o, want 600", name, info.Mode().Perm())
+		if err := validateSecretFileInfo(path, info); err != nil {
+			t.Fatalf("%s: %v", name, err)
 		}
 	}
 }

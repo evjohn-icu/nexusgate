@@ -108,10 +108,6 @@ func (j *rekeyJournalData) keyExistedDefaults() bool {
 	return j.KeyExisted == nil || *j.KeyExisted
 }
 
-func defaultFileOps() fileOps {
-	return fileOps{createTemp: func(dir string) (*os.File, error) { return os.CreateTemp(dir, ".provider-secrets-*") }, rename: os.Rename, syncDirectory: syncDirectory, remove: os.Remove}
-}
-
 // Open opens the Hub-only provider secret store. When dataDir is empty, the
 // store remains process-local for compatibility with in-memory callers.
 //
@@ -227,12 +223,16 @@ func (s *Store) withPathLock(fn func() error) error {
 	if s.path == "" {
 		return fn()
 	}
-	lock, err := lockStorePath(filepath.Dir(s.path))
+	dir := filepath.Dir(s.path)
+	if err := ensurePrivateDirectory(dir); err != nil {
+		return fmt.Errorf("open secret store directory: %w", err)
+	}
+	lock, err := lockStorePath(dir)
 	if err != nil {
 		return err
 	}
 	defer lock.Release()
-	if err := recoverRekey(filepath.Dir(s.path), s.adminToken); err != nil {
+	if err := recoverRekey(dir, s.adminToken); err != nil {
 		return fmt.Errorf("recover secret store journal: %w", err)
 	}
 	if err := s.refreshKeyLocked(); err != nil {
@@ -446,7 +446,7 @@ func legacyDecrypts(raw []byte, gcm cipher.AEAD) error {
 func loadOrCreateKey(keyPath string) ([]byte, error) {
 	info, err := os.Lstat(keyPath)
 	if err == nil {
-		if err := validateSecretFileInfo(info); err != nil {
+		if err := validateSecretFileInfo(keyPath, info); err != nil {
 			return nil, fmt.Errorf("read secret store key: %w", err)
 		}
 		raw, err := os.ReadFile(keyPath)
@@ -743,7 +743,7 @@ func (s *Store) reloadLocked() error {
 	if err != nil {
 		return fmt.Errorf("stat secret store: %w", err)
 	}
-	if err := validateSecretFileInfo(info); err != nil {
+	if err := validateSecretFileInfo(s.path, info); err != nil {
 		return fmt.Errorf("read secret store: %w", err)
 	}
 	raw, err := os.ReadFile(s.path)
@@ -754,7 +754,7 @@ func (s *Store) reloadLocked() error {
 	if err != nil {
 		return fmt.Errorf("stat secret store after read: %w", err)
 	}
-	if err := validateSecretFileInfo(after); err != nil {
+	if err := validateSecretFileInfo(s.path, after); err != nil {
 		return fmt.Errorf("read secret store: %w", err)
 	}
 	if !os.SameFile(info, after) {
@@ -793,7 +793,7 @@ func (s *Store) persistLocked() error {
 		return fmt.Errorf("write secret store directory: %w", err)
 	}
 	if info, err := os.Lstat(s.path); err == nil {
-		if err := validateSecretFileInfo(info); err != nil {
+		if err := validateSecretFileInfo(s.path, info); err != nil {
 			return fmt.Errorf("write secret store: %w", err)
 		}
 	} else if !os.IsNotExist(err) {
@@ -830,25 +830,23 @@ func writePrivateTemp(ops fileOps, path string, raw []byte) (string, error) {
 		return "", fmt.Errorf("create secret store temporary file: %w", err)
 	}
 	tmpPath := tmp.Name()
+	var keep bool
 	defer func() {
 		_ = tmp.Close()
+		if !keep {
+			_ = ops.remove(tmpPath)
+		}
 	}()
-	if err := tmp.Chmod(secretFileMode); err != nil {
-		_ = ops.remove(tmpPath)
-		return "", fmt.Errorf("protect secret store temporary file: %w", err)
-	}
 	if _, err := tmp.Write(raw); err != nil {
-		_ = ops.remove(tmpPath)
 		return "", fmt.Errorf("write secret store: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
-		_ = ops.remove(tmpPath)
 		return "", fmt.Errorf("sync secret store: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		_ = ops.remove(tmpPath)
 		return "", fmt.Errorf("close secret store: %w", err)
 	}
+	keep = true
 	return tmpPath, nil
 }
 
@@ -858,7 +856,7 @@ func renameAndSync(ops fileOps, source, destination string) error {
 	}
 	if info, err := os.Lstat(destination); err != nil {
 		return fmt.Errorf("stat committed secret store: %w", err)
-	} else if err := validateSecretFileInfo(info); err != nil {
+	} else if err := validateSecretFileInfo(destination, info); err != nil {
 		return fmt.Errorf("commit secret store: %w", err)
 	}
 	if err := ops.syncDirectory(filepath.Dir(destination)); err != nil {
@@ -1008,43 +1006,11 @@ func validateMigrationRollback(journal rekeyJournalData, hubAdminToken string) e
 	return nil
 }
 
-func ensurePrivateDirectory(path string) error {
-	if err := os.MkdirAll(path, dataDirMode); err != nil {
-		return err
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return fmt.Errorf("data directory is not a private directory")
-	}
-	if info.Mode().Perm() != dataDirMode {
-		return fmt.Errorf("data directory must have mode 0700")
-	}
-	return nil
-}
-
-func validateSecretFileInfo(info os.FileInfo) error {
+func validateSecretFileInfo(path string, info os.FileInfo) error {
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return fmt.Errorf("secret file is not a regular file")
 	}
-	if info.Mode().Perm() != secretFileMode {
-		return fmt.Errorf("secret file must have mode 0600")
-	}
-	return nil
-}
-
-func syncDirectory(path string) error {
-	directory, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	if err := directory.Sync(); err != nil {
-		_ = directory.Close()
-		return err
-	}
-	return directory.Close()
+	return validateSecretFilePermissions(path, info)
 }
 
 func validateRef(ref string) error {

@@ -878,12 +878,8 @@ func sourceSizeBytes(path string) int64 {
 
 // diskSpaceErr reports whether a heavy stage may proceed: nil means run, an
 // error wrapping errDiskSpaceLow means the cache volume is below the
-// configured floor and the job must be parked. It is deliberately permissive
-// on a failed probe: an unreadable statfs (or a platform without one —
-// Windows) reads as "unknown", never as "blocked", because a false blocker
-// would park every heavy job in the queue while the operator hunts a disk
-// problem that does not exist. The guard is a safety net for NAS/local Linux
-// hubs. The check is one statfs per heavy job — nothing worth caching.
+// configured floor and the job must be parked. A failed filesystem probe is
+// treated as unknown so it cannot stop all heavy jobs.
 // diskFloor picks the live free-space floor for one job: the throttle value
 // (editable from the settings page without a restart) when the settings row
 // exists, otherwise the static config floor. The configured flag is what makes

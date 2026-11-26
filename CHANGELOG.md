@@ -6,6 +6,8 @@
   pairing token. Hub administrators grant inference and model maintenance
   during pairing, and Workers need an attestation for the exact locked model
   they lease. Re-enroll upgraded Workers that need inference grants.
+- Windows migration snapshots use write-through publication. Hub tokens and
+  provider secrets use Windows access control lists for private storage.
 - The release includes an offline inference runtime bundle. The optional
   inference image provides a CPU environment, and the systemd Worker runs
   under a separate account with private state.

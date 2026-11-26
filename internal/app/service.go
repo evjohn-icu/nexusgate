@@ -1289,8 +1289,7 @@ func (s *Service) LeaseNextWorkerDerive(ctx context.Context, worker remote.Worke
 	// while that volume is full fills it further — the upload then fails with
 	// ENOSPC and the job burns attempts. The floor resolution mirrors the
 	// pipeline's (settings row wins when it exists, including an explicit 0 =
-	// disabled; otherwise the static config floor), and the probe fails open:
-	// an unreadable statfs or a Windows host never blocks work.
+	// disabled; otherwise the static config floor). Probe failures allow work.
 	configured, cfgErr := s.repo.PipelineThrottleConfigured(ctx)
 	floor := s.cfg.Pipeline.MinimumFreeSpaceBytes
 	if cfgErr == nil && configured {
