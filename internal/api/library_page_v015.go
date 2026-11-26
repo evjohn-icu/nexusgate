@@ -327,13 +327,13 @@ async function runShotSearch(append){
     const data=await response.json();
     if(!isCurrent())return;
     if(data&&data.status==='pending'){
-      if(status)status.textContent=tdT('library.imageSearchPending');
+      if(status&&!imageSearchPendingFile)status.textContent=tdT('library.imageSearchPending');
       imageSearchPolls++;
       if(imageSearchPolls<15){
         setTimeout(function(){if(isCurrent())runShotSearch(append)},2000);
       }else if(append){
         throw Error(tdT('library.imageSearchPending'));
-      }else if(status){status.textContent=tdT('library.imageSearchError')}
+      }else if(status&&!imageSearchPendingFile){status.textContent=tdT('library.imageSearchError')}
       return;
     }
     const page=data&&Array.isArray(data.results)?data.results:[];
@@ -342,7 +342,7 @@ async function runShotSearch(append){
     pageState.nextOffset=data&&typeof data.next_offset==='number'?data.next_offset:null;
     pageState.windowExhausted=!!(data&&data.window_exhausted);
     imageSearchPolls=0;
-    if(status&&reference)status.textContent=tdT('library.imageSearchReady');
+    if(status&&reference&&!imageSearchPendingFile)status.textContent=tdT('library.imageSearchReady');
     renderShotResults(pageState.items);
     lastLoadedAssets=[];lastLoadedAssets.__searchOwned=true;
   }catch(e){
@@ -357,7 +357,7 @@ async function runShotSearch(append){
       retry.disabled=false;
       return;
     }
-    if(status&&reference)status.textContent=tdT('library.imageSearchError')+e.message;
+    if(status&&reference&&!imageSearchPendingFile)status.textContent=tdT('library.imageSearchError')+e.message;
     library.innerHTML='<div class="empty error">'+tdT('library.searchFailed')+esc(e.message)+'</div>';
   }finally{pageState.loading=false}
 }
@@ -404,6 +404,8 @@ async function imageSearchFile(file){
   if(!file)return;
   const status=document.getElementById('image-search-status');
   const generation=++imageSearchGeneration;
+  const previousPage=shotPage;
+  const previousMore=library.querySelector('#shot-more-btn:disabled');
   imageSearchPendingFile=null;
   if(status)status.textContent=tdT('library.imageSearchUploading');
   try{
@@ -428,6 +430,14 @@ async function imageSearchFile(file){
     await startShotSearch('');
   }catch(e){
     if(generation===imageSearchGeneration&&status)status.textContent=tdT('library.imageSearchError')+e.message;
+  }finally{
+    if(generation===imageSearchGeneration&&shotPage===previousPage&&previousPage?.hasMore&&previousMore&&library.contains(previousMore)){
+      // The upload superseded the old request. Give further paging its own state.
+      shotPage={...previousPage,loading:false};
+      imageSearchPolls=0;
+      previousMore.textContent=tdT('library.loadMore');
+      previousMore.disabled=false;
+    }
   }
 }
 function showImageSearchLoginStatus(status){status.textContent=tdT('common.loginRequiredTop');const retry=document.createElement('button');retry.type='button';retry.className='shot-add';retry.textContent=tdT('common.retry');retry.addEventListener('click',function(){const file=imageSearchPendingFile;if(file)imageSearchFile(file)});status.appendChild(retry)}

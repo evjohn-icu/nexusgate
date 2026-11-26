@@ -32,6 +32,8 @@
   with the same reference image.
 - Failed shot-search continuations preserve the displayed results and let
   users retry the same page.
+- A failed image upload restores pagination on the search results already
+  on screen.
 - Eval runs use separate databases and caches per label. To score a report from
   the shared-database layout, rerun its label. Multimodal scoring reads recorded
   predictions and computes event macro F1 across labels.

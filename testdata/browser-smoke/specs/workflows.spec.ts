@@ -614,6 +614,74 @@ test.describe('browse and search view ownership (partition 18 review)', () => {
     });
   }
 
+  for (const searchKind of ['text', 'image']) {
+    for (const failure of [401, 403, 503, 'network']) {
+      test(`${searchKind} pagination recovers after an image upload fails (${failure})`, async ({ page }) => {
+        await page.goto('/');
+        await browseReady(page);
+        let uploadingReplacement = false;
+        await page.route('**/api/v1/admin/search-references', async (route) => {
+          if (searchKind === 'image' && !uploadingReplacement) {
+            await route.fulfill({ status: 201, json: { id: 'original-reference' } });
+          } else if (failure === 'network') {
+            await route.abort('failed');
+          } else {
+            await route.fulfill({ status: failure, json: { error: { code: 'upload_failed', message: 'upload failed' } } });
+          }
+        });
+        const interrupted = Promise.withResolvers<Route>();
+        const requests: Array<{ query: string; offset: number; reference_id?: string }> = [];
+        await page.route('**/api/v1/search/shots', async (route) => {
+          const { query, offset, reference_id } = route.request().postDataJSON();
+          requests.push({ query, offset, reference_id });
+          if (requests.length === 2) {
+            interrupted.resolve(route);
+            return;
+          }
+          const filename = offset === 0 ? 'original.mp4' : 'next.mp4';
+          await route.fulfill({ json: {
+            results: [{ shot_id: filename, asset_id: 'asset-fixture', filename, start_ms: 0, end_ms: 5000 }],
+            has_more: offset === 0,
+            ...(offset === 0 ? { next_offset: 40 } : {}),
+          } });
+        });
+        const input = page.locator('#image-search');
+        if (searchKind === 'image') {
+          await input.setInputFiles({ name: 'original.png', mimeType: 'image/png', buffer: nextProbePng() });
+        } else {
+          await page.locator('#q').fill('camera');
+          await page.locator('#q').press('Enter');
+        }
+        const files = page.locator('.shot-result-file');
+        await expect(files).toHaveText(['original.mp4']);
+        const more = page.locator('#shot-more-btn');
+        await more.click();
+        const oldPage = await interrupted.promise;
+        await expect(more).toBeDisabled();
+
+        uploadingReplacement = true;
+        await input.setInputFiles({ name: 'replacement.png', mimeType: 'image/png', buffer: nextProbePng() });
+        const status = page.locator('#image-search-status');
+        await expect(status).toContainText(failure === 401 ? zh.loginRequiredTop : failure === 403 ? zh.http403 : zh.imageSearchError);
+        if (failure === 401) await page.keyboard.press('Escape');
+        await expect(files).toHaveText(['original.mp4']);
+        await expect(more).toBeEnabled();
+
+        await more.click();
+        await expect(files).toHaveText(['original.mp4', 'next.mp4']);
+        const completed = page.waitForResponse((response) => response.request() === oldPage.request());
+        await oldPage.fulfill({ json: { results: [{ shot_id: 'stale', asset_id: 'asset-fixture', filename: 'stale.mp4' }] } });
+        await (await completed).finished();
+        await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+        await expect(files).toHaveText(['original.mp4', 'next.mp4']);
+        expect(requests.map(({ offset }) => offset)).toEqual([0, 40, 40]);
+        expect(requests[1]).toEqual({ query: searchKind === 'image' ? '' : 'camera', offset: 40, reference_id: searchKind === 'image' ? 'original-reference' : undefined });
+        expect(requests[2]).toEqual(requests[1]);
+        if (failure === 401) await expect(status.getByRole('button')).toBeVisible();
+      });
+    }
+  }
+
   for (const action of ['Clear', 'saved view']) {
     test(`${action} discards the image awaiting sign-in`, async ({ page }) => {
       await page.goto('/');
