@@ -56,6 +56,17 @@ func makeExistingConfigInsecure(t *testing.T, path string) {
 	applyTestSDDL(t, path, "D:P(A;;FA;;;"+testRunningSID(t).String()+")(A;;GR;;;WD)")
 }
 
+// assertConfigStillSecure asserts the exact state LoadConfig accepts after a
+// local-admin update: an owner-controlled file whose DACL grants read, write
+// or DACL control only to the running account, LocalSystem and Administrators
+// (POSIX permission bits carry no meaning on Windows).
+func assertConfigStillSecure(t *testing.T, path string) {
+	t.Helper()
+	if err := validateConfigSecurity(path); err != nil {
+		t.Fatalf("published Windows config no longer protected: %v", err)
+	}
+}
+
 // assertWorkerDACL asserts that path carries the protected Worker DACL: an
 // allowed owner and no ACE granting any other account read, write or DACL
 // control.

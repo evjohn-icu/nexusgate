@@ -139,15 +139,18 @@ func TestGenerateProxyRejectsRAWByPathBeforeFFmpeg(t *testing.T) {
 // is a no-op (the separator is already '/'). The Windows-style path below is
 // skipped on Unix because backslash is not a path separator there and
 // filepath.ToSlash cannot convert it.
+//
+// The drive colon in a Windows path must come out escaped ("C\:/..."): an
+// unescaped ':' after the drive letter would be parsed by the filtergraph
+// lexer as a filter option separator rather than part of the filename. The
+// forward slashes stay unescaped, so the exact expectation below is what
+// lut3d receives after shell/filtergraph splitting.
 func TestEscapeFilterValueUsesForwardSlashes(t *testing.T) {
 	tests := []struct {
 		input string
 	}{
 		{`/home/user/apple-log.cube`},
 		{`../luts/apple-log.cube`},
-	}
-	if runtime.GOOS == "windows" {
-		tests = append(tests, struct{ input string }{`C:\Users\user\apple-log.cube`})
 	}
 	for _, tt := range tests {
 		got := escapeFilterValue(tt.input)
@@ -157,6 +160,14 @@ func TestEscapeFilterValueUsesForwardSlashes(t *testing.T) {
 		if !strings.Contains(got, "apple-log.cube") {
 			t.Fatalf("escapeFilterValue(%q) = %q missing expected filename", tt.input, got)
 		}
+	}
+	if runtime.GOOS != "windows" {
+		return
+	}
+	// On Windows the drive colon survives as a path separator and must be
+	// escaped for the filtergraph, while the ToSlash'd separators must not.
+	if got, want := escapeFilterValue(`C:\Users\user\apple-log.cube`), `C\:/Users/user/apple-log.cube`; got != want {
+		t.Fatalf("escapeFilterValue(C:\\Users\\user\\apple-log.cube) = %q, want %q", got, want)
 	}
 }
 

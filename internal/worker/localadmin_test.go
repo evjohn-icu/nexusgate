@@ -264,6 +264,9 @@ func TestLocalAdminKeepsConfigPrivateAndComplete(t *testing.T) {
 	}
 }
 
+// The update must preserve exactly what LoadConfig accepts: on Unix a 0600
+// regular file, on Windows an owner-controlled file with a protected DACL
+// (assertConfigStillSecure covers both platforms).
 func TestLocalAdminUpdateKeepsExactConfigPermissions(t *testing.T) {
 	path := writeWorkerConfig(t, enrolledConfig())
 	admin := newTestAdmin(t, path)
@@ -272,13 +275,7 @@ func TestLocalAdminUpdateKeepsExactConfigPermissions(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 || !info.Mode().IsRegular() {
-		t.Fatalf("mode/type=%o/%v", info.Mode().Perm(), info.Mode().IsRegular())
-	}
+	assertConfigStillSecure(t, path)
 }
 
 func TestLocalAdminURLCarriesTheToken(t *testing.T) {

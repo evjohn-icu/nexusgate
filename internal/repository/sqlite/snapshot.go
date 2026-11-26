@@ -151,20 +151,11 @@ func (r *Repository) preMigrationSnapshotWith(ctx context.Context, conn *sql.Con
 	if err := file.Close(); err != nil {
 		return "", fmt.Errorf("pre-migration snapshot failed (restore from %s if the database is damaged): %w", snapshotPath, err)
 	}
-	if err := os.Rename(tempPath, snapshotPath); err != nil {
+	// publishSnapshotFile replaces any prior snapshot and makes the directory
+	// entry durable: Unix rename plus directory fsync, Windows MoveFileEx with
+	// MOVEFILE_WRITE_THROUGH. A failure here still aborts the migration.
+	if err := publishSnapshotFile(tempPath, snapshotPath); err != nil {
 		return "", fmt.Errorf("pre-migration snapshot failed (restore from %s if the database is damaged): %w", snapshotPath, err)
-	}
-	// fsync the directory so the snapshot's directory entry is durable too.
-	dir, err := os.Open(filepath.Dir(snapshotPath))
-	if err != nil {
-		return "", fmt.Errorf("pre-migration snapshot failed (restore from %s if the database is damaged): open snapshot directory: %w", snapshotPath, err)
-	}
-	if err := dir.Sync(); err != nil {
-		dir.Close()
-		return "", fmt.Errorf("pre-migration snapshot failed (restore from %s if the database is damaged): sync snapshot directory: %w", snapshotPath, err)
-	}
-	if err := dir.Close(); err != nil {
-		return "", fmt.Errorf("pre-migration snapshot failed (restore from %s if the database is damaged): close snapshot directory: %w", snapshotPath, err)
 	}
 	return snapshotPath, nil
 }
