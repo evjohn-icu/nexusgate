@@ -4,6 +4,7 @@
 package secretstore
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -20,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"unicode/utf8"
+
+	"github.com/evjohn-icu/nexusgate/internal/cachecoord"
 )
 
 const (
@@ -31,6 +34,17 @@ const (
 	maxRefLength   = 512
 	keyBytes       = 32
 	rekeyJournal   = "rekey.journal"
+	// lockFilename is the cross-handle lock inside the private store
+	// directory. Every persistent store operation — including reads, so
+	// recovery is always serialized — holds it exclusively after the
+	// per-instance mutex; process-local stores have no lock path at all.
+	lockFilename = ".secret-store.lock"
+)
+
+// Journal kinds. An absent Kind means the original rekey protocol.
+const (
+	journalKindRekey     = "rekey"
+	journalKindMigration = "legacy-migration"
 )
 
 // ErrAdminTokenRotated reports a store that predates the independent key file
@@ -49,6 +63,10 @@ type Store struct {
 	gcm     cipher.AEAD
 	secrets map[string]string
 	ops     fileOps
+	// adminToken is held only in memory and only so a persistent operation
+	// can validate a legacy-migration rollback before replaying it. It is
+	// never serialized, logged or included in errors.
+	adminToken string
 }
 
 type fileOps struct {
@@ -59,14 +77,35 @@ type fileOps struct {
 }
 
 type rekeyJournalData struct {
-	State              string `json:"state"`
-	CiphertextPath     string `json:"ciphertext_path"`
-	CiphertextExisted  bool   `json:"ciphertext_existed"`
-	KeyPath            string `json:"key_path"`
+	State string `json:"state"`
+	// Kind distinguishes the original rekey protocol from the legacy
+	// token-migration protocol that reuses it. Empty means rekey.
+	Kind string `json:"kind,omitempty"`
+	// CiphertextPath and KeyPath are the canonical filenames the journal
+	// protects.
+	CiphertextPath    string `json:"ciphertext_path"`
+	CiphertextExisted bool   `json:"ciphertext_existed"`
+	KeyPath           string `json:"key_path"`
+	// KeyExisted records whether the canonical key file existed before the
+	// operation. The field is optional: a journal written before it existed
+	// has no field, and the rekey protocol — whose only caller of the time
+	// always had a key snapshot — must then behave as before, i.e. as if the
+	// key existed and must be restored from its snapshot.
+	KeyExisted         *bool  `json:"key_existed,omitempty"`
 	SnapshotCiphertext string `json:"snapshot_ciphertext"`
 	SnapshotKey        string `json:"snapshot_key"`
 	StagedCiphertext   string `json:"staged_ciphertext"`
 	StagedKey          string `json:"staged_key"`
+}
+
+func (j *rekeyJournalData) isLegacyMigration() bool {
+	return j.Kind == journalKindMigration
+}
+
+// keyExistedDefaults applies the legacy default for journals that predate the
+// field: the key existed and its snapshot restores it.
+func (j *rekeyJournalData) keyExistedDefaults() bool {
+	return j.KeyExisted == nil || *j.KeyExisted
 }
 
 func defaultFileOps() fileOps {
@@ -114,10 +153,19 @@ func Open(dataDir, hubAdminToken string) (*Store, error) {
 	path := filepath.Join(secretDir, filename)
 	keyPath := filepath.Join(secretDir, keyFilename)
 
-	if err := recoverRekey(secretDir); err != nil {
+	// Cross-handle coordination: recovery, migration and the initial load all
+	// read and possibly rewrite the same on-disk files, so they run under the
+	// store path lock no matter which process or handle wins it.
+	lock, err := lockStorePath(secretDir)
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Release()
+
+	if err := recoverRekey(secretDir, hubAdminToken); err != nil {
 		return nil, fmt.Errorf("recover secret store rekey: %w", err)
 	}
-	if err := migrateLegacyStore(path, keyPath, hubAdminToken); err != nil {
+	if err := migrateLegacyStore(path, keyPath, hubAdminToken, defaultFileOps()); err != nil {
 		return nil, err
 	}
 	key, err := loadOrCreateKey(keyPath)
@@ -129,7 +177,7 @@ func Open(dataDir, hubAdminToken string) (*Store, error) {
 		return nil, err
 	}
 
-	s := &Store{path: path, gcm: gcm, secrets: map[string]string{}, ops: defaultFileOps()}
+	s := &Store{path: path, gcm: gcm, secrets: map[string]string{}, ops: defaultFileOps(), adminToken: hubAdminToken}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.reloadLocked(); err != nil {
@@ -157,11 +205,88 @@ func newGCM(key []byte) (cipher.AEAD, error) {
 	return gcm, nil
 }
 
-// migrateLegacyStore upgrades a store written before store.key existed. It is a
-// no-op once the key file is present, or when there is no ciphertext to carry
-// over. Nothing is written until the legacy payload has decrypted successfully,
-// so a failed migration leaves the original file untouched.
-func migrateLegacyStore(path, keyPath, hubAdminToken string) error {
+// lockStorePath acquires the exclusive cross-handle lock for one store
+// directory. The lock file lives inside the already-private store directory
+// and is created with 0600, so it never widens the directory's exposure.
+func lockStorePath(secretDir string) (*cachecoord.Lock, error) {
+	lock, err := cachecoord.AcquirePath(filepath.Join(secretDir, lockFilename), true)
+	if err != nil {
+		return nil, fmt.Errorf("acquire secret store lock: %w", err)
+	}
+	return lock, nil
+}
+
+// withPathLock runs fn while holding the store path lock, after the caller
+// already holds the per-instance mutex. Before fn runs, any journal left by an
+// interrupted persistent operation is recovered and the current on-disk key is
+// reloaded with the cipher rebuilt, so a handle never decrypts with a key
+// another handle has already rotated or migrated. Process-local stores have no
+// lock path and simply run fn. Persistent methods must call this exactly once
+// per operation — the internal *Locked helpers never re-acquire.
+func (s *Store) withPathLock(fn func() error) error {
+	if s.path == "" {
+		return fn()
+	}
+	lock, err := lockStorePath(filepath.Dir(s.path))
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	if err := recoverRekey(filepath.Dir(s.path), s.adminToken); err != nil {
+		return fmt.Errorf("recover secret store journal: %w", err)
+	}
+	if err := s.refreshKeyLocked(); err != nil {
+		return err
+	}
+	return fn()
+}
+
+// refreshKeyLocked re-reads the on-disk data-encryption key and rebuilds the
+// cipher. Callers hold the store mutex and the path lock.
+func (s *Store) refreshKeyLocked() error {
+	if s.path == "" {
+		return nil
+	}
+	key, err := loadOrCreateKey(s.keyPath())
+	if err != nil {
+		return err
+	}
+	gcm, err := newGCM(key)
+	if err != nil {
+		return err
+	}
+	s.gcm = gcm
+	return nil
+}
+
+// migrateLegacyStore upgrades a store written before store.key existed. It is
+// a no-op once the key file is present, or when there is no ciphertext to carry
+// over. Nothing is published until the legacy payload has decrypted
+// successfully, so a failed migration leaves the original file untouched.
+//
+// The migration reuses the prepared/committed rekey journal: the legacy
+// ciphertext and key presence are snapshotted, both replacement files are
+// staged, a prepared record is written, the new ciphertext and key file are
+// published in order, and a committed record closes the transaction. Recovery
+// rolls both filenames back to the snapshot, preserving the legacy backup —
+// which stays on disk as the operator's copy of the pre-migration store either
+// way.
+//
+// Stores stranded by the old unjournaled migration are recognized first: a key
+// file next to a canonical ciphertext that still matches the legacy backup.
+// That state is recoverable only when the backup decrypts under the supplied
+// admin token, which proves the store belongs to this deployment; the stray
+// key file is then removed and migration reruns normally.
+func migrateLegacyStore(path, keyPath, hubAdminToken string, ops fileOps) error {
+	if ops.createTemp == nil {
+		ops = defaultFileOps()
+	}
+	backupPath := path + backupSuffix
+	secretDir := filepath.Dir(path)
+
+	if err := recoverStrandedMigration(path, keyPath, backupPath, hubAdminToken); err != nil {
+		return err
+	}
 	if _, err := os.Lstat(keyPath); err == nil {
 		return nil
 	} else if !os.IsNotExist(err) {
@@ -185,20 +310,132 @@ func migrateLegacyStore(path, keyPath, hubAdminToken string) error {
 			ErrAdminTokenRotated, filepath.Dir(path))
 	}
 
-	if err := copyPrivateFile(path, path+backupSuffix); err != nil {
-		return fmt.Errorf("back up secret store before migration: %w", err)
+	// Snapshot the legacy ciphertext as the operator-facing backup. An existing
+	// backup from an earlier attempt is left untouched: it already holds the
+	// same legacy payload and recovery must be able to trust it.
+	if _, err := os.Lstat(backupPath); os.IsNotExist(err) {
+		if err := copyPrivateFile(path, backupPath, ops); err != nil {
+			return fmt.Errorf("back up secret store before migration: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("stat secret store backup: %w", err)
 	}
-	key, err := loadOrCreateKey(keyPath)
+
+	// Stage both replacement files before any canonical filename changes.
+	newKeyBytes := make([]byte, keyBytes)
+	if _, err := io.ReadFull(rand.Reader, newKeyBytes); err != nil {
+		return fmt.Errorf("generate migration key: %w", err)
+	}
+	migratedGCM, err := newGCM(newKeyBytes)
 	if err != nil {
 		return err
 	}
-	gcm, err := newGCM(key)
+	newCiphertext, err := encryptedBytes(legacy.secrets, migratedGCM)
+	if err != nil {
+		return fmt.Errorf("migration: encrypt new ciphertext: %w", err)
+	}
+	cipherTemp, err := writePrivateTemp(ops, path, newCiphertext)
+	if err != nil {
+		return fmt.Errorf("migration: stage new ciphertext: %w", err)
+	}
+	keyTemp, err := writePrivateTemp(ops, keyPath, []byte(base64.StdEncoding.EncodeToString(newKeyBytes)))
+	if err != nil {
+		_ = ops.remove(cipherTemp)
+		return fmt.Errorf("migration: stage new key: %w", err)
+	}
+
+	// The legacy store predates store.key, so the canonical key file never
+	// existed and rollback deletes it; the ciphertext existed and its snapshot
+	// is the operator backup.
+	keyExisted := false
+	j := rekeyJournalData{
+		State: "prepared", Kind: journalKindMigration,
+		CiphertextPath: path, CiphertextExisted: true, KeyPath: keyPath, KeyExisted: &keyExisted,
+		SnapshotCiphertext: backupPath, SnapshotKey: "",
+		StagedCiphertext: cipherTemp, StagedKey: keyTemp,
+	}
+	journalPath := filepath.Join(secretDir, rekeyJournal)
+	if err := writeJournal(journalPath, j, ops); err != nil {
+		// No canonical file has been renamed yet. Remove the journal before the
+		// staged files so a post-rename journal-write failure cannot leave Open
+		// with an unrecoverable prepared record.
+		if removeErr := ops.remove(journalPath); removeErr != nil && !os.IsNotExist(removeErr) {
+			return fmt.Errorf("migration: write journal: %w; preserve recovery journal: %v", err, removeErr)
+		}
+		_ = ops.remove(cipherTemp)
+		_ = ops.remove(keyTemp)
+		return fmt.Errorf("migration: write journal: %w", err)
+	}
+
+	if err := renameAndSync(ops, cipherTemp, path); err != nil {
+		return fmt.Errorf("migration: commit ciphertext: %w", err)
+	}
+	if err := renameAndSync(ops, keyTemp, keyPath); err != nil {
+		return fmt.Errorf("migration: commit key: %w", err)
+	}
+	j.State = "committed"
+	if err := writeJournal(journalPath, j, ops); err != nil {
+		return fmt.Errorf("migration: write commit marker: %w", err)
+	}
+	// The backup is deliberately preserved after a successful migration.
+	_ = ops.remove(journalPath)
+	return nil
+}
+
+// recoverStrandedMigration removes a key file stranded by the old unjournaled
+// migration. The old code created the new key file before publishing the new
+// ciphertext; a crash between the two left a store whose canonical ciphertext
+// is still the legacy bytes and whose key file belongs to the aborted attempt.
+// That state is identified by a canonical ciphertext byte-identical to the
+// legacy backup, and is recoverable only when the backup decrypts under the
+// supplied admin token — anything else is left exactly as found.
+func recoverStrandedMigration(path, keyPath, backupPath, hubAdminToken string) error {
+	if _, err := os.Lstat(keyPath); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("stat secret store key: %w", err)
+	}
+	backup, err := os.ReadFile(backupPath)
+	if os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("read secret store backup: %w", err)
+	}
+	canonical, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read secret store: %w", err)
+	}
+	if !bytes.Equal(canonical, backup) {
+		// The canonical ciphertext moved on from the legacy payload — a
+		// completed migration or an unrelated configuration. Nothing to undo.
+		return nil
+	}
+	legacyGCM, err := newGCM(legacyKey(hubAdminToken))
 	if err != nil {
 		return err
 	}
-	migrated := &Store{path: path, gcm: gcm, secrets: legacy.secrets}
-	if err := migrated.persistLocked(); err != nil {
-		return fmt.Errorf("rewrite secret store during migration: %w", err)
+	if err := legacyDecrypts(backup, legacyGCM); err != nil {
+		return fmt.Errorf("%w: start the Hub once with the original token to migrate the store automatically, or delete %s to discard the stored Provider keys and configure them again",
+			ErrAdminTokenRotated, filepath.Dir(path))
+	}
+	if err := os.Remove(keyPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stranded secret store key: %w", err)
+	}
+	return nil
+}
+
+// legacyDecrypts reports whether one encrypted ciphertext file decrypts under
+// the legacy derivation.
+func legacyDecrypts(raw []byte, gcm cipher.AEAD) error {
+	var file encryptedFile
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return err
+	}
+	if file.Version != 1 || len(file.Nonce) != gcm.NonceSize() || len(file.Ciphertext) <= gcm.Overhead() {
+		return errors.New("invalid encrypted payload")
+	}
+	if _, err := gcm.Open(nil, file.Nonce, file.Ciphertext, nil); err != nil {
+		return errors.New("decrypt payload")
 	}
 	return nil
 }
@@ -236,12 +473,12 @@ func loadOrCreateKey(keyPath string) ([]byte, error) {
 	return key, nil
 }
 
-func copyPrivateFile(source, destination string) error {
+func copyPrivateFile(source, destination string, ops fileOps) error {
 	raw, err := os.ReadFile(source)
 	if err != nil {
 		return err
 	}
-	return writePrivateFile(destination, raw, defaultFileOps())
+	return writePrivateFile(destination, raw, ops)
 }
 
 // Rekey generates a new data-encryption key, re-encrypts every stored secret
@@ -249,9 +486,11 @@ func copyPrivateFile(source, destination string) error {
 // the previous key to store.key.pre-rekey. On failure the original files and
 // in-memory state are restored.
 //
-// Rekey is exclusive: it holds the write lock for its entire duration, so no
-// other call can observe an inconsistent state. A store opened in process-local
-// mode (dataDir empty) has no persistent key to rotate and returns an error.
+// Rekey is exclusive: it reloads from disk and rewrites the store while holding
+// the write lock and the cross-handle path lock for its entire duration, so no
+// other handle can observe an inconsistent state. A store opened in
+// process-local mode (dataDir empty) has no persistent key to rotate and
+// returns an error.
 func (s *Store) Rekey() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -259,14 +498,19 @@ func (s *Store) Rekey() error {
 	if s.path == "" {
 		return fmt.Errorf("secret store has no persistent key to rotate")
 	}
+	return s.withPathLock(func() error {
+		if err := s.reloadLocked(); err != nil {
+			return err
+		}
+		return s.rekeyLocked()
+	})
+}
 
-	if err := s.reloadLocked(); err != nil {
-		return err
-	}
-
+func (s *Store) rekeyLocked() error {
 	keyPath := s.keyPath()
+	secretDir := filepath.Dir(s.path)
 	preRekeyPath := keyPath + ".pre-rekey"
-	journalPath := filepath.Join(filepath.Dir(s.path), rekeyJournal)
+	journalPath := filepath.Join(secretDir, rekeyJournal)
 	oldCiphertext, err := os.ReadFile(s.path)
 	ciphertextExisted := err == nil
 	if os.IsNotExist(err) {
@@ -320,7 +564,8 @@ func (s *Store) Rekey() error {
 		cleanup()
 		return fmt.Errorf("rekey: stage new key: %w", err)
 	}
-	j := rekeyJournalData{State: "prepared", CiphertextPath: s.path, CiphertextExisted: ciphertextExisted, KeyPath: keyPath, SnapshotCiphertext: oldCipherSnapshot, SnapshotKey: oldKeySnapshot, StagedCiphertext: cipherTemp, StagedKey: keyTemp}
+	keyExisted := true
+	j := rekeyJournalData{State: "prepared", Kind: journalKindRekey, CiphertextPath: s.path, CiphertextExisted: ciphertextExisted, KeyPath: keyPath, KeyExisted: &keyExisted, SnapshotCiphertext: oldCipherSnapshot, SnapshotKey: oldKeySnapshot, StagedCiphertext: cipherTemp, StagedKey: keyTemp}
 	if err := writeJournal(journalPath, j, s.ops); err != nil {
 		// No canonical file has been renamed yet. Remove the journal before its
 		// snapshots so a post-rename journal-write failure cannot leave Open
@@ -363,17 +608,24 @@ func (s *Store) Get(ref string) (string, bool, error) {
 }
 
 // Resolve returns the value for ref, whether it exists, and any store error.
+// Persistent stores reload from disk under the path lock, so a value is never
+// served while another handle is mid-write or mid-recovery on the same files.
 func (s *Store) Resolve(ref string) (string, bool, error) {
 	if err := validateRef(ref); err != nil {
 		return "", false, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.reloadLocked(); err != nil {
-		return "", false, err
-	}
-	value, ok := s.secrets[ref]
-	return value, ok, nil
+	var value string
+	var ok bool
+	err := s.withPathLock(func() error {
+		if err := s.reloadLocked(); err != nil {
+			return err
+		}
+		value, ok = s.secrets[ref]
+		return nil
+	})
+	return value, ok, err
 }
 
 // Has reports whether ref is present without exposing its value.
@@ -383,11 +635,15 @@ func (s *Store) Has(_ context.Context, ref string) (bool, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.reloadLocked(); err != nil {
-		return false, err
-	}
-	_, ok := s.secrets[ref]
-	return ok, nil
+	var ok bool
+	err := s.withPathLock(func() error {
+		if err := s.reloadLocked(); err != nil {
+			return err
+		}
+		_, ok = s.secrets[ref]
+		return nil
+	})
+	return ok, err
 }
 
 // Put stores value under ref. Values are held only by the Hub process and the
@@ -401,20 +657,22 @@ func (s *Store) Put(ref, value string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.reloadLocked(); err != nil {
-		return err
-	}
-	previous, hadPrevious := s.secrets[ref]
-	s.secrets[ref] = value
-	if err := s.persistLocked(); err != nil {
-		if hadPrevious {
-			s.secrets[ref] = previous
-		} else {
-			delete(s.secrets, ref)
+	return s.withPathLock(func() error {
+		if err := s.reloadLocked(); err != nil {
+			return err
 		}
-		return err
-	}
-	return nil
+		previous, hadPrevious := s.secrets[ref]
+		s.secrets[ref] = value
+		if err := s.persistLocked(); err != nil {
+			if hadPrevious {
+				s.secrets[ref] = previous
+			} else {
+				delete(s.secrets, ref)
+			}
+			return err
+		}
+		return nil
+	})
 }
 
 // Delete removes ref. Deleting an absent reference is idempotent.
@@ -424,19 +682,21 @@ func (s *Store) Delete(ref string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.reloadLocked(); err != nil {
-		return err
-	}
-	previous, ok := s.secrets[ref]
-	if !ok {
+	return s.withPathLock(func() error {
+		if err := s.reloadLocked(); err != nil {
+			return err
+		}
+		previous, ok := s.secrets[ref]
+		if !ok {
+			return nil
+		}
+		delete(s.secrets, ref)
+		if err := s.persistLocked(); err != nil {
+			s.secrets[ref] = previous
+			return err
+		}
 		return nil
-	}
-	delete(s.secrets, ref)
-	if err := s.persistLocked(); err != nil {
-		s.secrets[ref] = previous
-		return err
-	}
-	return nil
+	})
 }
 
 // String deliberately reports only metadata. In particular, it never formats
@@ -639,7 +899,13 @@ func writeJournal(path string, journal rekeyJournalData, ops fileOps) error {
 	return writePrivateFile(path, raw, ops)
 }
 
-func recoverRekey(dir string) error {
+// recoverRekey replays the rekey journal — the same protocol the legacy
+// migration reuses — left behind by an interrupted persistent operation.
+// hubAdminToken is required to validate a legacy-migration rollback: the
+// snapshot it would restore is only trusted when it decrypts under the legacy
+// derivation of the supplied token, so a journal written for a store this
+// token cannot own is left untouched rather than used to overwrite files.
+func recoverRekey(dir, hubAdminToken string) error {
 	path := filepath.Join(dir, rekeyJournal)
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -653,9 +919,19 @@ func recoverRekey(dir string) error {
 		return fmt.Errorf("read rekey journal: %w", err)
 	}
 	if journal.State == "committed" {
-		for _, p := range []string{journal.SnapshotCiphertext, journal.SnapshotKey, journal.StagedCiphertext, journal.StagedKey} {
+		for _, p := range []string{journal.StagedCiphertext, journal.StagedKey} {
 			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("clean committed rekey transient: %w", err)
+			}
+		}
+		// A rekey run owns its snapshots; a legacy-migration run must preserve
+		// its operator backup, which survives the completed migration on
+		// purpose.
+		if !journal.isLegacyMigration() {
+			for _, p := range []string{journal.SnapshotCiphertext, journal.SnapshotKey} {
+				if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+					return fmt.Errorf("clean committed rekey transient: %w", err)
+				}
 			}
 		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -666,10 +942,23 @@ func recoverRekey(dir string) error {
 	if journal.State != "prepared" {
 		return fmt.Errorf("invalid rekey journal state")
 	}
-	for _, item := range []struct{ snapshot, canonical string }{{journal.SnapshotCiphertext, journal.CiphertextPath}, {journal.SnapshotKey, journal.KeyPath}} {
-		if item.canonical == journal.CiphertextPath && !journal.CiphertextExisted {
+	if journal.isLegacyMigration() {
+		if err := validateMigrationRollback(journal, hubAdminToken); err != nil {
+			return err
+		}
+	}
+	for _, item := range []struct {
+		snapshot, canonical string
+		restorable          bool
+	}{
+		{journal.SnapshotCiphertext, journal.CiphertextPath, journal.CiphertextExisted},
+		{journal.SnapshotKey, journal.KeyPath, journal.keyExistedDefaults()},
+	} {
+		if !item.restorable {
+			// The canonical file did not exist before the operation; recovery
+			// restores that absence.
 			if err := os.Remove(item.canonical); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("remove rekey rollback ciphertext: %w", err)
+				return fmt.Errorf("remove rekey rollback file: %w", err)
 			}
 			continue
 		}
@@ -681,10 +970,40 @@ func recoverRekey(dir string) error {
 			return fmt.Errorf("restore rekey rollback snapshot: %w", err)
 		}
 	}
+	if journal.isLegacyMigration() {
+		// Keep the legacy backup: it is the operator's pre-migration store and
+		// recovery does not consume it.
+		for _, p := range []string{journal.StagedCiphertext, journal.StagedKey, path} {
+			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("clean rekey rollback transient: %w", err)
+			}
+		}
+		return nil
+	}
 	for _, p := range []string{journal.SnapshotCiphertext, journal.SnapshotKey, journal.StagedCiphertext, journal.StagedKey, path} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("clean rekey rollback transient: %w", err)
 		}
+	}
+	return nil
+}
+
+// validateMigrationRollback refuses to roll a legacy migration back onto
+// ciphertext the supplied token cannot actually own. The snapshot must decrypt
+// under the legacy derivation — proving the store belongs to this
+// deployment — and the staged/new state it would replace is left untouched
+// when it does not, so the journal waits for the original token instead.
+func validateMigrationRollback(journal rekeyJournalData, hubAdminToken string) error {
+	snapshot, err := os.ReadFile(journal.SnapshotCiphertext)
+	if err != nil {
+		return fmt.Errorf("read legacy migration rollback snapshot: %w", err)
+	}
+	legacyGCM, err := newGCM(legacyKey(hubAdminToken))
+	if err != nil {
+		return err
+	}
+	if err := legacyDecrypts(snapshot, legacyGCM); err != nil {
+		return fmt.Errorf("%w: start the Hub once with the original token to finish recovering the secret store migration", ErrAdminTokenRotated)
 	}
 	return nil
 }

@@ -375,38 +375,64 @@ func (s *Service) inferenceTask(src modalitySource, req domain.InferenceRequest,
 	}, nil
 }
 
-// EnqueuePlannedModalities enqueues the planned tasks and the deterministic
-// shot-detection job when visual indexing is enabled for an asset that has no
-// canonical shots yet. Existing identical tasks are deduplicated by task_key.
-func (s *Service) EnqueuePlannedModalities(ctx context.Context, assetID, inputHash string) {
+// enqueuePlannedModalities is the error-returning core of the post-derive
+// modality hook. It enqueues exactly what EnqueuePlannedModalities always
+// did — the same detect-shots job key, the same per-task InferenceTaskKey
+// identity, the same priorities — and reports the first failure that is not
+// a lost deduplication race, so a durable replay can keep retrying until
+// every planned task is recorded. Losing a dedup race means another caller
+// already queued the work, which is success for this purpose.
+//
+// inputHash must already be the asset's canonical derive identity. The local
+// derive stage passes the hash it derived from the source, and the derive
+// outbox drain translates a `cache-rederive:` maintenance key back to that
+// identity before calling (Service.replayDerivedModalities). The maintenance
+// key therefore never reaches a task key: a cache repair cannot mint a new
+// modality generation, or a second detect-shots job, for a source that
+// already has one.
+func (s *Service) enqueuePlannedModalities(ctx context.Context, assetID, inputHash string) error {
 	if s.pipeline == nil || s.pipeline.inferenceRepo == nil {
-		return
+		return nil
 	}
 	settings, err := s.inferenceRepo.GetMultimodalSettings(ctx)
 	if err != nil {
-		slog.Warn("multimodal settings unreadable; skipping inference enqueue", "error", err)
-		return
+		return fmt.Errorf("multimodal settings unreadable: %w", err)
 	}
 	if settings.Enabled[domain.OpVisualEmbedding] {
 		if shots, err := s.repo.ListAssetShots(ctx, assetID); err == nil && len(shots) == 0 {
 			if err := s.repo.EnqueueJob(ctx, assetID, domain.JobDetectShots, hashStrings(inputHash, "detect-shots-v1"), 70); err != nil && !isDuplicateEnqueue(err) {
-				slog.Warn("detect_shots enqueue failed", "asset_id", assetID, "error", err)
+				return fmt.Errorf("detect_shots enqueue failed: %w", err)
 			}
 		}
 	}
 	tasks, err := s.PlanAssetModalities(ctx, assetID, inputHash)
 	if err != nil {
-		slog.Warn("modality planning failed", "asset_id", assetID, "error", err)
-		return
+		return fmt.Errorf("modality planning failed: %w", err)
 	}
 	for _, task := range tasks {
 		priority := 60
 		if task.Operation == domain.OpDiarization {
 			priority = 55
 		}
-		if _, err := s.pipeline.inferenceRepo.EnqueueInferenceTask(ctx, nil, task, priority); err != nil {
-			slog.Warn("inference enqueue failed", "asset_id", assetID, "operation", task.Operation, "error", err)
+		if _, err := s.pipeline.inferenceRepo.EnqueueInferenceTask(ctx, nil, task, priority); err != nil && !isDuplicateEnqueue(err) {
+			return fmt.Errorf("inference enqueue failed for %s: %w", task.Operation, err)
 		}
+	}
+	return nil
+}
+
+// EnqueuePlannedModalities enqueues the planned tasks and the deterministic
+// shot-detection job when visual indexing is enabled for an asset that has no
+// canonical shots yet. Existing identical tasks are deduplicated by task_key.
+//
+// This is the synchronous post-derive hook (SetAfterDeriveCompleted), so it
+// must never fail the derive that already committed: a failure here is
+// logged, and the durable derive_modality_outbox marker the completion
+// transaction wrote makes the enqueue retryable from serving maintenance
+// (drainDeriveModalityOutbox) instead of lost.
+func (s *Service) EnqueuePlannedModalities(ctx context.Context, assetID, inputHash string) {
+	if err := s.enqueuePlannedModalities(ctx, assetID, inputHash); err != nil {
+		slog.Warn("modality enqueue failed", "asset_id", assetID, "error", err)
 	}
 }
 

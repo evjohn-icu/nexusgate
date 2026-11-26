@@ -75,18 +75,29 @@ func multimodalCmd(args []string) error {
 	if results.SchemaVersion != "multimodal-results.v1" {
 		return fmt.Errorf("unsupported results schema %q", results.SchemaVersion)
 	}
+	diarization, err := manifest.ScoreDiarizationCases(results.Diarization)
+	if err != nil {
+		return err
+	}
 	report := multimodalReport{
 		SchemaVersion: "multimodal-report.v1",
 		Manifest:      *manifestPath,
 		PerQuery:      make(map[string]eval.RetrievalMetrics, len(manifest.Queries)),
 		Runtime:       results.Runtime,
+		Diarization:   diarization,
 	}
-	if results.Ranking == nil {
+	if len(results.Ranking) == 0 {
 		report.NotEvaluable = append(report.NotEvaluable, "retrieval: no ranking recorded")
 	}
 	var perQuery []eval.RetrievalMetrics
 	for _, query := range manifest.Queries {
-		ranked := results.Ranking[query.ID]
+		ranked, recorded := results.Ranking[query.ID]
+		if !recorded {
+			if len(results.Ranking) != 0 {
+				report.NotEvaluable = append(report.NotEvaluable, fmt.Sprintf("retrieval %s: no ranking recorded", query.ID))
+			}
+			continue
+		}
 		precision, recall, ndcg := eval.ScoreRetrieval(query, ranked)
 		metrics := eval.RetrievalMetrics{Queries: 1, PrecisionAt10: precision, RecallAt10: recall, NDCGAt10: ndcg}
 		report.PerQuery[query.ID] = metrics
@@ -103,15 +114,10 @@ func multimodalCmd(args []string) error {
 		report.NotEvaluable = append(report.NotEvaluable, "sound events: no annotations")
 	}
 
-	for _, testCase := range manifest.Diarization {
-		var duration int64
-		for _, asset := range manifest.Assets {
-			if asset.ID == testCase.AssetID {
-				duration = asset.DurationMS
-				break
-			}
+	for _, result := range diarization {
+		if !result.Evaluable {
+			report.NotEvaluable = append(report.NotEvaluable, fmt.Sprintf("diarization %s: no scored turns", result.AssetID))
 		}
-		report.Diarization = append(report.Diarization, eval.ScoreDiarization(testCase.Reference, testCase.Predicted, duration))
 	}
 	if len(manifest.Diarization) == 0 {
 		report.NotEvaluable = append(report.NotEvaluable, "diarization: no cases")
@@ -152,9 +158,11 @@ func multimodalCmd(args []string) error {
 		report.Retrieval.Queries, report.Retrieval.PrecisionAt10, report.Retrieval.RecallAt10, report.Retrieval.NDCGAt10)
 	fmt.Printf("events: micro-F1=%.4f macro-F1=%.4f boundary-error=%.1fms\n",
 		report.Events.MicroF1, report.Events.MacroF1, report.Events.MeanBoundaryErrorMS)
-	for i, result := range report.Diarization {
-		fmt.Printf("diarization[%d]: DER(overlap)=%.4f DER(no-overlap)=%.4f speaker-count-error=%d\n",
-			i, result.DERWithOverlap, result.DERWithoutOverlap, result.SpeakerCountError)
+	for _, result := range report.Diarization {
+		if result.Evaluable {
+			fmt.Printf("diarization[%s]: DER(overlap)=%.4f DER(no-overlap)=%.4f speaker-count-error=%d\n", result.AssetID,
+				result.DERWithOverlap, result.DERWithoutOverlap, result.SpeakerCountError)
+		}
 	}
 	if report.Speaker != nil {
 		fmt.Printf("speaker: threshold=%.4f precision=%.4f recall=%.4f FAR=%.4f FRR=%.4f EER=%.4f\n",

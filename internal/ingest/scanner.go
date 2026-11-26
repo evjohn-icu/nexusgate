@@ -96,6 +96,16 @@ func (s *Scanner) scan(ctx context.Context, root domain.LibraryRoot, deep bool) 
 			result.Errors = append(result.Errors, fmt.Sprintf("stat file: %s: %v", path, err))
 			return nil
 		}
+		// Media entries must be regular files. A symlink named like footage
+		// (possibly pointing outside the root), FIFO, device or socket is not
+		// ingestable content, and fingerprinting it would open whatever that
+		// entry names. Reject before fingerprinting or registration; the
+		// recorded error also keeps the scan incomplete, so reconciliation
+		// never runs on a root whose walk saw one.
+		if !info.Mode().IsRegular() {
+			result.Errors = append(result.Errors, fmt.Sprintf("non-regular media entry: %s: not a regular file", path))
+			return nil
+		}
 		relative, err := filepath.Rel(root.Path, path)
 		if err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("relative path %s: %v", path, err))

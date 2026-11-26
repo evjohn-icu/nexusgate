@@ -30,4 +30,10 @@ for target in "linux amd64 nexusgate-linux-amd64" \
   GOOS=$1 GOARCH=$2 go build -trimpath -ldflags="$ldflags" -o "$out/$3" "$root/cmd/nexusgate"
 done
 
+# The inference module ships beside the binaries: extract it (it unpacks as
+# inference/... -- code, model lock, pinned requirements) and point
+# --inference-module at the extracted directory after building the locked
+# venv against inference/requirements/torch.lock. See inference/README.md.
+"$root/scripts/package-inference.sh" "$out"
+
 printf 'built nexusgate %s in %s\n' "$version" "$out"

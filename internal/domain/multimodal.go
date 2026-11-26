@@ -1028,6 +1028,52 @@ type SpeakerEmbeddingStaging struct {
 	ProfileGeneration int64  `json:"profile_generation"`
 	ConsentGeneration int64  `json:"consent_generation"`
 	SecretRef         string `json:"-"`
+	// ResultDigest is the opaque one-way identity the Hub computed from the
+	// result it staged (remote.DigestResult). The commit transaction compares
+	// it against the submitted digest before publishing metadata: a lost
+	// HTTP response resubmits the same bytes and is answered idempotently, a
+	// different result under the same operation id is rejected without
+	// mutation, and no vector bytes ever ride along.
+	ResultDigest string `json:"result_digest,omitempty"`
+}
+
+// SpeakerResultCommitState is the pre-commit view of one speaker job. It lets
+// the Hub avoid encrypting anything at all when the lease is already gone or
+// the bytes were already committed, without weakening the commit transaction:
+// the commit's own compare-and-swap on lease, generations, staged digest and
+// job state remains the only authority that publishes.
+type SpeakerResultCommitState struct {
+	State string `json:"state"`
+	// LeaseValid is true when the job is running and owner still holds an
+	// unexpired lease. A pending job is not leased and is not valid.
+	LeaseValid bool `json:"lease_valid"`
+	// CancelRequested mirrors the task's cancellation flag; a cancelled result
+	// must never stage or commit.
+	CancelRequested bool `json:"cancel_requested"`
+	// CommittedDigest is the digest recorded at commit time, empty for a job
+	// that has not committed or a legacy row predating migration 0043.
+	CommittedDigest string `json:"committed_digest,omitempty"`
+}
+
+// BiometricPurgeRefDisposition says what the biometric purge drain may do with
+// one queued secret reference. The worklist is deliberately dumb — it only
+// records obligations — so the drain consults the live state instead of
+// trusting the queue: canonical ciphertext stays while referenced, a staged
+// extraction with unrevoked consent and an active profile keeps its
+// ciphertext, and everything else is deletable.
+type BiometricPurgeRefDisposition struct {
+	// Canonical is true when a committed speaker embedding row still names
+	// this reference. The obligation is erroneous (e.g. a crashed
+	// bookkeeping order) and is cleared while the ciphertext is kept.
+	Canonical bool `json:"canonical"`
+	// LiveStaging is true when a staging row still names this reference for a
+	// nonterminal inference job under enabled consent and an active profile.
+	// The reference is retained for that commit.
+	LiveStaging bool `json:"live_staging"`
+	// Staged is true when a staging row exists whose job is no longer live:
+	// a cancelled or terminal extraction whose obsolete staging metadata is
+	// removed together with the obligation.
+	Staged bool `json:"staged"`
 }
 
 // ModalityMatch is one row a modality channel matched, with the provenance the
@@ -1048,6 +1094,14 @@ type ModalityMatch struct {
 	ModelRevision  string   `json:"model_revision"`
 	Backend        string   `json:"backend"`
 	GenerationID   string   `json:"generation_id"`
+	// ShotStartMS/ShotEndMS are the canonical bounds of the shot the record
+	// was joined to. Audio windows, sound events and speaker turns are timed
+	// records that may span several shots: the search engine reports the
+	// record's own interval (StartMS/EndMS) as match evidence while
+	// populating candidate bounds from these canonical shot fields. Zero
+	// means the match carries no canonical shot pair.
+	ShotStartMS int64 `json:"shot_start_ms,omitempty"`
+	ShotEndMS   int64 `json:"shot_end_ms,omitempty"`
 }
 
 // CanonicalSpaceID is the SHA-256 of the canonical JSON identity of a space.

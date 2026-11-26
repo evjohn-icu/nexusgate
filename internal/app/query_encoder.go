@@ -90,7 +90,7 @@ func (e *modalityQueryEncoder) Encode(ctx context.Context, modality, text, refer
 // It runs at reference creation, where the caller is already an authenticated
 // administrator, so no read-path request can cause model work.
 func (s *Service) enqueueReferenceQuery(ctx context.Context, ref domain.SearchReference) {
-	if s.inferenceRepo == nil || s.inferenceExec == nil {
+	if s.inferenceRepo == nil {
 		return
 	}
 	settings, err := s.inferenceRepo.GetMultimodalSettings(ctx)

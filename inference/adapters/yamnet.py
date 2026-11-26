@@ -30,6 +30,10 @@ class YamnetAdapter:
             self.context.stage(0.18, "model_loaded")
         return self._tf, self._model
 
+    def load(self) -> None:
+        """Load-only probe hook: verify paths and load without running inference."""
+        self._load()
+
     def infer(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if request["input"]["kind"] != "asset":
             raise UnsupportedInput("YAMNet requires an audio asset")

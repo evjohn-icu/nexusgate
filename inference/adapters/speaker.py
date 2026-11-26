@@ -59,6 +59,10 @@ class SpeakerAdapter:
         self.context.stage(0.18, "model_loaded")
         return self._model
 
+    def load(self) -> None:
+        """Load-only probe hook: verify paths and load without running inference."""
+        self._load()
+
     def infer(self, request: Mapping[str, Any]) -> dict[str, Any]:
         source = request["input"]
         if source["kind"] != "asset":

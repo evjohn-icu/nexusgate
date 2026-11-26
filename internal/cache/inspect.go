@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/evjohn-icu/nexusgate/internal/media"
 	"github.com/evjohn-icu/nexusgate/internal/staging"
 )
 
@@ -48,6 +49,26 @@ type CacheStats struct {
 	// into a figure that reads as "under the cap".
 	SourceStagingTemporaryCount int
 	SourceStagingTemporaryBytes int64
+
+	// SearchReferenceCount/Bytes are the administrator-uploaded query images
+	// under cache/search-references/. They are managed rows with a TTL and
+	// their own reaper, so they are neither orphans nor rebuildable content,
+	// and no cache cleanup mode may delete them.
+	SearchReferenceCount int
+	SearchReferenceBytes int64
+	// InferenceScratchCount/Bytes are the files under cache/inference/. That
+	// tree is the active scratch space of local inference — a run in flight
+	// may be writing to it at the exact moment a cleanup walks the cache — so
+	// it is reported as its own figure and preserved on every GC mode rather
+	// than being folded into anything deletable.
+	InferenceScratchCount int
+	InferenceScratchBytes int64
+	// WaveformCount/Bytes are the waveform pairs: the manifest and the payload
+	// it names are one logical artifact, counted together under the manifest's
+	// entry. A payload no manifest references is unregistered litter and is
+	// reported as an orphan, not here.
+	WaveformCount int
+	WaveformBytes int64
 
 	ScratchCount int
 	ScratchBytes int64
@@ -81,7 +102,9 @@ func IsScratchDirName(name string) bool {
 // `cache gc --rebuildable` run deletes and the pipeline re-creates: the CLI
 // enqueues a re-derive job for each affected committed asset (see the derive
 // stage's committed check in internal/app/pipeline.go), and the job's
-// os.IsNotExist guard renders only what is missing.
+// os.IsNotExist guard renders only what is missing. Waveform manifests and
+// payloads are rebuildable too but travel as one pair — see GC's
+// removeWaveformPair — so they are matched separately.
 func IsRebuildableArtifactName(name string) bool {
 	return (strings.HasPrefix(name, "thumbnail-") && strings.HasSuffix(name, ".jpg")) ||
 		(strings.HasPrefix(name, "proxy-") && strings.HasSuffix(name, ".mp4")) ||
@@ -97,6 +120,57 @@ func IsRebuildableArtifactName(name string) bool {
 // Stage when the configured cap would be exceeded.
 func IsSourceStagingPath(rel string) bool {
 	return rel == "sources" || strings.HasPrefix(rel, "sources/")
+}
+
+// IsSearchReferencePath reports whether rel lies under cache/search-references/.
+// Administrator query images live there with a TTL and their own reaper
+// (internal/app's reference purge), so every deletion path in this package
+// skips the tree outright: two deleters on one tree is how a file vanishes
+// between the enqueue that recorded it and the query that was about to open it.
+func IsSearchReferencePath(rel string) bool {
+	return rel == "search-references" || strings.HasPrefix(rel, "search-references/")
+}
+
+// IsInferenceScratchPath reports whether rel lies under cache/inference/.
+// That tree is the local inference runtime's active scratch: a run in flight
+// writes input windows and result staging there, and the runtime removes its
+// own directories when the run ends. Nothing in this package deletes it — a
+// cleanup that raced a live run would delete the input out from under the
+// executor — but the walk still reports it so an operator can see what the
+// scratch is holding.
+func IsInferenceScratchPath(rel string) bool {
+	return rel == "inference" || strings.HasPrefix(rel, "inference/")
+}
+
+// IsWaveformManifestName reports whether name is a waveform manifest file: the
+// JSON half the pipeline publishes as <asset>/waveform.json and records as the
+// "waveform" derived artifact row.
+func IsWaveformManifestName(name string) bool {
+	return name == "waveform.json"
+}
+
+// IsWaveformPayloadName reports whether name is a waveform payload file: the
+// legacy fixed sibling waveform.bin, or a content-addressed sibling
+// waveform.<sha256>.bin published by current generations. Membership in a
+// registered pair is a separate question — a payload is only the pair's other
+// half while some manifest names it.
+func IsWaveformPayloadName(name string) bool {
+	if !strings.HasPrefix(name, "waveform.") || !strings.HasSuffix(name, ".bin") {
+		return false
+	}
+	middle := strings.TrimSuffix(strings.TrimPrefix(name, "waveform."), ".bin")
+	if middle == "" {
+		return true
+	}
+	if len(middle) != 64 {
+		return false
+	}
+	for _, r := range middle {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // isScratchPath reports whether a slash-separated relative path lies inside a
@@ -154,6 +228,12 @@ func Inspect(cacheDir string) (CacheStats, error) {
 			}
 			stats.SourceStagingCount++
 			stats.SourceStagingBytes += size
+		case IsSearchReferencePath(rel):
+			stats.SearchReferenceCount++
+			stats.SearchReferenceBytes += size
+		case IsInferenceScratchPath(rel):
+			stats.InferenceScratchCount++
+			stats.InferenceScratchBytes += size
 		case isScratchPath(rel):
 			stats.ScratchCount++
 			stats.ScratchBytes += size
@@ -166,6 +246,12 @@ func Inspect(cacheDir string) (CacheStats, error) {
 		case strings.HasPrefix(name, "audio") && strings.HasSuffix(name, ".m4a"):
 			stats.AudioCount++
 			stats.AudioBytes += size
+		case IsWaveformManifestName(name):
+			stats.WaveformCount++
+			stats.WaveformBytes += size
+		case IsWaveformPayloadName(name) && waveformPayloadRegistered(path):
+			stats.WaveformCount++
+			stats.WaveformBytes += size
 		default:
 			stats.OrphanCount++
 			stats.OrphanBytes += size
@@ -175,8 +261,24 @@ func Inspect(cacheDir string) (CacheStats, error) {
 	if err != nil {
 		return stats, err
 	}
-	stats.RebuildableBytes = stats.ThumbnailBytes + stats.ProxyBytes + stats.AudioBytes + stats.ScratchBytes
+	stats.RebuildableBytes = stats.ThumbnailBytes + stats.ProxyBytes + stats.AudioBytes + stats.ScratchBytes + stats.WaveformBytes
 	return stats, nil
+}
+
+// waveformPayloadRegistered reports whether a payload file is the named other
+// half of the manifest sitting next to it. Only the manifest decides: a
+// payload no manifest references is unregistered litter (a crashed publish, a
+// replaced generation), and reporting it as an orphan is what lets an operator
+// see it accumulate. Reading one small manifest per payload keeps this honest
+// for both layouts — legacy manifests name no file and fall back to the fixed
+// sibling, content-addressed manifests name exactly the payload they own.
+func waveformPayloadRegistered(payloadPath string) bool {
+	manifestPath := filepath.Join(filepath.Dir(payloadPath), "waveform.json")
+	manifest, err := media.LoadWaveformManifest(manifestPath)
+	if err != nil {
+		return false
+	}
+	return media.WaveformPayloadPath(manifestPath, manifest) == payloadPath
 }
 
 // AssetIDLister is the slice of the repository that OrphanDirectories needs:
@@ -196,7 +298,8 @@ type OrphanDir struct {
 
 // OrphanDirectories lists the top-level directories under cacheDir whose name
 // matches no asset in the assets table. Recognized category subtrees —
-// sources/ (staging) and scratch directories (tmp/, scratch/,
+// sources/ (staging), search-references/ (managed query images), inference/
+// (active inference scratch) and scratch directories (tmp/, scratch/,
 // analysis-frames/, analysis-windows/) — are never asset directories and are
 // never reported as orphan candidates. A missing cache dir is no orphans.
 func OrphanDirectories(ctx context.Context, repo AssetIDLister, cacheDir string) ([]OrphanDir, error) {
@@ -217,7 +320,7 @@ func OrphanDirectories(ctx context.Context, repo AssetIDLister, cacheDir string)
 	}
 	var orphans []OrphanDir
 	for _, entry := range entries {
-		if !entry.IsDir() || entry.Name() == "sources" || IsScratchDirName(entry.Name()) {
+		if !entry.IsDir() || entry.Name() == "sources" || entry.Name() == "search-references" || entry.Name() == "inference" || IsScratchDirName(entry.Name()) {
 			continue
 		}
 		if _, ok := known[entry.Name()]; ok {

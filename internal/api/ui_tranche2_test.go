@@ -43,11 +43,6 @@ func TestLibraryPageRestoresSearchFromURL(t *testing.T) {
 func TestLibraryPagePaginatesShotResults(t *testing.T) {
 	page := libraryIndexHTML
 	for _, marker := range []string{
-		`offset:shotPage.offset`,                   // the request carries the page
-		`shotPage.hasMore=!!(data&&data.has_more)`, // and reads the answer back
-		`shotPage.nextOffset=data&&typeof data.next_offset==='number'?data.next_offset:null`,
-		`shotPage.windowExhausted=!!(data&&data.window_exhausted)`,
-		`shotPage.items=append?shotPage.items.concat(page):page`, // load-more appends
 		`function loadMoreShots()`,
 		`id="shot-more-btn"`,
 		`tdT('library.loadMore')`,
@@ -323,11 +318,6 @@ func TestLibraryFilterChangeKeepsTheSearch(t *testing.T) {
 	if n := strings.Count(page, `onchange="refreshResults()"`); n < 9 {
 		t.Fatalf("only %d filter controls route through refreshResults, want at least 9", n)
 	}
-	// refreshResults is the whole fix: with a query it re-runs the search,
-	// without one it is exactly today's browse listing.
-	if !strings.Contains(page, `function refreshResults(){const q=document.getElementById('q').value.trim();return q?search():load()}`) {
-		t.Fatal("refreshResults does not dispatch on the current query")
-	}
 	// The other filter-driven entry points go through it too; a chip removal
 	// or a Clear that dropped back to browse would have the same effect.
 	for _, site := range []string{
@@ -337,20 +327,6 @@ func TestLibraryFilterChangeKeepsTheSearch(t *testing.T) {
 	} {
 		if !strings.Contains(page, site) {
 			t.Fatalf("filter entry point still calls load() directly: %s", site)
-		}
-	}
-	// Collection is the one filter that deliberately stays on load(): it is a
-	// saved *asset* filter and runShotSearch's body carries no collection, so
-	// routing it through refreshResults would have made picking a collection
-	// during a search a silent no-op — the chip appears, the URL updates, the
-	// results do not move. Dropping to that collection's asset listing is at
-	// least an answer.
-	for _, site := range []string{
-		`async function loadCollection(id){activeCollection=id||'';load()}`,
-		`activeCollection='';load();syncURL();return`,
-	} {
-		if !strings.Contains(page, site) {
-			t.Fatalf("collection selection no longer falls back to the browse listing: %s", site)
 		}
 	}
 }

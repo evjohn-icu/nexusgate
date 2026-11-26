@@ -85,7 +85,7 @@ func TestSearchIndexHealthFTSStateMapsFlag(t *testing.T) {
 	repo := openDoctorHealthRepo(t)
 	ctx := context.Background()
 
-	if _, err := repo.db.ExecContext(ctx, `UPDATE fts_index_state SET value='pending' WHERE name='cjk_bigram_v1'`); err != nil {
+	if _, err := repo.db.ExecContext(ctx, `UPDATE fts_index_state SET value='pending' WHERE name=?`, cjkFTSIndexState); err != nil {
 		t.Fatal(err)
 	}
 	health, err := repo.SearchIndexHealth(ctx)
@@ -96,7 +96,7 @@ func TestSearchIndexHealthFTSStateMapsFlag(t *testing.T) {
 		t.Fatalf("FTS state = %q, want pending", health.FTSState)
 	}
 
-	if _, err := repo.db.ExecContext(ctx, `DELETE FROM fts_index_state WHERE name='cjk_bigram_v1'`); err != nil {
+	if _, err := repo.db.ExecContext(ctx, `DELETE FROM fts_index_state WHERE name=?`, cjkFTSIndexState); err != nil {
 		t.Fatal(err)
 	}
 	health, err = repo.SearchIndexHealth(ctx)

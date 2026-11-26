@@ -9,6 +9,9 @@ Type=simple
 User=nexusgate
 Group=nexusgate
 StateDirectory=nexusgate
+# 0700: the state directory holds the generated admin token, the secret-store
+# key and the SQLite database; nobody but the service account may list it.
+StateDirectoryMode=0700
 WorkingDirectory=/var/lib/nexusgate
 Environment=NEXUSGATE_DATA_DIR=/var/lib/nexusgate
 Environment=NEXUSGATE_LISTEN_ADDRESS=127.0.0.1:8787

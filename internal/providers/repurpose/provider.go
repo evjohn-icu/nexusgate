@@ -80,7 +80,7 @@ func (p *Provider) completeJSON(ctx context.Context, system, user string) (strin
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return "", common.ReadErrorWithSecret(resp, p.Endpoint.APIKey)
+		return "", p.Endpoint.ReadError(resp)
 	}
 	raw, err := common.ReadBody(resp.Body)
 	if err != nil {
@@ -94,7 +94,7 @@ func (p *Provider) completeJSON(ctx context.Context, system, user string) (strin
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil || len(envelope.Choices) == 0 {
-		return "", common.Errorf(p.Endpoint.APIKey, "decode repurpose planner response: missing choices: %s", string(raw))
+		return "", p.Endpoint.Errorf("decode repurpose planner response: missing choices: %s", string(raw))
 	}
 	text := strings.TrimSpace(envelope.Choices[0].Message.Content)
 	text = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, "```json"), "```"))

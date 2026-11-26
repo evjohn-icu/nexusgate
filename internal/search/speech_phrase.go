@@ -16,8 +16,8 @@ func matchAlignedSpeechPhrase(phrase string, spans []domain.AlignmentWord) bool 
 	if len(components) == 0 {
 		return false
 	}
-	for start := 0; start < len(spans); start++ {
-		if matchSpeechComponents(components, spans, start) {
+	for start := range len(spans) {
+		if _, _, ok := matchSpeechComponents(components, spans, start); ok {
 			return true
 		}
 	}
@@ -69,47 +69,83 @@ func SpeechComponents(text string) []SpeechComponent {
 	return out
 }
 
-func matchSpeechComponents(cs []SpeechComponent, spans []domain.AlignmentWord, pos int) bool {
+// matchSpeechComponents consumes the components in order over the spans
+// starting at pos, using the established matching semantics: CJK components
+// match as substrings joined across adjacent spans, ASCII components match
+// whole aligned words, and adjacent consumed spans may not be more than
+// maxSpeechPhraseGapMS apart. On success it returns the first and one-past
+// the last consumed span index, so callers can report the located match's
+// interval; earlier spans that matched nothing are skipped, not consumed.
+func matchSpeechComponents(cs []SpeechComponent, spans []domain.AlignmentWord, pos int) (int, int, bool) {
 	var previous *domain.AlignmentWord
+	first := -1
 	for _, component := range cs {
 		if component.cjk {
 			joined := ""
 			for i := pos; i < len(spans); i++ {
 				if previous != nil && spans[i].StartMS-previous.EndMS > maxSpeechPhraseGapMS {
-					return false
+					return first, pos, false
 				}
 				joined += strings.ToLower(spans[i].Text)
 				previous = &spans[i]
+				if first < 0 {
+					first = i
+				}
 				pos = i + 1
 				if joined == component.text {
 					break
 				}
 				if !strings.HasPrefix(component.text, joined) {
-					return false
+					return first, pos, false
 				}
 			}
 			if previous == nil || joined != component.text {
-				return false
+				return first, pos, false
 			}
 			continue
 		}
 		found := false
 		for i := pos; i < len(spans); i++ {
 			if previous != nil && spans[i].StartMS-previous.EndMS > maxSpeechPhraseGapMS {
-				return false
+				return first, pos, false
 			}
 			if strings.ToLower(spans[i].Text) == component.text {
 				previous = &spans[i]
+				if first < 0 {
+					first = i
+				}
 				pos = i + 1
 				found = true
 				break
 			}
 		}
 		if !found {
-			return false
+			return first, pos, false
 		}
 	}
-	return true
+	return first, pos, true
+}
+
+// speechMatchIntervals returns the intervals of every located occurrence of
+// phrase in spans, using the same whole-word/ASR-fallback component semantics
+// the transcript channel validates with. Occurrences are reported in temporal
+// order and never overlap: the scan resumes after each consumed range.
+func speechMatchIntervals(phrase string, spans []domain.AlignmentWord) []Interval {
+	components := SpeechComponents(strings.ToLower(strings.TrimSpace(phrase)))
+	if len(components) == 0 || len(spans) == 0 {
+		return nil
+	}
+	var out []Interval
+	for start := 0; start < len(spans); {
+		first, end, ok := matchSpeechComponents(components, spans, start)
+		if !ok || first < 0 || end <= first {
+			start++
+			continue
+		}
+		out = append(out, Interval{StartMS: spans[first].StartMS, EndMS: spans[end-1].EndMS})
+		start = end
+	}
+	return out
 }
 
 func isSpeechCJK(r rune) bool {

@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+- Windows Worker enrollment validates the destination before redeeming its
+  pairing token. Hub administrators grant inference and model maintenance
+  during pairing, and Workers need an attestation for the exact locked model
+  they lease. Re-enroll upgraded Workers that need inference grants.
+- The release includes an offline inference runtime bundle. The optional
+  inference image provides a CPU environment, and the systemd Worker runs
+  under a separate account with private state.
+- The Hub resumes validated vision work and pending derive follow-ups after
+  restart. Cache repair queues rebuilds before removing derived files, and
+  waveform readers keep the manifest and payload in sync.
+- Provider keys stay bound to member IDs. Endpoint origin changes require
+  fresh keys for retained members. Store updates and recovery coordinate
+  across Hub processes.
+- Search rebuilds its lexical index to support single-character CJK queries.
+  Rebuild existing text embeddings with `nexusgate search rebuild-embeddings`
+  to populate the embedding spaces recorded by the upgraded Hub.
+- SQLite publishes plan revisions and current ASR intervals atomically.
+  Automatic shoot sessions keep their IDs when the same footage remains grouped.
+- The library page pages 300-card browse and saved views, continues long
+  timelines with Load more, and uploads image-search references with the
+  administrator session.
+- Text searches keep their results when an earlier image search finishes.
+  Clearing search or choosing a saved view cancels any image upload waiting
+  for administrator sign-in.
+- Late browse replies leave newer search and filtered results intact.
+  Removing a saved view returns to ordinary asset browsing.
+- Changing filters during image search refreshes the first results page
+  with the same reference image.
+- Failed shot-search continuations preserve the displayed results and let
+  users retry the same page.
+- A failed image upload lets the current search finish loading its first
+  page or continue paging the results already on screen.
+- Eval runs use separate databases and caches per label. To score a report from
+  the shared-database layout, rerun its label. Multimodal scoring reads recorded
+  predictions and computes event macro F1 across labels.
+
 ## v0.38.0-alpha — 2026-09-09（UnsupportedMedia 首个生产者、预览 LUT 分类与失败清单单一真源）
 
 - **`UnsupportedMedia` has its first producer, so RAW sources stop landing in

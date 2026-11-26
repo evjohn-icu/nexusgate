@@ -1,0 +1,762 @@
+import { expect, test, type Page, type Request, type Route } from '@playwright/test';
+
+// Partition 18 browser workflows: required-auth reference upload with CSRF,
+// browse/saved-view pagination, timeline continuation and invalidation. The
+// stable Provider member editor case lives in smoke.spec.ts (partition 10).
+const adminToken = 'pw-admin-fixture';
+const fixtureBaseUrl = process.env.NEXUSGATE_PLAYWRIGHT_BASE_URL ?? 'https://127.0.0.1:4173';
+
+// Valid 1x1 PNGs generated per upload in a distinct color: small enough for
+// MaxSearchReferenceBytes, decodable by CreateSearchReference, and — because
+// the Hub deduplicates references by normalized content hash — each upload
+// carries different pixels so its search really starts pending instead of
+// reusing a reference a previous test (or project) already encoded.
+import zlib from 'node:zlib';
+
+const crcTable = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(buf: Buffer): number {
+  let c = 0xffffffff;
+  for (const byte of buf) c = crcTable[(c ^ byte) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const head = Buffer.alloc(4);
+  head.writeUInt32BE(data.length, 0);
+  const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body), 0);
+  return Buffer.concat([head, body, crc]);
+}
+
+let probePngIndex = 0;
+function nextProbePng(): Buffer {
+  // Unique across worker processes and projects: both share one fixture
+  // server, and identical pixels deduplicate to an instantly ready search.
+  const seed = Math.floor(Math.random() * 0x1000000) + probePngIndex++;
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(1, 0);
+  ihdr.writeUInt32BE(1, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  const raw = Buffer.from([0, seed & 0xff, (seed >> 3) & 0xff, (seed >> 6) & 0xff]);
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlib.deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+const zh = {
+  loginRequiredTop: '需要 Hub 管理口令：请先在顶部登录',
+  imageSearchUploading: '正在上传参考图…',
+  imageSearchPending: '参考图仍在编码，稍后自动重试',
+  imageSearchReady: '已按参考图检索',
+  imageSearchError: '以图搜索失败：',
+  noMatch: '没有找到匹配的镜头',
+  http403: '没有权限（HTTP 403）',
+  browseLoadError: '加载更多素材失败',
+  loadMore: '加载更多',
+  timelinePartial: '时间轴仍有部分内容未加载',
+  timelinePartialStalled: '时间轴的剩余部分加载失败',
+  timelineEmpty: '此素材没有可显示的时间数据',
+};
+
+async function login(page: Page) {
+  await page.goto('/');
+  await signIn(page);
+}
+
+async function signIn(page: Page) {
+  const trigger = page.locator('#admin-trigger');
+  if (!(await trigger.isVisible())) {
+    const toggle = page.locator('#shell-menu-toggle');
+    if (await toggle.isVisible()) {
+      await toggle.click();
+    }
+  }
+  await trigger.click();
+  const token = page.locator('#admin-token');
+  await expect(token).toBeVisible();
+  await token.fill(adminToken);
+  await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith('/api/v1/auth/admin/session') && response.request().method() === 'POST'),
+    page.locator('#admin-login').click(),
+  ]);
+  await expect(page.locator('#admin-session-state')).toHaveText('已登录');
+}
+
+// browseReady waits for the initial browse page (300 cards) to render.
+async function browseReady(page: Page) {
+  await expect(page.locator('[data-asset-timeline="asset-card-0300"]')).toBeVisible();
+  await expect(page.locator('[data-browse-foot]')).toBeVisible();
+}
+
+test.describe('required-auth reference upload (partition 18)', () => {
+  test('uploads a fixture image with CSRF and advances into the pending-to-ready search', async ({ page }) => {
+    await login(page);
+    await page.goto('/');
+    await browseReady(page);
+
+    const searchRequests: string[] = [];
+    const uploadPromise = page.waitForResponse(
+      (response) => response.url().includes('/api/v1/admin/search-references') && response.request().method() === 'POST',
+    );
+    const firstSearchPromise = page.waitForResponse(
+      (response) => response.url().includes('/api/v1/search/shots') && response.request().method() === 'POST',
+    );
+    page.on('request', (request) => {
+      if (request.url().includes('/api/v1/search/shots') && request.method() === 'POST') {
+        searchRequests.push(request.postData() ?? '');
+      }
+    });
+    await page.setInputFiles('#image-search', { name: 'probe.png', mimeType: 'image/png', buffer: nextProbePng() });
+
+    const upload = await uploadPromise;
+    expect(upload.status()).toBe(201);
+    expect(upload.request().headers()['x-csrf-token']).toBeTruthy();
+    expect(upload.request().headers()['content-type']).toBe('image/png');
+    const reference = (await upload.json()) as { id?: string };
+    expect(reference.id).toBeTruthy();
+
+    // The search continues into the existing pending-to-ready flow: the first
+    // request carries the reference id and the visual modality and answers
+    // 202 pending while the fixture encoder finishes.
+    const firstSearch = await firstSearchPromise;
+    expect(firstSearch.status()).toBe(202);
+    expect(JSON.parse(searchRequests[0])).toMatchObject({ modalities: ['visual'], reference_id: reference.id });
+    await expect(page.locator('#image-search-status')).toHaveText(zh.imageSearchPending, { timeout: 5000 });
+
+    // The fixture encodes the reference within a second; the page's poll then
+    // renders the shot-result view. No fixture asset carries a visual vector,
+    // so the honest result page is the no-match state.
+    await expect(page.locator('#image-search-status')).toHaveText(zh.imageSearchReady, { timeout: 20000 });
+    await expect(page.locator('#library')).toContainText(zh.noMatch);
+    await expect(page.locator('[data-asset-timeline="asset-card-0300"]')).toHaveCount(0);
+  });
+
+  test('shows the login-required control on 401 and retries with the selected file after sign-in', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('[data-library-browser]')).toBeVisible();
+    await expect(page.locator('[data-asset-timeline="asset-card-0300"]')).toBeVisible({ timeout: 20000 });
+
+    const uploads: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/api/v1/admin/search-references') && request.method() === 'POST') uploads.push(request.url());
+    });
+    const firstUpload = page.waitForResponse(
+      (response) => response.url().includes('/api/v1/admin/search-references') && response.request().method() === 'POST',
+    );
+    await page.setInputFiles('#image-search', { name: 'probe.png', mimeType: 'image/png', buffer: nextProbePng() });
+    const response = await firstUpload;
+    expect(response.status()).toBe(401);
+
+    // The existing login-required control: the wording plus the shared admin
+    // dialog, with a retry control bound to the still-selected file. The
+    // dialog opens on every viewport; on narrow ones it sits inside the
+    // collapsed sidebar menu, so dismiss it, open the menu and sign in the
+    // way the shell's own control works.
+    await expect(page.locator('#image-search-status')).toContainText(zh.loginRequiredTop);
+    await expect(page.locator('#image-search-status button', { hasText: '重试' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    const trigger = page.locator('#admin-trigger');
+    if (!(await trigger.isVisible())) {
+      await page.locator('#shell-menu-toggle').click();
+    }
+    await trigger.click();
+    await expect(page.locator('#admin-token')).toBeVisible();
+    await page.locator('#admin-token').fill(adminToken);
+    const retryUpload = page.waitForResponse(
+      (candidate) => candidate.url().includes('/api/v1/admin/search-references') && candidate.request().method() === 'POST',
+    );
+    await page.locator('#admin-login').click();
+    const retried = await retryUpload;
+    expect(retried.status()).toBe(201);
+    expect(retried.request().headers()['x-csrf-token']).toBeTruthy();
+    expect(uploads).toHaveLength(2);
+    await expect(page.locator('#image-search-status')).toHaveText(zh.imageSearchReady, { timeout: 20000 });
+  });
+
+  test('shows the authorization wording on 403 and never re-uploads', async ({ page }) => {
+    await login(page);
+    await page.goto('/');
+    await browseReady(page);
+    await page.route('**/api/v1/admin/search-references', (route: Route) =>
+      route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: { code: 'forbidden', message: 'denied' } }) }),
+    );
+    const uploads: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/api/v1/admin/search-references') && request.method() === 'POST') uploads.push(request.url());
+    });
+    await page.setInputFiles('#image-search', { name: 'probe.png', mimeType: 'image/png', buffer: nextProbePng() });
+    await expect(page.locator('#image-search-status')).toHaveText(zh.http403);
+    await page.waitForTimeout(2500);
+    expect(uploads).toHaveLength(1);
+  });
+
+  test('shows the upload error on a non-auth failure and never re-uploads', async ({ page }) => {
+    await login(page);
+    await page.goto('/');
+    await browseReady(page);
+    await page.route('**/api/v1/admin/search-references', (route: Route) =>
+      route.fulfill({ status: 413, contentType: 'application/json', body: JSON.stringify({ error: { code: 'invalid_request', message: 'too large' } }) }),
+    );
+    const uploads: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/api/v1/admin/search-references') && request.method() === 'POST') uploads.push(request.url());
+    });
+    await page.setInputFiles('#image-search', { name: 'probe.png', mimeType: 'image/png', buffer: nextProbePng() });
+    await expect(page.locator('#image-search-status')).toContainText(zh.imageSearchError);
+    await page.waitForTimeout(2500);
+    expect(uploads).toHaveLength(1);
+  });
+});
+
+test.describe('browse and saved-view pagination (partition 18)', () => {
+  test('ordinary browse shows card 301 via Load more without replacing page 1', async ({ page }) => {
+    await login(page);
+    const browseUrls: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/api/v1/assets?limit=300')) browseUrls.push(request.url());
+    });
+    await page.goto('/');
+    await browseReady(page);
+    await expect(page.locator('[data-asset-timeline="asset-card-0301"]')).toHaveCount(0);
+
+    await page.locator('#browse-more-btn').click();
+    await expect(page.locator('[data-asset-timeline="asset-card-0301"]')).toBeVisible();
+    // Page 1 is retained, not replaced.
+    await expect(page.locator('[data-asset-timeline="asset-card-0300"]')).toBeVisible();
+    await expect(page.locator('#browse-more-btn')).toHaveCount(0);
+    expect(browseUrls.filter((url) => url.includes('offset=0')).length).toBe(1);
+    expect(browseUrls.filter((url) => url.includes('offset=300')).length).toBe(1);
+  });
+
+  test('saved-view collection pages its 301 cards with Load more', async ({ page }) => {
+    await login(page);
+    const viewUrls: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/api/v1/collections/view-discovered/assets')) viewUrls.push(request.url());
+    });
+    await page.goto('/');
+    await browseReady(page);
+    await page.locator('#collection-filter').selectOption('view-discovered');
+    await expect(page.locator('[data-asset-timeline="asset-card-0300"]')).toBeVisible();
+    await expect(page.locator('#collection-filter')).toHaveValue('view-discovered');
+    expect(viewUrls.filter((url) => url.includes('offset=0')).length).toBeGreaterThanOrEqual(1);
+    expect(viewUrls.filter((url) => url.includes('offset=300')).length).toBe(0);
+
+    await page.locator('#browse-more-btn').click();
+    await expect(page.locator('[data-asset-timeline="asset-card-0301"]')).toBeVisible();
+    await expect(page.locator('[data-asset-timeline="asset-card-0300"]')).toBeVisible();
+    expect(await page.locator('[data-asset-timeline]').count()).toBe(301);
+    expect(viewUrls.filter((url) => url.includes('offset=300')).length).toBe(1);
+  });
+
+  test('a failed continuation retains the current page and retries the same offset', async ({ page }) => {
+    await login(page);
+    await page.goto('/');
+    await browseReady(page);
+    const browseUrls: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/api/v1/assets?limit=300')) browseUrls.push(request.url());
+    });
+    await page.route('**/api/v1/assets?limit=300&offset=300*', (route: Route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'internal_error', message: 'boom' } }) }),
+    );
+    await page.locator('#browse-more-btn').click();
+    await expect(page.locator('[data-browse-error]')).toContainText(zh.browseLoadError);
+    // Page 1 stays rendered and the retry control remains.
+    await expect(page.locator('[data-asset-timeline="asset-card-0300"]')).toBeVisible();
+    await expect(page.locator('#browse-more-btn')).toBeVisible();
+
+    await page.unroute('**/api/v1/assets?limit=300&offset=300*');
+    await page.locator('#browse-more-btn').click();
+    await expect(page.locator('[data-asset-timeline="asset-card-0301"]')).toBeVisible();
+    // The failed attempt never advanced the offset: only one continuation.
+    expect(browseUrls.filter((url) => url.includes('offset=300')).length).toBe(2);
+  });
+
+  test('a late browse response is discarded after the view changes', async ({ page }) => {
+    await login(page);
+    await page.goto('/');
+    await browseReady(page);
+    await page.route('**/api/v1/assets?limit=300&offset=300*', async (route: Route) => {
+      { const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, 1500); await promise; }
+      await route.continue();
+    });
+    await page.locator('#browse-more-btn').click();
+    // Narrow the view while the continuation is still in flight; the fresh
+    // load replaces the browse state and the late response must not render.
+    await page.locator('#status-filter').selectOption('queued');
+    await expect(page.locator('[data-asset-timeline="asset-fixture"]')).toBeVisible();
+    await page.waitForTimeout(2200);
+    await expect(page.locator('[data-asset-timeline="asset-card-0301"]')).toHaveCount(0);
+    await expect(page.locator('#status-filter')).toHaveValue('queued');
+  });
+
+  test('a late browse failure leaves search results free of browse controls', async ({ page }) => {
+    await page.goto('/');
+    await browseReady(page);
+    const continuation = Promise.withResolvers<Route>();
+    await page.route('**/api/v1/assets?limit=300&offset=300*', (route) => continuation.resolve(route));
+    await page.locator('#browse-more-btn').click();
+    const route = await continuation.promise;
+    await page.locator('#q').fill('camera');
+    await page.locator('#q').press('Enter');
+    await expect(page.locator('.shot-result').first()).toBeVisible();
+    const failed = page.waitForEvent('requestfailed', (request) => request === route.request());
+    await route.abort('failed');
+    await failed;
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(page.locator('.shot-result').first()).toBeVisible();
+    await expect(page.locator('[data-browse-error], #browse-more-btn')).toHaveCount(0);
+  });
+
+  test('an older card render cannot replace a filtered browse page', async ({ page }) => {
+    await page.route('**/api/v1/assets?limit=300&offset=0', (route) => route.fulfill({
+      json: [{ id: 'stale-asset', filename: 'stale-browse.mp4', duration_ms: 1000 }],
+    }));
+    const shots = Promise.withResolvers<Route>();
+    await page.route('**/api/v1/assets/stale-asset/shots', (route) => shots.resolve(route));
+    await page.goto('/');
+    const route = await shots.promise;
+    await page.locator('#status-filter').selectOption('queued');
+    await expect(page.locator('[data-asset-timeline="asset-fixture"]')).toBeVisible();
+    const completed = page.waitForResponse((response) => response.request() === route.request());
+    await route.fulfill({ json: [] });
+    await (await completed).finished();
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(page.locator('[data-asset-timeline="asset-fixture"]')).toBeVisible();
+    await expect(page.locator('[data-asset-timeline="stale-asset"]')).toHaveCount(0);
+  });
+});
+
+test.describe('timeline continuation and invalidation (partition 18)', () => {
+  test('shows the partial state and loads the final word through Load more', async ({ page }) => {
+    await login(page);
+    const urls: string[] = [];
+    page.on('request', (request) => urls.push(request.url()));
+    await page.goto('/');
+    await browseReady(page);
+    await page.locator('[data-asset-timeline="asset-timeline-long"]').click();
+    await expect(page.locator('#asset-timeline-panel')).toBeVisible();
+    const transcript = page.locator('[data-tl-track="transcript"] [data-tl-interval]');
+    await expect(transcript).toHaveCount(1000, { timeout: 20000 });
+    // The words alone exceed the per-track page cap: the partial state and
+    // its Load more control are visible while a cursor remains.
+    await expect(page.locator('#asset-timeline-partial')).toContainText(zh.timelinePartial);
+    await expect(page.locator('#asset-timeline-partial button')).toContainText(zh.loadMore);
+    await expect(page.locator('[data-tl-track="transcript"] .tl-meta-label').filter({ hasText: 'word-1001' })).toHaveCount(0);
+
+    await page.locator('#asset-timeline-partial button', { hasText: zh.loadMore }).click();
+    await expect(transcript).toHaveCount(1001, { timeout: 20000 });
+    await expect(page.locator('[data-tl-track="transcript"] .tl-meta-label').filter({ hasText: 'word-1001' })).toHaveCount(1);
+    await expect(page.locator('#asset-timeline-partial')).toBeHidden();
+    const fetched = urls.filter((url) => url.includes('/api/v1/assets/asset-timeline-long/timeline'));
+    expect(fetched.some((url) => !url.includes('cursor='))).toBe(true);
+    expect(fetched.some((url) => url.includes('cursor='))).toBe(true);
+  });
+
+  test('switching assets after a delayed load never renders obsolete results', async ({ page }) => {
+    await login(page);
+    await page.goto('/');
+    await browseReady(page);
+    await page.route('**/api/v1/assets/asset-timeline-long/timeline*', async (route: Route) => {
+      { const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, 1200); await promise; }
+      await route.continue();
+    });
+    await page.locator('[data-asset-timeline="asset-timeline-long"]').click();
+    await expect(page.locator('#asset-timeline-panel')).toBeVisible();
+
+    // Close the stalled drawer and open another asset's timeline while the
+    // first response is still in flight.
+    await page.locator('.shot-drawer-close').click();
+    await page.locator('[data-asset-timeline="asset-fixture"]').click();
+    await expect(page.locator('#asset-timeline-panel')).toBeVisible();
+    await expect(page.locator('#asset-timeline-empty')).toContainText(zh.timelineEmpty);
+    await page.waitForTimeout(2000);
+    // The late long-asset response must not render over the fixture asset.
+    await expect(page.locator('#asset-timeline-empty')).toContainText(zh.timelineEmpty);
+    await expect(page.locator('[data-tl-track="transcript"]')).toHaveCount(0);
+  });
+
+  test('a stalled continuation shows the retryable error instead of looping', async ({ page }) => {
+    await login(page);
+    await page.goto('/');
+    await browseReady(page);
+    let firstPageBody: unknown = null;
+    // The local fixture answers in milliseconds, so the initial response is
+    // awaited from before the click onward.
+    const initialPromise = page.waitForResponse(
+      (response) => response.url().includes('/api/v1/assets/asset-timeline-long/timeline') && !response.url().includes('cursor='),
+    );
+    await page.locator('[data-asset-timeline="asset-timeline-long"]').click();
+    await expect(page.locator('#asset-timeline-panel')).toBeVisible();
+    firstPageBody = await (await initialPromise).json();
+    const transcript = page.locator('[data-tl-track="transcript"] [data-tl-interval]');
+    await expect(transcript).toHaveCount(1000, { timeout: 20000 });
+
+    // The continuation answers with the first page's own cursors: fetching
+    // again would loop forever, so the page must stop and show a retryable
+    // error with the partial rows intact.
+    let continuationRequests = 0;
+    await page.route('**/api/v1/assets/asset-timeline-long/timeline*cursor=*', async (route: Route) => {
+      continuationRequests += 1;
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(firstPageBody) });
+    });
+    await page.locator('#asset-timeline-partial button', { hasText: zh.loadMore }).click();
+    await expect(page.locator('#asset-timeline-partial')).toContainText(zh.timelinePartialStalled, { timeout: 20000 });
+    await expect(page.locator('#asset-timeline-partial button')).toContainText('重试');
+    await expect(transcript).toHaveCount(1000);
+    await page.waitForTimeout(2500);
+    expect(continuationRequests).toBe(1);
+  });
+});
+
+test.describe('browse and search view ownership (partition 18 review)', () => {
+  test('an empty browse result is an empty state, not an error', async ({ page }) => {
+    await page.goto('/?region=no-such-region');
+    await expect(page.locator('#library .empty')).toBeVisible();
+    await expect(page.locator('#library .empty.error')).toHaveCount(0);
+  });
+
+  test('Back to browse leaves the search and lists assets again', async ({ page }) => {
+    await page.goto('/');
+    await page.locator('#q').fill('camera');
+    await page.locator('#q').press('Enter');
+    await expect(page.locator('.shot-result').first()).toBeVisible();
+    await page.locator('.shot-results-head .link-button').click();
+    await expect(page.locator('[data-asset-timeline]').first()).toBeVisible();
+    await expect(page.locator('.shot-result')).toHaveCount(0);
+    expect(await page.locator('#q').inputValue()).toBe('');
+  });
+
+  test('removing a saved-view chip during search returns to browse', async ({ page }) => {
+    await page.goto('/?collection=view-discovered');
+    const chip = page.locator('[data-filter-chip="collection"]');
+    await page.locator('#q').fill('camera');
+    await page.locator('#q').press('Enter');
+    await expect(page.locator('.shot-result').first()).toBeVisible();
+    await chip.getByRole('button').click();
+    await browseReady(page);
+    await expect(chip).toHaveCount(0);
+    await expect(page.locator('#q')).toBeEmpty();
+    expect(new URL(page.url()).searchParams.has('collection')).toBe(false);
+  });
+
+  test('Back to browse discards a pending image search', async ({ page }) => {
+    await login(page);
+    await page.goto('/');
+    await page.locator('#q').fill('camera');
+    await page.locator('#q').press('Enter');
+    await expect(page.locator('.shot-result').first()).toBeVisible();
+    await page.route('**/api/v1/search/shots', async (route: Route) => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 1200);
+      await promise;
+      await route.fulfill({
+        json: {
+          results: [{ shot_id: 'shot-late', asset_id: 'asset-fixture', filename: 'late-image.mp4', start_ms: 0, end_ms: 5000, description: 'fixture', score: 0.9 }],
+          has_more: false,
+        },
+      });
+    });
+    const search = page.waitForRequest((request) => request.url().endsWith('/api/v1/search/shots'));
+    await page.setInputFiles('#image-search', { name: 'late.png', mimeType: 'image/png', buffer: nextProbePng() });
+    await search;
+    await page.locator('.shot-results-head .link-button').click();
+    await expect(page.locator('[data-asset-timeline]').first()).toBeVisible();
+    await page.waitForTimeout(2200);
+    await expect(page.locator('[data-asset-timeline]').first()).toBeVisible();
+    await expect(page.locator('.shot-result')).toHaveCount(0);
+  });
+
+  test('an older image search cannot replace a newer selection', async ({ page }) => {
+    await login(page);
+    await page.goto('/');
+    let searches = 0;
+    await page.route('**/api/v1/search/shots', async (route: Route) => {
+      searches += 1;
+      const first = searches === 1;
+      // The first reference's search answers slowly with a shot that would be
+      // visibly wrong if it replaced the second reference's result.
+      if (first) {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 1500);
+        await promise;
+      }
+      await route.fulfill({
+        json: {
+          results: [{
+            shot_id: first ? 'shot-old' : 'shot-new', asset_id: 'asset-fixture',
+            filename: first ? 'older-image.mp4' : 'newer-image.mp4',
+            start_ms: 0, end_ms: 5000, description: 'fixture', score: 0.9,
+          }],
+          has_more: false,
+        },
+      });
+    });
+    const input = page.locator('#image-search');
+    const firstSearch = page.waitForRequest((request) => request.url().endsWith('/api/v1/search/shots'));
+    await input.setInputFiles({ name: 'a.png', mimeType: 'image/png', buffer: nextProbePng() });
+    await firstSearch;
+    // Select B while A's search is still delayed: only the generation guard
+    // keeps A's late response from replacing B's result.
+    await input.setInputFiles({ name: 'b.png', mimeType: 'image/png', buffer: nextProbePng() });
+    await expect(page.locator('.shot-result-file')).toHaveText('newer-image.mp4', { timeout: 10000 });
+    await page.waitForTimeout(2000);
+    await expect(page.locator('.shot-result-file')).toHaveText('newer-image.mp4');
+    await expect(page.locator('.shot-result-file')).toHaveCount(1);
+    await expect(page.locator('#image-search-status')).toContainText(zh.imageSearchReady);
+  });
+
+  test('image filters restart at page one and discard an older continuation', async ({ page }) => {
+    await login(page);
+    await page.goto('/');
+    await browseReady(page);
+    const continuation = Promise.withResolvers<Route>();
+    const requests: Array<{ reference_id: string; query: string; offset: number; asset_filter?: { status?: string } }> = [];
+    await page.route('**/api/v1/search/shots', async (route) => {
+      const body = route.request().postDataJSON();
+      requests.push(body);
+      if (body.offset === 40) {
+        continuation.resolve(route);
+        return;
+      }
+      const filtered = body.asset_filter?.status === 'queued';
+      const filename = filtered ? 'filtered-image.mp4' : 'unfiltered-image.mp4';
+      await route.fulfill({ json: {
+        results: [{ shot_id: filename, asset_id: 'asset-fixture', filename, start_ms: 0, end_ms: 5000 }],
+        has_more: !filtered,
+        next_offset: filtered ? null : 40,
+      } });
+    });
+    await page.setInputFiles('#image-search', { name: 'probe.png', mimeType: 'image/png', buffer: nextProbePng() });
+    const files = page.locator('.shot-result-file');
+    await expect(files).toHaveText('unfiltered-image.mp4');
+    const reference = requests[0].reference_id;
+    expect(reference).toBeTruthy();
+
+    await page.locator('#shot-more-btn').click();
+    const route = await continuation.promise;
+    try {
+      await page.locator('#status-filter').selectOption('queued');
+      await expect(files).toHaveText('filtered-image.mp4');
+      expect(requests[2]).toMatchObject({ query: '', reference_id: reference, offset: 0, asset_filter: { status: 'queued' } });
+      expect(new URL(page.url()).searchParams.get('status')).toBe('queued');
+    } finally {
+      const completed = page.waitForResponse((response) => response.request() === route.request());
+      await route.fulfill({ json: { results: [{ shot_id: 'old', asset_id: 'asset-fixture', filename: 'old-page.mp4' }] } });
+      await (await completed).finished();
+    }
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(files).toHaveText('filtered-image.mp4');
+
+    await page.locator('[data-filter-chip="status"] button').click();
+    await expect(files).toHaveText('unfiltered-image.mp4');
+    expect(requests[3]).toMatchObject({ reference_id: reference, offset: 0 });
+    expect(requests[3]).not.toHaveProperty('asset_filter');
+  });
+
+  for (const status of [200, 500]) {
+    test(`a late image search (${status}) leaves newer text results visible`, async ({ page }) => {
+      await login(page);
+      await page.goto('/');
+      await browseReady(page);
+      const imageRequest = Promise.withResolvers<Route>();
+      await page.route('**/api/v1/search/shots', async (route) => {
+        const body = JSON.parse(route.request().postData() ?? '{}');
+        if (!body.query) {
+          imageRequest.resolve(route);
+          return;
+        }
+        await route.fulfill({ json: { results: [{ shot_id: 'text', asset_id: 'asset-fixture', filename: 'text-result.mp4', start_ms: 0, end_ms: 5000, description: 'fixture', score: 0.9 }] } });
+      });
+      await page.setInputFiles('#image-search', { name: 'probe.png', mimeType: 'image/png', buffer: nextProbePng() });
+      const imageRoute = await imageRequest.promise;
+      try {
+        expect(JSON.parse(imageRoute.request().postData() ?? '{}').reference_id).toBeTruthy();
+        const textStarted = page.waitForRequest((request) => request.url().endsWith('/api/v1/search/shots'));
+        await page.locator('#q').fill('camera');
+        await page.locator('#q').press('Enter');
+        const textBody = JSON.parse((await textStarted).postData() ?? '{}');
+        expect(textBody).toMatchObject({ query: 'camera' });
+        expect(textBody).not.toHaveProperty('reference_id');
+        await expect(page.locator('.shot-result-file')).toHaveText('text-result.mp4');
+      } finally {
+        const imageFinished = page.waitForResponse((response) => response.request() === imageRoute.request(), { timeout: 5000 });
+        await imageRoute.fulfill({
+          status,
+          json: status === 200
+            ? { results: [{ shot_id: 'image', asset_id: 'asset-fixture', filename: 'stale-image.mp4', start_ms: 0, end_ms: 5000, description: 'fixture', score: 0.9 }] }
+            : { error: { code: 'internal_error', message: 'stale image failure' } },
+        });
+        await (await imageFinished).finished();
+      }
+      await page.evaluate(() => {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        return promise;
+      });
+      await expect(page.locator('.shot-result-file')).toHaveText('text-result.mp4');
+      await expect(page.locator('#image-search-status')).toBeEmpty();
+    });
+  }
+
+  for (const searchKind of ['text', 'image']) {
+    test(`${searchKind} first page finishes after a replacement image upload fails`, async ({ page }) => {
+      await page.goto('/');
+      await browseReady(page);
+      let uploads = 0;
+      await page.route('**/api/v1/admin/search-references', async (route) => {
+        uploads++;
+        if (searchKind === 'image' && uploads === 1) {
+          await route.fulfill({ status: 201, json: { id: 'original-reference' } });
+          return;
+        }
+        await route.fulfill({ status: 503, json: { error: { code: 'unavailable', message: 'upload failed' } } });
+      });
+      const resultRequest = Promise.withResolvers<Route>();
+      let searches = 0;
+      await page.route('**/api/v1/search/shots', async (route) => {
+        searches++;
+        if (searchKind === 'image' && searches === 1) {
+          await route.fulfill({ status: 202, json: { status: 'pending' } });
+          return;
+        }
+        resultRequest.resolve(route);
+      });
+      const input = page.locator('#image-search');
+      const status = page.locator('#image-search-status');
+      if (searchKind === 'image') {
+        await input.setInputFiles({ name: 'original.png', mimeType: 'image/png', buffer: nextProbePng() });
+        await expect(status).toHaveText(zh.imageSearchPending);
+      } else {
+        const started = page.waitForRequest((request) => request.url().endsWith('/api/v1/search/shots'));
+        await page.locator('#q').fill('camera');
+        await page.locator('#q').press('Enter');
+        await started;
+      }
+
+      await input.setInputFiles({ name: 'replacement.png', mimeType: 'image/png', buffer: nextProbePng() });
+      await expect(status).toContainText(zh.imageSearchError);
+      const route = await resultRequest.promise;
+      expect(route.request().postDataJSON()).toMatchObject(searchKind === 'image'
+        ? { query: '', offset: 0, reference_id: 'original-reference' }
+        : { query: 'camera', offset: 0 });
+      await route.fulfill({ json: {
+        results: [{ shot_id: 'first', asset_id: 'asset-fixture', filename: 'first-page.mp4', start_ms: 0, end_ms: 5000 }],
+      } });
+      await expect(page.locator('.shot-result-file')).toHaveText('first-page.mp4');
+      await expect(status).toContainText(zh.imageSearchError);
+      expect(searches).toBe(searchKind === 'image' ? 2 : 1);
+    });
+  }
+
+  for (const searchKind of ['text', 'image']) {
+    for (const failure of [401, 403, 503, 'network']) {
+      test(`${searchKind} pagination recovers after an image upload fails (${failure})`, async ({ page }) => {
+        await page.goto('/');
+        await browseReady(page);
+        let uploadingReplacement = false;
+        await page.route('**/api/v1/admin/search-references', async (route) => {
+          if (searchKind === 'image' && !uploadingReplacement) {
+            await route.fulfill({ status: 201, json: { id: 'original-reference' } });
+          } else if (failure === 'network') {
+            await route.abort('failed');
+          } else {
+            await route.fulfill({ status: failure, json: { error: { code: 'upload_failed', message: 'upload failed' } } });
+          }
+        });
+        const interrupted = Promise.withResolvers<Route>();
+        const requests: Array<{ query: string; offset: number; reference_id?: string }> = [];
+        await page.route('**/api/v1/search/shots', async (route) => {
+          const { query, offset, reference_id } = route.request().postDataJSON();
+          requests.push({ query, offset, reference_id });
+          if (requests.length === 2) {
+            interrupted.resolve(route);
+            return;
+          }
+          const filename = offset === 0 ? 'original.mp4' : 'next.mp4';
+          await route.fulfill({ json: {
+            results: [{ shot_id: filename, asset_id: 'asset-fixture', filename, start_ms: 0, end_ms: 5000 }],
+            has_more: offset === 0,
+            ...(offset === 0 ? { next_offset: 40 } : {}),
+          } });
+        });
+        const input = page.locator('#image-search');
+        if (searchKind === 'image') {
+          await input.setInputFiles({ name: 'original.png', mimeType: 'image/png', buffer: nextProbePng() });
+        } else {
+          await page.locator('#q').fill('camera');
+          await page.locator('#q').press('Enter');
+        }
+        const files = page.locator('.shot-result-file');
+        await expect(files).toHaveText(['original.mp4']);
+        const more = page.locator('#shot-more-btn');
+        await more.click();
+        const oldPage = await interrupted.promise;
+        await expect(more).toBeDisabled();
+
+        uploadingReplacement = true;
+        await input.setInputFiles({ name: 'replacement.png', mimeType: 'image/png', buffer: nextProbePng() });
+        const status = page.locator('#image-search-status');
+        await expect(status).toContainText(failure === 401 ? zh.loginRequiredTop : failure === 403 ? zh.http403 : zh.imageSearchError);
+        if (failure === 401) await page.keyboard.press('Escape');
+        await expect(files).toHaveText(['original.mp4']);
+        await expect(more).toBeEnabled();
+
+        await more.click();
+        await expect(files).toHaveText(['original.mp4', 'next.mp4']);
+        const completed = page.waitForResponse((response) => response.request() === oldPage.request());
+        await oldPage.fulfill({ json: { results: [{ shot_id: 'stale', asset_id: 'asset-fixture', filename: 'stale.mp4' }] } });
+        await (await completed).finished();
+        await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+        await expect(files).toHaveText(['original.mp4', 'next.mp4']);
+        expect(requests.map(({ offset }) => offset)).toEqual([0, 40, 40]);
+        expect(requests[1]).toEqual({ query: searchKind === 'image' ? '' : 'camera', offset: 40, reference_id: searchKind === 'image' ? 'original-reference' : undefined });
+        expect(requests[2]).toEqual(requests[1]);
+        if (failure === 401) await expect(status.getByRole('button')).toBeVisible();
+      });
+    }
+  }
+
+  for (const action of ['Clear', 'saved view']) {
+    test(`${action} discards the image awaiting sign-in`, async ({ page }) => {
+      await page.goto('/');
+      let uploads = 0;
+      const isUpload = (request: Request) =>
+        request.url().endsWith('/api/v1/admin/search-references') && request.method() === 'POST';
+      page.on('request', (request) => { if (isUpload(request)) uploads++; });
+      const denied = page.waitForResponse((response) => isUpload(response.request()));
+      await page.setInputFiles('#image-search', { name: 'probe.png', mimeType: 'image/png', buffer: nextProbePng() });
+      expect((await denied).status()).toBe(401);
+      const status = page.locator('#image-search-status');
+      await expect(status.getByRole('button')).toBeVisible();
+      await page.keyboard.press('Escape');
+      if (action === 'Clear') {
+        await page.locator('.search-clear').click();
+      } else {
+        const assets = page.waitForResponse((response) => response.url().includes('/api/v1/collections/view-discovered/assets'));
+        await page.locator('#collection-filter').selectOption('view-discovered');
+        expect((await assets).ok()).toBe(true);
+      }
+      await expect(status).toBeEmpty();
+      await signIn(page);
+      await expect(page.locator('[data-asset-timeline="asset-card-0300"]')).toBeVisible();
+      await expect(status).toBeEmpty();
+      expect(uploads).toBe(1);
+    });
+  }
+});

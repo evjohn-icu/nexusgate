@@ -191,7 +191,7 @@ func TestCJKBigramMigrationBackfillsPendingIndex(t *testing.T) {
 	if err := repo.ReplaceAssetShots(ctx, "asset-backfill", "", []domain.AssetShot{{ID: "shot-backfill", StartMS: 0, EndMS: 3000, Description: "雨夜街道"}}, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.db.ExecContext(ctx, `DELETE FROM asset_shot_search; UPDATE fts_index_state SET value='pending' WHERE name='cjk_bigram_v1'`); err != nil {
+	if _, err := repo.db.ExecContext(ctx, `DELETE FROM asset_shot_search; UPDATE fts_index_state SET value='pending' WHERE name=?`, cjkFTSIndexState); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.Migrate(ctx); err != nil {
@@ -202,7 +202,7 @@ func TestCJKBigramMigrationBackfillsPendingIndex(t *testing.T) {
 		t.Fatalf("backfilled hits=%+v err=%v", hits, err)
 	}
 	var state string
-	if err := repo.db.QueryRowContext(ctx, `SELECT value FROM fts_index_state WHERE name='cjk_bigram_v1'`).Scan(&state); err != nil || state != "ready" {
+	if err := repo.db.QueryRowContext(ctx, `SELECT value FROM fts_index_state WHERE name=?`, cjkFTSIndexState).Scan(&state); err != nil || state != "ready" {
 		t.Fatalf("backfill state=%q err=%v", state, err)
 	}
 }

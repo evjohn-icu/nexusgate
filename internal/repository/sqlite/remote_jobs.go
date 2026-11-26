@@ -404,7 +404,7 @@ func recordWorkerJobFailure(ctx context.Context, tx *sql.Tx, jobID, workerID, st
 // inline, in the same transaction as every lease attempt, so the next Worker
 // or Hub pipeline run that asks for any work cleans it up as a side effect.
 func reclaimExhaustedLeases(ctx context.Context, tx *sql.Tx, now time.Time) error {
-	_, err := tx.ExecContext(ctx, `UPDATE jobs SET state='failed',terminal=1,last_error_message=COALESCE(last_error_message,'worker lease expired after exhausting all attempts'),lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE state='running' AND lease_expires_at IS NOT NULL AND lease_expires_at<=? AND attempt_count>=max_attempts`, formatTime(now), formatTime(now))
+	_, err := tx.ExecContext(ctx, `UPDATE jobs SET state='failed',terminal=1,last_error_message=COALESCE(last_error_message,'worker lease expired after exhausting all attempts'),lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE state='running' AND lease_expires_at IS NOT NULL AND lease_expires_at<=? AND attempt_count>=max_attempts AND NOT EXISTS(SELECT 1 FROM inference_tasks t WHERE t.job_id=jobs.id AND t.cancel_requested=1)`, formatTime(now), formatTime(now))
 	return err
 }
 
@@ -460,7 +460,7 @@ func (r *Repository) SetDeriveWorkerAssignment(ctx context.Context, jobID, worke
 
 func assertActiveWorkerLease(ctx context.Context, tx *sql.Tx, jobID, workerID string) error {
 	var owned int
-	err := tx.QueryRowContext(ctx, `SELECT 1 FROM jobs WHERE id=? AND state='running' AND lease_owner=? AND lease_expires_at>?`, jobID, workerID, formatTime(time.Now().UTC())).Scan(&owned)
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM jobs WHERE id=? AND state='running' AND lease_owner=? AND lease_expires_at>? AND NOT EXISTS(SELECT 1 FROM inference_tasks t WHERE t.job_id=jobs.id AND t.cancel_requested=1)`, jobID, workerID, formatTime(time.Now().UTC())).Scan(&owned)
 	if errors.Is(err, sql.ErrNoRows) {
 		return leaseLostErr(jobID, workerID)
 	}
@@ -541,7 +541,7 @@ func (r *Repository) CompleteWorkerJob(ctx context.Context, jobID, workerID stri
 	// expiry here means a lapsed Worker now fails instead of silently
 	// succeeding, and the widened reclaim predicates in LeaseNextJob /
 	// LeaseNextWorkerDerive pick the job back up for a real attempt.
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE(asset_id,''),job_type,input_hash,current_stage,attempt_count,max_attempts FROM jobs WHERE id=? AND lease_owner=? AND state='running' AND lease_expires_at>?`, jobID, workerID, formatTime(now)).Scan(&assetID, &jobType, &inputHash, &currentStage, &attemptCount, &maxAttempts)
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(asset_id,''),job_type,input_hash,current_stage,attempt_count,max_attempts FROM jobs WHERE id=? AND lease_owner=? AND state='running' AND lease_expires_at>? AND NOT EXISTS(SELECT 1 FROM inference_tasks t WHERE t.job_id=jobs.id AND t.cancel_requested=1)`, jobID, workerID, formatTime(now)).Scan(&assetID, &jobType, &inputHash, &currentStage, &attemptCount, &maxAttempts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return leaseLostErr(jobID, workerID)
 	}
@@ -565,6 +565,10 @@ func (r *Repository) CompleteWorkerJob(ctx context.Context, jobID, workerID stri
 		}
 		return tx.Commit()
 	}
+	switch jobType {
+	case domain.JobInference, domain.JobModelInstall, domain.JobModelProbe:
+		return leaseLostErr(jobID, workerID)
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE jobs SET state=?,last_error_message=?,current_stage='complete',progress=100,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND lease_owner=? AND state='running' AND lease_expires_at>?`, string(state), nullString(message), formatTime(now), jobID, workerID, formatTime(now))
 	if err != nil {
 		return err
@@ -577,6 +581,16 @@ func (r *Repository) CompleteWorkerJob(ctx context.Context, jobID, workerID stri
 		return err
 	}
 	if jobType == domain.JobDerive {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO derive_modality_outbox(derive_job_id) VALUES(?)`, jobID); err != nil {
+			return err
+		}
+		committed, err := hasCommittedAnalysis(ctx, tx, assetID)
+		if err != nil {
+			return err
+		}
+		if committed {
+			return tx.Commit()
+		}
 		var audioExists int
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM derived_artifacts WHERE asset_id=? AND artifact_type='audio')`, assetID).Scan(&audioExists); err != nil {
 			return err

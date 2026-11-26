@@ -2,22 +2,74 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/evjohn-icu/nexusgate/internal/api"
 	"github.com/evjohn-icu/nexusgate/internal/config"
 	"github.com/evjohn-icu/nexusgate/internal/secretstore"
+	"github.com/evjohn-icu/nexusgate/internal/worker"
 )
 
 func TestUsage(t *testing.T) {
 	err := usage()
 	if err == nil || err.Error() != "invalid command" {
 		t.Fatalf("usage() error = %v, want %q", err, "invalid command")
+	}
+}
+
+func TestWorkerEnrollChecksDestinationAndPersistsHubGrants(t *testing.T) {
+	var requests atomic.Int32
+	hub := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/worker/enroll" {
+			t.Errorf("unexpected enrollment request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"worker":{"id":"worker-fixture","capabilities":{"inference_operations":["visual_embedding"],"model_management_operations":["install"]}},"token":"fixture-token"}`)
+	}))
+	defer hub.Close()
+	fingerprint := fmt.Sprintf("%x", sha256.Sum256(hub.Certificate().Raw))
+	dir := t.TempDir()
+	badPath := filepath.Join(dir, "existing-directory")
+	if err := os.Mkdir(badPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	args := os.Args
+	t.Cleanup(func() { os.Args = args })
+	run := func(path string) error {
+		os.Args = []string{"nexusgate", "worker", "enroll", "--hub", hub.URL, "--pairing", "fixture", "--fingerprint", fingerprint, "--config", path}
+		return runWorkerCommand(config.Config{})
+	}
+	if err := run(badPath); err == nil || requests.Load() != 0 {
+		t.Fatalf("invalid destination: requests=%d, err=%v", requests.Load(), err)
+	}
+	path := filepath.Join(dir, "private", "worker.json")
+	if err := run(path); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("requests=%d, want 1", requests.Load())
+	}
+	cfg, err := worker.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caps := cfg.Registration.Capabilities
+	if strings.Join(caps.InferenceOperations, ",") != "visual_embedding" || strings.Join(caps.ModelManagementOperations, ",") != "install" {
+		t.Fatalf("stored grants: inference=%v management=%v", caps.InferenceOperations, caps.ModelManagementOperations)
 	}
 }
 
@@ -404,6 +456,86 @@ func TestRunServeDispatchTLSFilesMissing(t *testing.T) {
 		t.Fatal("expected error from missing TLS files")
 	}
 	t.Logf("serve with missing TLS files returned: %v", err)
+}
+
+type blockingHubTasks struct {
+	started, cancelling, release, stopped, maintenanceDone, pipelineDone chan struct{}
+}
+
+func (*blockingHubTasks) SetPipelineContext(context.Context) {}
+
+func (tasks *blockingHubTasks) RunLibrarySupervisor(ctx context.Context) error {
+	close(tasks.started)
+	<-ctx.Done()
+	close(tasks.cancelling)
+	<-tasks.release
+	close(tasks.stopped)
+	return nil
+}
+
+func (tasks *blockingHubTasks) StartServingMaintenance(context.Context) func() {
+	<-tasks.started
+	return func() { close(tasks.maintenanceDone) }
+}
+
+func (tasks *blockingHubTasks) WaitPipeline() { close(tasks.pipelineDone) }
+
+func TestServeListenerModesJoinBackgroundWorkOnBindFailure(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	for _, mode := range []string{"ordinary", "ready-file"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			tasks := &blockingHubTasks{
+				started: make(chan struct{}), cancelling: make(chan struct{}), release: make(chan struct{}),
+				stopped: make(chan struct{}), maintenanceDone: make(chan struct{}), pipelineDone: make(chan struct{}),
+			}
+			released := false
+			defer func() {
+				if !released {
+					close(tasks.release)
+				}
+			}()
+			readyFile := ""
+			if mode == "ready-file" {
+				readyFile = filepath.Join(t.TempDir(), "ready.json")
+			}
+			address := occupied.Addr().String()
+			done := make(chan error, 1)
+			go func() { done <- serveHub(ctx, tasks, api.NewServer(address, nil), address, "", readyFile) }()
+			select {
+			case <-tasks.cancelling:
+			case <-ctx.Done():
+				t.Fatal("listener failure did not cancel the supervisor")
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("serve returned %v before the supervisor stopped", err)
+			case <-time.After(20 * time.Millisecond):
+			}
+			close(tasks.release)
+			released = true
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("serve unexpectedly bound an occupied address")
+				}
+			case <-ctx.Done():
+				t.Fatal("serve did not return after background work stopped")
+			}
+			for _, completion := range []<-chan struct{}{tasks.stopped, tasks.maintenanceDone, tasks.pipelineDone} {
+				select {
+				case <-completion:
+				default:
+					t.Fatal("serve returned before background work joined")
+				}
+			}
+		})
+	}
 }
 
 // TestDoctorReportsInvalidProviderConfig proves `doctor` stays runnable when

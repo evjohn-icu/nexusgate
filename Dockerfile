@@ -113,9 +113,96 @@ RUN sed -i 's/Components: main$/Components: main non-free/' /etc/apt/sources.lis
 USER nexusgate:nexusgate
 
 # --------------------------------------------------------------------------
+# CPU inference environment, opt-in. Only `docker build --target inference`
+# (and the Compose override in deploy/docker-compose.inference.yml) reach
+# these two stages; every default invocation above never downloads a Python
+# interpreter or a wheel, so the lean image stays lean.
+#
+# The venv is built from the checked-in pin file -- inference/requirements/
+# torch.lock, the resolved set that the "torch" environment in
+# inference/models.lock.json validates against -- not from the floating
+# requirements input. Installing exactly those pins is also what makes a
+# broken environment fail the build: if any pin cannot be resolved or
+# installed, pip exits nonzero here and no image gets published that would
+# advertise an empty runtime. (The same rule covers architectures: a pin the
+# index does not publish for TARGETARCH fails the build instead of silently
+# substituting something else.)
+#
+# python:3.12-slim-bookworm is both the interpreter major the lock names
+# ("environments.torch.python": "3.12") and the same Debian suite as the
+# runtime stage, so the interpreter, its stdlib and libpython copied below
+# are ABI-compatible with the libraries they link against.
+FROM python:3.12-slim-bookworm AS inference-venv
+
+# torch is pinned as 2.15.0+cpu, which exists only on the PyTorch CPU index;
+# PyPI stays the primary index for every other pin in the lock. This is the
+# same two-index layout inference/README.md documents for local venvs.
+COPY inference/requirements/torch.lock /tmp/torch.lock
+RUN python -m venv /opt/nexusgate-venv \
+    && /opt/nexusgate-venv/bin/pip install \
+         --disable-pip-version-check --no-cache-dir \
+         --extra-index-url https://download.pytorch.org/whl/cpu \
+         -r /tmp/torch.lock
+
+# --------------------------------------------------------------------------
+# The opt-in inference image: the lean runtime above plus the locked CPU
+# Python environment and the checked-in inference module. Weights are never
+# baked in; NEXUSGATE_INFERENCE_MODEL_DIR (Hub: <dataDir>/models, Worker:
+# --inference-models) is populated at runtime by the hash-verified install
+# path, and an artifact-free probe reports model_unavailable instead of
+# downloading anything. Runtime enabling stays an operator decision: the
+# Compose override sets NEXUSGATE_INFERENCE_* on the Hub and the matching
+# --inference-* flags on the Worker command (deploy/docker-compose.inference.yml).
+FROM runtime AS inference
+
+USER root
+
+# The venv's python entries are symlinks into the builder's
+# /usr/local/bin/python3.12, and that interpreter is built --enable-shared,
+# so the binary, the stdlib and the libpython shared object must exist in the
+# runtime image at the same paths the symlinks point to.
+COPY --from=inference-venv /opt/nexusgate-venv /opt/nexusgate-venv
+COPY --from=inference-venv /usr/local/bin/python /usr/local/bin/python
+COPY --from=inference-venv /usr/local/bin/python3 /usr/local/bin/python3
+COPY --from=inference-venv /usr/local/bin/python3.12 /usr/local/bin/python3.12
+COPY --from=inference-venv /usr/local/lib/python3.12 /usr/local/lib/python3.12
+COPY --from=inference-venv /usr/local/lib/libpython3.12.so.1.0 /usr/local/lib/libpython3.12.so.1.0
+
+# Shared libraries the copied interpreter's extension modules and the locked
+# wheels load dynamically. The builder image keeps exactly these via its own
+# ldd pass; a plain debian:bookworm-slim (the runtime stage) does not carry
+# them. libgomp1 is torch's OpenMP runtime, libsndfile1 backs soundfile.
+RUN apt-get update \
+    && apt-get install --no-install-recommends --yes \
+         libbz2-1.0 \
+         libexpat1 \
+         libffi8 \
+         libgomp1 \
+         liblzma5 \
+         libsndfile1 \
+         libsqlite3-0 \
+         libssl3 \
+         libstdc++6 \
+         zlib1g \
+    && rm -rf /var/lib/apt/lists/* \
+    && ldconfig
+
+# The checked-in module: dispatch/protocol/adapters plus models.lock.json and
+# the pinned requirements. .dockerignore keeps venvs, caches and the model
+# weights out of the context, so this copy is exactly the reviewed artifacts.
+COPY inference/ /opt/nexusgate/inference/
+
+# The venv's tools are handy for operators exec'ing into the container; it
+# contains nothing that conflicts with the runtime image's own commands.
+ENV PATH=/opt/nexusgate-venv/bin:/usr/local/bin:/usr/bin:/bin
+
+USER nexusgate:nexusgate
+RUN ["/opt/nexusgate-venv/bin/python", "-B", "-c", "import torch, transformers"]
+
+# --------------------------------------------------------------------------
 # `docker build` with no --target builds the last stage in this file. Without
-# this alias that would silently become `gpu` the moment the stage above was
-# added, breaking every existing build/CI invocation that doesn't pass
+# this alias that would silently become the newest stage above (gpu, then
+# inference), breaking every existing build/CI invocation that doesn't pass
 # --target. This stage adds no instructions of its own, so it is
 # byte-identical to `runtime` -- it only keeps the untargeted build pointed
 # at the plain CPU image.

@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"fmt"
 	"math"
 	"testing"
 )
@@ -80,6 +81,18 @@ func TestEventDetectionScoresOneToOnePerClass(t *testing.T) {
 	}
 }
 
+func TestEventDetectionMacroIncludesMissedClassesAcrossAssets(t *testing.T) {
+	truth := []EventAnnotation{
+		{AssetID: "a", Label: "rain", Interval: intv(0, 1000)},
+		{AssetID: "b", Label: "rain", Interval: intv(0, 1000)},
+		{AssetID: "c", Label: "horn", Interval: intv(0, 1000)},
+	}
+	micro, macro, boundary := ScoreEventDetection(truth, truth[:2])
+	if micro != 0.8 || macro != 0.5 || boundary != 0 {
+		t.Fatalf("event scores = %g/%g/%g, want 0.8/0.5/0", micro, macro, boundary)
+	}
+}
+
 func TestDiarizationDERCountsCollarAndOverlap(t *testing.T) {
 	reference := []SpeakerSegment{
 		{Speaker: "A", Interval: intv(0, 5000)},
@@ -104,6 +117,25 @@ func TestDiarizationDERCountsCollarAndOverlap(t *testing.T) {
 	}
 	if missing.SpeakerCountError != -1 {
 		t.Fatalf("speaker count error=%d, want -1", missing.SpeakerCountError)
+	}
+}
+
+func TestDiarizationCountsBothSpeakersInAnOverlap(t *testing.T) {
+	reference := []SpeakerSegment{
+		{Speaker: "A", Interval: intv(0, 10000)},
+		{Speaker: "B", Interval: intv(2000, 8000)},
+	}
+	predicted := []SpeakerSegment{
+		{Speaker: "Y", Interval: intv(2000, 8000)},
+		{Speaker: "X", Interval: intv(0, 10000)},
+	}
+	if got := ScoreDiarization(reference, predicted, 10000); !got.Evaluable || got.DERWithOverlap != 0 || got.DERWithoutOverlap != 0 {
+		t.Fatalf("reordered overlapping predictions = %+v, want perfect scores", got)
+	}
+	got := ScoreDiarization(reference, predicted[1:], 10000)
+	want := 5500.0 / 14000.0
+	if math.Abs(got.DERWithOverlap-want) > 1e-9 || got.DERWithoutOverlap != 0 || got.SpeakerCountError != -1 {
+		t.Fatalf("one missing overlapping speaker = %+v, want DER %g with overlap and zero without", got, want)
 	}
 }
 
@@ -197,5 +229,21 @@ func TestOptimalAssignmentBeatsGreedy(t *testing.T) {
 	}
 	if got := optimalAssignment(nil); len(got) != 0 {
 		t.Fatalf("empty pairs produced %v", got)
+	}
+}
+
+func TestOptimalAssignmentKeepsBothPositivePairsAndSupportsLargeSets(t *testing.T) {
+	pairs := map[cell]int{{"A", "X"}: 3, {"A", "Y"}: 2, {"B", "X"}: 8, {"B", "Y"}: 7}
+	for i := range 24 {
+		id := fmt.Sprint(i)
+		pairs[cell{"ref-" + id, "hyp-" + id}] = 1
+	}
+	assignment := optimalAssignment(pairs)
+	total := 0
+	for ref, hyp := range assignment {
+		total += pairs[cell{ref, hyp}]
+	}
+	if len(assignment) != 26 || total != 34 {
+		t.Fatalf("assignment has %d pairs with weight %d, want 26 and 34", len(assignment), total)
 	}
 }

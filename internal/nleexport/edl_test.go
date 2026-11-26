@@ -14,6 +14,22 @@ func reelOf(line string) string {
 	return strings.TrimSpace(line[5:13])
 }
 
+func TestEDLTitleKeepsEventsOnTheirOwnRecords(t *testing.T) {
+	timeline := Timeline{Title: "  Night\r\n街景\u0085rough\u2028cut\u2029 ", Clips: []Clip{
+		{Reel: "first", SourceInMS: 0, SourceOutMS: 1000, FPS: 25},
+		{Reel: "second", SourceInMS: 0, SourceOutMS: 1000, FPS: 25},
+	}}
+	out, err := EDL(timeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(out, "\r\n")
+	if len(lines) != 5 || lines[0] != "TITLE: Night 街景 rough cut" ||
+		!strings.HasPrefix(lines[2], "001  FIRST") || !strings.HasPrefix(lines[3], "002  SECOND") {
+		t.Fatalf("unexpected EDL records: %q", lines)
+	}
+}
+
 // For a straight cut the record duration must equal the source duration frame
 // for frame, and each event's record in must be the previous event's record
 // out. An NLE reads any disagreement as a gap or an overlap — silently, since

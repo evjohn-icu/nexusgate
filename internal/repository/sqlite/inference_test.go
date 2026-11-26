@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/inferencecatalog"
 	"github.com/evjohn-icu/nexusgate/internal/remote"
 )
 
@@ -228,7 +229,7 @@ func TestInferenceStageRequiresLiveOwnerAndLease(t *testing.T) {
 	}
 }
 
-func TestCancelInferenceTaskDistinguishesPendingAndRunning(t *testing.T) {
+func TestCancelInferenceTaskTerminalizesPendingAndRunning(t *testing.T) {
 	repo, assetID := newInferenceRepository(t)
 	ctx := context.Background()
 	pendingRequest := inferenceTestRequest(domain.OpSoundEvents, assetID, "", "cancel-pending")
@@ -258,11 +259,22 @@ func TestCancelInferenceTaskDistinguishesPendingAndRunning(t *testing.T) {
 	if err != nil || !runningTask.CancelRequested {
 		t.Fatalf("running task cancel flag=%v err=%v", runningTask.CancelRequested, err)
 	}
-	if err := repo.db.QueryRow(`SELECT state FROM jobs WHERE id=?`, runningID).Scan(&state); err != nil {
+	var terminal int
+	var stage, owner string
+	if err := repo.db.QueryRow(`SELECT state,terminal,last_error_code,current_stage,COALESCE(lease_owner,'') FROM jobs WHERE id=?`, runningID).Scan(&state, &terminal, &errorCode, &stage, &owner); err != nil {
 		t.Fatal(err)
 	}
-	if state != string(domain.JobRunning) {
-		t.Fatalf("running cancellation changed job state to %q", state)
+	if state != string(domain.JobFailed) || terminal != 1 || errorCode != "cancelled" || stage != "cancelled" || owner != "" {
+		t.Fatalf("running cancellation state=%q terminal=%d code=%q stage=%q owner=%q", state, terminal, errorCode, stage, owner)
+	}
+	if err := repo.RenewInferenceLease(ctx, runningID, "owner-a", time.Now().Add(time.Minute)); !errors.Is(err, domain.ErrJobLeaseLost) {
+		t.Fatalf("renewal err=%v, want lost lease", err)
+	}
+	if affected, err := repo.RequeueFailedJobs(ctx); err != nil || affected != 0 {
+		t.Fatalf("manual requeue affected=%d err=%v", affected, err)
+	}
+	if released, _, err := repo.HealStaleRunningJobs(ctx, time.Now().Add(time.Hour)); err != nil || released != 0 {
+		t.Fatalf("heal released=%d err=%v", released, err)
 	}
 }
 
@@ -491,22 +503,42 @@ func TestActiveGenerationSurvivesUncommittedReplacement(t *testing.T) {
 
 func TestAssetlessInferenceLeaseAndFailureAreNullSafe(t *testing.T) {
 	repo, _ := newInferenceRepository(t)
+	model, ok := inferencecatalog.Lookup("visual-siglip2-base")
+	if !ok {
+		t.Fatal("visual model missing from catalog")
+	}
 	space := inferenceTestSpace(t, repo, domain.ModalityVisual)
 	firstReq := inferenceTestRequest(domain.OpVisualEmbedding, "", space.ID, "assetless-worker-a")
+	firstReq.ModelID = model.ModelID
+	firstReq.ModelRevision = model.Revision
 	secondReq := inferenceTestRequest(domain.OpVisualEmbedding, "", space.ID, "assetless-worker-b")
+	secondReq.ModelID = model.ModelID
+	secondReq.ModelRevision = model.Revision
 	firstID := enqueueInferenceTestTask(t, repo, firstReq, "task-key-assetless-a")
 	secondID := enqueueInferenceTestTask(t, repo, secondReq, "task-key-assetless-b")
 	now := time.Now().UTC()
+	granted, err := json.Marshal(remote.WorkerCapabilities{InferenceOperations: []string{string(domain.OpVisualEmbedding)}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, worker := range []string{"worker-a", "worker-b"} {
 		nowText := formatTime(now)
-		if _, err := repo.db.Exec(`INSERT INTO workers(id,name,platform,token_hash,status,capabilities_json,last_seen_at,created_at) VALUES(?,?,?,?,'online','{}',?,?)`, worker, worker, "linux", "token-"+worker, nowText, nowText); err != nil {
+		if _, err := repo.db.Exec(`INSERT INTO workers(id,name,platform,token_hash,status,capabilities_json,last_seen_at,created_at) VALUES(?,?,?,?,'online',?,?,?)`, worker, worker, "linux", "token-"+worker, string(granted), nowText, nowText); err != nil {
 			t.Fatal(err)
 		}
 	}
 	caps := []remote.InferenceCapability{{
-		Operation: domain.OpVisualEmbedding, ModelID: "fixture-model",
-		ModelRevision: "revision-1", SpaceID: space.ID, Available: true,
+		Operation: domain.OpVisualEmbedding, ModelID: model.ModelID,
+		ModelRevision: model.Revision, SpaceID: space.ID, Available: true,
 	}}
+	// A paired Worker's claimed profile is only routable behind a Hub-verified
+	// attestation, so both fixtures attest before they lease.
+	if err := repo.RecordModelAttestation(context.Background(), "worker-a", model.CatalogID, model.ManifestDigest(), "probe", "{}"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RecordModelAttestation(context.Background(), "worker-b", model.CatalogID, model.ManifestDigest(), "probe", "{}"); err != nil {
+		t.Fatal(err)
+	}
 	first, err := repo.LeaseNextWorkerInference(context.Background(), "worker-a", time.Minute, nil, caps, 0, now)
 	if err != nil || first == nil {
 		t.Fatalf("assetless no-root worker lease=%+v err=%v", first, err)
@@ -603,7 +635,7 @@ func TestLeaseNextModelManagementTargetsWorker(t *testing.T) {
 	if _, err := repo.db.Exec(`INSERT INTO model_management_tasks(job_id,target_worker_id,catalog_id,manifest_digest,action,license_accepted_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, jobID, "hub-local-owner", "catalog-model", "sha256:manifest", "install", formatTime(now), formatTime(now), formatTime(now)); err != nil {
 		t.Fatal(err)
 	}
-	leased, err := repo.LeaseNextModelManagement(context.Background(), "hub-local-owner", time.Minute, now)
+	leased, err := repo.LeaseNextModelManagement(context.Background(), "hub-local-owner", "hub-local-owner", []string{"install"}, time.Minute, now)
 	if err != nil || leased == nil {
 		t.Fatalf("model management lease=%+v err=%v", leased, err)
 	}
@@ -611,6 +643,8 @@ func TestLeaseNextModelManagementTargetsWorker(t *testing.T) {
 		t.Fatalf("unexpected management lease: %+v", leased)
 	}
 }
+
+const speakerCommitFixtureDigest = "sha256:speaker-digest-fixture"
 
 func prepareSpeakerEmbeddingCommit(t *testing.T, key string) (*Repository, string, int64, int64, []domain.SpeakerEmbedding) {
 	t.Helper()
@@ -643,13 +677,16 @@ func prepareSpeakerEmbeddingCommit(t *testing.T, key string) (*Repository, strin
 		ConsentGeneration: consent.Generation,
 		ProfileGeneration: profileGeneration,
 	}}
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO speaker_embedding_staging(operation_id,job_id,profile_id,profile_generation,consent_generation,secret_ref,result_digest,created_at) VALUES(?,?,?,?,?,?,?,?)`, request.OperationID, jobID, profileID, profileGeneration, consent.Generation, records[0].SecretRef, speakerCommitFixtureDigest, formatTime(time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
 	return repo, jobID, consent.Generation, profileGeneration, records
 }
 
 func TestCommitSpeakerEmbeddingFencesConsentProfileAndLease(t *testing.T) {
 	t.Run("stale consent", func(t *testing.T) {
 		repo, jobID, consentGeneration, profileGeneration, records := prepareSpeakerEmbeddingCommit(t, "stale-consent")
-		err := repo.CommitSpeakerEmbedding(context.Background(), jobID, "speaker-owner", consentGeneration-1, profileGeneration, records)
+		err := repo.CommitSpeakerEmbedding(context.Background(), jobID, "speaker-owner", consentGeneration-1, profileGeneration, speakerCommitFixtureDigest, records)
 		if !errors.Is(err, domain.ErrPermanentFailure) {
 			t.Fatalf("stale consent error=%v, want permanent failure", err)
 		}
@@ -663,7 +700,7 @@ func TestCommitSpeakerEmbeddingFencesConsentProfileAndLease(t *testing.T) {
 	})
 	t.Run("valid encrypted references", func(t *testing.T) {
 		repo, jobID, consentGeneration, profileGeneration, records := prepareSpeakerEmbeddingCommit(t, "valid")
-		if err := repo.CommitSpeakerEmbedding(context.Background(), jobID, "speaker-owner", consentGeneration, profileGeneration, records); err != nil {
+		if err := repo.CommitSpeakerEmbedding(context.Background(), jobID, "speaker-owner", consentGeneration, profileGeneration, speakerCommitFixtureDigest, records); err != nil {
 			t.Fatal(err)
 		}
 		if got := inferenceTestCount(t, repo, "speaker_embeddings", ""); got != len(records) {
@@ -682,7 +719,7 @@ func TestCommitSpeakerEmbeddingFencesConsentProfileAndLease(t *testing.T) {
 		if _, err := repo.db.Exec(`UPDATE jobs SET lease_expires_at=? WHERE id=?`, formatTime(time.Now().UTC().Add(-time.Second)), jobID); err != nil {
 			t.Fatal(err)
 		}
-		err := repo.CommitSpeakerEmbedding(context.Background(), jobID, "speaker-owner", consentGeneration, profileGeneration, records)
+		err := repo.CommitSpeakerEmbedding(context.Background(), jobID, "speaker-owner", consentGeneration, profileGeneration, speakerCommitFixtureDigest, records)
 		if !errors.Is(err, domain.ErrJobLeaseLost) {
 			t.Fatalf("lost-lease speaker commit error=%v, want ErrJobLeaseLost", err)
 		}
@@ -741,16 +778,26 @@ func TestStagedInferenceResultKeepsVectorsForRetryDigest(t *testing.T) {
 
 func TestInferenceLeaseRequiresExactModelAndProbeAttestation(t *testing.T) {
 	repo, assetID := newInferenceRepository(t)
+	model, ok := inferencecatalog.Lookup("sound-yamnet")
+	if !ok {
+		t.Fatal("sound model missing from catalog")
+	}
 	request := inferenceTestRequest(domain.OpSoundEvents, assetID, "", "routing")
+	request.ModelID = model.ModelID
+	request.ModelRevision = model.Revision
 	jobID := enqueueInferenceTestTask(t, repo, request, "task-key-routing")
 	now := time.Now().UTC()
-	if _, err := repo.db.Exec(`INSERT INTO workers(id,name,platform,token_hash,status,capabilities_json,last_seen_at,created_at) VALUES('worker-routing','w','linux','token','online','{}',?,?)`, formatTime(now), formatTime(now)); err != nil {
+	granted, err := json.Marshal(remote.WorkerCapabilities{InferenceOperations: []string{string(domain.OpSoundEvents)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.Exec(`INSERT INTO workers(id,name,platform,token_hash,status,capabilities_json,last_seen_at,created_at) VALUES('worker-routing','w','linux','token','online',?,?,?)`, string(granted), formatTime(now), formatTime(now)); err != nil {
 		t.Fatal(err)
 	}
 	base := remote.InferenceCapability{
-		Operation: domain.OpSoundEvents, ModelID: "fixture-model",
-		ModelRevision: "revision-1", Available: true,
-		CatalogID: "sound-yamnet", ManifestDigest: "sha256:manifest",
+		Operation: domain.OpSoundEvents, ModelID: model.ModelID,
+		ModelRevision: model.Revision, Available: true,
+		CatalogID: model.CatalogID, ManifestDigest: model.ManifestDigest(),
 	}
 	wrong := base
 	wrong.ModelID = "other-model"
@@ -762,7 +809,7 @@ func TestInferenceLeaseRequiresExactModelAndProbeAttestation(t *testing.T) {
 	if err != nil || job != nil {
 		t.Fatalf("unattested capability leased job=%+v err=%v", job, err)
 	}
-	if err := repo.RecordModelAttestation(context.Background(), "worker-routing", base.CatalogID, "sha256:manifest", "probe", "{}"); err != nil {
+	if err := repo.RecordModelAttestation(context.Background(), "worker-routing", model.CatalogID, model.ManifestDigest(), "probe", "{}"); err != nil {
 		t.Fatal(err)
 	}
 	job, err = repo.LeaseNextWorkerInference(context.Background(), "worker-routing", time.Minute, []string{"root-inference"}, []remote.InferenceCapability{base}, 0, now)

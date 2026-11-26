@@ -56,6 +56,19 @@ func TestFusionRRFMath(t *testing.T) {
 	}
 }
 
+func TestFusionRRFIgnoresChannelBaseScore(t *testing.T) {
+	rrf := &RRF{K: 60}
+	fused := rrf.Fuse([]ChannelResult{{Signal: SignalTextEmbedding, Candidates: []Candidate{
+		{ShotID: "cosine-only", Score: 0.91, Signals: map[string]float64{SignalTextEmbedding: 0.91}},
+	}}})
+	if len(fused) != 1 {
+		t.Fatalf("fused = %+v", fused)
+	}
+	if diff(fused[0].Score, 1.0/61) > 1e-12 || diff(fused[0].Signals[SignalTextEmbedding], 0.91) > 1e-12 {
+		t.Fatalf("score=%v signals=%v, want the rank sum only with the cosine preserved", fused[0].Score, fused[0].Signals)
+	}
+}
+
 func TestFusionRRFMergesAllSignals(t *testing.T) {
 	rrf := &RRF{K: 60}
 	results := []ChannelResult{

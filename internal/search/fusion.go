@@ -99,9 +99,10 @@ func (f *RRF) Fuse(results []ChannelResult) []Candidate {
 			if !ok {
 				idx = len(fused)
 				index[candidate.ShotID] = idx
-				// Clone the first sighting's signals so the fused candidate
-				// never shares (and later mutates) the channel's own map —
-				// same invariant WeightedRRF keeps.
+				// The fused score is only the rank sum; a channel's raw score
+				// (an embedding cosine, for example) stays in Signals and must
+				// never ride along as an extra fusion weight.
+				candidate.Score = 0
 				candidate.Signals = maps.Clone(candidate.Signals)
 				fused = append(fused, candidate)
 			}

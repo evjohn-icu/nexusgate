@@ -212,3 +212,174 @@ func TestTextEmbeddingRoundtrip(t *testing.T) {
 		t.Fatal("provider adapter must have hit the endpoint")
 	}
 }
+
+// TestShotTextEmbeddingsKeysPerSpace proves the (shot_id, model) key: one
+// shot can carry one vector per space, each read sees only its space, and
+// re-upserting a (shot, space) pair replaces instead of duplicating.
+func TestShotTextEmbeddingsKeysPerSpace(t *testing.T) {
+	repo, err := Open(filepath.Join(t.TempDir(), "spaces.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := repo.DB().ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES('a','fp',1,'discovered','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	doc := search.ShotSearchDocument{ShotID: "s", Description: "red car"}
+	hash := search.ShotTextSourceHash(doc)
+	if err := repo.ReplaceAssetShots(ctx, "a", "", []domain.AssetShot{{ID: "s", AssetID: "a", EndMS: 1, Description: doc.Description}}, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Two equal-dimensional spaces for the same shot.
+	primary := search.ShotEmbeddingRow{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "s"}}, Model: "text-space-v1:primary", Vector: []float32{0.6, 0.8}, SourceTextHash: hash}
+	fallback := search.ShotEmbeddingRow{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "s"}}, Model: "text-space-v1:fallback", Vector: []float32{0.8, 0.6}, SourceTextHash: hash}
+	if err := repo.UpsertShotTextEmbeddings(ctx, []search.ShotEmbeddingRow{primary, fallback}); err != nil {
+		t.Fatal(err)
+	}
+	for _, space := range []string{primary.Model, fallback.Model} {
+		rows, err := repo.ListShotTextEmbeddings(ctx, space)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1 || rows[0].Shot.ID != "s" || rows[0].Model != space {
+			t.Fatalf("space %q rows=%+v", space, rows)
+		}
+	}
+	// Re-upsert the primary: replaced, not duplicated.
+	replacement := primary
+	replacement.Vector = []float32{1, 0}
+	if err := repo.UpsertShotTextEmbeddings(ctx, []search.ShotEmbeddingRow{replacement}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := repo.ListShotTextEmbeddings(ctx, primary.Model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Vector[0] != 1 {
+		t.Fatalf("same-space upsert must replace, got %+v", rows)
+	}
+	var count int
+	if err := repo.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM shot_text_embeddings`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("one row per space expected, got %d rows total", count)
+	}
+}
+
+// TestListShotTextEmbeddingsFiltersStaleSourceHash: a row whose
+// source_text_hash no longer matches the shot's current projection is not
+// returned to any reader — that is what keeps a stale fallback vector of an
+// old description from ever being scored.
+func TestListShotTextEmbeddingsFiltersStaleSourceHash(t *testing.T) {
+	repo, err := Open(filepath.Join(t.TempDir(), "stale.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	if err := repo.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := repo.DB().ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES('a','fp',1,'discovered','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ReplaceAssetShots(ctx, "a", "", []domain.AssetShot{{ID: "s", AssetID: "a", EndMS: 1, Description: "red car"}}, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	currentHash := search.ShotTextSourceHash(search.ShotSearchDocument{ShotID: "s", Description: "red car"})
+	if err := repo.UpsertShotTextEmbeddings(ctx, []search.ShotEmbeddingRow{
+		{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "s"}}, Model: "space", Vector: []float32{1, 0}, SourceTextHash: "stale-hash-of-old-text"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := repo.ListShotTextEmbeddings(ctx, "space")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("stale-hash row must be filtered, got %+v", rows)
+	}
+	// Once the row's hash matches the current projection it is readable.
+	if _, err := repo.DB().ExecContext(ctx, `UPDATE shot_text_embeddings SET source_text_hash=? WHERE shot_id='s' AND model='space'`, currentHash); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = repo.ListShotTextEmbeddings(ctx, "space")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("current-hash row must be returned, got %+v", rows)
+	}
+}
+
+// TestMigration0045DiscardsLegacyEmbeddings runs the real upgrade from 0044:
+// the legacy per-shot rows have unprovable provenance and are discarded,
+// while the canonical shots are retained and the recreated table accepts
+// multiple spaces per shot.
+func TestMigration0045DiscardsLegacyEmbeddings(t *testing.T) {
+	ctx := context.Background()
+	repo, err := Open(filepath.Join(t.TempDir(), "upgrade.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	applyMigrationsThrough(t, ctx, repo, "0044_rebuild_latest_asr_segments.sql")
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO assets(id,quick_fingerprint,file_size,state,first_seen_at,last_seen_at) VALUES('a','fp',1,'discovered','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ReplaceAssetShots(ctx, "a", "", []domain.AssetShot{
+		{ID: "s1", AssetID: "a", Ordinal: 0, StartMS: 0, EndMS: 1000, Description: "red car"},
+		{ID: "s2", AssetID: "a", Ordinal: 1, StartMS: 1000, EndMS: 2000, Description: "dog park"},
+	}, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Legacy rows under the pre-0045 schema: shot_id primary key, display
+	// model name, no provable backend.
+	if _, err := repo.db.ExecContext(ctx, `INSERT INTO shot_text_embeddings(shot_id,model,vector_blob,source_text_hash,created_at) VALUES('s1','text-embedding-model',X'0000803F0000803F','legacy-hash','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM shot_text_embeddings`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("legacy rows with unprovable provenance must be discarded, got %d", count)
+	}
+	var shotCount int
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM asset_shots`).Scan(&shotCount); err != nil {
+		t.Fatal(err)
+	}
+	if shotCount != 2 {
+		t.Fatalf("canonical shots must be retained, got %d", shotCount)
+	}
+	// The recreated table is live: a fresh rebuild writes under a space, and
+	// the normal analysis hook finds an empty hash map.
+	currentHash := search.ShotTextSourceHash(search.ShotSearchDocument{ShotID: "s1", Description: "red car"})
+	if err := repo.UpsertShotTextEmbeddings(ctx, []search.ShotEmbeddingRow{
+		{Shot: domain.ShotSearchResult{AssetShot: domain.AssetShot{ID: "s1"}}, Model: "text-space-v1:rebuild", Vector: []float32{1, 0}, SourceTextHash: currentHash},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := repo.ListShotTextEmbeddings(ctx, "text-space-v1:rebuild")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Shot.ID != "s1" {
+		t.Fatalf("rebuild must re-create the index, got %+v", rows)
+	}
+	hashes, err := repo.ShotTextEmbeddingHashes(ctx, "text-space-v1:rebuild", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hashes["s1"] != currentHash {
+		t.Fatalf("hash map after upgrade = %v", hashes)
+	}
+}

@@ -9,8 +9,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/evjohn-icu/nexusgate/internal/secretredact"
 )
 
 type Endpoint struct {
@@ -25,13 +29,103 @@ type Endpoint struct {
 
 func (e Endpoint) Client() *http.Client {
 	if e.HTTPClient != nil {
-		return e.HTTPClient
+		return WithSameOriginRedirects(e.HTTPClient)
 	}
 	timeout := 120 * time.Second
 	if e.TimeoutSeconds > 0 {
 		timeout = time.Duration(e.TimeoutSeconds) * time.Second
 	}
-	return &http.Client{Timeout: timeout}
+	return WithSameOriginRedirects(&http.Client{Timeout: timeout})
+}
+
+// SameOrigin reports whether two URLs point at the same HTTP(S) origin: the
+// scheme must be http or https and identical, both URLs must name a host, and
+// the lowercased host plus the effective port (the explicit port, or the
+// scheme's default when absent) must match. Path, query, fragment and userinfo
+// never take part in the comparison — an origin is scheme+host+port, so two
+// URLs that differ only in credentials are still same-origin, and two URLs
+// that differ only by an explicit default port spelling (:443 on https) are
+// still same-origin. Anything that is not HTTP or HTTPS, anything without a
+// host, and anything with a non-numeric, zero or out-of-range explicit port is
+// never same-origin with anything, including itself, so SameOrigin(u, u) also
+// works as an HTTP(S) origin validity test.
+func SameOrigin(first, second *url.URL) bool {
+	if first == nil || second == nil {
+		return false
+	}
+	scheme := strings.ToLower(first.Scheme)
+	if scheme != strings.ToLower(second.Scheme) {
+		return false
+	}
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+	if first.Hostname() == "" || second.Hostname() == "" {
+		return false
+	}
+	firstPort, firstOK := effectivePort(first)
+	secondPort, secondOK := effectivePort(second)
+	if !firstOK || !secondOK {
+		return false
+	}
+	return strings.EqualFold(first.Hostname(), second.Hostname()) && firstPort == secondPort
+}
+
+// effectivePort returns the port an URL connects on as a normalized integer:
+// the explicit port when present (zero-padded spellings included), otherwise
+// the scheme's default. A non-HTTP scheme without an explicit port, and an
+// explicit port that is non-numeric, zero or out of range, is no effective
+// port at all.
+func effectivePort(u *url.URL) (int, bool) {
+	if port := u.Port(); port != "" {
+		value, err := strconv.Atoi(port)
+		if err != nil || value <= 0 || value > 65535 {
+			return 0, false
+		}
+		return value, true
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return 443, true
+	case "http":
+		return 80, true
+	}
+	return 0, false
+}
+
+// maxRedirectHops is the net/http default stop-after limit. A custom
+// CheckRedirect replaces that default silently, so the same-origin policy
+// reinstates it whenever the wrapped client had no redirect policy of its own.
+const maxRedirectHops = 10
+
+// WithSameOriginRedirects returns a copy of client whose redirects may only
+// leave the origin of the request the client issued first. Each hop is checked
+// against that first request with SameOrigin before any policy the caller
+// attached to the original client runs; a hop to a different origin returns
+// http.ErrUseLastResponse, so the redirect response itself comes back to the
+// caller instead of net/http replaying the request — and with it configured
+// credentials — against the new origin. Transport, timeout and any existing
+// CheckRedirect on the wrapped client are preserved; a client without its own
+// redirect policy keeps the standard 10-hop limit.
+func WithSameOriginRedirects(client *http.Client) *http.Client {
+	if client == nil {
+		return nil
+	}
+	previous := client.CheckRedirect
+	copied := *client
+	copied.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) > 0 && !SameOrigin(via[0].URL, req.URL) {
+			return http.ErrUseLastResponse
+		}
+		if previous != nil {
+			return previous(req, via)
+		}
+		if len(via) >= maxRedirectHops {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &copied
 }
 
 func (e Endpoint) URL(path string) string {
@@ -132,6 +226,27 @@ func ReadErrorWithSecret(resp *http.Response, secret string) error {
 	return RedactError(ReadError(resp), secret)
 }
 
+func (e Endpoint) ReadError(resp *http.Response) error {
+	return redactProviderError(ReadError(resp), secretredact.New(e.redactionMaterial()))
+}
+
+// redactionMaterial covers every configured credential surface, including
+// ExtraHeaders, so response text echoed back by a provider cannot persist a
+// header value in a job error.
+func (e Endpoint) redactionMaterial() secretredact.Material {
+	return secretredact.Material{APIKey: e.APIKey, ExtraHeaders: e.ExtraHeaders, BaseURL: e.BaseURL}
+}
+
+// RedactString redacts value against this endpoint's configured credentials.
+func (e Endpoint) RedactString(value string) string {
+	return BoundedString(secretredact.New(e.redactionMaterial()).Diagnostic(value))
+}
+
+// Errorf constructs an endpoint-redacted error safe to persist and display.
+func (e Endpoint) Errorf(format string, args ...any) error {
+	return redactProviderError(fmt.Errorf(format, args...), secretredact.New(e.redactionMaterial()))
+}
+
 // BoundedString is the persistence bound shared by provider and pipeline errors.
 func BoundedString(value string) string {
 	if len(value) > maxErrorBodyBytes {
@@ -141,14 +256,7 @@ func BoundedString(value string) string {
 }
 
 func RedactString(value, secret string) string {
-	return BoundedString(redactString(value, secret))
-}
-
-func redactString(value, secret string) string {
-	if secret == "" {
-		return value
-	}
-	return strings.ReplaceAll(value, secret, "[REDACTED]")
+	return BoundedString(secretredact.New(secretredact.Material{APIKey: secret}).Diagnostic(value))
 }
 
 // Errorf constructs an error whose text is safe to persist and display.
@@ -211,17 +319,22 @@ func (e *redactedNetError) Temporary() bool { return e.cause.Temporary() }
 func (e *RedactedError) Unwrap() error { return nil }
 
 func RedactError(err error, secret string) error {
+	return redactProviderError(err, secretredact.New(secretredact.Material{APIKey: secret}))
+}
+
+func redactProviderError(err error, redactor secretredact.Redactor) error {
 	if err == nil {
 		return nil
 	}
-	out := &RedactedError{message: RedactString(err.Error(), secret), cause: err}
+	clean := func(message string) string { return BoundedString(redactor.Diagnostic(message)) }
+	out := &RedactedError{message: clean(err.Error()), cause: err}
 	var status *StatusError
 	if errors.As(err, &status) {
-		out.status = &StatusError{StatusCode: status.StatusCode, Body: RedactString(status.Body, secret)}
+		out.status = &StatusError{StatusCode: status.StatusCode, Body: clean(status.Body)}
 	}
 	var network net.Error
 	if errors.As(err, &network) {
-		out.netErr = &redactedNetError{message: RedactString(network.Error(), secret), cause: network}
+		out.netErr = &redactedNetError{message: clean(network.Error()), cause: network}
 	}
 	return out
 }

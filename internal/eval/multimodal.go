@@ -38,8 +38,8 @@ func (iv EvalInterval) Validate() error {
 
 // OverlapMS returns the shared duration.
 func (iv EvalInterval) OverlapMS(other EvalInterval) int64 {
-	start := max64(iv.StartMS, other.StartMS)
-	end := min64(iv.EndMS, other.EndMS)
+	start := max(iv.StartMS, other.StartMS)
+	end := min(iv.EndMS, other.EndMS)
 	if end <= start {
 		return 0
 	}
@@ -109,8 +109,7 @@ type SpeakerTrial struct {
 	Partition  string  `json:"partition"`
 }
 
-// DiarizationReference is one reference turn and the predicted turns over the
-// same asset.
+// DiarizationCase holds asset-scoped reference or predicted turns.
 type DiarizationCase struct {
 	AssetID   string           `json:"asset_id"`
 	Reference []SpeakerSegment `json:"reference"`
@@ -236,6 +235,17 @@ func (m MultimodalManifest) Validate() error {
 			return fmt.Errorf("event on %q exceeds the asset duration", event.AssetID)
 		}
 	}
+	seenDiarization := make(map[string]bool, len(m.Diarization))
+	for _, testCase := range m.Diarization {
+		asset, ok := assets[testCase.AssetID]
+		if !ok || seenDiarization[testCase.AssetID] {
+			return fmt.Errorf("diarization case references an unknown or repeated asset %q", testCase.AssetID)
+		}
+		seenDiarization[testCase.AssetID] = true
+		if err := validateDiarizationCase(testCase, asset.DurationMS); err != nil {
+			return err
+		}
+	}
 	// Speaker trials must be partitioned by recording: calibration and test
 	// identities are disjoint, so a trial may not mix partitions.
 	seenTrialPartitions := make(map[string]bool)
@@ -248,6 +258,60 @@ func (m MultimodalManifest) Validate() error {
 		seenTrialPartitions[trial.Partition] = true
 	}
 	return nil
+}
+
+func validateDiarizationCase(testCase DiarizationCase, durationMS int64) error {
+	for _, turns := range [][]SpeakerSegment{testCase.Reference, testCase.Predicted} {
+		for _, turn := range turns {
+			if strings.TrimSpace(turn.Speaker) == "" {
+				return fmt.Errorf("diarization asset %q has a turn without a speaker ID", testCase.AssetID)
+			}
+			if err := turn.Interval.Validate(); err != nil || turn.Interval.EndMS > durationMS {
+				return fmt.Errorf("diarization asset %q has a turn outside its duration", testCase.AssetID)
+			}
+		}
+	}
+	return nil
+}
+
+// ScoreDiarizationCases validates the recorded predictions before scoring
+// anything. A missing asset case remains unevaluable in the report.
+func (m MultimodalManifest) ScoreDiarizationCases(predictions []DiarizationCase) ([]DiarizationResult, error) {
+	durations := make(map[string]int64, len(m.Assets))
+	for _, asset := range m.Assets {
+		durations[asset.ID] = asset.DurationMS
+	}
+	annotated := make(map[string]bool, len(m.Diarization))
+	for _, testCase := range m.Diarization {
+		annotated[testCase.AssetID] = true
+	}
+	byAsset := make(map[string][]SpeakerSegment, len(predictions))
+	for _, prediction := range predictions {
+		duration, known := durations[prediction.AssetID]
+		if !known || !annotated[prediction.AssetID] {
+			return nil, fmt.Errorf("prediction references an unannotated diarization asset %q", prediction.AssetID)
+		}
+		if _, duplicate := byAsset[prediction.AssetID]; duplicate {
+			return nil, fmt.Errorf("duplicate diarization predictions for asset %q", prediction.AssetID)
+		}
+		if prediction.Predicted == nil {
+			return nil, fmt.Errorf("diarization asset %q requires a predicted turns array", prediction.AssetID)
+		}
+		if err := validateDiarizationCase(prediction, duration); err != nil {
+			return nil, err
+		}
+		byAsset[prediction.AssetID] = prediction.Predicted
+	}
+	results := make([]DiarizationResult, 0, len(m.Diarization))
+	for _, testCase := range m.Diarization {
+		result := DiarizationResult{AssetID: testCase.AssetID}
+		if predicted, recorded := byAsset[testCase.AssetID]; recorded {
+			result = ScoreDiarization(testCase.Reference, predicted, durations[testCase.AssetID])
+			result.AssetID = testCase.AssetID
+		}
+		results = append(results, result)
+	}
+	return results, nil
 }
 
 // RankedItem is one search result in rank order.
@@ -329,47 +393,51 @@ func ScoreRetrieval(query EvalQuery, ranked []RankedItem) (precision, recall, nd
 // error of matched pairs.
 func ScoreEventDetection(annotations, predictions []EventAnnotation) (microF1, macroF1, meanBoundaryErrorMS float64) {
 	type key struct{ asset, label string }
-	byKey := make(map[key][]EvalInterval)
+	type intervals struct{ reference, predictions []EvalInterval }
+	byKey := make(map[key]intervals)
 	for _, annotation := range annotations {
-		byKey[key{annotation.AssetID, annotation.Label}] = append(byKey[key{annotation.AssetID, annotation.Label}], annotation.Interval)
+		k := key{annotation.AssetID, annotation.Label}
+		group := byKey[k]
+		group.reference = append(group.reference, annotation.Interval)
+		byKey[k] = group
 	}
-	predicted := make(map[key][]EvalInterval)
 	for _, prediction := range predictions {
-		predicted[key{prediction.AssetID, prediction.Label}] = append(predicted[key{prediction.AssetID, prediction.Label}], prediction.Interval)
+		k := key{prediction.AssetID, prediction.Label}
+		group := byKey[k]
+		group.predictions = append(group.predictions, prediction.Interval)
+		byKey[k] = group
 	}
-	labels := make(map[key]bool)
-	for k := range byKey {
-		labels[k] = true
-	}
-	for k := range predicted {
-		labels[k] = true
-	}
-	var totalTP, totalFP, totalFN int
+	type counts struct{ tp, fp, fn int }
+	byLabel := make(map[string]counts)
+	var total counts
 	var boundarySum float64
 	var boundaryCount int
-	var f1Sum float64
-	var labelCount int
-	for k := range labels {
-		tp, fp, fn, boundary, matched := matchIntervals(byKey[k], predicted[k])
-		totalTP += tp
-		totalFP += fp
-		totalFN += fn
+	for k, group := range byKey {
+		tp, fp, fn, boundary, matched := matchIntervals(group.reference, group.predictions)
+		tally := byLabel[k.label]
+		tally.tp += tp
+		tally.fp += fp
+		tally.fn += fn
+		byLabel[k.label] = tally
+		total.tp += tp
+		total.fp += fp
+		total.fn += fn
 		boundarySum += boundary
 		boundaryCount += matched
-		precision := ratio(tp, tp+fp)
-		recall := ratio(tp, tp+fn)
-		if precision+recall > 0 {
-			f1Sum += 2 * precision * recall / (precision + recall)
-			labelCount++
+	}
+	microF1 = ratio(2*total.tp, 2*total.tp+total.fp+total.fn)
+	if len(byLabel) > 0 {
+		var sum float64
+		labels := make([]string, 0, len(byLabel))
+		for label := range byLabel {
+			labels = append(labels, label)
 		}
-	}
-	precision := ratio(totalTP, totalTP+totalFP)
-	recall := ratio(totalTP, totalTP+totalFN)
-	if precision+recall > 0 {
-		microF1 = 2 * precision * recall / (precision + recall)
-	}
-	if labelCount > 0 {
-		macroF1 = f1Sum / float64(labelCount)
+		sort.Strings(labels)
+		for _, label := range labels {
+			count := byLabel[label]
+			sum += ratio(2*count.tp, 2*count.tp+count.fp+count.fn)
+		}
+		macroF1 = sum / float64(len(labels))
 	}
 	if boundaryCount > 0 {
 		meanBoundaryErrorMS = boundarySum / float64(boundaryCount)
@@ -422,125 +490,111 @@ type cell struct {
 // figures. The collar excuses 250 ms around each reference boundary, and the
 // frame step is 10 ms, matching the timeline's resolution.
 type DiarizationResult struct {
+	AssetID           string  `json:"asset_id,omitempty"`
 	DERWithOverlap    float64 `json:"der_with_overlap"`
 	DERWithoutOverlap float64 `json:"der_without_overlap"`
 	SpeakerCountError int     `json:"speaker_count_error"`
 	Evaluable         bool    `json:"evaluable"`
 }
 
-// ScoreDiarization computes DER under the documented collar. Reference and
-// predicted speakers are matched by optimal permutation on the overlap-free
-// frames; the result is not evaluable when there is no scored frame.
+// ScoreDiarization computes speaker-time DER with a single optimal mapping.
+// The overlap-exclusive score omits frames with multiple reference speakers.
+// Frames in the reference collar are excluded from both scores.
 func ScoreDiarization(reference, predicted []SpeakerSegment, durationMS int64) DiarizationResult {
 	const (
-		frameMS  = 10
-		collarMS = 250
+		frameMS      = 10
+		collarFrames = 250 / frameMS
+		refTrack     = 0
+		hypTrack     = 1
+		collarTrack  = 2
 	)
 	if durationMS <= 0 {
-		return DiarizationResult{Evaluable: false}
+		return DiarizationResult{}
 	}
-	mark := func(segments []SpeakerSegment) []string {
-		frames := make([]string, durationMS/frameMS)
+	type change struct {
+		frame   int64
+		speaker string
+		track   int
+		delta   int
+	}
+	changes := make([]change, 0, 6*len(reference)+2*len(predicted))
+	endFrame := durationMS / frameMS
+	addSpan := func(from, to int64, speaker string, track int) {
+		from, to = max(0, from), min(endFrame, to)
+		if from < to {
+			changes = append(changes, change{from, speaker, track, 1}, change{to, speaker, track, -1})
+		}
+	}
+	var speakers [2]map[string]int
+	for track, segments := range [][]SpeakerSegment{reference, predicted} {
+		speakers[track] = make(map[string]int)
 		for _, segment := range segments {
-			start := segment.Interval.StartMS / frameMS
-			end := segment.Interval.EndMS / frameMS
-			for i := int(start); i < int(end) && i < len(frames); i++ {
-				frames[i] = segment.Speaker
-			}
-		}
-		return frames
-	}
-	refFrames := mark(reference)
-	hypFrames := mark(predicted)
-	collared := make([]bool, len(refFrames))
-	overlapping := make([]bool, len(refFrames))
-	refCounts := make(map[string]int)
-	for _, speaker := range refFrames {
-		if speaker != "" {
-			refCounts[speaker]++
-		}
-	}
-	predCounts := make(map[string]int)
-	for _, speaker := range hypFrames {
-		if speaker != "" {
-			predCounts[speaker]++
-		}
-	}
-	// A collar excuses frames near a reference boundary, not the whole span:
-	// marking [start-collar, end+collar] would excuse the entire recording.
-	collarFrames := int(collarMS / frameMS)
-	for _, segment := range reference {
-		start := int(segment.Interval.StartMS / frameMS)
-		end := int(segment.Interval.EndMS / frameMS)
-		for _, mark := range [][2]int{{start - collarFrames, start + collarFrames}, {end - collarFrames, end + collarFrames}} {
-			from, to := mark[0], mark[1]
-			if from < 0 {
-				from = 0
-			}
-			for i := from; i < to && i < len(collared); i++ {
-				collared[i] = true
+			start, end := segment.Interval.StartMS/frameMS, segment.Interval.EndMS/frameMS
+			addSpan(start, end, segment.Speaker, track)
+			speakers[track][segment.Speaker] = 0
+			if track == refTrack {
+				addSpan(start-collarFrames, start+collarFrames, "", collarTrack)
+				addSpan(end-collarFrames, end+collarFrames, "", collarTrack)
 			}
 		}
 	}
-	// Overlap frames are those where more than one reference segment is active.
-	active := make([]int, len(refFrames))
-	for _, segment := range reference {
-		start := int(segment.Interval.StartMS / frameMS)
-		end := int(segment.Interval.EndMS / frameMS)
-		for i := start; i < end && i < len(active); i++ {
-			active[i]++
-		}
-	}
-	for i := range active {
-		if active[i] > 1 {
-			overlapping[i] = true
-		}
-	}
+	countError := len(speakers[hypTrack]) - len(speakers[refTrack])
+	clear(speakers[refTrack])
+	clear(speakers[hypTrack])
+	sort.Slice(changes, func(i, j int) bool { return changes[i].frame < changes[j].frame })
 
-	pairs := make(map[cell]int)
-	for i := range refFrames {
-		if refFrames[i] == "" || hypFrames[i] == "" {
-			continue
-		}
-		pairs[cell{refFrames[i], hypFrames[i]}]++
-	}
-	assignment := optimalAssignment(pairs)
-
-	var missWith, totalWith int
-	var missWithout, totalWithout int
-	for i := range refFrames {
-		if collared[i] {
-			continue
-		}
-		ref := refFrames[i]
-		hyp := hypFrames[i]
-		wrong := false
-		if ref != "" {
-			if mapped, ok := assignment[ref]; !ok || mapped != hyp {
-				wrong = true
+	pairsWith := make(map[cell]int)
+	pairsWithout := make(map[cell]int)
+	var refWith, errorWith, refWithout, errorWithout int
+	var lastFrame int64
+	var collar int
+	for _, change := range changes {
+		// The active speakers are constant between adjacent boundaries.
+		// Count one unit of error per speaker until the mapping credits matches.
+		width := int(change.frame - lastFrame)
+		if width > 0 && collar == 0 {
+			ref, hyp := speakers[refTrack], speakers[hypTrack]
+			denominator := len(ref) * width
+			potentialErrors := max(len(ref), len(hyp)) * width
+			refWith += denominator
+			errorWith += potentialErrors
+			if len(ref) <= 1 {
+				refWithout += denominator
+				errorWithout += potentialErrors
 			}
-		} else if hyp != "" {
-			wrong = true
+			for refSpeaker := range ref {
+				for hypSpeaker := range hyp {
+					pair := cell{refSpeaker, hypSpeaker}
+					pairsWith[pair] += width
+					if len(ref) <= 1 {
+						pairsWithout[pair] += width
+					}
+				}
+			}
 		}
-		totalWith++
-		if wrong {
-			missWith++
-		}
-		if overlapping[i] {
+		lastFrame = change.frame
+		if change.track == collarTrack {
+			collar += change.delta
 			continue
 		}
-		totalWithout++
-		if wrong {
-			missWithout++
+		active := speakers[change.track]
+		if count := active[change.speaker] + change.delta; count == 0 {
+			delete(active, change.speaker)
+		} else {
+			active[change.speaker] = count
 		}
 	}
-	result := DiarizationResult{
-		DERWithOverlap:    ratio(missWith, totalWith),
-		DERWithoutOverlap: ratio(missWithout, totalWithout),
-		Evaluable:         totalWith > 0,
+	for ref, hyp := range optimalAssignment(pairsWith) {
+		pair := cell{ref, hyp}
+		errorWith -= pairsWith[pair]
+		errorWithout -= pairsWithout[pair]
 	}
-	result.SpeakerCountError = len(predCounts) - len(refCounts)
-	return result
+	return DiarizationResult{
+		DERWithOverlap:    ratio(errorWith, refWith),
+		DERWithoutOverlap: ratio(errorWithout, refWithout),
+		SpeakerCountError: countError,
+		Evaluable:         refWith > 0,
+	}
 }
 
 // SpeakerMetrics is the threshold sweep outcome. Threshold selection happens on
@@ -694,11 +748,8 @@ func HashFile(path string) (string, error) {
 	return "sha256:" + hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
-// optimalAssignment finds the reference->hypothesis mapping that maximises the
-// number of agreeing frames. It is an exhaustive bitmask DP over the predicted
-// speakers (typically fewer than ten), which is the optimal permutation DER
-// requires; a greedy pick fails on a case like A-X=5, A-Y=4, B-X=4, where it
-// takes A-X and leaves B unassigned.
+// optimalAssignment uses the Hungarian algorithm on sorted speaker IDs.
+// Zero-weight dummy speakers allow either side to remain unmatched.
 func optimalAssignment(pairs map[cell]int) map[string]string {
 	refSet := map[string]bool{}
 	hypSet := map[string]bool{}
@@ -716,85 +767,69 @@ func optimalAssignment(pairs map[cell]int) map[string]string {
 		hyps = append(hyps, hyp)
 	}
 	sort.Strings(hyps)
-	if len(refs) == 0 || len(hyps) == 0 || len(hyps) > 20 {
-		return map[string]string{}
+	result := make(map[string]string, min(len(refs), len(hyps)))
+	if len(refs) == 0 || len(hyps) == 0 {
+		return result
 	}
-	const unset = -1
-	type state struct {
-		score int
-		ref   int
-	}
-	width := 1 << len(hyps)
-	dp := make([]int, width)
-	for i := range dp {
-		dp[i] = unset
-	}
-	dp[0] = 0
-	for refIndex := range refs {
-		next := make([]int, width)
-		for i := range next {
-			next[i] = unset
+	count := max(len(refs), len(hyps))
+	rowPotential := make([]int, count+1)
+	colPotential := make([]int, count+1)
+	matchedRow := make([]int, count+1)
+	previousCol := make([]int, count+1)
+	slack := make([]int, count+1)
+	used := make([]bool, count+1)
+	for row := 1; row <= count; row++ {
+		matchedRow[0] = row
+		clear(used)
+		for col := 1; col <= count; col++ {
+			slack[col] = math.MaxInt
 		}
-		for mask, score := range dp {
-			if score < 0 {
-				continue
-			}
-			// Leaving this reference unassigned is allowed: its frames then
-			// count as speaker error.
-			if score > next[mask] {
-				next[mask] = score
-			}
-			for hypIndex, hyp := range hyps {
-				if mask&(1<<hypIndex) != 0 {
+		currentCol := 0
+		for {
+			used[currentCol] = true
+			currentRow := matchedRow[currentCol]
+			delta, nextCol := math.MaxInt, 0
+			for col := 1; col <= count; col++ {
+				if used[col] {
 					continue
 				}
-				gain := pairs[cell{refs[refIndex], hyp}]
-				candidate := score + gain
-				nextMask := mask | 1<<hypIndex
-				if candidate > next[nextMask] {
-					next[nextMask] = candidate
+				gain := 0
+				if currentRow <= len(refs) && col <= len(hyps) {
+					gain = pairs[cell{refs[currentRow-1], hyps[col-1]}]
+				}
+				cost := -gain - rowPotential[currentRow] - colPotential[col]
+				if cost < slack[col] {
+					slack[col] = cost
+					previousCol[col] = currentCol
+				}
+				if slack[col] < delta {
+					delta, nextCol = slack[col], col
 				}
 			}
-		}
-		dp = next
-	}
-	bestMask, bestScore := 0, unset
-	for mask, score := range dp {
-		if score > bestScore {
-			bestScore, bestMask = score, mask
-		}
-	}
-	// Reconstruct greedily from the optimal DP table by replaying each choice
-	// against its recorded predecessor scores.
-	assignment := make(map[string]string, len(refs))
-	mask := bestMask
-	for refIndex := len(refs) - 1; refIndex >= 0; refIndex-- {
-		target := -1
-		for hypIndex, hyp := range hyps {
-			if mask&(1<<hypIndex) == 0 {
-				continue
+			for col := 0; col <= count; col++ {
+				if used[col] {
+					rowPotential[matchedRow[col]] += delta
+					colPotential[col] -= delta
+				} else {
+					slack[col] -= delta
+				}
 			}
-			without := mask &^ (1 << hypIndex)
-			if dpValue(dp, without) < 0 {
-				continue
-			}
-			expected := dpValue(dp, without) + pairs[cell{refs[refIndex], hyp}]
-			if expected == dpValue(dp, mask) {
-				target = hypIndex
+			currentCol = nextCol
+			if matchedRow[currentCol] == 0 {
 				break
 			}
 		}
-		if target >= 0 {
-			assignment[refs[refIndex]] = hyps[target]
-			mask &^= 1 << target
+		for currentCol != 0 {
+			prev := previousCol[currentCol]
+			matchedRow[currentCol] = matchedRow[prev]
+			currentCol = prev
 		}
 	}
-	return assignment
-}
-
-func dpValue(table []int, mask int) int {
-	if mask < 0 || mask >= len(table) {
-		return -1
+	for col := 1; col <= len(hyps); col++ {
+		row := matchedRow[col]
+		if row <= len(refs) && pairs[cell{refs[row-1], hyps[col-1]}] > 0 {
+			result[refs[row-1]] = hyps[col-1]
+		}
 	}
-	return table[mask]
+	return result
 }

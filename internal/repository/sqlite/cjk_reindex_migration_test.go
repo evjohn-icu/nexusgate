@@ -50,20 +50,14 @@ func legacyBuggySegment(text string) string {
 	return strings.Join(tokens, " ")
 }
 
-// openCJKReindexTestRepo mirrors the Open+Migrate pattern used throughout
-// this package (see search_filtered_facets_test.go); a fake repository would
-// not exercise fts_index_state or FTS5 at all, and those are the whole point
-// here.
-func openCJKReindexTestRepo(t *testing.T, name string) *Repository {
+func openCJKReindexTestRepo(t *testing.T, name, through string) *Repository {
 	t.Helper()
 	repo, err := Open(filepath.Join(t.TempDir(), name))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { repo.Close() })
-	if err := repo.Migrate(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	applyMigrationsThrough(t, context.Background(), repo, through)
 	return repo
 }
 
@@ -122,26 +116,10 @@ func seedStaleCJKAsset(t *testing.T, repo *Repository, id, summary string) {
 	}
 }
 
-// migrationFileName is the exact filename Migrate() tracks in
-// schema_migrations for 0022 -- kept as one constant so the red/green pair
-// below cannot typo two different strings past each other.
-const cjkReindexMigrationFile = "0022_v021_cjk_bigram_reindex.sql"
-
-// TestStaleCJKIndexRowIsUnsearchableUntilMigrationReruns is the red/green
-// pair the migration exists to fix. Step 1 proves the bug still stands today
-// for any row written before 8fb1dd0: fts_index_state reaching 'ready' (set
-// once, back when migrations/0012 first ran) does not mean every row in
-// asset_search was tokenized by the segmenter currently in the binary, and
-// nothing revisits a row just because the binary changed underneath it.
-// Step 2 proves 0022 is what recovers it: schema_migrations' tracking row
-// for 0022 is deleted to put this database back in the state a real
-// pre-existing library is in the first time it runs a binary that ships
-// 0022 (the file has never been recorded as applied on it before), then
-// Migrate() is called again the same way cmd/nexusgate/main.go calls it on
-// every startup.
+// An upgrade rebuilds rows written before mixed ASCII and CJK tokenization.
 func TestStaleCJKIndexRowIsUnsearchableUntilMigrationReruns(t *testing.T) {
 	ctx := context.Background()
-	repo := openCJKReindexTestRepo(t, "cjk-reindex.db")
+	repo := openCJKReindexTestRepo(t, "cjk-reindex.db", "0021_v021_sortable_timestamps.sql")
 
 	const assetID = "cjk-reindex-asset-1"
 	const summary = "2024年春节的素材"
@@ -164,12 +142,6 @@ func TestStaleCJKIndexRowIsUnsearchableUntilMigrationReruns(t *testing.T) {
 		t.Fatalf("fixture sanity failed: stale row already matched (got %v) before the migration ran -- the red case never held", hits)
 	}
 
-	// Put the database back in "0022 has never run here" state, then let
-	// Migrate() apply it and drive ensureCJKBigramFTS the same way a real
-	// Hub startup would.
-	if _, err := repo.db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = ?`, cjkReindexMigrationFile); err != nil {
-		t.Fatal(err)
-	}
 	if err := repo.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -189,5 +161,30 @@ func TestStaleCJKIndexRowIsUnsearchableUntilMigrationReruns(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("Search(%q) = %v, want it to contain %q after the migration reran the rebuild", "春节", hits, assetID)
+	}
+}
+
+func TestCJKUnigramUpgradeFindsCharactersAndPreservesPhrases(t *testing.T) {
+	ctx := context.Background()
+	repo := openCJKReindexTestRepo(t, "unigram-upgrade.db", "0040_multimodal_generation_identity.sql")
+	const assetID = "unigram-asset"
+	seedStaleCJKAsset(t, repo, assetID, "雨夜街道")
+	if _, err := repo.db.ExecContext(ctx, `UPDATE asset_search SET summary='雨夜 夜街 街道' WHERE asset_id=?`, assetID); err != nil {
+		t.Fatal(err)
+	}
+	if hits, err := repo.Search(ctx, "雨", 10); err != nil || len(hits) != 0 {
+		t.Fatalf("old index unexpectedly found a unigram: %v, %v", hits, err)
+	}
+	if err := repo.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{"雨", "雨夜街道"} {
+		hits, err := repo.Search(ctx, query, 10)
+		if err != nil || len(hits) != 1 || hits[0] != assetID {
+			t.Errorf("Search(%q) = %v, %v, want %q", query, hits, err, assetID)
+		}
+	}
+	if hits, err := repo.Search(ctx, "雨夜道", 10); err != nil || len(hits) != 0 {
+		t.Fatalf("unrelated fragments matched as a phrase: %v, %v", hits, err)
 	}
 }

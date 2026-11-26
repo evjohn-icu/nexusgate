@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -116,7 +117,7 @@ func (s *Service) WorkerInferenceProgress(ctx context.Context, workerID, jobID, 
 // only implement the derive contract keep compiling.
 type inferenceLeaseRepository interface {
 	LeaseNextWorkerInference(ctx context.Context, worker string, lease time.Duration, roots []string, caps []remote.InferenceCapability, maxAssetBytes int64, now time.Time) (*remote.WorkerJob, error)
-	LeaseNextModelManagement(ctx context.Context, worker string, lease time.Duration, now time.Time) (*remote.WorkerJob, error)
+	LeaseNextModelManagement(ctx context.Context, targetID, leaseOwner string, operations []string, lease time.Duration, now time.Time) (*remote.WorkerJob, error)
 }
 
 // LeaseNextWorkerInference leases the next inference or maintenance unit this
@@ -128,18 +129,17 @@ func (s *Service) LeaseNextWorkerInference(ctx context.Context, worker remote.Wo
 		return nil, nil
 	}
 	caps := authorizedInferenceCapabilities(worker.Capabilities)
-	if len(caps) == 0 {
-		return nil, nil
-	}
 	now := time.Now().UTC()
-	job, err := repo.LeaseNextWorkerInference(ctx, worker.ID, lease, worker.Capabilities.LibraryRoots, caps, filter.MaxAssetBytes, now)
-	if err != nil || job != nil {
-		return job, err
+	if len(caps) > 0 {
+		job, err := repo.LeaseNextWorkerInference(ctx, worker.ID, lease, worker.Capabilities.LibraryRoots, caps, filter.MaxAssetBytes, now)
+		if err != nil || job != nil {
+			return job, err
+		}
 	}
 	if len(worker.Capabilities.ModelManagementOperations) == 0 {
 		return nil, nil
 	}
-	return repo.LeaseNextModelManagement(ctx, worker.ID, lease, now)
+	return repo.LeaseNextModelManagement(ctx, worker.ID, worker.ID, worker.Capabilities.ModelManagementOperations, lease, now)
 }
 
 // authorizedInferenceCapabilities intersects what the Worker claims with what
@@ -157,16 +157,18 @@ func authorizedInferenceCapabilities(caps remote.WorkerCapabilities) []remote.In
 		if !capability.Available || !granted[string(capability.Operation)] || capability.Validate() != nil {
 			continue
 		}
+		model, ok := inferencecatalog.LookupByModel(capability.ModelID, capability.ModelRevision)
+		if !ok || !slices.Contains(model.Operations, capability.Operation) {
+			continue
+		}
 		key := strings.Join([]string{string(capability.Operation), capability.ModelID,
 			capability.ModelRevision, capability.ConfigHash, capability.SpaceID}, "\x1f")
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
-		if model, ok := inferencecatalog.LookupByModel(capability.ModelID, capability.ModelRevision); ok {
-			capability.CatalogID = model.CatalogID
-			capability.ManifestDigest = model.ManifestDigest()
-		}
+		capability.CatalogID = model.CatalogID
+		capability.ManifestDigest = model.ManifestDigest()
 		out = append(out, capability)
 	}
 	return out
@@ -183,12 +185,15 @@ func (s *Service) WorkerInferenceInput(ctx context.Context, workerID, jobID stri
 	if err != nil {
 		return remote.InferenceInputDescriptor{}, "", err
 	}
-	if status.State != domain.JobRunning || status.LeaseOwner != workerID {
+	if status.JobType != domain.JobInference || status.State != domain.JobRunning || status.LeaseOwner != workerID || !status.LeaseExpiresAt.After(time.Now()) {
 		return remote.InferenceInputDescriptor{}, "", domain.ErrJobLeaseLost
 	}
 	task, err := s.inferenceRepo.GetInferenceTask(ctx, jobID)
 	if err != nil {
 		return remote.InferenceInputDescriptor{}, "", err
+	}
+	if task.CancelRequested {
+		return remote.InferenceInputDescriptor{}, "", domain.ErrJobLeaseLost
 	}
 	var request domain.InferenceRequest
 	if err := json.Unmarshal([]byte(task.RequestJSON), &request); err != nil {
@@ -200,6 +205,9 @@ func (s *Service) WorkerInferenceInput(ctx context.Context, workerID, jobID stri
 	ref, path, err := s.GetSearchReference(ctx, request.Input.ReferenceID)
 	if err != nil {
 		return remote.InferenceInputDescriptor{}, "", err
+	}
+	if ref.ContentHash != request.Input.Digest {
+		return remote.InferenceInputDescriptor{}, "", fmt.Errorf("query image digest does not match the lease")
 	}
 	var size int64
 	if info, statErr := os.Stat(path); statErr == nil {

@@ -159,3 +159,107 @@ func captureStdout(t *testing.T, fn func()) string {
 	_ = r.Close()
 	return out
 }
+
+// TestCacheGCOrphansFixtureRemovesOrphanOnly is the command-surface
+// acceptance for `--orphans --yes`: one real orphan asset directory is
+// removed while the managed search-references tree, the active inference
+// scratch and known assets all survive — and no job is enqueued for a mode
+// that deletes nothing rebuildable.
+func TestCacheGCOrphansFixtureRemovesOrphanOnly(t *testing.T) {
+	repo, cfg, assets := cacheGCTestRepo(t, 1)
+	for _, assetID := range assets {
+		writeCacheArtifact(t, cfg.CacheDir, assetID, 0)
+	}
+	orphan := filepath.Join(cfg.CacheDir, "orphan-asset")
+	if err := os.MkdirAll(orphan, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orphan, "odd.bin"), []byte("12345"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-10 * time.Minute)
+	if err := os.Chtimes(orphan, old, old); err != nil {
+		t.Fatal(err)
+	}
+	reference := filepath.Join(cfg.CacheDir, "search-references", "abc.jpg")
+	if err := os.MkdirAll(filepath.Dir(reference), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reference, []byte("query-image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scratch := filepath.Join(cfg.CacheDir, "inference", "inputs", "job1", "in.bin")
+	if err := os.MkdirAll(filepath.Dir(scratch), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scratch, []byte("active-scratch"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runCacheGC(context.Background(), repo, cfg, []string{"--orphans", "--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "freed") {
+		t.Fatalf("orphan run must report the deletion: %s", out)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("the orphan directory must be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(reference); err != nil {
+		t.Fatalf("the 24-hour query image must survive: %v", err)
+	}
+	if _, err := os.Stat(scratch); err != nil {
+		t.Fatalf("live inference scratch must survive: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.CacheDir, assets[0], "proxy-sw.mp4")); err != nil {
+		t.Fatalf("a known asset's directory must survive --orphans: %v", err)
+	}
+	var jobs int
+	if err := repo.DB().QueryRow(`SELECT COUNT(*) FROM jobs`).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 0 {
+		t.Fatalf("an orphan run must not enqueue rebuilds, jobs=%d", jobs)
+	}
+}
+
+// TestCacheGCProtectsAssetsWithQueuedWork pins queued protection through the
+// command surface: an asset with a nonterminal pending job keeps its
+// rebuildable artifacts in a --rebuildable --yes run, while the unprotected
+// asset is cleaned and re-enqueued as usual.
+func TestCacheGCProtectsAssetsWithQueuedWork(t *testing.T) {
+	repo, cfg, assets := cacheGCTestRepo(t, 2)
+	for i, assetID := range assets {
+		writeCacheArtifact(t, cfg.CacheDir, assetID, i)
+	}
+	now := time.Now().UTC()
+	stamp := now.Format(time.RFC3339Nano)
+	if _, err := repo.DB().Exec(`INSERT INTO jobs(id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,created_at,updated_at) VALUES(?,?,'derive','pending',10,0,3,?,?,?,?)`,
+		"job-queued", assets[0], stamp, "hash", stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runCacheGC(context.Background(), repo, cfg, []string{"--rebuildable", "--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, err := os.Stat(filepath.Join(cfg.CacheDir, assets[0], "proxy-sw.mp4")); err != nil {
+		t.Fatalf("a queued asset's artifact must be protected: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.CacheDir, assets[1], "proxy-sw.mp4")); !os.IsNotExist(err) {
+		t.Fatalf("the unprotected asset's artifact must be removed, stat err = %v", err)
+	}
+	if !strings.Contains(out, "skipped active") {
+		t.Fatalf("the report must account the protected artifact: %s", out)
+	}
+	var jobs int
+	if err := repo.DB().QueryRow(`SELECT COUNT(*) FROM jobs WHERE job_type='derive'`).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if jobs != 2 {
+		t.Fatalf("one pre-existing + one new re-derive job expected, jobs=%d", jobs)
+	}
+}

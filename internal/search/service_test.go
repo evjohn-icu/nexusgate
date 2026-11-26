@@ -80,6 +80,53 @@ func TestSearchV2SimilarOffsetPagination(t *testing.T) {
 	}
 }
 
+func TestSimilarReturnsEvidenceAndNeighborsInNearestOrder(t *testing.T) {
+	store := &fakeStore{candidates: []domain.ShotSearchResult{
+		shot("a-first", "a", 0, 1000, []string{"car"}, "nearby car"),
+		shot("a-second", "a", 1000, 2000, []string{"car"}, "closest car"),
+	}}
+	store.candidates[0].SemanticScore = 0.5
+	store.candidates[1].SemanticScore = 0.9
+	store.candidates[1].Ordinal = 1
+	store.shotsByID = map[string]domain.AssetShot{"a-first": store.candidates[0].AssetShot}
+	response, err := NewService(store, DefaultOptions()).Search(context.Background(), SearchRequest{
+		Query: "car", Mode: "similar", Limit: 1, IncludeContext: true, IncludeEvidence: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 1 || response.Results[0].ShotID != "a-second" {
+		t.Fatalf("nearest result = %+v, want a-second", response.Results)
+	}
+	result := response.Results[0]
+	if len(result.Evidence) != 1 || result.Evidence[0].State != EvidenceConfirmed || result.Context == nil || result.Context.PreviousShot == nil || result.Context.PreviousShot.ShotID != "a-first" {
+		t.Fatalf("nearest result lacks requested evidence or previous shot: %+v", result)
+	}
+}
+
+func TestCreativeSelectionKeepsFusedScores(t *testing.T) {
+	store := &fakeStore{candidates: []domain.ShotSearchResult{
+		shot("a-first", "a", 0, 1000, nil, "car"),
+		shot("a-second", "a", 6000, 7000, nil, "car"),
+		shot("b-third", "b", 0, 1000, nil, "car"),
+	}}
+	for i := range store.candidates {
+		store.candidates[i].SemanticScore = float64(3-i) / 4
+	}
+	response, err := NewService(store, DefaultOptions()).Search(context.Background(), SearchRequest{Query: "car", Mode: "creative", Limit: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 3 || response.Results[1].ShotID != "b-third" || response.Results[2].ShotID != "a-second" {
+		t.Fatalf("diversity did not demote the second shot of asset a: %+v", response.Results)
+	}
+	result := response.Results[2]
+	want := 0.45 / (DefaultRRFK + 2.0)
+	if result.Score != want || result.Scores[SignalWeightedRRF] != want || result.Rank != 3 {
+		t.Fatalf("diversified result = %+v, want original fused score %g and rank 3", result, want)
+	}
+}
+
 // fakeStore is a scripted ShotStore for pipeline tests. It holds the legacy
 // candidate universe plus per-channel results; every method is deterministic.
 type fakeStore struct {

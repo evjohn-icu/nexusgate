@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/evjohn-icu/nexusgate/internal/eval"
 )
 
 func TestMultimodalScoreWritesReport(t *testing.T) {
@@ -64,5 +66,74 @@ func TestMultimodalScoreWritesReport(t *testing.T) {
 	}
 	if err := multimodalCmd([]string{"score"}); err == nil {
 		t.Fatal("missing flags accepted")
+	}
+}
+
+func TestMultimodalScoreUsesOnlyRecordedDiarization(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "manifest.json")
+	resultsPath := filepath.Join(dir, "results.json")
+	reportPath := filepath.Join(dir, "report.json")
+	interval := eval.EvalInterval{StartMS: 500, EndMS: 2500}
+	reference := []eval.SpeakerSegment{{Speaker: "A", Interval: interval}}
+	manifest := eval.MultimodalManifest{
+		SchemaVersion: eval.MultimodalManifestVersion,
+		Assets:        []eval.EvalAsset{{ID: "a", SHA256: "sha256:" + strings.Repeat("a", 64), License: "fixture", Source: "fixture", DurationMS: 4000, Partition: "test"}},
+		Queries:       []eval.EvalQuery{{ID: "q", Positives: []eval.EvalPositive{{AssetID: "a", Interval: interval, Grade: 1}}}},
+		Diarization:   []eval.DiarizationCase{{AssetID: "a", Reference: reference, Predicted: reference}},
+	}
+	writeJSON := func(path string, value any) {
+		t.Helper()
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeJSON(manifestPath, manifest)
+	for _, tt := range []struct {
+		name      string
+		cases     []eval.DiarizationCase
+		ranking   map[string][]eval.RankedItem
+		wantScore bool
+		wantDER   float64
+		wantError bool
+	}{
+		{name: "missing", ranking: map[string][]eval.RankedItem{}},
+		{name: "perfect", cases: []eval.DiarizationCase{{AssetID: "a", Predicted: reference}}, wantScore: true},
+		{name: "explicit empty", cases: []eval.DiarizationCase{{AssetID: "a", Predicted: []eval.SpeakerSegment{}}}, ranking: map[string][]eval.RankedItem{"q": {}}, wantScore: true, wantDER: 1},
+		{name: "past duration", cases: []eval.DiarizationCase{{AssetID: "a", Predicted: []eval.SpeakerSegment{{Speaker: "B", Interval: eval.EvalInterval{StartMS: 5, EndMS: 4001}}}}}, wantError: true},
+		{name: "negative", cases: []eval.DiarizationCase{{AssetID: "a", Predicted: []eval.SpeakerSegment{{Speaker: "B", Interval: eval.EvalInterval{StartMS: -5, EndMS: 50}}}}}, wantError: true},
+		{name: "unannotated", cases: []eval.DiarizationCase{{AssetID: "b", Predicted: reference}}, wantError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			writeJSON(resultsPath, multimodalResults{SchemaVersion: "multimodal-results.v1", Ranking: tt.ranking, Diarization: tt.cases})
+			err := multimodalCmd([]string{"score", "--manifest", manifestPath, "--results", resultsPath, "--out", reportPath})
+			if tt.wantError {
+				if err == nil {
+					t.Fatal("invalid prediction was scored")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(reportPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var report multimodalReport
+			if err := json.Unmarshal(raw, &report); err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Diarization) != 1 || report.Diarization[0].Evaluable != tt.wantScore || report.Diarization[0].DERWithOverlap != tt.wantDER {
+				t.Fatalf("diarization = %+v, want evaluable=%t DER=%g", report.Diarization, tt.wantScore, tt.wantDER)
+			}
+			if report.Retrieval.Queries != len(tt.ranking) {
+				t.Fatalf("scored %d queries, want %d recorded queries", report.Retrieval.Queries, len(tt.ranking))
+			}
+		})
 	}
 }

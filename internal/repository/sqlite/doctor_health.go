@@ -30,7 +30,7 @@ func (r *Repository) SearchIndexHealth(ctx context.Context) (domain.SearchIndexH
 		return health, err
 	}
 	var state string
-	err := r.db.QueryRowContext(ctx, `SELECT value FROM fts_index_state WHERE name='cjk_bigram_v1'`).Scan(&state)
+	err := r.db.QueryRowContext(ctx, `SELECT value FROM fts_index_state WHERE name=?`, cjkFTSIndexState).Scan(&state)
 	if errors.Is(err, sql.ErrNoRows) {
 		health.FTSState = "missing"
 		return health, nil

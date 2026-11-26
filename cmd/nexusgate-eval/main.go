@@ -58,9 +58,9 @@ Usage:
   nexusgate-eval score --corpus <dir> --data-dir <dir> --labels <a,b,...>
   nexusgate-eval multimodal score --manifest <file> --results <file> [--out <file>]
 
-The data dir holds the providers config.json (the same file a nexusgate Hub
-uses) and receives its own nexusgate.db. Set NEXUSGATE_DATA_DIR instead of
---data-dir if you prefer.
+The data dir holds the providers config.json. Each label stores its own
+database, cache, and report under runs/<label> in that directory. Set
+NEXUSGATE_DATA_DIR instead of --data-dir if you prefer.
 
 Corpus layout:
   <corpus>/clips/*.mp4              the footage
@@ -73,7 +73,7 @@ Corpus layout:
 func parseRunArgs(args []string) (corpus, dataDir, label string, err error) {
 	fs := flag.NewFlagSet("nexusgate-eval run", flag.ContinueOnError)
 	corpusFlag := fs.String("corpus", "", "corpus directory (clips/ + ground_truth.json)")
-	dataDirFlag := fs.String("data-dir", "", "evaluation data directory")
+	dataDirFlag := fs.String("data-dir", os.Getenv("NEXUSGATE_DATA_DIR"), "evaluation data directory")
 	labelFlag := fs.String("label", "", "run label")
 	if err := fs.Parse(args); err != nil {
 		return "", "", "", err
@@ -93,7 +93,7 @@ func parseRunArgs(args []string) (corpus, dataDir, label string, err error) {
 func parseScoreArgs(args []string) (corpus, dataDir, labels string, err error) {
 	fs := flag.NewFlagSet("nexusgate-eval score", flag.ContinueOnError)
 	corpusFlag := fs.String("corpus", "", "corpus directory (clips/ + ground_truth.json)")
-	dataDirFlag := fs.String("data-dir", "", "evaluation data directory")
+	dataDirFlag := fs.String("data-dir", os.Getenv("NEXUSGATE_DATA_DIR"), "evaluation data directory")
 	labelsFlag := fs.String("labels", "", "comma-separated run labels")
 	if err := fs.Parse(args); err != nil {
 		return "", "", "", err

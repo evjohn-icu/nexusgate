@@ -52,6 +52,8 @@ func toWindows(matches []domain.ModalityMatch) []search.ModalityWindow {
 			Modality:       string(match.Modality),
 			StartMS:        match.StartMS,
 			EndMS:          match.EndMS,
+			ShotStartMS:    match.ShotStartMS,
+			ShotEndMS:      match.ShotEndMS,
 			Score:          match.Score,
 			Label:          match.Label,
 			EvidenceStatus: match.EvidenceStatus,
@@ -91,8 +93,10 @@ func (m *modalityStore) SoundEvents(ctx context.Context, labels []string, univer
 func (m *modalityStore) SpeakerTurns(ctx context.Context, filter search.SpeakerFilter, universe map[string]bool, limit int) ([]search.ModalityWindow, error) {
 	if filter.ProfileID != "" {
 		// Profile matching is biometric and admin-only; it is resolved before
-		// search reaches this adapter, never as a public channel filter.
-		return nil, fmt.Errorf("speaker profile filtering requires an authorised profile search")
+		// search reaches this adapter, never as a public channel filter. The
+		// typed unavailable error matters: returning unfiltered shots would
+		// turn an unsupported selector into a silent widening of the result.
+		return nil, fmt.Errorf("%w: speaker profile filtering requires an authorised profile search", search.ErrModalitiesUnavailable)
 	}
 	matches, err := m.repo.SpeakerTurnMatches(ctx, filter.AssetID, filter.DiarizationGenerationID, filter.LocalSpeakerID, universe, limit)
 	if err != nil {

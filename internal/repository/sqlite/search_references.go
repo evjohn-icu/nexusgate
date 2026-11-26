@@ -81,27 +81,22 @@ func (r *Repository) ExpiredSearchReferences(ctx context.Context, now time.Time)
 	return out, rows.Err()
 }
 
-// CancelInferenceTasksForReference fails queued query tasks bound to a
-// reference and flags running ones for cancellation. Deleting a query image
-// must take its in-flight work with it: a late result would otherwise publish
-// vectors for bytes the operator deleted.
+// CancelInferenceTasksForReference flags the query tasks bound to a reference
+// as cancelled and terminalizes every nonterminal job bound to them — pending,
+// running and retryable alike. Deleting a query image must take its in-flight
+// work with it: a late result would otherwise publish vectors for bytes the
+// operator deleted. It runs through cancelInferenceTasksTx so the shared
+// cancellation predicate stays the one every path uses.
 func (r *Repository) CancelInferenceTasksForReference(ctx context.Context, referenceID string) error {
 	if strings.TrimSpace(referenceID) == "" {
 		return nil
 	}
-	now := formatTime(time.Now().UTC())
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `UPDATE inference_tasks SET cancel_requested=1,updated_at=? WHERE query_reference_id=?`, now, referenceID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE jobs SET state='failed',terminal=1,last_error_code='cancelled',last_error_message='query reference deleted',updated_at=?
-		WHERE id IN (SELECT job_id FROM inference_tasks WHERE query_reference_id=?)
-		  AND state='pending'`, now, referenceID); err != nil {
+	if _, _, err := cancelInferenceTasksTx(ctx, tx, time.Now().UTC(), "query reference deleted", "query_reference_id = ?", referenceID); err != nil {
 		return err
 	}
 	return tx.Commit()

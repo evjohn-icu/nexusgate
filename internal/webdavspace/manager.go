@@ -140,20 +140,24 @@ func (m *Manager) Handler() http.Handler {
 			return
 		}
 		// Bound concurrent bcrypt verifies so a LAN flood cannot occupy all
-		// cores; see webdavBcryptSlots.
+		// cores; see webdavBcryptSlots. The slot is held only for the
+		// credential verify and released as soon as Authenticate returns —
+		// success, failure or cancellation — so slow file transfers never
+		// keep verify capacity occupied.
 		select {
 		case m.bcryptSlots <- struct{}{}:
-			defer func() { <-m.bcryptSlots }()
 		case <-r.Context().Done():
 			http.Error(w, "authentication aborted", http.StatusServiceUnavailable)
 			return
 		}
 		if err := Authenticate(r.Context(), m.accounts, username, password); err != nil {
+			<-m.bcryptSlots
 			m.recordLoginFailure(loginKey, time.Now())
 			w.Header().Set("WWW-Authenticate", `Basic realm="nexusgate webdav"`)
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}
+		<-m.bcryptSlots
 		m.clearLoginFailures(loginKey)
 
 		space := m.Space(spaceID)

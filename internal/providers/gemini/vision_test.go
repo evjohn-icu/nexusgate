@@ -88,3 +88,114 @@ func TestPrepareVideoResumableFixture(t *testing.T) {
 		t.Fatalf("prepared=%+v", prepared)
 	}
 }
+
+// The resumable upload URL is provider-controlled. Scheme and exact origin are
+// checked before any file byte or authentication header is attached, so a
+// relay answering with a session elsewhere cannot receive the credential.
+func TestPrepareVideoAcceptsSameOriginAndRelativeUploadSession(t *testing.T) {
+	tests := []struct {
+		name       string
+		uploadURL  string
+		wantPath   string
+		wantReject bool
+	}{
+		{"absolute same origin", "http://provider.invalid/upload-session", "/upload-session", false},
+		{"relative resolves against initial endpoint", "/upload/v1beta/files/session", "/upload/v1beta/files/session", false},
+		{"explicit default port spelling", "http://provider.invalid:80/upload-session", "/upload-session", false},
+		{"different origin refused", "http://attacker.invalid/upload-session", "", true},
+		{"https on http endpoint refused", "https://provider.invalid/upload-session", "", true},
+		{"non-http scheme refused", "ftp://provider.invalid/upload-session", "", true},
+		{"different port refused", "http://provider.invalid:8080/upload-session", "", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			uploadBodySeen := false
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/upload/v1beta/files" && r.Header.Get("X-Goog-Upload-Command") == "start" {
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Goog-Upload-Url": []string{tc.uploadURL}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+				}
+				if tc.wantReject {
+					t.Errorf("upload request sent to %q after the origin check should have refused it", r.URL.String())
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: r}, nil
+				}
+				if r.URL.Path == tc.wantPath {
+					uploadBodySeen = true
+					data, _ := io.ReadAll(r.Body)
+					if string(data) != "video-fixture" {
+						t.Errorf("uploaded body = %q", string(data))
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"file":{"name":"files/abc","uri":"https://files.example/abc","mimeType":"video/mp4","state":"ACTIVE"}}`)), Request: r}, nil
+				}
+				t.Errorf("unexpected upload request to %q", r.URL.Path)
+				return &http.Response{StatusCode: http.StatusNotFound, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+			})}
+
+			videoPath := filepath.Join(t.TempDir(), "clip.mp4")
+			if err := os.WriteFile(videoPath, []byte("video-fixture"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			provider := &Vision{
+				Endpoint: common.Endpoint{
+					BaseURL: "http://provider.invalid/v1beta", APIKey: "gemini-key",
+					AuthHeader: "x-goog-api-key", AuthScheme: "raw", HTTPClient: client,
+				},
+				ModelName: "gemini-test",
+			}
+			prepared, err := provider.PrepareVideo(context.Background(), common.PrepareVideoRequest{
+				VideoPath: videoPath, DisplayName: "clip.mp4", MIMEType: "video/mp4",
+			})
+			if tc.wantReject {
+				if err == nil {
+					t.Fatal("cross-origin or non-HTTP upload session was accepted")
+				}
+				if !strings.Contains(err.Error(), "different origin") && !strings.Contains(err.Error(), "usable resumable") {
+					t.Fatalf("error = %v", err)
+				}
+				if uploadBodySeen {
+					t.Fatal("file bytes or authentication left the configured origin")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("PrepareVideo: %v", err)
+			}
+			if !uploadBodySeen {
+				t.Fatal("upload bytes were never sent to the resolved session")
+			}
+			if prepared.State != "ACTIVE" || prepared.RemoteName != "files/abc" {
+				t.Fatalf("prepared=%+v", prepared)
+			}
+		})
+	}
+}
+
+// A malformed session URL must fail closed without echoing it into the error.
+func TestPrepareVideoRejectsUnparseableUploadSession(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/upload/v1beta/files" {
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Goog-Upload-Url": []string{"http://[::1"}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+		}
+		t.Errorf("upload request sent after the origin check should have refused it")
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: r}, nil
+	})}
+	videoPath := filepath.Join(t.TempDir(), "clip.mp4")
+	if err := os.WriteFile(videoPath, []byte("video-fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	provider := &Vision{
+		Endpoint: common.Endpoint{
+			BaseURL: "http://provider.invalid/v1beta", APIKey: "gemini-key",
+			AuthHeader: "x-goog-api-key", AuthScheme: "raw", HTTPClient: client,
+		},
+		ModelName: "gemini-test",
+	}
+	_, err := provider.PrepareVideo(context.Background(), common.PrepareVideoRequest{
+		VideoPath: videoPath, DisplayName: "clip.mp4", MIMEType: "video/mp4",
+	})
+	if err == nil {
+		t.Fatal("unparseable upload session was accepted")
+	}
+	if strings.Contains(err.Error(), "http://[::1") {
+		t.Fatalf("error echoed the unparseable session URL: %v", err)
+	}
+}

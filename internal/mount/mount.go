@@ -743,6 +743,16 @@ func Guidance(share Share, mountpoint string, host Host) Guide {
 	// containerised Hub whose media bind is unknown. That placeholder is this
 	// package's own "edit this line" marker, not untrusted input, and it is the
 	// container branch's normal output.
+	// A DISCOVERED default gets the same scrutiny as a caller-supplied one.
+	// DefaultMountpoint for a containerised Hub is path.Join(MediaBind.Source,
+	// name), and the bind source is whatever the container runtime happened to
+	// mount — a host path with spaces ("/mnt/My Media") is a legal bind and a
+	// catastrophic default: every step below interpolates the mount point
+	// unquoted, so the generated lines would mean a different directory than
+	// the one displayed. When the only unsafe part is the literal built-in
+	// placeholder marker the operator is expected to edit, the guidance
+	// proceeds as designed; any other unsafe default yields the same
+	// no-commands shape as a caller-supplied unsafe path.
 	// A share name that cannot survive interpolation withholds the commands for
 	// the same reason an unusable mount point does, and in the same shape: the
 	// summary, no steps. This branch exists because ParseShare now classifies
@@ -753,7 +763,11 @@ func Guidance(share Share, mountpoint string, host Host) Guide {
 		return guide
 	}
 	if mountpoint == "" {
-		mountpoint = DefaultMountpoint(share, host)
+		defaulted := DefaultMountpoint(share, host)
+		if defaulted != "" && !strings.HasPrefix(defaulted, hostMediaRootPlaceholder) && !ValidMountpoint(defaulted, host) {
+			return guide
+		}
+		mountpoint = defaulted
 	} else if !ValidMountpoint(mountpoint, host) {
 		return guide
 	}

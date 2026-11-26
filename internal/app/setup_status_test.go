@@ -245,7 +245,7 @@ func TestSetupStatusRequiresHealthyRootRunnableVideoAndSearchableShots(t *testin
 	}
 
 	// A pending index drops back to scan_or_process and can never be Ready.
-	if _, err := repo.DB().ExecContext(ctx, `UPDATE fts_index_state SET value='pending' WHERE name='cjk_bigram_v1'`); err != nil {
+	if _, err := repo.DB().ExecContext(ctx, `UPDATE fts_index_state SET value='pending' WHERE name='cjk_bigram_unigram_v2'`); err != nil {
 		t.Fatal(err)
 	}
 	status = service.SetupStatus(ctx)
@@ -258,7 +258,7 @@ func TestSetupStatusRequiresHealthyRootRunnableVideoAndSearchableShots(t *testin
 	if status.Ready {
 		t.Fatal("a hub with a pending index must not report ready")
 	}
-	if _, err := repo.DB().ExecContext(ctx, `UPDATE fts_index_state SET value='ready' WHERE name='cjk_bigram_v1'`); err != nil {
+	if _, err := repo.DB().ExecContext(ctx, `UPDATE fts_index_state SET value='ready' WHERE name='cjk_bigram_unigram_v2'`); err != nil {
 		t.Fatal(err)
 	}
 

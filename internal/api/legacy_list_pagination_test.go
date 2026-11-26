@@ -186,6 +186,42 @@ func TestLegacyListPaginationHeaders(t *testing.T) {
 	assertListPaginationHeaders(t, last, 2, 4, false)
 }
 
+func TestCollectionAssetsPublishPaginationHeaders(t *testing.T) {
+	service, repo := newLegacyListService(t, "collection-paging")
+	handler := NewServer("", service).Handler()
+	ctx := context.Background()
+	for i := range 5 {
+		insertAPITestAsset(t, repo, fmt.Sprintf("collection-asset-%d", i))
+	}
+	if _, err := repo.SaveAssetCollection(ctx, domain.AssetCollection{ID: "paged-collection", Name: "全部", CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for offset := 0; offset < 5; offset += 2 {
+		response := getJSONList(handler, fmt.Sprintf("/api/v1/collections/paged-collection/assets?limit=2&offset=%d", offset))
+		if response.Code != http.StatusOK {
+			t.Fatalf("offset %d: status=%d body=%s", offset, response.Code, response.Body.String())
+		}
+		if got := response.Header().Get("X-NexusGate-Has-More"); got != fmt.Sprintf("%t", offset < 4) {
+			t.Fatalf("offset %d: has-more=%q", offset, got)
+		}
+		var page []domain.AssetCard
+		if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+			t.Fatal(err)
+		}
+		for _, card := range page {
+			ids = append(ids, card.ID)
+		}
+	}
+	if len(ids) != 5 {
+		t.Fatalf("collected %d unique cards, want 5", len(ids))
+	}
+	invalid := getJSONList(handler, "/api/v1/collections/paged-collection/assets?limit=abc")
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid limit status=%d body=%s, want 400", invalid.Code, invalid.Body.String())
+	}
+}
+
 func TestLegacyListPaginationRejectsMalformedParameters(t *testing.T) {
 	service, _ := newLegacyListService(t, "legacy-paging-invalid")
 	handler := NewServer("", service).Handler()

@@ -3,12 +3,16 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"image"
+	"image/jpeg"
 	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,8 +21,11 @@ import (
 	"github.com/evjohn-icu/nexusgate/internal/app"
 	"github.com/evjohn-icu/nexusgate/internal/config"
 	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/inferencecatalog"
 	"github.com/evjohn-icu/nexusgate/internal/media"
+	"github.com/evjohn-icu/nexusgate/internal/remote"
 	"github.com/evjohn-icu/nexusgate/internal/repository/sqlite"
+	"github.com/evjohn-icu/nexusgate/internal/worker"
 )
 
 func newMultimodalTestStack(t *testing.T) (http.Handler, *sqlite.Repository) {
@@ -95,11 +102,7 @@ func TestSearchRejectsInvalidTemporalBeforeRetrieval(t *testing.T) {
 	}
 }
 
-// TestPendingReferenceSearchReturns202 pins the plan's explicit-channel
-// contract: when a query image is already queued but not yet encoded, the read
-// path answers 202 with the job ids instead of pretending the channel is
-// missing.
-func TestPendingReferenceSearchReturns202(t *testing.T) {
+func TestWorkerEncodesReferenceAfterLeasedModelInstall(t *testing.T) {
 	handler, repo := newMultimodalTestStack(t)
 	// The query encoder reads the operator-selected profile, so visual must be
 	// enabled for the pending-channel path to be reachable.
@@ -108,7 +111,7 @@ func TestPendingReferenceSearchReturns202(t *testing.T) {
 	if err := repo.PutMultimodalSettings(context.Background(), settings); err != nil {
 		t.Fatal(err)
 	}
-	// A 1x1 PNG is enough to create the reference; the encoder never runs.
+	// Upload triggers encoding on a Hub whose only executor is the Worker.
 	var encoded bytes.Buffer
 	if err := png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil {
 		t.Fatal(err)
@@ -129,19 +132,9 @@ func TestPendingReferenceSearchReturns202(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	jobID := "job-pending-ref"
-	if _, err := repo.DB().ExecContext(ctx, `
-		INSERT INTO jobs(id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,created_at,updated_at)
-		VALUES(?,NULL,'inference','running',30,1,3,?,?,?,?)`,
-		jobID, now, "task-key-pending", now, now); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := repo.DB().ExecContext(ctx, `
-		INSERT INTO inference_tasks(job_id,task_key,operation,request_json,query_reference_id,config_hash,model_revision,created_at,updated_at)
-		VALUES(?,?, 'visual_embedding','{}',?,'cfg','rev',?,?)`,
-		jobID, "task-key-pending", ref.ID, now, now); err != nil {
-		t.Fatal(err)
+	jobID, queued, err := repo.QueryReferenceJob(ctx, ref.ID)
+	if err != nil || !queued {
+		t.Fatalf("reference job=%q queued=%t err=%v", jobID, queued, err)
 	}
 
 	recorder = postSearch(t, handler, `{"query":"","modalities":["visual"],"reference_id":"`+ref.ID+`"}`)
@@ -158,6 +151,116 @@ func TestPendingReferenceSearchReturns202(t *testing.T) {
 	if pending.Status != "pending" || len(pending.JobIDs) != 1 || pending.JobIDs[0] != jobID {
 		t.Fatalf("unexpected pending body: %+v", pending)
 	}
+
+	hub := httptest.NewTLSServer(handler)
+	defer hub.Close()
+	request := func(path, body string, want int) *httptest.ResponseRecorder {
+		t.Helper()
+		r := lanRequest(http.MethodPost, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, r)
+		if response.Code != want {
+			t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		return response
+	}
+	pairingResponse := request("/api/v1/hub/worker-pairings", `{"grants":{"inference_operations":["visual_embedding","visual_embedding"],"model_management_operations":["install"]}}`, http.StatusCreated)
+	var pairing remote.PairingToken
+	if err := json.Unmarshal(pairingResponse.Body.Bytes(), &pairing); err != nil {
+		t.Fatal(err)
+	}
+	client := worker.NewClient(hub.URL, fmt.Sprintf("%x", sha256.Sum256(hub.Certificate().Raw)))
+	registration := remote.WorkerRegistration{Name: "visual-worker", Platform: "linux"}
+	enrollment, err := client.Enroll(ctx, pairing.Token, registration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registration.Capabilities = enrollment.Worker.Capabilities
+	if len(registration.Capabilities.InferenceOperations) != 1 {
+		t.Fatalf("enrollment grants=%v", registration.Capabilities.InferenceOperations)
+	}
+	model, ok := inferencecatalog.DefaultFor(domain.OpVisualEmbedding)
+	if !ok {
+		t.Fatal("visual model missing from catalog")
+	}
+	executor := &referenceWorkerFixture{model: model}
+	runtime := worker.NewRuntime(client, worker.Config{Token: enrollment.Token, CacheDir: t.TempDir(), Registration: registration}, nil, registration.Capabilities).
+		WithInferenceExecutor(executor).WithModelManager(executor)
+	if worked, err := runtime.RunOnce(ctx); err != nil || worked {
+		t.Fatalf("unattested executor worked=%t err=%v", worked, err)
+	}
+	request("/api/v1/admin/inference/models/"+model.CatalogID+"/install", `{"worker_id":"`+enrollment.Worker.ID+`","license_accepted":true}`, http.StatusAccepted)
+	for _, operation := range []string{"install", "inference"} {
+		if worked, err := runtime.RunOnce(ctx); err != nil || !worked {
+			t.Fatalf("%s worked=%t err=%v", operation, worked, err)
+		}
+	}
+	if _, err := os.Stat(executor.imagePath); !os.IsNotExist(err) {
+		t.Fatalf("staged Worker image was retained: %v", err)
+	}
+	if _, err := client.FetchInferenceInput(ctx, enrollment.Token, jobID); err == nil {
+		t.Fatal("completed lease still grants image access")
+	}
+	recorder = postSearch(t, handler, `{"query":"","modalities":["visual"],"reference_id":"`+ref.ID+`"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("ready status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+type referenceWorkerFixture struct {
+	model     inferencecatalog.Model
+	installed bool
+	imagePath string
+}
+
+func (f *referenceWorkerFixture) Install(_ context.Context, task domain.ModelManagementTask) error {
+	if task.CatalogID != f.model.CatalogID || task.ManifestDigest != f.model.ManifestDigest() || !task.LicenseAccepted {
+		return fmt.Errorf("unexpected model installation task")
+	}
+	f.installed = true
+	return nil
+}
+
+func (f *referenceWorkerFixture) Probe(context.Context, domain.ModelManagementTask) error {
+	return fmt.Errorf("unexpected model probe")
+}
+
+func (f *referenceWorkerFixture) Capabilities(context.Context) ([]remote.InferenceCapability, error) {
+	if !f.installed {
+		return nil, nil
+	}
+	return []remote.InferenceCapability{{
+		Operation: domain.OpVisualEmbedding, SchemaVersion: domain.InferenceSchemaVersion,
+		ModelID: f.model.ModelID, ModelRevision: f.model.Revision, Backend: "cpu", Available: true,
+	}}, nil
+}
+
+func (f *referenceWorkerFixture) Execute(ctx context.Context, request domain.InferenceRequest) (domain.InferenceResult, error) {
+	if request.Input.Kind != domain.InputKindImage || request.Input.RelativePath != "" || request.Input.RootID != "" {
+		return domain.InferenceResult{}, fmt.Errorf("unexpected image input locator")
+	}
+	path, err := worker.ResolveInferenceImage(ctx, request.Input.ReferenceID, request.Input.Digest)
+	if err != nil {
+		return domain.InferenceResult{}, err
+	}
+	f.imagePath = path
+	file, err := os.Open(path)
+	if err != nil {
+		return domain.InferenceResult{}, err
+	}
+	defer file.Close()
+	if _, err := jpeg.DecodeConfig(file); err != nil {
+		return domain.InferenceResult{}, fmt.Errorf("Worker image was not normalized: %w", err)
+	}
+	vector := make([]float32, f.model.Dimension)
+	vector[0] = 1
+	return domain.InferenceResult{
+		SchemaVersion: request.SchemaVersion, OperationID: request.OperationID, Operation: request.Operation,
+		ModelID: request.ModelID, ModelRevision: request.ModelRevision, SpaceID: request.SpaceID,
+		InputHash: request.InputHash, ConfigHash: request.ConfigHash, Backend: "cpu",
+		Embeddings: []domain.EmbeddingRecord{{Vector: vector, SampleIndex: -1}},
+	}, nil
 }
 
 func TestTimelineCursorValidation(t *testing.T) {

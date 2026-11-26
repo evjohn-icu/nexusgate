@@ -14,18 +14,52 @@ import (
 // It is a retrieval signal only — the evidence gate never treats an embedding
 // hit as observation evidence, exactly like the semantic channel before it.
 //
-// The scan is a full-library cosine pass in Go over the stored model's
+// The scan is a full-library cosine pass in Go over the served space's
 // vectors (SQLite-first: no vector DB). That is the deliberate v1 trade-off;
 // a library of tens of thousands of shots stays comfortably inside a few
 // milliseconds per query at 256-1024 dimensions, and the boundary is where a
 // future ANN index plugs in without touching the engine.
 //
 // Degradation is graceful: with no embedder configured, or with no vectors
-// stored under the current model, the channel returns nothing and fusion
+// stored under the current space, the channel returns nothing and fusion
 // simply never sees the signal — recall keeps working.
 type TextEmbeddingRetriever struct {
 	store    ShotStore
 	embedder TextEmbedder
+}
+
+// IdentifiedTextEmbedder is the optional identity-aware extension of
+// TextEmbedder. A routed provider (a channel that may fall back from the
+// primary route to a different backend within one operation) cannot promise
+// which backend will serve a batch before it runs, so it carries the
+// provenance of the batch that actually came back:
+//
+//   - EmbedInSpace returns the vectors together with the space ID of the
+//     backend that produced them — the same operation, so the identity can
+//     never disagree with the vectors.
+//   - EmbeddingSpaceID plans the primary route's space without any provider
+//     call. It is what a rebuild compares against, so a rebuild knows which
+//     shots are stale in the space it would write next.
+//
+// Vectors live in one space and are scored against queries of that space —
+// never across spaces (see embedTextInSpace).
+type IdentifiedTextEmbedder interface {
+	TextEmbedder
+	EmbeddingSpaceID() string
+	EmbedInSpace(ctx context.Context, texts []string) ([][]float64, string, error)
+}
+
+// embedTextInSpace embeds one batch and reports the space the vectors live
+// in. An embedder implementing IdentifiedTextEmbedder decides its own space
+// (the backend that actually served); a plain TextEmbedder is a
+// single-provider caller whose vectors always live under Model() — the
+// shape every test/library embedder has always had.
+func embedTextInSpace(ctx context.Context, embedder TextEmbedder, texts []string) ([][]float64, string, error) {
+	if identified, ok := embedder.(IdentifiedTextEmbedder); ok {
+		return identified.EmbedInSpace(ctx, texts)
+	}
+	vectors, err := embedder.Embed(ctx, texts)
+	return vectors, embedder.Model(), err
 }
 
 func NewTextEmbeddingRetriever(store ShotStore, embedder TextEmbedder) *TextEmbeddingRetriever {
@@ -47,7 +81,7 @@ func (r *TextEmbeddingRetriever) Retrieve(ctx context.Context, q SearchQuery, li
 	if r.embedder == nil {
 		return nil, nil
 	}
-	vectors, err := r.embedder.Embed(ctx, []string{q.Raw})
+	vectors, spaceID, err := embedTextInSpace(ctx, r.embedder, []string{q.Raw})
 	if err != nil {
 		return nil, err
 	}
@@ -58,12 +92,12 @@ func (r *TextEmbeddingRetriever) Retrieve(ctx context.Context, q SearchQuery, li
 	if err := validateQueryEmbedding(queryVector); err != nil {
 		return []Candidate{}, err
 	}
-	rows, err := r.store.ListShotTextEmbeddings(ctx, r.embedder.Model())
+	rows, err := r.store.ListShotTextEmbeddings(ctx, spaceID)
 	if err != nil {
 		return nil, err
 	}
 	// Full-library cosine scan. A stored vector whose dimension differs from
-	// the query vector's is a different model's artifact (a provider update
+	// the query vector's is a different space's artifact (a provider update
 	// without a rebuild) — it is skipped before the cutoff/cluster logic, so
 	// it neither distorts maxSimilarity nor enters the scored output.
 	maxSimilarity := 0.0

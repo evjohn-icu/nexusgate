@@ -1,12 +1,16 @@
 package webdavspace
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -222,7 +226,7 @@ func TestManagerBoundedBcryptConcurrency(t *testing.T) {
 	}
 	h := m.Handler()
 	var wg sync.WaitGroup
-	for i := 0; i < 64; i++ {
+	for i := range 64 {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
@@ -240,4 +244,74 @@ func TestManagerBoundedBcryptConcurrency(t *testing.T) {
 	if len(m.bcryptSlots) != 0 {
 		t.Fatalf("bcrypt semaphore leaked slots after the flood: %d", len(m.bcryptSlots))
 	}
+}
+
+// WEBDAV-002: the verify slot is released as soon as Authenticate returns,
+// not held for the rest of the request. Six transfers held mid-stream (each
+// blocked inside its body write, as an editor stalling a download would)
+// must leave the authentication semaphore open for the next login.
+func TestBcryptSlotsReleasedWhileTransfersAreHeld(t *testing.T) {
+	dir := t.TempDir()
+	// 10 MiB so a stalled reader reliably blocks the handler mid-body.
+	payload := bytes.Repeat([]byte("0123456789"), 1<<20)
+	if err := os.WriteFile(filepath.Join(dir, "clip-a.mov"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := &testLinker{dir: dir, originals: map[string]string{"a": "clip-a.mov"}}
+	accounts := NewMemAccountStore()
+	if err := accounts.CreateAccount("editor", "s3cret"); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(l, accounts)
+	space := m.CreateSpace("space-1")
+	if _, err := space.LinkOriginal(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(m.Handler())
+	defer srv.Close()
+
+	heldCtx, cancelHeld := context.WithCancel(context.Background())
+	defer cancelHeld()
+	started := make(chan struct{}, webdavBcryptSlots)
+	var wg sync.WaitGroup
+	for range webdavBcryptSlots {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req, _ := http.NewRequestWithContext(heldCtx, "GET", srv.URL+"/spaces/space-1/assets/a/original.mov", nil)
+			req.SetBasicAuth("editor", "s3cret")
+			resp, err := srv.Client().Do(req)
+			if err != nil {
+				return
+			}
+			defer resp.Body.Close()
+			if _, err := resp.Body.Read(make([]byte, 1)); err != nil {
+				return
+			}
+			started <- struct{}{}
+			<-heldCtx.Done() // hold the transfer open, unread, until the test ends
+		}()
+	}
+	for range webdavBcryptSlots {
+		select {
+		case <-started:
+		case <-time.After(10 * time.Second):
+			t.Fatal("held transfers did not start streaming")
+		}
+	}
+	if got := len(m.bcryptSlots); got != 0 {
+		t.Fatalf("bcrypt slots held by in-flight transfers: %d", got)
+	}
+
+	// A fresh login must go through while the six transfers stay blocked.
+	authCtx, cancelAuth := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelAuth()
+	req, _ := http.NewRequestWithContext(authCtx, "GET", srv.URL+"/spaces/space-1/assets/a/original.mov", nil)
+	req.SetBasicAuth("editor", "s3cret")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("authenticating while six transfers are held: %v", err)
+	}
+	resp.Body.Close()
 }

@@ -28,10 +28,14 @@ type StorageOverview struct {
 	ThumbnailBytes int64 `json:"thumbnail_bytes"`
 	ProxyBytes     int64 `json:"proxy_bytes"`
 	AudioBytes     int64 `json:"audio_bytes"`
+	WaveformBytes  int64 `json:"waveform_bytes"`
 	// SourceStagingBytes is cache/sources/ — the copy-mode staging area that
 	// mirrors NAS originals locally so every derive does not re-read them over
 	// the network. It is a copy, so removing it loses nothing but the speed.
-	SourceStagingBytes int64 `json:"source_staging_bytes"`
+	SourceStagingBytes    int64 `json:"source_staging_bytes"`
+	SearchReferenceBytes  int64 `json:"search_reference_bytes"`
+	SearchReferenceCount  int   `json:"search_reference_count"`
+	InferenceScratchBytes int64 `json:"inference_scratch_bytes"`
 	// ScratchBytes is transient analysis scratch (analysis-frames/,
 	// analysis-windows/, tmp/), which the pipeline is supposed to remove
 	// itself; anything still here is litter.
@@ -72,8 +76,12 @@ func (s *Service) StorageOverview(ctx context.Context) (StorageOverview, error) 
 	overview.ThumbnailBytes = stats.ThumbnailBytes
 	overview.ProxyBytes = stats.ProxyBytes
 	overview.AudioBytes = stats.AudioBytes
-	overview.DerivedBytes = stats.ThumbnailBytes + stats.ProxyBytes + stats.AudioBytes
+	overview.WaveformBytes = stats.WaveformBytes
+	overview.DerivedBytes = stats.ThumbnailBytes + stats.ProxyBytes + stats.AudioBytes + stats.WaveformBytes
 	overview.SourceStagingBytes = stats.SourceStagingBytes
+	overview.SearchReferenceBytes = stats.SearchReferenceBytes
+	overview.SearchReferenceCount = stats.SearchReferenceCount
+	overview.InferenceScratchBytes = stats.InferenceScratchBytes
 	overview.ScratchBytes = stats.ScratchBytes
 	// Scratch and unclassified leftovers are all transient; the page collapses
 	// them into one 临时文件 row rather than pretending the walk can name what

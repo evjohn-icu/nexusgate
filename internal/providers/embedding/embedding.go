@@ -67,7 +67,7 @@ func (p *Provider) Embed(ctx context.Context, inputs []string) ([][]float64, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return nil, common.ReadErrorWithSecret(resp, p.Endpoint.APIKey)
+		return nil, p.Endpoint.ReadError(resp)
 	}
 	raw, err := common.ReadBody(resp.Body)
 	if err != nil {
@@ -112,7 +112,7 @@ func (p *Provider) embedGemini(ctx context.Context, path, input string) ([][]flo
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return nil, common.ReadErrorWithSecret(resp, p.Endpoint.APIKey)
+		return nil, p.Endpoint.ReadError(resp)
 	}
 	var out struct {
 		Embedding struct {

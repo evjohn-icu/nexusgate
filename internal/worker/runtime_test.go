@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -36,6 +37,53 @@ func (c *runtimeTestClient) UploadArtifact(_ context.Context, _ string, _ string
 func (c *runtimeTestClient) Complete(_ context.Context, _ string, _ string, state domain.JobState, _ string) error {
 	c.complete = state
 	return nil
+}
+
+type renewingDeriveClient struct {
+	runtimeTestClient
+	uploadStarted chan struct{}
+}
+
+func (c *renewingDeriveClient) UploadArtifact(ctx context.Context, _, _ string, _ ArtifactUpload) error {
+	close(c.uploadStarted)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (c *renewingDeriveClient) Progress(context.Context, string, string, string, float64, string, string) error {
+	select {
+	case <-c.uploadStarted:
+		return domain.ErrJobLeaseLost
+	default:
+		return nil
+	}
+}
+
+type stagedFixtureDeriver struct{}
+
+func (stagedFixtureDeriver) Derive(_ context.Context, _ remote.WorkerJob, staged, _ string) ([]ArtifactUpload, error) {
+	return []ArtifactUpload{{Type: "proxy", ProfileHash: "fixture", Path: staged}}, nil
+}
+
+func TestDeriveRenewalRejectCancelsUpload(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "clip.mp4"), []byte("source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client := &renewingDeriveClient{
+		runtimeTestClient: runtimeTestClient{job: &remote.WorkerJob{
+			JobID: "job-1", AssetID: "asset-1", RootID: "root-1", RelativePath: "clip.mp4", JobType: domain.JobDerive,
+		}},
+		uploadStarted: make(chan struct{}),
+	}
+	runtime := NewRuntime(client, Config{Token: "token", CacheDir: t.TempDir(), Mounts: map[string]string{"root-1": root}}, stagedFixtureDeriver{}, remote.WorkerCapabilities{}).
+		WithInferenceRenewInterval(time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	worked, err := runtime.RunOnce(ctx)
+	if !worked || !errors.Is(err, domain.ErrJobLeaseLost) || client.complete != domain.JobFailed {
+		t.Fatalf("worked=%t err=%v completion=%q", worked, err, client.complete)
+	}
 }
 
 func TestFFmpegDeriverFallbackUploadsSoftwareProfiles(t *testing.T) {

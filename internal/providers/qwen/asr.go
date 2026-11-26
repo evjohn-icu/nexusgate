@@ -70,7 +70,7 @@ func (a *ASR) Transcribe(ctx context.Context, req common.TranscribeRequest) (dom
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return domain.Transcript{}, common.ReadErrorWithSecret(resp, a.Endpoint.APIKey)
+		return domain.Transcript{}, a.Endpoint.ReadError(resp)
 	}
 	raw, err := common.ReadBody(resp.Body)
 	if err != nil {
@@ -90,5 +90,5 @@ func (a *ASR) Transcribe(ctx context.Context, req common.TranscribeRequest) (dom
 		return domain.Transcript{}, fmt.Errorf("qwen response has no choices")
 	}
 	text := strings.TrimSpace(out.Choices[0].Message.Content)
-	return domain.Transcript{Language: req.Language, Text: text, Segments: []domain.TranscriptSegment{{StartMS: 0, EndMS: 0, Text: text}}, RawResponse: common.RedactString(string(raw), a.Endpoint.APIKey)}, nil
+	return domain.Transcript{Language: req.Language, Text: text, Segments: []domain.TranscriptSegment{{StartMS: 0, EndMS: 0, Text: text}}, RawResponse: a.Endpoint.RedactString(string(raw))}, nil
 }

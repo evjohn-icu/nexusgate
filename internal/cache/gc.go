@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/evjohn-icu/nexusgate/internal/domain"
+	"github.com/evjohn-icu/nexusgate/internal/media"
 )
 
 // reportLimit caps the paths carried in GCResult.Removed and
@@ -41,6 +43,12 @@ type GCOptions struct {
 	// assets row is gone; a listed path outside cacheDir is an error, never a
 	// target.
 	RemoveOrphans []OrphanDir
+	// EligibleAssetIDs gates rebuildable deletion per asset: an artifact whose
+	// asset directory is not in the set is preserved. The cache commands build
+	// the set from the durable re-derive repairs they recorded before deleting
+	// anything, so a file survives until its rebuild is queued. A nil set
+	// disables gating. A non-nil empty set allows no rebuildable deletion.
+	EligibleAssetIDs map[string]struct{}
 	// ProtectedAssetIDs are assets with active pipeline leases. Their artifacts
 	// remain available to the running job.
 	ProtectedAssetIDs map[string]struct{}
@@ -60,6 +68,12 @@ type GCResult struct {
 	SkippedActiveBytes         int64
 	SkippedYoungFiles          int
 	SkippedYoungBytes          int64
+	// SkippedUnrepairedFiles/Bytes count rebuildable artifacts that were
+	// eligible on age and activity but whose asset had no durable re-derive
+	// repair recorded when the run started. They are preserved: deleting them
+	// would leave nothing behind the promised rebuild.
+	SkippedUnrepairedFiles int
+	SkippedUnrepairedBytes int64
 	// Errors holds non-fatal failures. GC deletes file by file and never
 	// aborts mid-way: an unremovable entry is recorded and the rest of the
 	// walk continues, so the report reflects the partial result.
@@ -121,6 +135,13 @@ func GC(cacheDir string, opts GCOptions) (GCResult, error) {
 				// copied it and the ffmpeg that was about to open it.
 				return filepath.SkipDir
 			}
+			if name == "search-references" || name == "inference" {
+				// search-references/ is managed rows with a TTL and their own
+				// reaper; inference/ is the active scratch of local
+				// inference, possibly mid-write. Both are preserved on every
+				// mode — no cleanup flag reaches them.
+				return filepath.SkipDir
+			}
 			if IsScratchDirName(name) && opts.RemoveScratch {
 				if shouldSkipDirectory(&result, cacheDir, path, opts) {
 					return filepath.SkipDir
@@ -135,27 +156,114 @@ func GC(cacheDir string, opts GCOptions) (GCResult, error) {
 			}
 			return nil
 		}
-		if opts.RemoveRebuildable && IsRebuildableArtifactName(d.Name()) {
-			assetID, reason := ClassifyRebuildableArtifact(cacheDir, path, opts.ProtectedAssetIDs, opts.MinAge, opts.Now)
-			if reason != ArtifactEligible {
-				info, infoErr := d.Info()
-				if infoErr == nil {
-					switch reason {
-					case ArtifactActive:
-						result.SkippedActiveFiles++
-						result.SkippedActiveBytes += info.Size()
-					case ArtifactYoung:
-						result.SkippedYoungFiles++
-						result.SkippedYoungBytes += info.Size()
-					}
+		if opts.RemoveRebuildable {
+			// The waveform manifest and the payload it names are one logical
+			// artifact: the manifest is the commit marker, and deleting it
+			// deletes its referenced payload with it. A payload whose sibling
+			// manifest still exists is never deleted on its own visit — the
+			// manifest's visit owns both halves — while an unregistered
+			// payload (no readable sibling manifest) is litter and goes on
+			// its own merits.
+			if IsWaveformManifestName(d.Name()) {
+				assetID, reason := ClassifyRebuildableArtifact(cacheDir, path, opts.ProtectedAssetIDs, opts.MinAge, opts.Now)
+				if reason != ArtifactEligible {
+					accountSkip(&result, path, d, reason)
+					return nil
 				}
+				if !rebuildEligible(opts, assetID) {
+					accountSkip(&result, path, d, ArtifactUnrepaired)
+					return nil
+				}
+				return removeWaveformPair(&result, cacheDir, path, d, assetID, opts.DryRun)
+			}
+			if IsWaveformPayloadName(d.Name()) && waveformPayloadRegistered(path) {
 				return nil
 			}
-			return removeFile(&result, cacheDir, path, d, assetID, opts.DryRun)
+			if IsRebuildableArtifactName(d.Name()) || IsWaveformPayloadName(d.Name()) {
+				assetID, reason := ClassifyRebuildableArtifact(cacheDir, path, opts.ProtectedAssetIDs, opts.MinAge, opts.Now)
+				if reason != ArtifactEligible {
+					accountSkip(&result, path, d, reason)
+					return nil
+				}
+				if !rebuildEligible(opts, assetID) {
+					accountSkip(&result, path, d, ArtifactUnrepaired)
+					return nil
+				}
+				return removeFile(&result, cacheDir, path, d, assetID, opts.DryRun)
+			}
 		}
 		return nil
 	})
 	return result, err
+}
+
+// rebuildEligible reports whether the run's durable-repair set admits assetID.
+// A nil set disables gating for direct callers and the discovery pass.
+func rebuildEligible(opts GCOptions, assetID string) bool {
+	if opts.EligibleAssetIDs == nil {
+		return true
+	}
+	_, ok := opts.EligibleAssetIDs[assetID]
+	return ok
+}
+
+// accountSkip records one preserved artifact in the report's skip counters.
+func accountSkip(result *GCResult, path string, d fs.DirEntry, reason ArtifactSkipReason) {
+	info, err := d.Info()
+	if err != nil {
+		return
+	}
+	switch reason {
+	case ArtifactActive:
+		result.SkippedActiveFiles++
+		result.SkippedActiveBytes += info.Size()
+	case ArtifactYoung:
+		result.SkippedYoungFiles++
+		result.SkippedYoungBytes += info.Size()
+	case ArtifactUnrepaired:
+		result.SkippedUnrepairedFiles++
+		result.SkippedUnrepairedBytes += info.Size()
+	}
+}
+
+// removeWaveformPair deletes the manifest and the payload the manifest names
+// as one logical artifact, manifest first. A payload already gone (a missing
+// pair, or an earlier partial run) is not an error; a payload that cannot be
+// removed leaves the run's error recorded while the manifest still went — the
+// next derive regenerates both halves from the surviving row. Dry runs count
+// both halves and delete nothing.
+func removeWaveformPair(result *GCResult, cacheDir, manifestPath string, d fs.DirEntry, assetID string, dryRun bool) error {
+	size := int64(0)
+	if info, err := d.Info(); err == nil {
+		size = info.Size()
+	}
+	payloadPath := strings.TrimSuffix(manifestPath, ".json") + ".bin"
+	if manifest, err := media.LoadWaveformManifest(manifestPath); err == nil {
+		payloadPath = media.WaveformPayloadPath(manifestPath, manifest)
+	}
+	payloadSize := int64(0)
+	if info, err := os.Stat(payloadPath); err == nil && info.Mode().IsRegular() {
+		payloadSize = info.Size()
+	} else {
+		payloadPath = ""
+	}
+	if !dryRun {
+		if err := os.Remove(manifestPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			result.Errors = append(result.Errors, fmt.Sprintf("remove %s: %v", manifestPath, err))
+			return nil
+		}
+		if payloadPath != "" {
+			if err := os.Remove(payloadPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				result.Errors = append(result.Errors, fmt.Sprintf("remove %s: %v", payloadPath, err))
+				return nil
+			}
+		}
+	}
+	recordRemoved(result, cacheDir, manifestPath, size, assetID)
+	if payloadPath != "" {
+		recordRemoved(result, cacheDir, payloadPath, payloadSize, assetID)
+	}
+	return nil
 }
 
 func shouldSkipDirectory(result *GCResult, cacheDir, path string, opts GCOptions) bool {
@@ -250,6 +358,10 @@ const (
 	ArtifactActive
 	ArtifactYoung
 	ArtifactInvalid
+	// ArtifactUnrepaired marks an artifact whose asset had no durable re-derive
+	// repair recorded when the run started. It is preserved: a deletion with
+	// only a promised rebuild behind it is a loss, not a cleanup.
+	ArtifactUnrepaired
 )
 
 // ClassifyRebuildableArtifact applies the safety gates before deletion and
@@ -322,6 +434,13 @@ type VerifyResult struct {
 // a cache walk. cache/sources/ is excluded from orphan accounting for the
 // same reason GC never touches it: the staging copy has no artifact row by
 // design.
+//
+// A waveform row is the manifest half of a pair, so the pair is checked and
+// reported as one artifact: a row whose manifest is present but whose
+// referenced payload is missing or wrong-sized is one missing artifact —
+// "reported as a missing pair" — and the payload a row's manifest names is
+// registered, never an orphan. Payload files no registered manifest names are
+// orphans like any other unregistered file.
 func Verify(ctx context.Context, repo ArtifactLister, cacheDir string) (VerifyResult, error) {
 	var result VerifyResult
 	rows, err := repo.ListDerivedArtifacts(ctx)
@@ -337,6 +456,25 @@ func Verify(ctx context.Context, repo ArtifactLister, cacheDir string) (VerifyRe
 		}
 		known[filepath.Clean(row.LocalPath)] = struct{}{}
 		if _, err := os.Stat(row.LocalPath); err != nil {
+			if os.IsNotExist(err) {
+				result.MissingFiles++
+				if len(result.MissingPaths) < reportLimit {
+					result.MissingPaths = append(result.MissingPaths, row.LocalPath)
+				}
+			}
+			continue
+		}
+		if row.Type != "waveform" {
+			continue
+		}
+		// The row's file is the manifest; the pair's second half is whatever
+		// that manifest names. Either half missing is one rebuildable gap.
+		payloadPath := strings.TrimSuffix(row.LocalPath, ".json") + ".bin"
+		if manifest, err := media.LoadWaveformManifest(row.LocalPath); err == nil {
+			payloadPath = media.WaveformPayloadPath(row.LocalPath, manifest)
+		}
+		known[filepath.Clean(payloadPath)] = struct{}{}
+		if _, err := os.Stat(payloadPath); err != nil {
 			if os.IsNotExist(err) {
 				result.MissingFiles++
 				if len(result.MissingPaths) < reportLimit {

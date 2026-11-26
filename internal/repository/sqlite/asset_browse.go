@@ -183,7 +183,7 @@ LEFT JOIN asset_locations al ON al.id=(SELECT l.id FROM asset_locations l JOIN l
 LEFT JOIN media_metadata m ON m.asset_id=a.id
 LEFT JOIN capture_metadata cm ON cm.asset_id=a.id
 LEFT JOIN asset_analysis an ON an.asset_id=a.id
-LEFT JOIN transcripts t ON t.id=(SELECT id FROM transcripts t2 WHERE t2.asset_id=a.id AND t2.status='succeeded' ORDER BY t2.created_at DESC LIMIT 1)`
+LEFT JOIN transcripts t ON t.id=(SELECT id FROM transcripts t2 WHERE t2.asset_id=a.id AND t2.status='succeeded' ORDER BY t2.created_at DESC,t2.id DESC LIMIT 1)`
 
 // scanAssetCardRow scans one row of assetCardColumns into a domain.AssetCard,
 // applying the same field post-processing (basename, has_speech bool, time
@@ -241,8 +241,8 @@ func (r *Repository) ListAssetCardsFiltered(ctx context.Context, filter domain.A
 // PagedAssetCardsFiltered is the paged form of ListAssetCardsFiltered: the
 // same filter and ordering, but one probe row past the requested page so the
 // caller can tell "this page is full" from "this is the last page" without a
-// second query. The API list handler is its only consumer; ListAssetCards and
-// ListAssetCardsInCollection keep using the un-paged form.
+// second query. The browse handler and ListAssetCardsInCollection both use
+// it; ListAssetCards keeps the un-paged form for callers that want it all.
 func (r *Repository) PagedAssetCardsFiltered(ctx context.Context, filter domain.AssetCardFilter) ([]domain.AssetCard, bool, error) {
 	if filter.Limit <= 0 {
 		filter.Limit = 100

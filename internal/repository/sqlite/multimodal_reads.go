@@ -329,6 +329,8 @@ func (r *Repository) VisualWindowMatches(ctx context.Context, spaceID string, qu
 			Label:          fmt.Sprintf("sample:%d", sampleIndex),
 			StartMS:        startMS,
 			EndMS:          endMS,
+			ShotStartMS:    startMS,
+			ShotEndMS:      endMS,
 			Score:          1 - distance,
 			EvidenceStatus: "possible",
 			ModelID:        modelID,
@@ -340,7 +342,11 @@ func (r *Repository) VisualWindowMatches(ctx context.Context, spaceID string, qu
 	return out, rows.Err()
 }
 
-// AudioWindowMatches runs the same exact search over audio windows.
+// AudioWindowMatches runs the same exact search over audio windows. An audio
+// window is timed evidence, not a shot: each result row is the (window,
+// overlapping canonical shot) pair under the half-open rule, so retrieval can
+// name the shot it supports while the window keeps its own interval. The
+// eligible universe applies to the joined shot id.
 func (r *Repository) AudioWindowMatches(ctx context.Context, spaceID string, query []float32, universe map[string]bool, limit int) ([]domain.ModalityMatch, error) {
 	space, err := r.embeddingSpace(ctx, spaceID)
 	if err != nil {
@@ -354,19 +360,20 @@ func (r *Repository) AudioWindowMatches(ctx context.Context, spaceID string, que
 		limit = 200
 	}
 	sqlText := `
-		SELECT e.id,e.asset_id,e.start_ms,e.end_ms,
+		SELECT e.id,e.asset_id,s.id,e.start_ms,e.end_ms,s.start_ms,s.end_ms,
 		       vec_distance_cosine(e.vector, ?) AS distance,
 		       g.id,COALESCE(g.model_id,''),COALESCE(g.model_revision,''),COALESCE(g.backend,'')
 		FROM audio_embeddings e
 		JOIN modality_heads h ON h.generation_id=e.generation_id
 		JOIN modality_generations g ON g.id=e.generation_id
+		JOIN asset_shots s ON s.asset_id=e.asset_id AND s.start_ms < e.end_ms AND s.end_ms > e.start_ms
 		WHERE e.space_id=?`
 	args := []any{blob, spaceID}
 	if universe != nil {
-		sqlText += ` AND e.asset_id IN (SELECT s.asset_id FROM asset_shots s WHERE s.id IN (SELECT value FROM json_each(?)))`
+		sqlText += ` AND s.id IN (SELECT value FROM json_each(?))`
 		args = append(args, universeJSON(universe))
 	}
-	sqlText += ` ORDER BY distance ASC, e.asset_id ASC, e.start_ms ASC, e.id ASC`
+	sqlText += ` ORDER BY distance ASC, e.asset_id ASC, e.start_ms ASC, e.id ASC, s.id ASC`
 	if limit > 0 {
 		sqlText += ` LIMIT ?`
 		args = append(args, limit)
@@ -379,18 +386,21 @@ func (r *Repository) AudioWindowMatches(ctx context.Context, spaceID string, que
 	out := []domain.ModalityMatch{}
 	for rows.Next() {
 		var id int64
-		var assetID, generationID, modelID, modelRevision, backend string
-		var startMS, endMS int64
+		var assetID, shotID, generationID, modelID, modelRevision, backend string
+		var startMS, endMS, shotStartMS, shotEndMS int64
 		var distance float64
-		if err := rows.Scan(&id, &assetID, &startMS, &endMS, &distance, &generationID, &modelID, &modelRevision, &backend); err != nil {
+		if err := rows.Scan(&id, &assetID, &shotID, &startMS, &endMS, &shotStartMS, &shotEndMS, &distance, &generationID, &modelID, &modelRevision, &backend); err != nil {
 			return nil, err
 		}
 		out = append(out, domain.ModalityMatch{
 			RecordID:       fmt.Sprintf("audio-%d", id),
 			AssetID:        assetID,
+			ShotID:         shotID,
 			Modality:       domain.ModalityAudio,
 			StartMS:        startMS,
 			EndMS:          endMS,
+			ShotStartMS:    shotStartMS,
+			ShotEndMS:      shotEndMS,
 			Score:          1 - distance,
 			EvidenceStatus: "possible",
 			ModelID:        modelID,
@@ -403,7 +413,7 @@ func (r *Repository) AudioWindowMatches(ctx context.Context, spaceID string, que
 }
 
 // SoundEventMatches returns active sound events whose canonical class id is in
-// labels, restricted to the eligible shots' assets.
+// labels, paired with each overlapping canonical shot like the audio windows.
 func (r *Repository) SoundEventMatches(ctx context.Context, labels []string, universe map[string]bool, limit int) ([]domain.ModalityMatch, error) {
 	if len(labels) == 0 {
 		return []domain.ModalityMatch{}, nil
@@ -417,17 +427,18 @@ func (r *Repository) SoundEventMatches(ctx context.Context, labels []string, uni
 		args = append(args, label)
 	}
 	sqlText := `
-		SELECT e.id,e.asset_id,e.start_ms,e.end_ms,e.event_label,e.raw_score,e.confidence,e.evidence_status,
+		SELECT e.id,e.asset_id,s.id,e.start_ms,e.end_ms,s.start_ms,s.end_ms,e.event_label,e.raw_score,e.confidence,e.evidence_status,
 		       g.id,COALESCE(g.model_id,''),COALESCE(g.model_revision,''),COALESCE(g.backend,'')
 		FROM audio_events e
 		JOIN modality_heads h ON h.generation_id=e.generation_id
 		JOIN modality_generations g ON g.id=e.generation_id
+		JOIN asset_shots s ON s.asset_id=e.asset_id AND s.start_ms < e.end_ms AND s.end_ms > e.start_ms
 		WHERE e.event_label IN (` + placeholders + `)`
 	if universe != nil {
-		sqlText += ` AND e.asset_id IN (SELECT s.asset_id FROM asset_shots s WHERE s.id IN (SELECT value FROM json_each(?)))`
+		sqlText += ` AND s.id IN (SELECT value FROM json_each(?))`
 		args = append(args, universeJSON(universe))
 	}
-	sqlText += ` ORDER BY e.raw_score DESC, e.asset_id ASC, e.start_ms ASC, e.id ASC`
+	sqlText += ` ORDER BY e.raw_score DESC, e.asset_id ASC, e.start_ms ASC, e.id ASC, s.id ASC`
 	if limit > 0 {
 		sqlText += ` LIMIT ?`
 		args = append(args, limit)
@@ -439,21 +450,24 @@ func (r *Repository) SoundEventMatches(ctx context.Context, labels []string, uni
 	defer rows.Close()
 	out := []domain.ModalityMatch{}
 	for rows.Next() {
-		var id, assetID, label, evidence, generationID, modelID, modelRevision, backend string
-		var startMS, endMS int64
+		var id, assetID, shotID, label, evidence, generationID, modelID, modelRevision, backend string
+		var startMS, endMS, shotStartMS, shotEndMS int64
 		var score float64
 		var confidence *float64
-		if err := rows.Scan(&id, &assetID, &startMS, &endMS, &label, &score, &confidence, &evidence,
+		if err := rows.Scan(&id, &assetID, &shotID, &startMS, &endMS, &shotStartMS, &shotEndMS, &label, &score, &confidence, &evidence,
 			&generationID, &modelID, &modelRevision, &backend); err != nil {
 			return nil, err
 		}
 		out = append(out, domain.ModalityMatch{
 			RecordID:       "event-" + id,
 			AssetID:        assetID,
+			ShotID:         shotID,
 			Modality:       domain.ModalitySoundEvent,
 			Label:          label,
 			StartMS:        startMS,
 			EndMS:          endMS,
+			ShotStartMS:    shotStartMS,
+			ShotEndMS:      shotEndMS,
 			Score:          score,
 			EvidenceStatus: evidence,
 			Confidence:     confidence,
@@ -466,17 +480,19 @@ func (r *Repository) SoundEventMatches(ctx context.Context, labels []string, uni
 	return out, rows.Err()
 }
 
-// SpeakerTurnMatches returns active turns for one local speaker identity.
+// SpeakerTurnMatches returns active turns for one local speaker identity,
+// paired with each overlapping canonical shot like the audio windows.
 func (r *Repository) SpeakerTurnMatches(ctx context.Context, assetID, generationID, localSpeakerID string, universe map[string]bool, limit int) ([]domain.ModalityMatch, error) {
 	if limit == 0 {
 		limit = 200
 	}
 	sqlText := `
-		SELECT t.id,t.asset_id,t.start_ms,t.end_ms,COALESCE(t.local_speaker_id,''),t.confidence,t.overlap,
+		SELECT t.id,t.asset_id,s.id,t.start_ms,t.end_ms,s.start_ms,s.end_ms,COALESCE(t.local_speaker_id,''),t.confidence,t.overlap,
 		       g.id,COALESCE(g.model_id,''),COALESCE(g.model_revision,''),COALESCE(g.backend,'')
 		FROM speaker_turns t
 		JOIN modality_heads h ON h.generation_id=t.generation_id
 		JOIN modality_generations g ON g.id=t.generation_id
+		JOIN asset_shots s ON s.asset_id=t.asset_id AND s.start_ms < t.end_ms AND s.end_ms > t.start_ms
 		WHERE t.generation_id=? AND t.local_speaker_id=?`
 	args := []any{generationID, localSpeakerID}
 	if assetID != "" {
@@ -484,10 +500,10 @@ func (r *Repository) SpeakerTurnMatches(ctx context.Context, assetID, generation
 		args = append(args, assetID)
 	}
 	if universe != nil {
-		sqlText += ` AND t.asset_id IN (SELECT s.asset_id FROM asset_shots s WHERE s.id IN (SELECT value FROM json_each(?)))`
+		sqlText += ` AND s.id IN (SELECT value FROM json_each(?))`
 		args = append(args, universeJSON(universe))
 	}
-	sqlText += ` ORDER BY t.asset_id ASC, t.start_ms ASC, t.id ASC`
+	sqlText += ` ORDER BY t.asset_id ASC, t.start_ms ASC, t.id ASC, s.id ASC`
 	if limit > 0 {
 		sqlText += ` LIMIT ?`
 		args = append(args, limit)
@@ -499,21 +515,24 @@ func (r *Repository) SpeakerTurnMatches(ctx context.Context, assetID, generation
 	defer rows.Close()
 	out := []domain.ModalityMatch{}
 	for rows.Next() {
-		var id, turnAsset, speaker, generationIDValue, modelID, modelRevision, backend string
-		var startMS, endMS int64
+		var id, turnAsset, shotID, speaker, generationIDValue, modelID, modelRevision, backend string
+		var startMS, endMS, shotStartMS, shotEndMS int64
 		var confidence *float64
 		var overlap int
-		if err := rows.Scan(&id, &turnAsset, &startMS, &endMS, &speaker, &confidence, &overlap,
+		if err := rows.Scan(&id, &turnAsset, &shotID, &startMS, &endMS, &shotStartMS, &shotEndMS, &speaker, &confidence, &overlap,
 			&generationIDValue, &modelID, &modelRevision, &backend); err != nil {
 			return nil, err
 		}
 		out = append(out, domain.ModalityMatch{
 			RecordID:       "turn-" + id,
 			AssetID:        turnAsset,
+			ShotID:         shotID,
 			Modality:       domain.ModalitySpeaker,
 			Label:          speaker,
 			StartMS:        startMS,
 			EndMS:          endMS,
+			ShotStartMS:    shotStartMS,
+			ShotEndMS:      shotEndMS,
 			Score:          1,
 			EvidenceStatus: "possible",
 			Confidence:     confidence,

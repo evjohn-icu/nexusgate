@@ -18,6 +18,7 @@ import (
 	"github.com/evjohn-icu/nexusgate/internal/credentials"
 	"github.com/evjohn-icu/nexusgate/internal/domain"
 	"github.com/evjohn-icu/nexusgate/internal/providerchannels"
+	"github.com/evjohn-icu/nexusgate/internal/providers/common"
 	"github.com/evjohn-icu/nexusgate/internal/remote"
 	"github.com/evjohn-icu/nexusgate/internal/secretredact"
 )
@@ -100,6 +101,68 @@ func validateProviderChannelCosts(channel domain.ProviderChannel) error {
 	return nil
 }
 
+// validateProviderChannelOriginChange enforces the credential-migration rule
+// for endpoint edits: a key collected under one origin must never start
+// being sent to another origin without the operator re-entering it. When the
+// canonical origin of the endpoint changes — lowercase scheme and host plus
+// the effective port, ignoring path, query and default-port spelling, the
+// exact comparison common.SameOrigin performs — every retained member that
+// still holds a stored secret reference must receive a replacement key in
+// the same write (memberKeys is positional, aligned with members), and the
+// edit is rejected before any secret is staged when one is missing.
+// Same-origin edits preserve the stored references untouched.
+//
+// Endpoint validity is decided with the same primitive: an endpoint that is
+// not same-origin with itself — not HTTP(S), or without a sane hostname and
+// effective port — cannot have its origin compared, so an edit that changes
+// the endpoint text to such a value (or away from one) fails the existing
+// invalid-request response rather than being guessed about. Endpoints whose
+// text did not change are trivially their own origin and are never re-parsed,
+// so an untouched non-HTTP(S) endpoint (the ASR family's wss://) does not
+// block an edit that leaves it alone. No error quotes the endpoint text:
+// a URL can carry embedded userinfo, and nothing about the rejection needs
+// it echoed back.
+//
+// UpdateProviderChannel calls this on the patch path with the merged member
+// list; SaveProviderChannel calls it on the direct-save path, with the
+// stored prior references restored onto the incoming members by id.
+func validateProviderChannelOriginChange(oldEndpoint, newEndpoint string, members []domain.ProviderChannelMember, memberKeys []string) error {
+	oldTrimmed := strings.TrimSpace(oldEndpoint)
+	newTrimmed := strings.TrimSpace(newEndpoint)
+	if oldTrimmed == newTrimmed {
+		return nil
+	}
+	for _, side := range []struct{ name, raw string }{{"previous", oldTrimmed}, {"new", newTrimmed}} {
+		parsed, err := url.Parse(side.raw)
+		switch {
+		case err != nil:
+			return fmt.Errorf("%w: the %s provider channel endpoint is not a valid URL", ErrProviderChannelValidation, side.name)
+		case !common.SameOrigin(parsed, parsed):
+			return fmt.Errorf("%w: the %s provider channel endpoint is not a valid HTTP(S) origin", ErrProviderChannelValidation, side.name)
+		}
+	}
+	parsedOld, _ := url.Parse(oldTrimmed)
+	parsedNew, _ := url.Parse(newTrimmed)
+	if common.SameOrigin(parsedOld, parsedNew) {
+		return nil
+	}
+	for i, member := range members {
+		if strings.TrimSpace(member.SecretRef) == "" {
+			// A member with nothing stored has no key to migrate; new
+			// members always carry their key in memberKeys anyway.
+			continue
+		}
+		key := ""
+		if i < len(memberKeys) {
+			key = strings.TrimSpace(memberKeys[i])
+		}
+		if key == "" {
+			return fmt.Errorf("%w: the endpoint moved to a different origin; enter a replacement key for member %q in the same save instead of reusing the key stored for the old origin", ErrProviderChannelValidation, strings.TrimSpace(member.Label))
+		}
+	}
+	return nil
+}
+
 type ProviderChannelTestResult struct {
 	ChannelID    string `json:"channel_id"`
 	ProviderName string `json:"provider_name"`
@@ -128,11 +191,33 @@ type ProviderChannelTestResult struct {
 
 // UpdateProviderChannel merges an admin patch with the persisted channel.
 // Existing SecretRefs are retained when a member update omits api_key.
+//
+// The whole read-merge-validate-save runs under the channel's named lock
+// (lockProviderChannel), so two concurrent patches cannot interleave their
+// load/merge/save and silently drop each other's members or retire each
+// other's live secret references. saveProviderChannelLocked does the actual
+// staging/versioned-ref/DB work plus orphaned-ref cleanup against
+// priorMembers — the member set exactly as it was read before the merge —
+// so this function must not call SaveProviderChannel (it would re-lock) or
+// deleteOrphanedMemberSecrets (the locked save already did, and a second
+// pass would race the refs the save just published).
 func (s *Service) UpdateProviderChannel(ctx context.Context, id string, patch ProviderChannelUpdate) (domain.ProviderChannel, error) {
+	unlock, err := s.lockProviderChannel(id)
+	if err != nil {
+		return domain.ProviderChannel{}, err
+	}
+	defer unlock()
 	channel, err := s.providerChannelByID(ctx, id)
 	if err != nil {
 		return domain.ProviderChannel{}, err
 	}
+	// priorMembers is the pre-merge member set, refs included. It is what
+	// saveProviderChannelLocked compares the saved list against when it
+	// retires replaced/removed references, so it must be snapshotted before
+	// any merge mutates channel.Members.
+	priorMembers := make([]domain.ProviderChannelMember, len(channel.Members))
+	copy(priorMembers, channel.Members)
+	priorEndpoint := channel.Endpoint
 	if patch.Label != nil {
 		channel.Label = strings.TrimSpace(*patch.Label)
 	}
@@ -233,26 +318,28 @@ func (s *Service) UpdateProviderChannel(ctx context.Context, id string, patch Pr
 			return domain.ProviderChannel{}, err
 		}
 		// Capture the pre-patch SecretRefs before the list is replaced: a
-		// member absent from the patch is dropped, and its ref must not
-		// linger as an orphaned encrypted file. Deleting a secret is not
-		// reversible, so the deletion happens only after the save succeeds
-		// (a failed save must leave every ref resolvable) and only for refs
-		// no surviving member still references.
-		oldSecretRefs := make(map[string]struct{}, len(channel.Members))
-		for _, member := range channel.Members {
-			if ref := strings.TrimSpace(member.SecretRef); ref != "" {
-				oldSecretRefs[ref] = struct{}{}
-			}
-		}
+		// member absent from the patch is dropped, and saveProviderChannel-
+		// Locked retires its ref only after the save succeeds (a failed save
+		// must leave every ref resolvable). The comparison runs against
+		// priorMembers rather than the patch input because refs exist only on
+		// saved members: ProviderChannelMemberUpdate carries an APIKey, never
+		// a SecretRef, so the patch cannot say which key a retained member
+		// still points at.
 		channel.Members = members
-		saved, err := s.SaveProviderChannel(ctx, channel, keys)
-		if err != nil {
+		// An endpoint whose canonical origin changed must not quietly inherit
+		// the keys collected under the old one: every retained member with a
+		// stored reference needs its replacement key in this same write, and
+		// the edit is rejected here — before saveProviderChannelLocked stages
+		// a single secret — when one is missing.
+		if err := validateProviderChannelOriginChange(priorEndpoint, channel.Endpoint, channel.Members, keys); err != nil {
 			return domain.ProviderChannel{}, err
 		}
-		s.deleteOrphanedMemberSecrets(saved.ID, oldSecretRefs, saved.Members)
-		return saved, nil
+		return s.saveProviderChannelLocked(ctx, channel, keys, priorMembers)
 	}
-	return s.SaveProviderChannel(ctx, channel, nil)
+	if err := validateProviderChannelOriginChange(priorEndpoint, channel.Endpoint, channel.Members, nil); err != nil {
+		return domain.ProviderChannel{}, err
+	}
+	return s.saveProviderChannelLocked(ctx, channel, nil, priorMembers)
 }
 
 // deleteOrphanedMemberSecrets removes secret-store entries whose SecretRef no
@@ -294,22 +381,37 @@ func (s *Service) SetProviderChannelEnabled(ctx context.Context, id string, enab
 
 // DeleteProviderChannel is a soft delete that persists the tombstone in
 // SQLite via the deleted_at column so the channel stays hidden across Hub
-// restarts. Hub secrets are removed synchronously. The UNIQUE(capability,label)
-// constraint on provider_channels prevents reuse of the same label until a
-// future hard-delete migration removes the row.
+// restarts. Hub secrets are removed synchronously, after the tombstone: the
+// tombstone write happens first and the key deletions use the shared
+// deleteOrphanedMemberSecrets helper against the just-tombstoned channel, so
+// a failed tombstone write leaves every key in place and a failed key
+// deletion leaves an encrypted file with no live row pointing at it — the
+// recoverable direction of the two. The whole sequence runs under the
+// channel's named lock so a concurrent patch cannot re-save members (and
+// their refs) between the tombstone and the key deletions. The
+// UNIQUE(capability,label) constraint on provider_channels prevents reuse of
+// the same label until a future hard-delete migration removes the row.
 func (s *Service) DeleteProviderChannel(ctx context.Context, id string) error {
+	unlock, err := s.lockProviderChannel(id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	channel, err := s.providerChannelByID(ctx, id)
 	if err != nil {
 		return err
 	}
+	if err := s.repo.SoftDeleteProviderChannel(ctx, channel.ID); err != nil {
+		return err
+	}
+	oldRefs := make(map[string]struct{}, len(channel.Members))
 	for _, member := range channel.Members {
-		if strings.TrimSpace(member.SecretRef) != "" {
-			if err := s.secrets.Delete(member.SecretRef); err != nil {
-				return err
-			}
+		if ref := strings.TrimSpace(member.SecretRef); ref != "" {
+			oldRefs[ref] = struct{}{}
 		}
 	}
-	return s.repo.SoftDeleteProviderChannel(ctx, channel.ID)
+	s.deleteOrphanedMemberSecrets(channel.ID, oldRefs, nil)
+	return nil
 }
 
 func (s *Service) providerChannelByID(ctx context.Context, id string) (domain.ProviderChannel, error) {
@@ -539,7 +641,7 @@ func (s *Service) ProbeProviderModelList(ctx context.Context, providerName, endp
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, providerChannelTestBudget)
 	defer cancel()
-	client := &http.Client{Timeout: providerChannelTestBudget}
+	client := common.WithSameOriginRedirects(&http.Client{Timeout: providerChannelTestBudget})
 	models, schemaOK, message, status := probeProviderModelList(probeCtx, client, endpoint, apiKey)
 	if len(models) > 0 {
 		result.Status = "ok"
@@ -589,7 +691,7 @@ func (s *Service) TestProviderChannel(ctx context.Context, id string) (ProviderC
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, providerChannelTestBudget)
 	defer cancel()
-	client := &http.Client{Timeout: providerChannelTestBudget}
+	client := common.WithSameOriginRedirects(&http.Client{Timeout: providerChannelTestBudget})
 	started := time.Now()
 	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, strings.TrimSpace(channel.Endpoint), nil)
 	if err != nil {
@@ -914,7 +1016,7 @@ func (s *Service) ProxyWorkerProviderJSON(ctx context.Context, worker remote.Wor
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	client := &http.Client{Timeout: timeout}
+	client := common.WithSameOriginRedirects(&http.Client{Timeout: timeout})
 	response, err := client.Do(request)
 	if err != nil {
 		return ProviderProxyResult{}, ErrProviderProxyRequest

@@ -38,14 +38,14 @@ func (s *Service) SimilarByText(ctx context.Context, query string, limit int) ([
 	if s.opts.Embedder == nil {
 		return nil, ErrNoEmbeddingSearch
 	}
-	vectors, err := s.opts.Embedder.Embed(ctx, []string{query})
+	vectors, spaceID, err := embedTextInSpace(ctx, s.opts.Embedder, []string{query})
 	if err != nil {
 		return nil, err
 	}
 	if len(vectors) == 0 {
 		return nil, ErrNoEmbeddingSearch
 	}
-	rows, err := s.store.ListShotTextEmbeddings(ctx, s.opts.Embedder.Model())
+	rows, err := s.store.ListShotTextEmbeddings(ctx, spaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +61,7 @@ func (s *Service) SimilarByText(ctx context.Context, query string, limit int) ([
 	}
 	scored := make([]Candidate, 0, len(rows))
 	for _, row := range rows {
-		// A stale-model row (dimension mismatch) is skipped entirely, not
+		// A stale-space row (dimension mismatch) is skipped entirely, not
 		// scored as a zero that could fill the top-N.
 		if len(queryVector) != len(row.Vector) {
 			continue
@@ -77,7 +77,7 @@ func (s *Service) SimilarByText(ctx context.Context, query string, limit int) ([
 	}
 	sortCandidates(scored)
 	if len(scored) == 0 {
-		// Every stored vector is a different model's artifact (dimension
+		// Every stored vector is a different space's artifact (dimension
 		// mismatch after a model switch without a rebuild): the library has no
 		// vectors under the current model, so the "embeddings unavailable"
 		// verdict applies and the caller falls back to heuristic similarity.

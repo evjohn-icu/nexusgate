@@ -6,11 +6,13 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/evjohn-icu/nexusgate/internal/app"
+	"github.com/evjohn-icu/nexusgate/internal/cachecoord"
 	"github.com/evjohn-icu/nexusgate/internal/domain"
 	"github.com/evjohn-icu/nexusgate/internal/inferencecatalog"
 	"github.com/evjohn-icu/nexusgate/internal/media"
@@ -176,6 +178,12 @@ func (s *Server) workerInferenceInput(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	cacheLock, err := cachecoord.AcquireShared(s.cacheLockRoot())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	defer cacheLock.Release()
 	descriptor, path, err := s.service.WorkerInferenceInput(r.Context(), worker.ID, r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, domain.ErrJobLeaseLost) {
@@ -185,12 +193,28 @@ func (s *Server) workerInferenceInput(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "no input is bound to this job"})
 		return
 	}
-	file, err := os.Open(path)
+	rootPath := filepath.Join(s.service.CacheDir(), "search-references")
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "input bytes are unavailable"})
+		return
+	}
+	defer root.Close()
+	name, err := filepath.Rel(rootPath, path)
+	if err != nil || !filepath.IsLocal(name) {
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "input bytes are unavailable"})
+		return
+	}
+	file, size, err := openRegularCacheFile(root, name)
 	if err != nil {
 		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "input bytes are unavailable"})
 		return
 	}
 	defer file.Close()
+	if size <= 0 || size > app.MaxSearchReferenceBytes || size != descriptor.SizeBytes {
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "not_found", Message: "input bytes are unavailable"})
+		return
+	}
 	w.Header().Set("Content-Type", descriptor.MediaType)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Digest", descriptor.Digest)
@@ -454,37 +478,61 @@ func (s *Server) assetWaveform(w http.ResponseWriter, r *http.Request) {
 		}
 		level = parsed
 	}
+	lockDir := s.cacheLockRoot()
+	cacheLock, err := cachecoord.AcquireShared(lockDir)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	defer cacheLock.Release()
 	artifact, err := s.service.GetArtifactForAsset(r.Context(), assetID, "waveform")
 	if err != nil || artifact == nil {
 		writeAPIError(w, http.StatusNotFound, APIError{Code: "waveform_unavailable", Message: "no waveform has been generated for this asset"})
 		return
 	}
-	// Defence in depth: the row is Hub-written, but a corrupted or hand-edited
-	// path must not let this route read outside the managed roots.
-	allowed := pathInsideRoot(artifact.LocalPath, s.service.DataDir()) || pathInsideRoot(artifact.LocalPath, s.service.CacheDir())
-	if !allowed {
+	pairLock, err := cachecoord.AcquireWaveform(lockDir, assetID, false)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	defer pairLock.Release()
+	root, err := os.OpenRoot(s.service.CacheDir())
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, APIError{Code: "waveform_unavailable", Message: "waveform cache is unreadable"})
+		return
+	}
+	defer root.Close()
+	manifestName, err := filepath.Rel(s.service.CacheDir(), artifact.LocalPath)
+	if err != nil || !filepath.IsLocal(manifestName) {
 		writeAPIError(w, http.StatusNotFound, APIError{Code: "waveform_unavailable", Message: "waveform artifact is outside the managed cache"})
 		return
 	}
-	manifestRaw, err := os.ReadFile(artifact.LocalPath)
+	manifestFile, _, err := openRegularCacheFile(root, manifestName)
 	if err != nil {
 		writeAPIError(w, http.StatusNotFound, APIError{Code: "waveform_unavailable", Message: "waveform manifest is unreadable"})
 		return
 	}
-	var manifest media.WaveformManifest
-	if err := json.Unmarshal(manifestRaw, &manifest); err != nil {
+	defer manifestFile.Close()
+	manifest, err := media.ReadWaveformManifest(manifestFile)
+	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, APIError{Code: "waveform_corrupt", Message: "waveform manifest is corrupt"})
 		return
 	}
-	payload, err := os.ReadFile(strings.TrimSuffix(artifact.LocalPath, ".json") + ".bin")
+	payloadName := media.WaveformPayloadPath(manifestName, manifest)
+	payload, size, err := openRegularCacheFile(root, payloadName)
 	if err != nil {
 		writeAPIError(w, http.StatusNotFound, APIError{Code: "waveform_unavailable", Message: "waveform payload is unreadable"})
+		return
+	}
+	defer payload.Close()
+	if size != manifest.PayloadSize {
+		writeAPIError(w, http.StatusInternalServerError, APIError{Code: "waveform_corrupt", Message: "waveform payload size does not match the manifest"})
 		return
 	}
 	if endMS == 0 {
 		endMS = manifest.DurationMS
 	}
-	buckets, err := media.ReadWaveformBuckets(manifest, payload, level, startMS, endMS, 4096)
+	buckets, err := media.ReadWaveformBucketsAt(manifest, payload, size, level, startMS, endMS, 4096)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, APIError{Code: "invalid_request", Message: clipText(err.Error(), 200)})
 		return
@@ -495,6 +543,30 @@ func (s *Server) assetWaveform(w http.ResponseWriter, r *http.Request) {
 		"duration_ms": manifest.DurationMS,
 		"buckets":     buckets,
 	})
+}
+
+func (s *Server) cacheLockRoot() string {
+	if dir := s.service.DataDir(); dir != "" {
+		return dir
+	}
+	return filepath.Dir(s.service.CacheDir())
+}
+
+func openRegularCacheFile(root *os.Root, name string) (*os.File, int64, error) {
+	expected, err := root.Lstat(name)
+	if err != nil || !expected.Mode().IsRegular() {
+		return nil, 0, errors.New("cache file is unavailable")
+	}
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, 0, err
+	}
+	actual, err := file.Stat()
+	if err != nil || !os.SameFile(actual, expected) || !actual.Mode().IsRegular() {
+		file.Close()
+		return nil, 0, errors.New("cache file changed while opening")
+	}
+	return file, actual.Size(), nil
 }
 
 func (s *Server) inferenceCatalog(w http.ResponseWriter, r *http.Request) {

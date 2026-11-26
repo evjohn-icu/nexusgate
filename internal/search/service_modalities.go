@@ -4,23 +4,36 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
 
 // modalityBundle is everything one modality channel produced: the candidates
 // fusion consumes, the windows the evidence layer reports, and the coverage
-// statement the response must not overstate.
+// statement the response must not overstate. The speaker bundle additionally
+// carries the complete eligible-shot allowlist its filter demands.
 type modalityBundle struct {
 	signal     string
 	candidates []Candidate
 	windows    []ModalityWindow
 	coverage   Coverage
+	// truncated reports honest storage truncation of the window pool: the
+	// store returned its limit+1th row. A single shot with many matching
+	// windows still counts, so coverage can never call a cut pool complete.
+	truncated bool
+	// allowlist is the complete set of eligible shots the speaker channel
+	// matched (nontruncated matching), keyed by shot id. Every fused result
+	// must be restricted to it, even when the speaker_filter was the only
+	// selector in the request.
+	allowlist map[string]bool
 }
 
 // retrieveModalities runs every requested new channel. It never invents a
 // channel: a requested modality without a store or an encoder is an error the
-// caller can report, not a silently narrower result set.
+// caller can report, not a silently narrower result set. A speaker_filter by
+// itself implicitly requests the speaker channel, because its allowlist is
+// what restricts the other channels.
 func (s *Service) retrieveModalities(ctx context.Context, req SearchRequest, q SearchQuery, limit int, universe map[string]bool, universeReady bool) ([]modalityBundle, error) {
 	if !hasMultimodalRequest(req) {
 		return nil, nil
@@ -29,7 +42,11 @@ func (s *Service) retrieveModalities(ctx context.Context, req SearchRequest, q S
 		return nil, fmt.Errorf("%w: no multimodal store is configured", ErrModalitiesUnavailable)
 	}
 	wanted := requestedModalities(req)
-	if len(wanted) == 0 && req.Temporal == nil && req.SpeakerFilter == nil {
+	if req.SpeakerFilter != nil && !slices.Contains(wanted, ModalitySpeaker) {
+		wanted = append(wanted, ModalitySpeaker)
+		sort.Strings(wanted)
+	}
+	if len(wanted) == 0 && req.Temporal == nil {
 		return nil, nil
 	}
 	bundles := make([]modalityBundle, 0, len(wanted))
@@ -94,86 +111,86 @@ func (s *Service) retrieveModality(ctx context.Context, modality string, req Sea
 			return modalityBundle{}, fmt.Errorf("%w: speaker retrieval needs a speaker_filter", ErrModalitiesUnavailable)
 		}
 		retriever.SpeakerFilter = *req.SpeakerFilter
+		// The speaker channel is the filter channel: it must produce the
+		// complete eligible-shot set, so a speaker_filter restricts every
+		// fused result instead of only the speaker channel's own top-K.
+		// Nothing is truncated, so the coverage statement stays complete.
+		limit = -1
 	}
-	candidates, windows, err := retriever.RetrieveWithWindows(ctx, q, limit)
+	candidates, windows, truncated, err := retriever.RetrieveWithWindows(ctx, q, limit)
 	if err != nil {
 		return modalityBundle{}, err
 	}
 	state := "complete"
-	if len(candidates) >= limit {
-		// The channel filled its pool, which means more eligible rows may
-		// exist. Saying "partial" here is honest; saying "complete" would
-		// turn a truncated list into a claim about the whole library.
+	if truncated {
+		// The channel's storage pool was cut, which means more eligible rows
+		// may exist. Saying "partial" here is honest; saying "complete" would
+		// turn a truncated list into a claim about the whole library. This
+		// counts even when one shot occupied every row.
 		state = "partial"
 	}
 	intervals := make([]Interval, 0, len(windows))
 	for _, window := range windows {
 		intervals = append(intervals, Interval{StartMS: window.StartMS, EndMS: window.EndMS})
 	}
-	return modalityBundle{
+	bundle := modalityBundle{
 		signal:     modality,
 		candidates: candidates,
 		windows:    windows,
 		coverage:   Coverage{Modality: modality, State: state, Intervals: normalizeCoverageIntervals(intervals)},
-	}, nil
+		truncated:  truncated,
+	}
+	if modality == ModalitySpeaker {
+		bundle.allowlist = make(map[string]bool, len(candidates))
+		for _, candidate := range candidates {
+			bundle.allowlist[candidate.ShotID] = true
+		}
+	}
+	return bundle, nil
+}
+
+// speakerAllowlist returns the complete eligible-shot set the speaker channel
+// matched, or nil when no speaker bundle ran. The caller intersects every
+// fused result with it so a speaker_filter — even a filter-only request —
+// restricts all channels, not just the speaker channel itself.
+func speakerAllowlist(bundles []modalityBundle) map[string]bool {
+	for _, bundle := range bundles {
+		if bundle.signal == ModalitySpeaker {
+			return bundle.allowlist
+		}
+	}
+	return nil
 }
 
 // temporalEvidence evaluates an explicit temporal query at asset level: every
-// predicate must have at least one satisfying pair inside the asset. It returns
-// the allowed assets and the supporting windows, or a typed error when a
-// condition cannot be retrieved.
-func (s *Service) temporalEvidence(ctx context.Context, req SearchRequest, q SearchQuery, limit int, universe map[string]bool, universeReady bool) (map[string]bool, []Match, error) {
+// predicate must have at least one satisfying pair inside the asset. It
+// returns the allowed assets, the supporting eligible shots of those assets
+// (so a compound query whose raw text matches no single shot can still return
+// the temporal evidence in the candidate pool) and the supporting matches, or
+// a typed error when a condition cannot be retrieved.
+func (s *Service) temporalEvidence(ctx context.Context, req SearchRequest, q SearchQuery, limit int, universe map[string]bool, universeReady bool) (map[string]bool, []Candidate, []Match, error) {
 	if req.Temporal == nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	query := *req.Temporal
 	if len(query.Conditions) == 0 {
-		return nil, nil, fmt.Errorf("%w: temporal query has no conditions", ErrInvalidMultimodal)
-	}
-	if s.opts.ModalityStore == nil {
-		return nil, nil, fmt.Errorf("%w: temporal retrieval needs a multimodal store", ErrModalitiesUnavailable)
+		return nil, nil, nil, fmt.Errorf("%w: temporal query has no conditions", ErrInvalidMultimodal)
 	}
 	windowsByCondition := make(map[string][]ModalityWindow, len(query.Conditions))
+	candidatesByCondition := make(map[string][]Candidate, len(query.Conditions))
 	for _, condition := range query.Conditions {
-		retriever := &ModalityRetriever{Store: s.opts.ModalityStore, Modality: condition.Modality, Universe: universe, UniverseReady: universeReady}
-		switch condition.Modality {
-		case ModalityVisual, ModalityAudio:
-			if s.opts.ModalityEncoder == nil {
-				return nil, nil, fmt.Errorf("%w: temporal condition %q needs a query encoder", ErrModalitiesUnavailable, condition.ID)
-			}
-			spaceID, vector, err := s.opts.ModalityEncoder.Encode(ctx, condition.Modality, condition.Query, req.ReferenceID)
-			if err != nil {
-				return nil, nil, fmt.Errorf("%w: temporal condition %q: %v", ErrModalitiesUnavailable, condition.ID, err)
-			}
-			retriever.SpaceID = spaceID
-			retriever.Vector = vector
-		case ModalitySoundEvent:
-			retriever.SoundLabels = soundEventLabels(condition.Query, nil)
-			if len(retriever.SoundLabels) == 0 {
-				return nil, nil, fmt.Errorf("%w: temporal condition %q names no recognised sound", ErrModalitiesUnavailable, condition.ID)
-			}
-		case ModalitySpeaker:
-			if req.SpeakerFilter == nil {
-				return nil, nil, fmt.Errorf("%w: temporal condition %q needs a speaker filter", ErrModalitiesUnavailable, condition.ID)
-			}
-			retriever.SpeakerFilter = *req.SpeakerFilter
-		default:
-			return nil, nil, fmt.Errorf("%w: temporal condition %q uses unsupported modality %q", ErrInvalidMultimodal, condition.ID, condition.Modality)
-		}
-		// Predicates must see the complete condition set: a supporting pair
-		// beyond the response top-K is still a valid temporal fact. The final
-		// matches are truncated to limit after the asset-level join.
-		_, windows, err := retriever.RetrieveWithWindows(ctx, q, -1)
+		windows, candidates, err := s.temporalConditionWindows(ctx, req, q, condition, universe, universeReady)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		windowsByCondition[condition.ID] = windows
+		candidatesByCondition[condition.ID] = candidates
 	}
 
 	// Every condition is conjunctive: an asset must contain a match for all of
 	// them, even when no predicate references a condition. Start from the
 	// intersection of the per-condition asset sets, then require every
-	// predicate to hold in the same asset.
+	// predicate to hold in the same asset. Windows never match across assets.
 	var allowed map[string]bool
 	for _, condition := range query.Conditions {
 		conditionAssets := make(map[string]bool)
@@ -197,11 +214,14 @@ func (s *Service) temporalEvidence(ctx context.Context, req SearchRequest, q Sea
 				if left.AssetID != right.AssetID {
 					continue
 				}
+				// The original full record interval is what temporal checks
+				// evaluate; repeated (record, shot) join copies of one window
+				// dedupe again by record id when the matches are built.
 				leftInterval := Interval{StartMS: left.StartMS, EndMS: left.EndMS}
 				rightInterval := Interval{StartMS: right.StartMS, EndMS: right.EndMS}
 				ok, err := EvaluatePredicate(predicate.Relation, leftInterval, rightInterval, predicate.MaxGapMS)
 				if err != nil {
-					return nil, nil, fmt.Errorf("%w: %v", ErrInvalidMultimodal, err)
+					return nil, nil, nil, fmt.Errorf("%w: %v", ErrInvalidMultimodal, err)
 				}
 				if ok {
 					satisfied[left.AssetID] = true
@@ -220,20 +240,164 @@ func (s *Service) temporalEvidence(ctx context.Context, req SearchRequest, q Sea
 	}
 
 	var matches []Match
+	seenShots := make(map[string]bool)
+	var supporting []Candidate
 	for _, condition := range query.Conditions {
-		perCondition := 0
+		var allowedWindows []ModalityWindow
 		for _, window := range windowsByCondition[condition.ID] {
 			if allowed != nil && !allowed[window.AssetID] {
 				continue
 			}
-			if limit > 0 && perCondition >= limit {
-				break
+			allowedWindows = append(allowedWindows, window)
+		}
+		conditionMatches := BuildMatches(condition.ID, allowedWindows)
+		if limit > 0 && len(conditionMatches) > limit {
+			conditionMatches = conditionMatches[:limit]
+		}
+		matches = append(matches, conditionMatches...)
+		for _, candidate := range candidatesByCondition[condition.ID] {
+			if allowed != nil && !allowed[candidate.AssetID] {
+				continue
 			}
-			matches = append(matches, BuildMatches(condition.ID, []ModalityWindow{window})...)
-			perCondition++
+			if seenShots[candidate.ShotID] {
+				continue
+			}
+			seenShots[candidate.ShotID] = true
+			supporting = append(supporting, candidate)
 		}
 	}
-	return allowed, dedupeMatches(matches), nil
+	sortCandidates(supporting)
+	return allowed, supporting, dedupeMatches(matches), nil
+}
+
+// temporalConditionWindows retrieves one condition's complete matching window
+// set with the condition's own query — never the request's raw text — and the
+// candidates that carry them. Predicates must see the complete condition set:
+// a supporting pair beyond the response top-K is still a valid temporal fact.
+func (s *Service) temporalConditionWindows(ctx context.Context, req SearchRequest, q SearchQuery, condition TemporalCondition, universe map[string]bool, universeReady bool) ([]ModalityWindow, []Candidate, error) {
+	conditionQuery := SearchQuery{Raw: condition.Query}
+	switch condition.Modality {
+	case ModalityLexical:
+		// Lexical windows are the matched shots' canonical intervals. A
+		// lexical hit is shot-level text evidence, not a timed observation,
+		// so it reports "possible".
+		candidates, err := NewLexicalRetriever(s.store, Profiles()[q.Intent].FieldWeights).Retrieve(ctx, conditionQuery, -1)
+		if err != nil {
+			return nil, nil, err
+		}
+		candidates = filterUniverseCandidates(candidates, universe, universeReady)
+		windows := make([]ModalityWindow, 0, len(candidates))
+		for _, candidate := range candidates {
+			windows = append(windows, ModalityWindow{
+				AssetID:        candidate.AssetID,
+				ShotID:         candidate.ShotID,
+				RecordID:       "lexical-" + candidate.ShotID,
+				Modality:       ModalityLexical,
+				StartMS:        candidate.StartMS,
+				EndMS:          candidate.EndMS,
+				ShotStartMS:    candidate.StartMS,
+				ShotEndMS:      candidate.EndMS,
+				Score:          candidate.Signals[SignalLexical],
+				EvidenceStatus: string(EvidenceStatusPossible),
+			})
+		}
+		return windows, candidates, nil
+	case ModalityTranscript:
+		candidates, err := NewTranscriptRetriever(s.store).Retrieve(ctx, conditionQuery, -1)
+		if err != nil {
+			return nil, nil, err
+		}
+		candidates = filterUniverseCandidates(candidates, universe, universeReady)
+		requests := make([]TranscriptSpanRequest, 0, len(candidates))
+		for _, candidate := range candidates {
+			requests = append(requests, TranscriptSpanRequest{
+				ShotID:  candidate.ShotID,
+				AssetID: candidate.AssetID,
+				StartMS: candidate.StartMS,
+				EndMS:   candidate.EndMS,
+			})
+		}
+		spansByID, err := s.store.ShotTranscriptSpansBatch(ctx, requests)
+		if err != nil {
+			return nil, nil, err
+		}
+		var windows []ModalityWindow
+		for _, candidate := range candidates {
+			score := candidate.Signals[SignalTranscript]
+			for _, interval := range speechMatchIntervals(condition.Query, spansByID[candidate.ShotID]) {
+				windows = append(windows, ModalityWindow{
+					AssetID:  candidate.AssetID,
+					ShotID:   candidate.ShotID,
+					RecordID: fmt.Sprintf("transcript-%s-%d-%d", candidate.ShotID, interval.StartMS, interval.EndMS),
+					Modality: ModalityTranscript,
+					// Only the matching located spans are evidence; the rest
+					// of the shot's transcript is not part of this claim.
+					StartMS:        interval.StartMS,
+					EndMS:          interval.EndMS,
+					ShotStartMS:    candidate.StartMS,
+					ShotEndMS:      candidate.EndMS,
+					Score:          score,
+					EvidenceStatus: string(EvidenceStatusConfirmed),
+				})
+			}
+		}
+		return windows, candidates, nil
+	case ModalityVisual, ModalityAudio:
+		if s.opts.ModalityStore == nil {
+			return nil, nil, fmt.Errorf("%w: temporal retrieval needs a multimodal store", ErrModalitiesUnavailable)
+		}
+		if s.opts.ModalityEncoder == nil {
+			return nil, nil, fmt.Errorf("%w: temporal condition %q needs a query encoder", ErrModalitiesUnavailable, condition.ID)
+		}
+		spaceID, vector, err := s.opts.ModalityEncoder.Encode(ctx, condition.Modality, condition.Query, req.ReferenceID)
+		if err != nil {
+			// A pending encode of the condition's query text must surface as
+			// "wait", not as "unavailable".
+			var pending *PendingModalitiesError
+			if errors.As(err, &pending) {
+				return nil, nil, fmt.Errorf("%s: %w", condition.Modality, err)
+			}
+			return nil, nil, fmt.Errorf("%w: temporal condition %q: %v", ErrModalitiesUnavailable, condition.ID, err)
+		}
+		retriever := &ModalityRetriever{Store: s.opts.ModalityStore, Modality: condition.Modality, SpaceID: spaceID, Vector: vector, Universe: universe, UniverseReady: universeReady}
+		candidates, windows, _, err := retriever.RetrieveWithWindows(ctx, conditionQuery, -1)
+		return windows, candidates, err
+	case ModalitySoundEvent:
+		if s.opts.ModalityStore == nil {
+			return nil, nil, fmt.Errorf("%w: temporal retrieval needs a multimodal store", ErrModalitiesUnavailable)
+		}
+		retriever := &ModalityRetriever{Store: s.opts.ModalityStore, Modality: condition.Modality, Universe: universe, UniverseReady: universeReady}
+		candidates, windows, _, err := retriever.RetrieveWithWindows(ctx, conditionQuery, -1)
+		return windows, candidates, err
+	case ModalitySpeaker:
+		if s.opts.ModalityStore == nil {
+			return nil, nil, fmt.Errorf("%w: temporal retrieval needs a multimodal store", ErrModalitiesUnavailable)
+		}
+		if req.SpeakerFilter == nil {
+			return nil, nil, fmt.Errorf("%w: temporal condition %q needs a speaker filter", ErrModalitiesUnavailable, condition.ID)
+		}
+		retriever := &ModalityRetriever{Store: s.opts.ModalityStore, Modality: condition.Modality, SpeakerFilter: *req.SpeakerFilter, Universe: universe, UniverseReady: universeReady}
+		candidates, windows, _, err := retriever.RetrieveWithWindows(ctx, conditionQuery, -1)
+		return windows, candidates, err
+	default:
+		return nil, nil, fmt.Errorf("%w: temporal condition %q uses unsupported modality %q", ErrInvalidMultimodal, condition.ID, condition.Modality)
+	}
+}
+
+// filterUniverseCandidates applies the precomputed facet/asset universe to a
+// candidate list the store could not filter itself (the lexical and transcript
+// rankers take no universe). A ready empty universe means nothing is eligible.
+func filterUniverseCandidates(candidates []Candidate, universe map[string]bool, universeReady bool) []Candidate {
+	if !universeReady || universe == nil {
+		return candidates
+	}
+	kept := candidates[:0]
+	for _, candidate := range candidates {
+		if universe[candidate.ShotID] {
+			kept = append(kept, candidate)
+		}
+	}
+	return kept
 }
 
 // dedupeMatches keeps the highest-score record per (condition, asset, interval)

@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -215,5 +217,188 @@ func TestRedactErrorPreservesClassification(t *testing.T) {
 				t.Fatal("redacted error exposes its cause")
 			}
 		})
+	}
+}
+
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	return u
+}
+
+func TestSameOriginClassification(t *testing.T) {
+	tests := []struct {
+		name   string
+		first  string
+		second string
+		want   bool
+	}{
+		{"identical origin ignores path and query", "https://provider.example/v1/x", "https://provider.example/other?x=1", true},
+		{"case-insensitive scheme and host", "HTTPS://PROVIDER.Example", "https://provider.example", true},
+		{"default port matches explicit", "https://provider.example", "https://provider.example:443", true},
+		{"http default port matches explicit", "http://provider.example", "http://provider.example:80", true},
+		{"zero-padded port normalizes", "http://provider.example:0080", "http://provider.example:80", true},
+		{"different ports differ", "https://provider.example:8443", "https://provider.example", false},
+		{"scheme differs", "https://provider.example", "http://provider.example", false},
+		{"host differs", "https://provider.example", "https://other.example", false},
+		{"userinfo ignored", "https://user:pass@provider.example", "https://provider.example", true},
+		{"ftp is never same origin", "ftp://provider.example", "ftp://provider.example", false},
+		{"data urls are never same origin", "data:text/plain,x", "data:text/plain,x", false},
+		{"missing host is never same origin", "https:///path", "https:///path", false},
+		{"out-of-range port is never valid", "https://provider.example:70000", "https://provider.example:70000", false},
+		{"zero port is never valid", "http://provider.example:0", "http://provider.example:0", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SameOrigin(mustParseURL(t, tc.first), mustParseURL(t, tc.second)); got != tc.want {
+				t.Fatalf("SameOrigin(%q, %q) = %t, want %t", tc.first, tc.second, got, tc.want)
+			}
+		})
+	}
+	if SameOrigin(nil, mustParseURL(t, "https://provider.example")) {
+		t.Fatal("nil URL must never be same origin")
+	}
+	if SameOrigin(mustParseURL(t, "https://provider.example"), nil) {
+		t.Fatal("nil URL must never be same origin")
+	}
+}
+
+// A credentialed client must never deliver its authentication to a redirect
+// target on another origin: the policy returns the redirect response to the
+// caller instead of replaying the request with its headers.
+func TestWithSameOriginRedirectsRefusesCrossOriginHop(t *testing.T) {
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("cross-origin target received Authorization header")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer other.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/start":
+			w.Header().Set("Location", other.URL+"/target")
+			w.WriteHeader(http.StatusFound)
+		case "/local":
+			w.Header().Set("Location", "/local/target")
+			w.WriteHeader(http.StatusFound)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer origin.Close()
+
+	client := WithSameOriginRedirects(&http.Client{Timeout: 5 * time.Second})
+	req, err := http.NewRequest(http.MethodGet, origin.URL+"/start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer sk-test-credential-42")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("cross-origin redirect status = %d, want the unfollowed 302", resp.StatusCode)
+	}
+
+	// Same origin keeps following.
+	req, err = http.NewRequest(http.MethodGet, origin.URL+"/local", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer sk-test-credential-42")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("Do same-origin: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("same-origin redirect status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestWithSameOriginRedirectsDelegatesExistingPolicyAndKeepsDefaults(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "/loop")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer origin.Close()
+
+	// A client without its own policy keeps the standard 10-hop limit.
+	plain := WithSameOriginRedirects(&http.Client{})
+	resp, err := plain.Get(origin.URL + "/loop")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("self-redirect loop must stop")
+	}
+	if !strings.Contains(err.Error(), "stopped after 10 redirects") {
+		t.Fatalf("error = %v, want the net/http default limit", err)
+	}
+
+	// An existing policy is delegated after the origin check.
+	base := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return errors.New("caller policy consulted")
+	}}
+	wrapped := WithSameOriginRedirects(base)
+	resp, err = wrapped.Get(origin.URL + "/loop")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("redirect must reach the caller policy")
+	}
+	if !strings.Contains(err.Error(), "caller policy consulted") {
+		t.Fatalf("error = %v, want delegation to the caller policy", err)
+	}
+	if base.CheckRedirect == nil {
+		t.Fatal("the wrapped policy must not mutate the original client")
+	}
+}
+
+func TestWithSameOriginRedirectsPreservesClientSettings(t *testing.T) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	base := &http.Client{Transport: transport, Timeout: 7 * time.Second}
+	wrapped := WithSameOriginRedirects(base)
+	if wrapped.Timeout != 7*time.Second {
+		t.Fatalf("timeout = %v, want preserved", wrapped.Timeout)
+	}
+	if wrapped.Transport != transport {
+		t.Fatal("transport must be preserved")
+	}
+	if wrapped == base {
+		t.Fatal("the original client must not be mutated")
+	}
+}
+
+func TestEndpointClientAppliesSameOriginPolicy(t *testing.T) {
+	if (Endpoint{}).Client().CheckRedirect == nil {
+		t.Fatal("default endpoint client must carry the same-origin policy")
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	supplied := &http.Client{Transport: transport}
+	wrapped := (Endpoint{HTTPClient: supplied}).Client()
+	if wrapped.CheckRedirect == nil {
+		t.Fatal("caller-supplied client must also carry the same-origin policy")
+	}
+	if wrapped.Transport != transport {
+		t.Fatal("caller-supplied transport must be preserved")
+	}
+	if supplied.CheckRedirect != nil {
+		t.Fatal("the original supplied client must not be mutated")
+	}
+}
+
+func TestEndpointRedactionCoversExtraHeaders(t *testing.T) {
+	const headerSecret = "header-secret-value"
+	endpoint := Endpoint{APIKey: "api-key-value", ExtraHeaders: map[string]string{"X-Custom": headerSecret}, BaseURL: "https://provider.invalid"}
+	if got := endpoint.RedactString("echo " + headerSecret); strings.Contains(got, headerSecret) {
+		t.Fatalf("RedactString leaked an extra header: %q", got)
+	}
+	err := endpoint.Errorf("decode failed: %s", headerSecret)
+	if strings.Contains(err.Error(), headerSecret) {
+		t.Fatalf("Errorf leaked an extra header: %v", err)
 	}
 }

@@ -213,7 +213,7 @@ func TestWireRequestResolvesAssetAndOmitsCallerPaths(t *testing.T) {
 	request.Input.RootID = "root-1"
 	request.Input.RelativePath = "nested/clip.mp4"
 	request.Input.Interval = &domain.TimeInterval{StartMS: 100, EndMS: 900}
-	encoded, err := executor.wireRequest(request)
+	encoded, err := executor.wireRequest(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,9 +259,15 @@ func TestWireRequestResolvesImageReference(t *testing.T) {
 	if err := os.WriteFile(imagePath, []byte("image"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	executor.cfg.ResolveImagePath = func(referenceID, digest string) (string, error) {
+	executor.cfg.ResolveImagePath = func(ctx context.Context, referenceID, digest string) (string, error) {
 		if referenceID != "ref-1" || digest != "sha256:abc" {
 			t.Fatalf("unexpected image resolver identity %q %q", referenceID, digest)
+		}
+		// The resolver must receive the executing job's context, not a fresh
+		// background one, so a lease-bound resolver can only see what its own
+		// job staged.
+		if got := ctx.Value(jobContextKey{}); got != "job-1" {
+			t.Fatalf("image resolver context lost the job identity: %v", got)
 		}
 		return imagePath, nil
 	}
@@ -271,7 +277,7 @@ func TestWireRequestResolvesImageReference(t *testing.T) {
 	request.SoundEvent = nil
 	request.Visual = &domain.VisualSettings{}
 	request.Input = domain.InferenceInput{Kind: domain.InputKindImage, ReferenceID: "ref-1", Digest: "sha256:abc"}
-	encoded, err := executor.wireRequest(request)
+	encoded, err := executor.wireRequest(context.WithValue(context.Background(), jobContextKey{}, "job-1"), request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +490,7 @@ func TestWireRequestSendsSpeakerSegmentsNotProfileIdentity(t *testing.T) {
 		ProfileID: "profile-secret",
 		Interval:  &domain.TimeInterval{StartMS: 1000, EndMS: 4500},
 	}
-	encoded, err := executor.wireRequest(request)
+	encoded, err := executor.wireRequest(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}

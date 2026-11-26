@@ -14,9 +14,23 @@ import (
 
 	"github.com/evjohn-icu/nexusgate/internal/domain"
 	"github.com/evjohn-icu/nexusgate/internal/idgen"
+	"github.com/evjohn-icu/nexusgate/internal/remote"
 )
 
 func (r *Repository) EnqueueInferenceTask(ctx context.Context, jobID *string, task domain.InferenceTask, priority int) (string, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	id, err := enqueueInferenceTaskTx(ctx, tx, jobID, task, priority, time.Now().UTC())
+	if err != nil {
+		return "", err
+	}
+	return id, tx.Commit()
+}
+
+func enqueueInferenceTaskTx(ctx context.Context, tx *sql.Tx, jobID *string, task domain.InferenceTask, priority int, now time.Time) (string, error) {
 	if strings.TrimSpace(task.TaskKey) == "" {
 		return "", errors.New("inference task key is required")
 	}
@@ -40,7 +54,6 @@ func (r *Repository) EnqueueInferenceTask(ctx context.Context, jobID *string, ta
 		return "", errors.New("assetless inference request cannot have an asset id")
 	}
 
-	now := time.Now().UTC()
 	id := idgen.New()
 	if jobID != nil {
 		if strings.TrimSpace(*jobID) == "" {
@@ -48,12 +61,6 @@ func (r *Repository) EnqueueInferenceTask(ctx context.Context, jobID *string, ta
 		}
 		id = *jobID
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
-
 	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO jobs(id,asset_id,job_type,state,priority,attempt_count,max_attempts,run_after,input_hash,created_at,updated_at) VALUES(?,?,?,'pending',?,0,3,?,?,?,?)`, id, nullString(task.AssetID), string(domain.JobInference), priority, formatTime(now), task.TaskKey, formatTime(now), formatTime(now))
 	if err != nil {
 		return "", err
@@ -66,9 +73,6 @@ func (r *Repository) EnqueueInferenceTask(ctx context.Context, jobID *string, ta
 		var existing string
 		err = tx.QueryRowContext(ctx, `SELECT j.id FROM jobs j LEFT JOIN inference_tasks t ON t.job_id=j.id WHERE j.job_type=? AND ((t.task_key=? ) OR (j.asset_id IS NULL AND j.input_hash=?)) ORDER BY CASE WHEN t.task_key=? THEN 0 ELSE 1 END LIMIT 1`, string(domain.JobInference), task.TaskKey, task.TaskKey, task.TaskKey).Scan(&existing)
 		if err != nil {
-			return "", err
-		}
-		if err := tx.Commit(); err != nil {
 			return "", err
 		}
 		return existing, nil
@@ -87,11 +91,10 @@ func (r *Repository) EnqueueInferenceTask(ctx context.Context, jobID *string, ta
 		if err := tx.QueryRowContext(ctx, `SELECT job_id FROM inference_tasks WHERE task_key=?`, task.TaskKey).Scan(&existing); err != nil {
 			return "", err
 		}
-		_ = tx.Rollback()
+		if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE id=?`, id); err != nil {
+			return "", err
+		}
 		return existing, nil
-	}
-	if err := tx.Commit(); err != nil {
-		return "", err
 	}
 	return id, nil
 }
@@ -215,8 +218,12 @@ func (r *Repository) StageInferenceTask(ctx context.Context, jobID, owner string
 	if err != nil {
 		return err
 	}
+	digest, err := remote.DigestResult(result)
+	if err != nil {
+		return err
+	}
 	stageNow := time.Now().UTC()
-	res, err := tx.ExecContext(ctx, `UPDATE inference_tasks SET staged_json=?,updated_at=? WHERE job_id=? AND operation=? AND config_hash=? AND model_revision=? AND cancel_requested=0 AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=inference_tasks.job_id AND j.job_type=? AND j.state='running' AND j.lease_owner=? AND j.lease_expires_at>?)`, staged, formatTime(stageNow), jobID, string(request.Operation), request.ConfigHash, request.ModelRevision, string(domain.JobInference), owner, formatTime(stageNow))
+	res, err := tx.ExecContext(ctx, `UPDATE inference_tasks SET staged_json=?,result_digest=?,updated_at=? WHERE job_id=? AND operation=? AND config_hash=? AND model_revision=? AND cancel_requested=0 AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=inference_tasks.job_id AND j.job_type=? AND j.state='running' AND j.lease_owner=? AND j.lease_expires_at>?)`, staged, digest, formatTime(stageNow), jobID, string(request.Operation), request.ConfigHash, request.ModelRevision, string(domain.JobInference), owner, formatTime(stageNow))
 	if err != nil {
 		return err
 	}
@@ -382,103 +389,12 @@ func (r *Repository) CommitInferenceTask(ctx context.Context, jobID, owner strin
 	return nil
 }
 
-// CommitSpeakerEmbedding publishes metadata for vectors already encrypted by
-// the Hub secret store. It never accepts or serializes a plaintext vector.
-func (r *Repository) CommitSpeakerEmbedding(ctx context.Context, jobID, owner string, consentGeneration, profileGeneration int64, records []domain.SpeakerEmbedding) error {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	now := time.Now().UTC()
-	var assetID, operation, requestJSON string
-	var cancelRequested int
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE(j.asset_id,''),t.operation,t.request_json,t.cancel_requested FROM inference_tasks t JOIN jobs j ON j.id=t.job_id WHERE j.id=? AND j.job_type=? AND j.state='running' AND j.lease_owner=? AND j.lease_expires_at>?`, jobID, string(domain.JobInference), owner, formatTime(now)).Scan(&assetID, &operation, &requestJSON, &cancelRequested)
-	if errors.Is(err, sql.ErrNoRows) {
-		return leaseLostErr(jobID, owner)
-	}
-	if err != nil {
-		return err
-	}
-	if cancelRequested != 0 {
-		return domain.Permanent(errors.New("speaker embedding was cancelled"))
-	}
-	var request domain.InferenceRequest
-	if err := json.Unmarshal([]byte(requestJSON), &request); err != nil {
-		return domain.Permanent(fmt.Errorf("stored inference request is unreadable: %w", err))
-	}
-	if domain.InferenceOperation(operation) != domain.OpSpeakerEmbedding || request.Operation != domain.OpSpeakerEmbedding || request.Input.Kind != domain.InputKindAsset || request.Input.AssetID != assetID || request.Speaker == nil || strings.TrimSpace(request.Speaker.ProfileID) == "" || assetID == "" {
-		return domain.Permanent(errors.New("speaker embedding request has no matching asset profile"))
-	}
-	if err := request.Validate(); err != nil {
-		return domain.Permanent(fmt.Errorf("stored inference request is invalid: %w", err))
-	}
-	if len(records) == 0 {
-		return domain.Permanent(errors.New("speaker embedding commit has no records"))
-	}
-	var enabled int
-	var currentConsentGeneration int64
-	err = tx.QueryRowContext(ctx, `SELECT enabled,generation FROM speaker_consent WHERE singleton=1`).Scan(&enabled, &currentConsentGeneration)
-	if errors.Is(err, sql.ErrNoRows) || err == nil && (enabled == 0 || currentConsentGeneration != consentGeneration) {
-		return domain.Permanent(errors.New("speaker consent generation is no longer active"))
-	}
-	if err != nil {
-		return err
-	}
-	var currentProfileGeneration int64
-	var profileState string
-	err = tx.QueryRowContext(ctx, `SELECT generation,state FROM speaker_profiles WHERE id=?`, request.Speaker.ProfileID).Scan(&currentProfileGeneration, &profileState)
-	if errors.Is(err, sql.ErrNoRows) || err == nil && (profileState != "active" || currentProfileGeneration != profileGeneration) {
-		return domain.Permanent(errors.New("speaker profile generation is no longer active"))
-	}
-	if err != nil {
-		return err
-	}
-	for index, record := range records {
-		if strings.TrimSpace(record.SecretRef) == "" || record.ProfileID != request.Speaker.ProfileID || record.AssetID != assetID || record.SpaceID != request.SpaceID || record.ConsentGeneration != consentGeneration || record.ProfileGeneration != profileGeneration || strings.TrimSpace(record.GenerationID) == "" {
-			return domain.Permanent(fmt.Errorf("speaker embedding record %d has mismatched identity or generation", index))
-		}
-		interval := domain.TimeInterval{StartMS: record.StartMS, EndMS: record.EndMS}
-		if err := interval.Validate(request.Input.DurationMS); err != nil {
-			return domain.Permanent(fmt.Errorf("speaker embedding record %d: %w", index, err))
-		}
-		if interval.StartMS < request.Speaker.Interval.StartMS || interval.EndMS > request.Speaker.Interval.EndMS {
-			return domain.Permanent(fmt.Errorf("speaker embedding record %d is outside the requested interval", index))
-		}
-	}
-	for _, record := range records {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO speaker_embeddings(id,profile_id,asset_id,generation_id,space_id,start_ms,end_ms,speech_duration_ms,quality_json,secret_ref,consent_generation,profile_generation,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, idgen.New(), record.ProfileID, record.AssetID, record.GenerationID, record.SpaceID, record.StartMS, record.EndMS, record.SpeechDurationMS, record.QualityJSON, record.SecretRef, record.ConsentGeneration, record.ProfileGeneration, formatTime(now)); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM biometric_purge_refs WHERE secret_ref=?`, record.SecretRef); err != nil {
-			return err
-		}
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM speaker_embedding_staging WHERE job_id=? AND operation_id=?`, jobID, request.OperationID); err != nil {
-		return err
-	}
-	finalNow := time.Now().UTC()
-	res, err := tx.ExecContext(ctx, `UPDATE jobs SET state='succeeded',terminal=0,last_error_code=NULL,last_error_message=NULL,current_stage='complete',progress=100,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND job_type=? AND state='running' AND lease_owner=? AND lease_expires_at>?`, formatTime(finalNow), jobID, string(domain.JobInference), owner, formatTime(finalNow))
-	if err != nil {
-		return err
-	}
-	count, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if count != 1 {
-		return leaseLostErr(jobID, owner)
-	}
-	return tx.Commit()
-}
-
 // RenewInferenceLease extends the lease of a still-running, non-cancelled
 // inference task. The executor calls it every 30 seconds so a long model run
 // does not outlive the initial 10-minute window.
 func (r *Repository) RenewInferenceLease(ctx context.Context, jobID, owner string, until time.Time) error {
 	now := time.Now().UTC()
-	res, err := r.db.ExecContext(ctx, `UPDATE jobs SET lease_expires_at=?,updated_at=? WHERE id=? AND job_type=? AND state='running' AND lease_owner=? AND EXISTS(SELECT 1 FROM inference_tasks t WHERE t.job_id=jobs.id AND t.cancel_requested=0)`, formatTime(until.UTC()), formatTime(now), jobID, string(domain.JobInference), owner)
+	res, err := r.db.ExecContext(ctx, `UPDATE jobs SET lease_expires_at=?,updated_at=? WHERE id=? AND job_type=? AND state='running' AND lease_owner=? AND lease_expires_at>? AND EXISTS(SELECT 1 FROM inference_tasks t WHERE t.job_id=jobs.id AND t.cancel_requested=0)`, formatTime(until.UTC()), formatTime(now), jobID, string(domain.JobInference), owner, formatTime(now))
 	if err != nil {
 		return err
 	}
@@ -508,20 +424,12 @@ func (r *Repository) CancelInferenceTask(ctx context.Context, jobID string) erro
 		return err
 	}
 	defer tx.Rollback()
-	now := formatTime(time.Now().UTC())
-	res, err := tx.ExecContext(ctx, `UPDATE inference_tasks SET cancel_requested=1,updated_at=? WHERE job_id=? AND EXISTS(SELECT 1 FROM jobs WHERE id=? AND job_type=?)`, now, jobID, jobID, string(domain.JobInference))
+	flagged, _, err := cancelInferenceTasksTx(ctx, tx, time.Now().UTC(), "cancelled", "job_id=?", jobID)
 	if err != nil {
 		return err
 	}
-	count, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if count != 1 {
+	if flagged != 1 {
 		return sql.ErrNoRows
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='failed',terminal=1,last_error_code='cancelled',last_error_message='cancelled',current_stage='cancelled',lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE id=? AND job_type=? AND state='pending'`, now, jobID, string(domain.JobInference)); err != nil {
-		return err
 	}
 	return tx.Commit()
 }

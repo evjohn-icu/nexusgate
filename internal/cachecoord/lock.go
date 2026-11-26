@@ -3,6 +3,7 @@
 package cachecoord
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,11 +12,24 @@ import (
 type Lock struct{ file *os.File }
 
 func AcquireExclusive(dataDir string) (*Lock, error) {
-	return acquire(filepath.Join(dataDir, ".cache-maintenance.lock"), true)
+	return AcquirePath(filepath.Join(dataDir, ".cache-maintenance.lock"), true)
 }
 func AcquireShared(dataDir string) (*Lock, error) {
-	return acquire(filepath.Join(dataDir, ".cache-maintenance.lock"), false)
+	return AcquirePath(filepath.Join(dataDir, ".cache-maintenance.lock"), false)
 }
+
+// AcquirePath coordinates operations on the resource identified by lock path.
+func AcquirePath(path string, exclusive bool) (*Lock, error) {
+	return acquire(path, exclusive)
+}
+
+// AcquireWaveform keeps a manifest and its named payload stable for readers.
+// Callers acquire the shared cache lock first.
+func AcquireWaveform(dataDir, assetID string, exclusive bool) (*Lock, error) {
+	name := fmt.Sprintf("%x.lock", sha256.Sum256([]byte(assetID)))
+	return AcquirePath(filepath.Join(dataDir, ".waveform-locks", name), exclusive)
+}
+
 func (l *Lock) Release() error {
 	if l == nil || l.file == nil {
 		return nil

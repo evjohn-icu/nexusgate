@@ -104,6 +104,7 @@ func apiErrorFromError(err error) (int, APIError) {
 		errors.Is(err, domain.ErrShotVectorNotFound),
 		errors.Is(err, domain.ErrShotNotFound),
 		errors.Is(err, domain.ErrWorkerJobNotFound),
+		errors.Is(err, domain.ErrWorkerNotFound),
 		errors.Is(err, app.ErrCollectionNotFound),
 		errors.Is(err, app.ErrWebDAVSpaceNotFound),
 		errors.Is(err, app.ErrTranscriptNotFound):
@@ -127,6 +128,7 @@ func apiErrorFromError(err error) (int, APIError) {
 		errors.Is(err, app.ErrProviderChannelValidation),
 		errors.Is(err, app.ErrInvalidWorkerArtifact),
 		errors.Is(err, domain.ErrInvalidWorkerRegistration),
+		errors.Is(err, domain.ErrInvalidWorkerGrants),
 		errors.Is(err, app.ErrWebDAVAccountInvalid),
 		errors.Is(err, app.ErrWebDAVLinkKindInvalid),
 		errors.Is(err, domain.ErrInvalidAssignment):

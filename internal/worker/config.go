@@ -61,42 +61,41 @@ func (c Config) SourceCacheCap() int64 {
 	return *c.SourceCacheMaxBytes
 }
 
+// PrepareConfigPath creates and validates the parent directory of the Worker
+// config and validates any existing destination file, without writing the
+// config. Enrollment calls it before contacting the Hub so a bad or insecure
+// destination fails before a pairing token is spent, and again through
+// SaveConfig because the destination may change while the request is in
+// flight. Rejections of insecure files and parents never name the path, so
+// nothing about the token's location leaves the node in an error report.
+func PrepareConfigPath(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("worker config path is required")
+	}
+	if err := prepareConfigParent(filepath.Dir(path)); err != nil {
+		return err
+	}
+	return validateConfigFile(path)
+}
+
 func SaveConfig(path string, config Config) error {
 	if strings.TrimSpace(config.HubURL) == "" || strings.TrimSpace(config.Token) == "" {
 		return fmt.Errorf("worker Hub URL and token are required")
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := PrepareConfigPath(path); err != nil {
 		return err
-	}
-	info, err := os.Lstat(dir)
-	if err != nil {
-		return fmt.Errorf("inspect worker config directory: %w", err)
-	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
-		return fmt.Errorf("worker config parent must be a non-symlink directory with mode 0700")
-	}
-	if existing, err := os.Lstat(path); err == nil {
-		if !existing.Mode().IsRegular() || existing.Mode()&os.ModeSymlink != 0 || existing.Mode().Perm() != 0o600 {
-			return fmt.Errorf("worker config must be a regular file with mode 0600")
-		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("inspect worker config: %w", err)
 	}
 	raw, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(dir, ".worker.json-")
+	dir := filepath.Dir(path)
+	temporary, err := createConfigTempFile(dir)
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(0o600); err != nil {
-		temporary.Close()
-		return err
-	}
 	if _, err := temporary.Write(raw); err != nil {
 		temporary.Close()
 		return err
@@ -108,34 +107,18 @@ func SaveConfig(path string, config Config) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(temporaryPath, path); err != nil {
+	if err := commitConfigFile(temporaryPath, path); err != nil {
 		return err
 	}
-	info, err = os.Lstat(path)
-	if err != nil {
+	if err := requireConfigFile(path); err != nil {
 		return fmt.Errorf("verify worker config: %w", err)
 	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 {
-		return fmt.Errorf("worker config must be a regular file with mode 0600")
-	}
-	directory, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	if err := directory.Sync(); err != nil {
-		directory.Close()
-		return err
-	}
-	return directory.Close()
+	return syncConfigDirectory(dir)
 }
 
 func LoadConfig(path string) (Config, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
+	if err := requireConfigFile(path); err != nil {
 		return Config{}, err
-	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 {
-		return Config{}, fmt.Errorf("worker config must be a regular file with mode 0600")
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {

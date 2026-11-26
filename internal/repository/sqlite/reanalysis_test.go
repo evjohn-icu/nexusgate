@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -194,8 +195,10 @@ func TestReanalysisKeepsOldModelRunAuditable(t *testing.T) {
 // derive job back on the queue so the deleted files are re-created. Only an
 // asset whose analysis already committed is eligible — re-deriving an
 // in-flight chain's files would re-enqueue the paid stages (see the derive
-// stage's committed check in app/pipeline.go) — and the enqueue must be a
-// fresh hash every time, or the succeeded original derive would swallow it.
+// stage's committed check in app/pipeline.go) — and the job carries the
+// `cache-rederive:` maintenance key, which both deduplicates a repeat repair
+// into the queued job and is what the lease queries hold back on while the
+// media root is offline.
 func TestEnqueueRederiveOnlyForCommittedAssets(t *testing.T) {
 	repo := openTestRepo(t)
 	ctx := context.Background()
@@ -389,4 +392,176 @@ func seedCommittedAsset(t *testing.T, repo *Repository, suffix string) string {
 		t.Fatal(err)
 	}
 	return assetID
+}
+
+// TestEnqueueRederiveDeduplicatesAndRounds pins the maintenance-key contract:
+// a repair enqueued while one is already nonterminal deduplicates into the
+// queued job (one job, no duplicate work for a repeated clean-up), and a
+// repair after a prior terminal repair records a fresh round under a distinct
+// key — a silent UNIQUE-dedup there would delete files with no rebuild behind
+// them.
+func TestEnqueueRederiveDeduplicatesAndRounds(t *testing.T) {
+	repo := openTestRepo(t)
+	ctx := context.Background()
+	assetID := seedCommittedAsset(t, repo, "rounds")
+	if _, err := repo.db.ExecContext(ctx, `UPDATE assets SET probe_modified_ns=456 WHERE id=?`, assetID); err != nil {
+		t.Fatal(err)
+	}
+	enqueued, err := repo.EnqueueRederive(ctx, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !enqueued {
+		t.Fatal("first repair must enqueue")
+	}
+	var firstKey string
+	if err := repo.db.QueryRowContext(ctx, `SELECT input_hash FROM jobs WHERE asset_id=? AND job_type='derive'`, assetID).Scan(&firstKey); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(firstKey, "cache-rederive:") {
+		t.Fatalf("re-derive key %q must carry the cache-rederive: maintenance prefix", firstKey)
+	}
+	if strings.Contains(firstKey, "@") {
+		t.Fatalf("first repair key %q must not carry a round suffix", firstKey)
+	}
+	durable, err := repo.HasDurableRederive(ctx, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !durable {
+		t.Fatal("a queued repair must read as durable")
+	}
+
+	// A repeat while the repair is queued deduplicates into it.
+	enqueued, err = repo.EnqueueRederive(ctx, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enqueued {
+		t.Fatal("a repeat repair must deduplicate into the queued job")
+	}
+	var count int
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs WHERE asset_id=? AND job_type='derive'`, assetID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("repeat repair left %d derive jobs, want 1", count)
+	}
+
+	// After the repair ran to a terminal state, a new repair records a new
+	// round: the succeeded row must not silently swallow the request and
+	// strand deleted files with no rebuild behind them.
+	if _, err := repo.db.ExecContext(ctx, `UPDATE jobs SET state='succeeded',terminal=1 WHERE asset_id=? AND job_type='derive'`, assetID); err != nil {
+		t.Fatal(err)
+	}
+	if durable, err = repo.HasDurableRederive(ctx, assetID); err != nil {
+		t.Fatal(err)
+	}
+	if durable {
+		t.Fatal("a terminal repair is not a durable queued repair")
+	}
+	enqueued, err = repo.EnqueueRederive(ctx, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !enqueued {
+		t.Fatal("a repair after a terminal repair must enqueue a new round")
+	}
+	var keys []string
+	rows, err := repo.db.QueryContext(ctx, `SELECT input_hash FROM jobs WHERE asset_id=? AND job_type='derive' ORDER BY created_at,input_hash`, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		keys = append(keys, k)
+	}
+	rows.Close()
+	if len(keys) != 2 {
+		t.Fatalf("expected 2 repair rounds, got %d (%v)", len(keys), keys)
+	}
+	if !strings.HasSuffix(keys[1], "@1") || !strings.HasPrefix(keys[1], firstKey[:len(firstKey)]) {
+		t.Fatalf("second round key %q must carry round 1 on the same identity as %q", keys[1], firstKey)
+	}
+}
+
+// TestEnqueueRederiveRecordsRepairWhileRootOffline pins the offline half of
+// the contract: with the only root unavailable — no online location, exactly
+// what GetPrimaryLocation refuses — an asset whose canonical probe metadata is
+// committed still gets a durable `cache-rederive:` job recorded. The lease
+// queries hold such jobs back until a root is online, so the repair spends no
+// attempts while offline and leases when the media returns.
+func TestEnqueueRederiveRecordsRepairWhileRootOffline(t *testing.T) {
+	repo := openTestRepo(t)
+	ctx := context.Background()
+	assetID := seedCommittedAsset(t, repo, "offline")
+	if _, err := repo.db.ExecContext(ctx, `UPDATE assets SET probe_modified_ns=789 WHERE id=?`, assetID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.db.ExecContext(ctx, `UPDATE library_roots SET health_state='unavailable' WHERE id=?`, "root-offline"); err != nil {
+		t.Fatal(err)
+	}
+	// The precondition the offline path exists for: the online-location lookup
+	// that the old enqueue required now finds nothing.
+	if _, err := repo.GetPrimaryLocation(ctx, assetID); err == nil {
+		t.Fatal("expected no online primary location after the root went unavailable")
+	}
+	enqueued, err := repo.EnqueueRederive(ctx, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !enqueued {
+		t.Fatal("an offline root must still record a durable repair")
+	}
+	var key string
+	if err := repo.db.QueryRowContext(ctx, `SELECT input_hash FROM jobs WHERE asset_id=? AND job_type='derive'`, assetID).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(key, "cache-rederive:") {
+		t.Fatalf("offline repair key %q must carry the maintenance prefix", key)
+	}
+	durable, err := repo.HasDurableRederive(ctx, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !durable {
+		t.Fatal("the recorded repair must read as durable while offline")
+	}
+}
+
+// TestEnqueueRederiveWithoutReconstructableIdentityKeepsQueueClean pins the
+// honest-refusal half: when no committed probe metadata exists and no online
+// location can supply the modified time, the canonical derive identity cannot
+// be reconstructed, no durable repair may be recorded, and the caller keeps
+// the artifacts.
+func TestEnqueueRederiveWithoutReconstructableIdentityKeepsQueueClean(t *testing.T) {
+	repo := openTestRepo(t)
+	ctx := context.Background()
+	assetID := seedCommittedAsset(t, repo, "noidentity")
+	// seedCommittedAsset leaves probe_modified_ns NULL and the location online;
+	// taking the root offline leaves no way to reconstruct the identity.
+	if _, err := repo.db.ExecContext(ctx, `UPDATE library_roots SET health_state='unavailable' WHERE id=?`, "root-noidentity"); err != nil {
+		t.Fatal(err)
+	}
+	enqueued, err := repo.EnqueueRederive(ctx, assetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enqueued {
+		t.Fatal("an unreconstructable identity must not enqueue")
+	}
+	var count int
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs WHERE asset_id=? AND job_type='derive'`, assetID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("expected no derive jobs, got %d", count)
+	}
+	if durable, err := repo.HasDurableRederive(ctx, assetID); err != nil || durable {
+		t.Fatalf("no durable repair must be recorded, got durable=%v err=%v", durable, err)
+	}
 }

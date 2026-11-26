@@ -151,6 +151,58 @@ type InferenceResultSubmission struct {
 	Result      domain.InferenceResult `json:"result"`
 }
 
+// Vectors stay out of the domain JSON used by canonical storage and read APIs.
+// The authenticated Worker result envelope is the transport that carries them.
+type inferenceWireEmbedding struct {
+	domain.EmbeddingRecord
+	Vector []float32 `json:"vector"`
+}
+
+type inferenceWireResult struct {
+	domain.InferenceResult
+	Embeddings []inferenceWireEmbedding `json:"embeddings,omitempty"`
+}
+
+type inferenceWireSubmission struct {
+	OperationID string              `json:"operation_id"`
+	Digest      string              `json:"digest"`
+	Result      inferenceWireResult `json:"result"`
+}
+
+func toInferenceWireResult(result domain.InferenceResult) inferenceWireResult {
+	wire := inferenceWireResult{InferenceResult: result}
+	if len(result.Embeddings) > 0 {
+		wire.Embeddings = make([]inferenceWireEmbedding, len(result.Embeddings))
+		for i, embedding := range result.Embeddings {
+			wire.Embeddings[i] = inferenceWireEmbedding{EmbeddingRecord: embedding, Vector: embedding.Vector}
+		}
+	}
+	return wire
+}
+
+func (s InferenceResultSubmission) MarshalJSON() ([]byte, error) {
+	return json.Marshal(inferenceWireSubmission{
+		OperationID: s.OperationID, Digest: s.Digest, Result: toInferenceWireResult(s.Result),
+	})
+}
+
+func (s *InferenceResultSubmission) UnmarshalJSON(data []byte) error {
+	var wire inferenceWireSubmission
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	result := wire.Result.InferenceResult
+	if len(wire.Result.Embeddings) > 0 {
+		result.Embeddings = make([]domain.EmbeddingRecord, len(wire.Result.Embeddings))
+		for i, embedding := range wire.Result.Embeddings {
+			result.Embeddings[i] = embedding.EmbeddingRecord
+			result.Embeddings[i].Vector = embedding.Vector
+		}
+	}
+	*s = InferenceResultSubmission{OperationID: wire.OperationID, Digest: wire.Digest, Result: result}
+	return nil
+}
+
 // InferenceInputDescriptor describes the exact bytes a Worker may fetch for
 // the query image bound to its lease. It never contains a path.
 type InferenceInputDescriptor struct {
@@ -192,7 +244,7 @@ var ErrResultCommitted = errors.New("inference result committed")
 // encoding/json for structs), and the Hub recomputes it from the bytes it
 // received before staging anything.
 func DigestResult(result domain.InferenceResult) (string, error) {
-	encoded, err := json.Marshal(result)
+	encoded, err := json.Marshal(toInferenceWireResult(result))
 	if err != nil {
 		return "", err
 	}

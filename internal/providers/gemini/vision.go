@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,6 +80,13 @@ func (v *Vision) PrepareVideo(ctx context.Context, req common.PrepareVideoReques
 		startURL = strings.TrimSuffix(startURL, "/v1beta")
 	}
 	startURL += "/upload/v1beta/files"
+	// The resumable session location comes back from the provider and is
+	// resolved against this URL, so it is also the origin every upload byte
+	// and credential is allowed to travel to.
+	initialURL, err := url.Parse(startURL)
+	if err != nil || initialURL.Scheme != "http" && initialURL.Scheme != "https" || initialURL.Host == "" {
+		return common.PreparedVideo{}, fmt.Errorf("Gemini upload endpoint is invalid")
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, startURL, bytes.NewReader(body))
 	if err != nil {
 		return common.PreparedVideo{}, err
@@ -95,15 +103,28 @@ func (v *Vision) PrepareVideo(ctx context.Context, req common.PrepareVideoReques
 	}
 	if resp.StatusCode/100 != 2 {
 		defer resp.Body.Close()
-		return common.PreparedVideo{}, common.ReadErrorWithSecret(resp, v.Endpoint.APIKey)
+		return common.PreparedVideo{}, v.Endpoint.ReadError(resp)
 	}
 	uploadURL := resp.Header.Get("X-Goog-Upload-URL")
 	resp.Body.Close()
 	if uploadURL == "" {
 		return common.PreparedVideo{}, fmt.Errorf("Gemini upload did not return X-Goog-Upload-URL")
 	}
+	// Resolve the session URL the provider returned against the endpoint the
+	// upload started from: a relative location continues on the configured
+	// origin, an absolute URL must already carry it. Scheme and exact origin
+	// are checked before any file byte or authentication header is attached —
+	// a relay that answers with a session on some other origin would otherwise
+	// receive the configured credential with the next request.
+	resolved, err := initialURL.Parse(uploadURL)
+	if err != nil {
+		return common.PreparedVideo{}, fmt.Errorf("Gemini upload did not return a usable resumable upload URL")
+	}
+	if !common.SameOrigin(initialURL, resolved) {
+		return common.PreparedVideo{}, fmt.Errorf("Gemini upload returned a resumable session on a different origin; upload refused")
+	}
 
-	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, f)
+	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolved.String(), f)
 	if err != nil {
 		return common.PreparedVideo{}, err
 	}
@@ -117,7 +138,7 @@ func (v *Vision) PrepareVideo(ctx context.Context, req common.PrepareVideoReques
 	}
 	defer uploadResp.Body.Close()
 	if uploadResp.StatusCode/100 != 2 {
-		return common.PreparedVideo{}, common.ReadErrorWithSecret(uploadResp, v.Endpoint.APIKey)
+		return common.PreparedVideo{}, v.Endpoint.ReadError(uploadResp)
 	}
 	raw, err := common.ReadBody(uploadResp.Body)
 	if err != nil {
@@ -168,7 +189,7 @@ func (v *Vision) fileState(ctx context.Context, name string) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return "", common.ReadErrorWithSecret(resp, v.Endpoint.APIKey)
+		return "", v.Endpoint.ReadError(resp)
 	}
 	var x struct {
 		State string `json:"state"`
@@ -235,7 +256,7 @@ func (v *Vision) analyzeNative(ctx context.Context, req videoanalysis.Input, pro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return videoanalysis.Result{}, "", common.ReadErrorWithSecret(resp, v.Endpoint.APIKey)
+		return videoanalysis.Result{}, "", v.Endpoint.ReadError(resp)
 	}
 	raw, err := common.ReadBody(resp.Body)
 	if err != nil {
@@ -251,13 +272,13 @@ func (v *Vision) analyzeNative(ctx context.Context, req videoanalysis.Input, pro
 		} `json:"candidates"`
 	}
 	if err := json.Unmarshal(raw, &x); err != nil || len(x.Candidates) == 0 {
-		return videoanalysis.Result{}, common.RedactString(string(raw), v.Endpoint.APIKey), common.Errorf(v.Endpoint.APIKey, "invalid Gemini response: %s", string(raw))
+		return videoanalysis.Result{}, v.Endpoint.RedactString(string(raw)), v.Endpoint.Errorf("invalid Gemini response: %s", string(raw))
 	}
 	var text string
 	for _, p := range x.Candidates[0].Content.Parts {
 		text += p.Text
 	}
-	return decodeAnalysis(text, raw, v.Endpoint.APIKey)
+	return decodeAnalysis(text, raw, &v.Endpoint)
 }
 
 func (v *Vision) analyzeOpenAI(ctx context.Context, req videoanalysis.Input, prompt string) (videoanalysis.Result, string, error) {
@@ -283,7 +304,7 @@ func (v *Vision) analyzeOpenAI(ctx context.Context, req videoanalysis.Input, pro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return videoanalysis.Result{}, "", common.ReadErrorWithSecret(resp, v.Endpoint.APIKey)
+		return videoanalysis.Result{}, "", v.Endpoint.ReadError(resp)
 	}
 	raw, _ := common.ReadBody(resp.Body)
 	var x struct {
@@ -294,17 +315,25 @@ func (v *Vision) analyzeOpenAI(ctx context.Context, req videoanalysis.Input, pro
 		} `json:"choices"`
 	}
 	if json.Unmarshal(raw, &x) != nil || len(x.Choices) == 0 {
-		return videoanalysis.Result{}, common.RedactString(string(raw), v.Endpoint.APIKey), common.Errorf(v.Endpoint.APIKey, "invalid OpenAI-compatible response: %s", string(raw))
+		return videoanalysis.Result{}, v.Endpoint.RedactString(string(raw)), v.Endpoint.Errorf("invalid OpenAI-compatible response: %s", string(raw))
 	}
-	return decodeAnalysis(x.Choices[0].Message.Content, raw, v.Endpoint.APIKey)
+	return decodeAnalysis(x.Choices[0].Message.Content, raw, &v.Endpoint)
 }
 
-func decodeAnalysis(text string, raw []byte, secrets ...string) (videoanalysis.Result, string, error) {
-	secret := ""
-	if len(secrets) > 0 {
-		secret = secrets[0]
+func decodeAnalysis(text string, raw []byte, endpoint *common.Endpoint) (videoanalysis.Result, string, error) {
+	redact := func(value string) string {
+		if endpoint != nil {
+			return endpoint.RedactString(value)
+		}
+		return common.BoundedString(value)
 	}
-	redactedRaw := common.RedactString(string(raw), secret)
+	fail := func(format string, args ...any) error {
+		if endpoint != nil {
+			return endpoint.Errorf(format, args...)
+		}
+		return fmt.Errorf(format, args...)
+	}
+	redactedRaw := redact(string(raw))
 	text = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(text), "```json"), "```"))
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(text), &fields); err != nil {
@@ -323,7 +352,7 @@ func decodeAnalysis(text string, raw []byte, secrets ...string) (videoanalysis.R
 	if err := json.Unmarshal([]byte(text), &out); err == nil && (out.Summary != "" || len(out.Scenes) > 0 || len(out.RawTags) > 0) {
 		return out, redactedRaw, nil
 	}
-	return out, redactedRaw, common.Errorf(secret, "decode structured video analysis: response has no unified fields; response: %s", redactedRaw)
+	return out, redactedRaw, fail("decode structured video analysis: response has no unified fields; response: %s", redactedRaw)
 }
 
 func (v *Vision) applyAuth(req *http.Request) {

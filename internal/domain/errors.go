@@ -268,6 +268,9 @@ var ErrWorkerJobNotFound = errors.New("worker job not found")
 // sent the operator looking for a Hub failure that never happened.
 var ErrInvalidWorkerRegistration = errors.New("worker name and platform are required")
 
+// ErrInvalidWorkerGrants reports unsupported operations in a pairing request.
+var ErrInvalidWorkerGrants = errors.New("worker pairing contains an unsupported operation")
+
 // ErrPairingTokenInvalid reports an unrecognised, already-redeemed or expired
 // pairing token on worker enrollment. Mapped to 401 by the API layer. It lives
 // here rather than in internal/app because the repository is the only layer
@@ -288,3 +291,12 @@ var ErrReorderInvalid = errors.New("collection shot reorder does not match the c
 // lease: the task's owner may still hold a valid lease, but the canonical
 // commit must refuse to publish a result the operator withdrew.
 var ErrInferenceCancelled = errors.New("inference cancelled")
+
+// ErrSpeakerConsentGenerationInactive reports that biometric persistence was
+// attempted under a consent generation that is no longer the live one. The
+// sqlite repository raises it from the create-with-tasks transaction and the
+// speaker commit transaction whenever speaker_consent is disabled or its
+// generation has moved on, so a late result can never be adopted by a newer
+// consent state. It is a permanent failure: the caller re-captures consent or
+// re-enqueues, never retries the same write.
+var ErrSpeakerConsentGenerationInactive = errors.New("speaker consent generation is no longer active")

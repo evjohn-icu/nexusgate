@@ -61,6 +61,7 @@ func (f *WeightedRRF) Fuse(results []ChannelResult) []Candidate {
 				index[candidate.ShotID] = idx
 				// Copy the signal map so later merges never mutate the
 				// channel's own candidate objects.
+				candidate.Score = 0
 				candidate.Signals = maps.Clone(candidate.Signals)
 				fused = append(fused, candidate)
 			}

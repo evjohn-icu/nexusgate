@@ -62,6 +62,14 @@ type healthState struct {
 	retryableFails int
 	cooldownUntil  time.Time
 	halfOpen       bool
+	// epoch counts cooldown transitions. Select stamps the current epoch on
+	// every lease it issues, so complete can tell a failure observed by a
+	// lease that acquired into the current epoch (the first failure of a
+	// healthy member, or a half-open probe issued after the cooldown) from a
+	// stale lease that was acquired while the member was still healthy and is
+	// only now completing, overlapping a cooldown a sibling lease started.
+	// Stale completions must not deepen the count or extend the cooldown.
+	epoch uint64
 }
 
 // Pool owns ordered capability channels. The input order is retained as the
@@ -244,14 +252,22 @@ type MemberHealth struct {
 	CooldownUntil time.Time
 	HalfOpen      bool
 	Inflight      int
-	// RetryableFails counts consecutive Retryable failures since the member
-	// last recovered (a successful call, a non-retryable failure, or a
-	// completed half-open probe all reset it — see Pool.complete). It is what
-	// lets a caller tell one unlucky call from a cooldown that has already
-	// survived a second, freshly-issued attempt: the second failure can only
-	// happen once the first cooldown has actually elapsed and Select tried
-	// the member again, so a count of two or more is evidence gathered over
-	// real wall-clock time, not a guess from a single sample.
+	// RetryableFails counts confirmed consecutive Retryable failures since
+	// the member last recovered (a successful call, a non-retryable failure,
+	// or a completed half-open probe all reset it — see Pool.complete). A
+	// failure confirms only when its lease acquired into the current
+	// cooldown epoch: the first failure of a healthy member counts one and
+	// starts the cooldown, and the count then grows only through half-open
+	// probes that Select issues after the cooldown has elapsed. Overlapping
+	// leases that were already in flight when the cooldown started do not
+	// confirm anything when they fail — their failure is the same outage the
+	// first failure already observed, not evidence gathered after the
+	// backoff. That is what lets a caller tell one unlucky call (or one
+	// request fanned out across overlapping attempts) from a failure that
+	// has survived a second, freshly-issued attempt: a count of two or more
+	// can only happen once the first cooldown has actually elapsed and a
+	// probe tried the member again, so it is evidence gathered over real
+	// wall-clock time, not a guess from a single sample.
 	RetryableFails int
 }
 
@@ -351,6 +367,7 @@ func (p *Pool) Select(capability Capability) (*Lease, error) {
 		member:     selectedMemberIndex,
 		capability: capability,
 		probe:      wasProbe,
+		epoch:      health.epoch,
 	}, nil
 }
 
@@ -409,10 +426,24 @@ func (p *Pool) complete(lease *Lease, err error) {
 
 	switch ClassifyFailure(err) {
 	case Retryable:
+		// A failure confirms only when the lease acquired into the current
+		// cooldown epoch: the first retryable failure of a healthy member
+		// counts one and starts the cooldown, and the count then grows only
+		// through a half-open probe issued after the cooldown elapsed. A
+		// lease acquired before that cooldown started and completing now is
+		// stale — it observed the same outage the confirming failure already
+		// recorded, so counting it would let two overlapping failures of one
+		// moment pass for "failed again after the backoff", and extending or
+		// resetting cooldown state here could overwrite a newer probe's
+		// outcome. It changes nothing.
+		if lease.epoch != health.epoch {
+			return
+		}
 		health.retryableFails++
 		delay := p.cooldownFor(health.retryableFails)
 		health.cooldownUntil = p.options.Now().Add(delay)
 		health.halfOpen = false
+		health.epoch++
 		return
 	case MemberSpent:
 		// A cooldown is a bet that the same key works later; a spent key never
@@ -489,6 +520,11 @@ type Lease struct {
 	member     int
 	capability Capability
 	probe      bool
+	// epoch is the healthState epoch at acquisition. A completing lease whose
+	// epoch no longer matches was already in flight when the current cooldown
+	// started; its outcome may not confirm or extend that cooldown (see
+	// Pool.complete).
+	epoch uint64
 }
 
 // Member returns the selected provider member.

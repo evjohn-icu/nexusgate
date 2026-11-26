@@ -35,45 +35,67 @@ func (r *Repository) MatchingDerivedArtifactsByProfilePrefixes(ctx context.Conte
 	return artifacts, rows.Err()
 }
 
-// DeleteDerivedArtifactsByProfilePrefixes removes only the requested preview
-// rows. Files are owned by the cache command and are deleted separately.
-func (r *Repository) DeleteDerivedArtifactsByProfilePrefixes(ctx context.Context, prefixes []string) ([]string, error) {
-	if len(prefixes) == 0 {
+// DeleteDerivedArtifactsByPaths removes only the rows whose local_path is
+// exactly one of the given paths, and returns the distinct asset IDs whose
+// rows were removed. Exact matching is the safety property, not convenience:
+// cache repair has already selected the files it can manage on disk, so a row
+// is deleted only when it names one of those files — a profile-prefix match
+// would also sweep up rows whose files were never selected, stranding bytes
+// outside the repair's reach. Files are owned by the cache command and are
+// deleted separately, file first and row second, so a crash between the two
+// leaves a row whose missing file the derive stage re-creates.
+func (r *Repository) DeleteDerivedArtifactsByPaths(ctx context.Context, paths []string) ([]string, error) {
+	if len(paths) == 0 {
 		return nil, nil
+	}
+	unique := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		unique = append(unique, p)
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	placeholders := make([]string, len(prefixes))
-	args := make([]any, len(prefixes))
-	for i, prefix := range prefixes {
-		placeholders[i] = "profile_hash LIKE ?"
-		args[i] = prefix + "%"
-	}
-	query := `SELECT DISTINCT asset_id FROM derived_artifacts WHERE artifact_type IN ('thumbnail','proxy') AND (` + strings.Join(placeholders, " OR ") + `)`
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	var assets []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+	assets := make([]string, 0, len(unique))
+	for start := 0; start < len(unique); start += knownAssetIDsChunkSize {
+		end := start + knownAssetIDsChunkSize
+		if end > len(unique) {
+			end = len(unique)
+		}
+		chunk := unique[start:end]
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]any, len(chunk))
+		for i, p := range chunk {
+			args[i] = p
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT DISTINCT asset_id FROM derived_artifacts WHERE local_path IN (`+placeholders+`)`, args...)
+		if err != nil {
 			return nil, err
 		}
-		assets = append(assets, id)
-	}
-	if err := rows.Err(); err != nil {
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			assets = append(assets, id)
+		}
 		rows.Close()
-		return nil, err
-	}
-	rows.Close()
-	deleteQuery := `DELETE FROM derived_artifacts WHERE artifact_type IN ('thumbnail','proxy') AND (` + strings.Join(placeholders, " OR ") + `)`
-	if _, err := tx.ExecContext(ctx, deleteQuery, args...); err != nil {
-		return nil, err
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM derived_artifacts WHERE local_path IN (`+placeholders+`)`, args...); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -104,10 +126,16 @@ func (r *Repository) ListDerivedArtifacts(ctx context.Context) ([]domain.Derived
 	return artifacts, rows.Err()
 }
 
-// ListLiveJobAssetIDs returns assets whose non-terminal running job still has
-// a valid lease. Cache maintenance protects all of their derived files.
-func (r *Repository) ListLiveJobAssetIDs(ctx context.Context, now time.Time) ([]string, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT DISTINCT asset_id FROM jobs WHERE asset_id IS NOT NULL AND state='running' AND terminal=0 AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`, formatTime(now))
+// ListCacheProtectedAssetIDs returns the assets whose derived files cache
+// maintenance must not delete. An asset is protected while a nonterminal
+// pending, running, or failed job for it still has attempts remaining — the
+// job will run (or run again) and its stage reads those files — and while a
+// running job holds a live lease even on its final attempt, where a renewal
+// or completion is still in flight. Files deleted under a queued job would
+// turn "rebuild on demand" into "fail on next stage", so protection is keyed
+// to schedulable work, not just to live leases.
+func (r *Repository) ListCacheProtectedAssetIDs(ctx context.Context, now time.Time) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT DISTINCT asset_id FROM jobs WHERE asset_id IS NOT NULL AND terminal=0 AND ((state IN ('pending','running','failed') AND attempt_count<max_attempts) OR (state='running' AND lease_expires_at IS NOT NULL AND lease_expires_at>?)) ORDER BY asset_id`, formatTime(now))
 	if err != nil {
 		return nil, err
 	}
@@ -121,6 +149,18 @@ func (r *Repository) ListLiveJobAssetIDs(ctx context.Context, now time.Time) ([]
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// HasDurableRederive reports whether a nonterminal `cache-rederive:` job for
+// the asset is already recorded. The cache commands gate deletion on a
+// durable repair: a rebuild that is only promised after the files are gone is
+// not a rebuild, it is a loss, so files may be removed when this job exists —
+// whether it was enqueued by this invocation or is still queued from a
+// previous one.
+func (r *Repository) HasDurableRederive(ctx context.Context, assetID string) (bool, error) {
+	var exists bool
+	err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM jobs WHERE asset_id=? AND job_type='derive' AND input_hash LIKE 'cache-rederive:%' AND terminal=0 AND state IN ('pending','running','failed'))`, assetID).Scan(&exists)
+	return exists, err
 }
 
 // ListAllAssetIDs returns every asset id in the assets table. It backs

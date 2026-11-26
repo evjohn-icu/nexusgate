@@ -36,6 +36,10 @@ class DiarizationAdapter:
             self.context.stage(0.18, "model_loaded")
         return self._pipeline, self._torch
 
+    def load(self) -> None:
+        """Load-only probe hook: verify paths and load without running inference."""
+        self._load()
+
     def infer(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if request["input"]["kind"] != "asset":
             raise UnsupportedInput("diarization requires an audio asset")

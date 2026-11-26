@@ -36,6 +36,11 @@ type WorkerJob struct {
 	// this field simply never sees the job type because the Hub only leases it
 	// to Workers whose enrollment authorized the operation.
 	Inference *domain.InferenceRequest `json:"inference,omitempty"`
+	// ModelManagement carries the typed maintenance task when JobType is
+	// JobModelInstall or JobModelProbe. Every other lease leaves it nil, and
+	// the Hub only leases these jobs to Workers whose pairing granted the
+	// operation, so a Worker that predates the field never decodes one.
+	ModelManagement *ModelManagementTask `json:"model_management,omitempty"`
 	// LeaseDeadline is the absolute lease expiry the Worker must renew before.
 	// It is advisory: the Hub stays authoritative and rejects a late result.
 	LeaseDeadline time.Time `json:"lease_deadline,omitempty"`
@@ -122,6 +127,17 @@ type WorkerRegistration struct {
 	Platform     string             `json:"platform"`
 	Version      string             `json:"version,omitempty"`
 	Capabilities WorkerCapabilities `json:"capabilities"`
+}
+
+// WorkerGrants is the administrator-selected operation grant set bound to one
+// pairing token. An empty or omitted grants body creates a derive-only
+// pairing, exactly like the pre-grants installer flow. The Hub validates and
+// normalizes the operation names before persisting them; the Worker receives
+// the accepted set back inside its enrollment capabilities and can never
+// widen it by editing a heartbeat.
+type WorkerGrants struct {
+	InferenceOperations       []string `json:"inference_operations,omitempty"`
+	ModelManagementOperations []string `json:"model_management_operations,omitempty"`
 }
 
 // WorkerHeartbeat is the POST /api/v1/worker/heartbeat body. Version is

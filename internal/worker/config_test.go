@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/evjohn-icu/nexusgate/internal/remote"
@@ -152,25 +153,32 @@ func TestConfigSaveIsAtomicAndFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 || !info.Mode().IsRegular() {
-		t.Fatalf("mode/type=%o/%v", info.Mode().Perm(), info.Mode().IsRegular())
+	if !runtimeIsWindows() {
+		if info.Mode().Perm() != 0o600 || !info.Mode().IsRegular() {
+			t.Fatalf("mode/type=%o/%v", info.Mode().Perm(), info.Mode().IsRegular())
+		}
 	}
+	// On Windows the POSIX bits are meaningless; the LoadConfig above already
+	// proves the destination carries the protected Worker DACL, and the
+	// native tests assert the DACL itself.
 
-	target := filepath.Join(t.TempDir(), "target.json")
-	if err := os.WriteFile(target, []byte("{}"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(target, path); err != nil {
-		t.Fatal(err)
-	}
-	if err := SaveConfig(path, second); err == nil {
-		t.Fatal("expected save symlink rejection")
-	}
-	if _, err := LoadConfig(path); err == nil {
-		t.Fatal("expected load symlink rejection")
+	if !runtimeIsWindows() {
+		target := filepath.Join(t.TempDir(), "target.json")
+		if err := os.WriteFile(target, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatal(err)
+		}
+		if err := SaveConfig(path, second); err == nil {
+			t.Fatal("expected save symlink rejection")
+		}
+		if _, err := LoadConfig(path); err == nil {
+			t.Fatal("expected load symlink rejection")
+		}
 	}
 
 	if err := os.Remove(path); err != nil {
@@ -188,6 +196,7 @@ func TestConfigSaveIsAtomicAndFailClosed(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"hub_url":"https://x","token":"x"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	makeExistingConfigInsecure(t, path)
 	if _, err := LoadConfig(path); err == nil {
 		t.Fatal("expected insecure permission rejection")
 	}
@@ -204,6 +213,7 @@ func TestConfigSaveRejectsInsecureExistingFileAndParent(t *testing.T) {
 	if err := os.WriteFile(path, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	makeExistingConfigInsecure(t, path)
 	if err := SaveConfig(path, config); err == nil {
 		t.Fatal("expected insecure existing file rejection")
 	}
@@ -219,8 +229,122 @@ func TestConfigSaveRejectsInsecureExistingFileAndParent(t *testing.T) {
 	if err := os.Mkdir(insecureDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if runtimeIsWindows() {
+		// An existing directory holds no secret, so it is permitted as long as
+		// the child config DACL can be protected — which SaveConfig does
+		// before the token is written. POSIX bits are not meaningful there.
+		path := filepath.Join(insecureDir, "worker.json")
+		if err := SaveConfig(path, config); err != nil {
+			t.Fatalf("existing directory must be permitted when the child config DACL can be protected: %v", err)
+		}
+		if _, err := LoadConfig(path); err != nil {
+			t.Fatalf("published config must carry a protected DACL: %v", err)
+		}
+		return
+	}
 	if err := SaveConfig(filepath.Join(insecureDir, "worker.json"), config); err == nil {
 		t.Fatal("expected insecure parent rejection")
+	}
+}
+
+func TestConfigPrepareConfigPathCreatesParentBeforeEnrollment(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, "enroll", "worker.json")
+	if err := PrepareConfigPath(path); err != nil {
+		t.Fatalf("PrepareConfigPath must create missing parents: %v", err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("PrepareConfigPath must not create the destination itself: %v", err)
+	}
+	if !runtimeIsWindows() {
+		info, err := os.Lstat(filepath.Dir(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o700 {
+			t.Fatalf("created parent mode=%o want 700", info.Mode().Perm())
+		}
+	}
+	config := Config{HubURL: "https://worker", Token: "node-token"}
+	if err := SaveConfig(path, config); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := PrepareConfigPath(path); err != nil {
+		t.Fatalf("PrepareConfigPath must accept the config it just saved: %v", err)
+	}
+}
+
+func TestConfigPrepareConfigPathRejectsInsecureDestinationBeforeEnrollment(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "worker.json")
+	original := []byte(`{"hub_url":"https://original","token":"original"}`)
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	makeExistingConfigInsecure(t, path)
+	err := PrepareConfigPath(path)
+	if err == nil {
+		t.Fatal("expected insecure destination rejection before any enrollment request")
+	}
+	if strings.Contains(err.Error(), path) || strings.Contains(err.Error(), filepath.Base(path)) {
+		t.Fatalf("insecure destination error must not name the path: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("rejected destination changed file: got %q want %q", got, original)
+	}
+}
+
+func TestConfigPrepareConfigPathRejectsSymlinkDestination(t *testing.T) {
+	if runtimeIsWindows() {
+		t.Skip("symlink destinations are covered by the Windows-native tests")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "elsewhere.json")
+	if err := os.WriteFile(target, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "worker.json")
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	config := Config{HubURL: "https://worker", Token: "node-token"}
+	if err := PrepareConfigPath(path); err == nil {
+		t.Fatal("expected symlink destination rejection")
+	}
+	if err := SaveConfig(path, config); err == nil {
+		t.Fatal("expected symlink destination rejection")
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("expected load symlink rejection")
+	}
+}
+
+func TestConfigPrepareConfigPathRejectsOverbroadOrLinkedParent(t *testing.T) {
+	if runtimeIsWindows() {
+		t.Skip("POSIX permission bits are not meaningful on Windows; existing directories are permitted when the child config DACL can be protected")
+	}
+	config := Config{HubURL: "https://worker", Token: "node-token"}
+	dir := filepath.Join(t.TempDir(), "config")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := PrepareConfigPath(filepath.Join(dir, "worker.json")); err == nil {
+		t.Fatal("expected overbroad parent rejection")
+	}
+
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveConfig(filepath.Join(link, "worker.json"), config); err == nil {
+		t.Fatal("expected symlinked parent rejection")
 	}
 }
 
@@ -236,7 +360,12 @@ func TestConfigResolvesMountedRootAndRejectsPathEscape(t *testing.T) {
 		t.Fatalf("resolved path=%q want=%q", path, want)
 	}
 
-	for _, relative := range []string{"../outside.mp4", "/absolute.mp4", "2026/../../outside.mp4"} {
+	absolute := "/absolute.mp4"
+	if runtimeIsWindows() {
+		// Windows absolute paths need a volume, not just a leading separator.
+		absolute = `C:\absolute.mp4`
+	}
+	for _, relative := range []string{"../outside.mp4", absolute, "2026/../../outside.mp4"} {
 		if _, err := config.ResolveSourcePath("nas-main", relative); err == nil {
 			t.Fatalf("expected path escape to be rejected: %q", relative)
 		}
